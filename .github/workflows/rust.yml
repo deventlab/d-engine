@@ -1,0 +1,41 @@
+name: Rust
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Install Protobuf compiler
+        run: sudo apt-get install protobuf-compiler
+
+      - name: Install Tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Run tests with Tarpaulin
+        run: cargo tarpaulin --all-features --out Xml --ciserver github
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: cobertura.xml
+          verbose: true
