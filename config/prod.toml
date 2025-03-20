@@ -1,0 +1,12 @@
+debug = false
+
+[raft_configure]
+# /// the metric used to convert a follower to learner,
+# ///     if learner's next_id is far away from leader's commit_index
+# /// be careful on the value, if it is too smal it might create a ‘competition’
+# ///     situation is that leader will keep convert a node between learner and follower
+# /// 
+learner_raft_log_gap = 10240
+snapshot_raft_log_db_entry_count_threshold = 1000000
+# if a follower is very slow to catch up with leader, we should limit the max number of the entries could sync per time
+append_entries_max_entries_per_replication = 1000

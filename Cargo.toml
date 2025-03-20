@@ -1,0 +1,79 @@
+[package]
+name = "dengine"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+coverage = []
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+prost = { version = "0.13", default-features = false }
+bincode = "1.3"
+
+# network
+tonic = { version = "0.12", features = ["gzip", "tls"] }
+tonic-health = "0.12.3"
+warp = "0.3.7"
+
+# certification
+rcgen = { version = "0.11", features = ["pem"] }
+
+# compress 
+flate2 = { version = "1.0", default-features = false, features = ["zlib"] }
+
+# Async
+tokio = { version = "1.4", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "signal",
+    "fs",
+    "sync",
+] }
+tokio-stream = "0.1.16"
+# use tokio_util::sync::CancellationToken;
+tokio-util = "0.7.11"
+
+
+# tokio-stream = { version = "0.1", features = [] }
+futures = "0.3.30"
+
+# DB
+sled = { version = "0.34.7", features = [
+    "compression",
+], default-features = false }
+
+# Monitoring
+prometheus = { version = "0.13", default-features = false }
+
+# log
+log = "0.4.20"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+parking_lot = "0.12.3"
+rand = "0.8.5"
+thiserror = "1.0"
+crossbeam = "0.8.4"
+config = "0.14.0"
+autometrics = { version = "1.0.1", features = ["prometheus-exporter"] }
+lazy_static = "1.4"
+chrono = "0.4.38"
+nanoid = "0.4.0"
+
+# using Dashset 
+dashmap = "5.5.3"
+im = { version = "15.1", default-features = false }
+
+[dev-dependencies]
+mockall = "0.12.1"
+env_logger = "0.11.6"
+once_cell = "1.20.2"
+tokio = { version = "1", features = ["test-util", "process"] }
+
+nix = { version = "0.29", features = ["signal"] }
+[build-dependencies]
+tonic-build = "0.12"
+vergen = { version = "8.1", features = ["git", "gitcl"] }
