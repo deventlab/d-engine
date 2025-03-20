@@ -1,0 +1,168 @@
+
+#############################################
+#### server_settings ########################
+#############################################
+[server_settings]
+id = 1
+listen_address = "127.0.0.1:9081"
+initial_cluster = [
+    { id = 1, name = "n1", ip = "127.0.0.1", port = 9081, role = 1 },
+    { id = 2, name = "n2", ip = "127.0.0.1", port = 9082, role = 1 },
+    { id = 3, name = "n3", ip = "127.0.0.1", port = 9083, role = 1 },
+]
+db_root_dir = "/tmp/db"
+log_dir = "/tmp/logs"
+
+# DO NOT MODIFY
+prometheus_enabled = true
+prometheus_metrics_port = 8080
+
+# dependency: RUSTFLAGS="--cfg tokio_unstable" cargo build --release
+tokio_console_enabled = false
+
+
+[election_timeout_control_settings]
+
+# Turn on or off the feature
+is_on = false
+
+# total CPU usage check
+check_cpu = false
+total_cpu_threshold = 80.0
+
+# system load threshold check
+check_system_load = true
+system_load_threshold = 3.5
+
+# election_timeout_legal_min = 500
+# election_timeout_legal_max = 6000
+
+
+#############################################
+#### raft_settings ##########################
+#############################################
+[raft_settings]
+# /// the metric used to convert a follower to learner,
+# ///     if learner's next_id is far away from leader's commit_index
+# /// be careful on the value, if it is too smal it might create a ‘competition’
+# ///     situation is that leader will keep convert a node between learner and follower
+# /// 
+
+learner_raft_log_gap = 10
+# [raft], leader append frequence
+rpc_append_entries_clock_in_ms = 100
+# Process commands when this number is reached
+rpc_append_entries_in_batch_threshold = 100
+# Ensure the batch is processed within a maximum delay (e.g., 10ms)
+rpc_append_entries_batch_process_delay_in_ms = 1
+# timeout in ms
+
+### -------- ELECTION TIMEOUT CONFIGURE -----------------##
+election_timeout_min = 500
+election_timeout_max = 1000
+
+### -------- REPLICATE ENTRIES RETRY CONFIGURE -----------------##
+
+# if a follower is very slow to catch up with leader, we should limit the max number of the entries could sync per time
+append_entries_max_entries_per_replication = 100
+# when there is a cluster membership changes, the max time to retry the sync.
+# bug:#130:Client write request timeout after 200ms, KEEP this number as 1
+rpc_append_entries_max_retries = 1
+rpc_append_entries_timeout_duration_in_ms = 100
+#  // re-try the async task after this duration
+rpc_append_entries_exponential_backoff_duration_in_ms = 50
+
+### -------- ELECTION RETRY CONFIGURE -----------------##
+rpc_election_max_retries = 3
+rpc_election_timeout_duration_in_ms = 100
+#  // re-try the async task after this duration
+rpc_election_exponential_backoff_duration_in_ms = 50
+# check rpc connection health per 30 sec
+rpc_peer_connectinon_monitor_interval_in_sec = 30
+internal_rpc_client_request_id = 0
+
+### -------- Leader Propose CONFIGURE -----------------##
+leader_propose_timeout_duration_in_ms = 100
+
+#############################################
+#### commit_handler_settings ######################
+#############################################
+[commit_handler_settings]
+batch_size_threshold = 100
+commit_handle_interval_in_ms = 10
+max_entries_per_chunk = 100
+
+#############################################
+#### cluster_settings #######################
+#############################################
+[cluster_settings]
+# when there is a cluster membership changes, the max time to retry the sync.
+# cluster membership sync can not failed. otherwise, server will panic!
+# try for 10+ min = 120 * 500
+cluster_membership_sync_max_retries = 120
+# timeout in ms
+cluster_membership_sync_timeout_duration_in_ms = 500 # too big?
+#  // re-try the async task after this duration
+cluster_membership_sync_exponential_backoff_duration_in_ms = 3000
+
+cluster_healtcheck_max_retries = 10000
+cluster_healtcheck_timeout_duration_in_ms = 100
+#  // re-try the async task after this duration
+cluster_healtcheck_exponential_backoff_duration_in_ms = 1000
+cluster_healthcheck_probe_service_name = "rpc_service.RpcService"
+
+
+#############################################
+#### rpc_connection_settings ################
+#############################################
+[rpc_connection_settings]
+# // connect_timeout is the timeout for grpc connection.
+connect_timeout_in_ms = 20
+
+# // request_timeout is the timeout for grpc requests.
+request_timeout_in_ms = 100
+
+# // concurrency_limit_per_connection: set the concurrency limit applied to on requests inbound per connection.
+concurrency_limit_per_connection = 8192
+
+# HTTP2/Multiplexing：
+# Assume the server sets SETTINGS_MAX_CONCURRENT_STREAMS = 10:
+# - After the client receives this setting, it can only initiate a maximum of 10 outstanding requests on the same connection at the same time.
+# - When the 11th request is attempted to be sent, the client will block and wait for the existing stream to complete (or trigger a timeout).
+max_concurrent_streams = 100
+
+tcp_nodelay = true
+
+# // tcp_keepalive is the keepalive duration for tcp connection.
+tcp_keepalive_in_secs = 3600
+
+# // http2_keep_alive_interval is the interval for http2 keep alive.
+http2_keep_alive_interval_in_secs = 300
+
+# // http2_keep_alive_timeout is the timeout for http2 keep alive.
+http2_keep_alive_timeout_in_secs = 20
+
+# // max_frame_size is the max frame size for grpc, default is 12mb = 12 * 1024 * 1024.
+max_frame_size = 12582912
+
+# 2MB
+initial_stream_window_size = 2097152
+
+# // initial_connection_window_size is the initial window size for grpc, default is 12mb = 12 * 1024 * 1024.
+initial_connection_window_size = 12582912
+# // buffer_size is the buffer size for grpc, default is 64kb = 64 * 1024.
+buffer_size = 65536
+
+# /// Sets whether to use an adaptive flow control. Defaults to false.
+# /// Enabling this will override the limits set in http2_initial_stream_window_size and
+# /// http2_initial_connection_window_size.
+http2_adaptive_window = false
+
+generate_self_signed_certificates = false
+certificate_authority_root_path = "/etc/ssl/certs/sample_ca.pem"
+server_certificate_path = "./certs/certificate.pem"
+server_private_key_path = "./certs/private.key"
+client_certificate_authority_root_path = "/etc/ssl/certs/sample_ca.pem"
+enable_mtls = false
+
+enable_tls = false

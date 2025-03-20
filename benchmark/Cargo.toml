@@ -1,0 +1,15 @@
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dengine = { path = "../../dengine" }
+
+tokio = { version = "1.36.0", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+tonic = { version = "0.12.1", features = ["gzip"] }
+tracing = "0.1.40"
+tracing-appender = "0.2.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+futures-util = "0.3.31"

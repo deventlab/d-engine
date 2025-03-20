@@ -1,0 +1,226 @@
+syntax = "proto3";
+
+package rpc_service;
+
+message VoteRequest {
+    uint64 term = 1;
+    uint32 candidateId = 2;
+    uint64 lastLogIndex = 3;
+    uint64 lastLogTerm= 4;
+}
+
+message VoteResponse {
+      /// currentTerm, for candidate to update itself
+      uint64 term = 1;
+      /// true means candidate received vote
+      bool voteGranted = 2;
+}
+
+message Entry {
+  uint64 index = 1;
+  uint64 term = 2;
+  bytes command = 3;
+}
+
+message ActiveSnapshot {
+  uint32 nodeId= 1;
+  uint64 index = 2;
+}
+
+message AppendEntriesRequest {
+  /// leader term
+  uint64 term = 1;
+  /// so follower can redirect clients
+  uint32 leaderId = 2;
+  /// index of log entry immediately preceding new ones
+  uint64 prevLogIndex = 3;
+  /// term of prevLogIndex entry
+  uint64 prevLogTerm = 4;
+  /// log entries to store (empty for heartbeat; may send more than one for efficiency)
+  repeated Entry entries = 5;
+  /// leader commitIndex
+  uint64 leaderCommitIndex = 6;
+}
+
+message AppendEntriesResponse {
+    /// record down the response owner id
+    uint32 id = 1;
+    /// currentTerm, for leader to update itself
+    uint64 term = 2;
+    /// true if follower contained entry matching prevLogIndex and prevLogTerm
+    bool success = 3;
+    /// the index of the last log entry it has received
+    uint64 matchIndex = 4;
+}
+
+message ClientCommand {
+  oneof command {
+    bytes get = 1;            // Key for GET
+    Insert insert = 2;        // Key+Value for INSERT
+    bytes delete = 3;         // Key for DELETE
+    bool no_op = 4;           // Simple flag for NO_OP
+  }
+
+  message Insert {
+    bytes key = 1;
+    bytes value = 2;
+  }
+}
+
+message ClientProposeRequest {
+  uint32 client_id = 1;
+  repeated ClientCommand commands = 2;
+}
+
+message ClientReadRequest {
+  uint32 client_id = 1;
+  bool linear = 2;
+  repeated ClientCommand commands = 3;
+}
+
+message ClientResult {  // Renamed from ClientGetResult
+  bytes key = 1;
+  bytes value = 2;
+}
+
+
+enum ClientRequestError {
+  NO_ERROR = 0;
+  COMMIT_NOT_CONFIRMED = 1;
+  NOT_LEADER = 2;
+  SERVER_TIMEOUT = 3;
+  SERVER_ERROR = 4;
+  UNKNOWN = 5;
+}
+
+message ClientResponse {
+  ClientRequestError error_code = 1;
+  oneof result {
+    bool write_result = 2;          // Single value for writes
+    ReadResults read_results = 3;    // Wrapped repeated for reads
+  }
+}
+
+message ReadResults {
+  repeated ClientResult results = 1;
+}
+
+
+message MetadataRequest {
+}
+
+message NodeMeta {
+  uint32 id = 1;
+  string ip = 2;
+  uint32 port = 3;
+  int32 role = 4;
+}
+
+message ClusterMembership {
+  repeated NodeMeta nodes = 1;
+}
+
+// message RaftState {
+//   // Public fields
+//   uint64 current_term = 1;
+//   // Optional voted_for field, represented by oneof
+//   oneof voted_for {
+//     uint32 voted_for_node_id = 2; // Node ID of the candidate voted for
+//   }
+
+//   uint64 commit_index = 3;
+//   uint64 last_applied = 4;
+  
+//   // Role type and exclusive state
+//   oneof role_state {
+//     FollowerState follower = 5;
+//     CandidateState candidate = 6;
+//     LeaderState leader = 7;
+//   }
+  
+// }
+  
+// // Exclusive structure for each state
+// message FollowerState {
+//   int64 last_heartbeat = 1;
+//   string leader_hint = 2;
+// }
+  
+// message CandidateState {
+//   map<uint32, bool> votes = 1; // Node ID -> whether to vote
+//   int64 election_start = 2;
+// }
+  
+// message LeaderState {
+//   map<uint32, uint64> next_index = 1; // Node ID -> next log index
+//   map<uint32, uint64> match_index = 2; // Node ID -> matched log index
+// }
+
+// enum RaftRole {
+//   Follower = 0;
+//   Candidate = 1;
+//   Leader = 2;
+//   Learner = 3;
+// }
+
+// message NodeRole {
+//   uint64 id = 1;
+//   RaftRole role = 2;
+// }
+
+message VotedFor {
+  uint32 voted_for_id = 1; 
+  uint64 voted_for_term = 2;
+}
+
+message SnapshotEntry {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message SnapshotMeta {
+    uint64 versionHigh = 1;
+    uint64 versionLow = 2;
+    uint64 createdAtHigh = 3;
+    uint64 createdAtLow = 4;
+    uint32 authorId = 5;
+    uint64 lastIncludedIndex = 6;
+    uint64 lastIncludedTerm = 7;
+}
+
+message Snapshot {
+  SnapshotMeta meta = 1;
+  repeated SnapshotEntry data = 2;  
+}
+
+message ClusteMembershipChangeRequest {
+  /// the request sender id, (might be fake leader or real leader)
+  uint32 id = 1;
+  /// leader term
+  uint64 term = 2;
+  /// so follower can redirect clients
+  /// when receiver receives the configure, they need compare the version
+  /// value is timestamp by default.
+  uint64 version = 3;
+
+  ClusterMembership cluster_membership = 4;
+}
+
+message ClusterConfUpdateResponse {
+  /// record down the response owner id
+  uint32 id = 1;
+  uint64 term = 2;
+  uint64 version = 3;
+  bool success = 4;
+}
+
+
+service RpcService {
+  rpc RequestVote (VoteRequest) returns (VoteResponse){};
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse){};
+  rpc UpdateClusterConf (ClusteMembershipChangeRequest) returns (ClusterConfUpdateResponse){};
+
+  rpc HandleClientPropose (ClientProposeRequest) returns (ClientResponse){};
+  rpc HandleClientRead (ClientReadRequest) returns (ClientResponse){};
+  rpc GetClusterMetadata (MetadataRequest) returns (ClusterMembership){};
+}
