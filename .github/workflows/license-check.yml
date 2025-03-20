@@ -1,0 +1,36 @@
+name: License Compliance
+
+on:
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "0 0 * * 1" # Automatic full scan every Monday
+
+jobs:
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Run license check
+        run: |
+          cargo deny check licenses \
+            --manifest-path Cargo.toml \
+            --config deny.toml
+
+      # Security vulnerability scanning
+      - name: Run security audit
+        run: cargo audit
+
+      - name: FOSSA License Scan
+        uses: fossas/fossa-action@v3
+        with:
+          fossa-api-key: ${{ secrets.FOSSA_API_KEY }}
+          strategy: dynamic

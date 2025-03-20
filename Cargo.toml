@@ -18,7 +18,7 @@ tonic-health = "0.12.3"
 warp = "0.3.7"
 
 # certification
-rcgen = { version = "0.11", features = ["pem"] }
+rcgen = { version = "0.13", features = ["pem"] }
 
 # compress 
 flate2 = { version = "1.0", default-features = false, features = ["zlib"] }
@@ -58,7 +58,7 @@ rand = "0.8.5"
 thiserror = "1.0"
 crossbeam = "0.8.4"
 config = "0.14.0"
-autometrics = { version = "1.0.1", features = ["prometheus-exporter"] }
+autometrics = { version = "2.0.0", features = ["prometheus-exporter"] }
 lazy_static = "1.4"
 chrono = "0.4.38"
 nanoid = "0.4.0"
