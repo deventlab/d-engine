@@ -1,10 +1,9 @@
 use core::panic;
 use dengine::utils::util;
-use dengine::{Error, Node, RaftTypeConfig, Result, ServerSettings};
+use dengine::{Error, Result, ServerSettings};
 use dengine::{NodeBuilder, Settings};
 use log::{error, info};
 use std::path::Path;
-use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -13,7 +12,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-// #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let settings = Settings::new()?;
 
