@@ -6,7 +6,7 @@ use crate::{
     leader_state::LeaderState,
     test_utils::{mock_raft, MockNode, MOCK_RAFT_PORT_BASE},
     ChannelWithAddressAndRole, Error, MaybeCloneOneshot, MockElectionCore, MockMembership,
-    MockTransport, RaftOneshot,
+    MockRaftLog, MockStateMachine, MockStateStorage, MockTransport, RaftOneshot,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -951,4 +951,48 @@ async fn test_handle_role_event_state_update_case1_4() {
     .expect("should succeed");
     assert_eq!(raft.role.match_index(node_id), None);
     assert_eq!(raft.role.next_index(node_id), None);
+}
+
+/// # Test before if raft is shutdown
+///
+/// ## Validation criterias:
+/// 1. raft loop should exist
+/// 2. HardState should be persisted
+/// 3. Raft Log should be flushed
+/// 4. State Machine should be flushed
+///
+#[tokio::test]
+async fn test_raft_shutdown() {
+    let _ = tokio::time::pause();
+
+    // 1. Create a Raft instance
+    let (graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = mock_raft("/tmp/test_raft_shutdown", graceful_rx, None);
+    let mut state_storage = MockStateStorage::new();
+    let mut raft_log = MockRaftLog::new();
+    let mut state_machine = MockStateMachine::new();
+
+    state_storage
+        .expect_save_hard_state()
+        .times(1)
+        .returning(|_| Ok(()));
+    raft_log.expect_flush().times(1).returning(|| Ok(()));
+    state_machine.expect_flush().times(1).returning(|| Ok(()));
+    raft.ctx.raft_log = Arc::new(raft_log);
+    raft.ctx.state_machine = Arc::new(state_machine);
+    raft.ctx.state_storage = Box::new(state_storage);
+
+    // 2. Start the Raft main loop
+    let raft_handle = tokio::spawn(async move { raft.run().await });
+
+    // 3. Send shutdown signal
+    graceful_tx.send(()).expect("send signal success");
+    // 4. Time advancement control (step-by-step trigger Tick)
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    if let Ok(Err(Error::Exit)) = raft_handle.await {
+        assert!(true);
+    } else {
+        assert!(false);
+    }
 }
