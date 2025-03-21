@@ -1,17 +1,16 @@
-use std::collections::HashMap;
-use tokio::sync::{mpsc, oneshot};
-
 use crate::{
     grpc::{
         grpc_transport::GrpcTransport,
         rpc_service::{AppendEntriesResponse, VoteResponse},
     },
     test_utils::{
-        self, mock_raft, setup_raft_components, MockNode, MockRpcService, MOCK_RPC_CLIENT_PORT_BASE,
+        self, setup_raft_components, MockNode, MockRpcService, MOCK_RPC_CLIENT_PORT_BASE,
     },
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RaftEvent, RaftSettings,
-    RoleEvent, Settings, Transport, CANDIDATE, FOLLOWER,
+    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RaftSettings, Settings,
+    Transport, CANDIDATE, FOLLOWER,
 };
+use std::collections::HashMap;
+use tokio::sync::oneshot;
 
 use super::{
     rpc_service::{AppendEntriesRequest, VoteRequest},
@@ -687,7 +686,7 @@ async fn test_send_vote_requests_case3() {
         last_log_term: 1,
     };
     let addr1 =
-        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 11, my_response, rx1)
+        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 21, my_response, rx1)
             .await
             .expect("should succeed");
     let requests_with_peer_address = vec![
@@ -747,7 +746,7 @@ async fn test_send_vote_requests_case4() {
         last_log_term: 1,
     };
     let addr1 =
-        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 12, my_response, rx1)
+        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 22, my_response, rx1)
             .await
             .expect("should succeed");
     let requests_with_peer_address = vec![
@@ -807,14 +806,14 @@ async fn test_send_vote_requests_case5() {
         last_log_term: 1,
     };
     let addr1 = MockNode::simulate_send_votes_mock_server(
-        MOCK_RPC_CLIENT_PORT_BASE + 13,
+        MOCK_RPC_CLIENT_PORT_BASE + 23,
         peer1_response,
         rx1,
     )
     .await
     .expect("should succeed");
     let addr2 = MockNode::simulate_send_votes_mock_server(
-        MOCK_RPC_CLIENT_PORT_BASE + 14,
+        MOCK_RPC_CLIENT_PORT_BASE + 24,
         peer2_response,
         rx2,
     )
