@@ -21,14 +21,14 @@ mod grpc_transport_test;
 //-------------------------------------------------------------------------------
 // Start RPC Server
 
+use crate::TypeConfig;
 use crate::{
     grpc::rpc_service::rpc_service_server::RpcServiceServer, Error, Node, Result,
     RpcConnectionSettings,
 };
-use crate::{ElectionHandler, TypeConfig};
 use futures::FutureExt;
 use log::{debug, error, info, warn};
-use rcgen::generate_simple_self_signed;
+use rcgen::{generate_simple_self_signed, CertifiedKey};
 use std::net::SocketAddr;
 use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
 
@@ -134,18 +134,12 @@ where
 fn generate_self_signed_certificates(config: RpcConnectionSettings) {
     // Example using rcgen to generate self-signed certificates
     let subject_alt_names = vec!["localhost".to_string()];
-    let cert =
+    let CertifiedKey { cert, key_pair } =
         generate_simple_self_signed(subject_alt_names).expect("Certificate generation failed");
 
     // Write certificate and private key to files
-    std::fs::write(
-        &config.server_certificate_path,
-        cert.serialize_pem().unwrap(),
-    )
-    .expect("Should succeed to write server certificate");
-    std::fs::write(
-        &config.server_private_key_path,
-        cert.serialize_private_key_pem(),
-    )
-    .expect("Should succeed to write server private key");
+    std::fs::write(&config.server_certificate_path, cert.pem())
+        .expect("Should succeed to write server certificate");
+    std::fs::write(&config.server_private_key_path, key_pair.serialize_pem())
+        .expect("Should succeed to write server private key");
 }
