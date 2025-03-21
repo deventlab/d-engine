@@ -40,10 +40,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         &mut self.shared_state
     }
 
-    // fn role(&self) -> i32 {
-    //     RaftRole::Follower(self.clone()).as_i32()
-    // }
-
     fn is_follower(&self) -> bool {
         true
     }
@@ -109,9 +105,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     fn next_deadline(&self) -> Instant {
         self.timer.next_deadline()
     }
-    // fn tick_interval(&self) -> Duration {
-    //     self.timer.tick_interval()
-    // }
 
     /// Election Timeout
     /// As follower,
