@@ -1,9 +1,9 @@
 use crate::{
     grpc::rpc_service::{
-        rpc_service_server::RpcServiceServer, AppendEntriesResponse,  VoteResponse,
+        rpc_service_server::RpcServiceServer, AppendEntriesResponse, VoteResponse,
     },
+    ChannelWithAddress, Error, Node, Result,
 };
-use crate::{ChannelWithAddress, Error, Node,  Result};
 use log::info;
 use std::io;
 use std::net::SocketAddr;
@@ -12,7 +12,6 @@ use tokio::{net::TcpListener, sync::oneshot};
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic_health::server::health_reporter;
-
 
 use super::{MockRpcService, MockTypeConfig};
 
@@ -26,7 +25,6 @@ pub(crate) const MOCK_CLUSTER_MEMBERSHIP_CONTROLLER_PORT_BASE: u64 = 60700;
 pub(crate) const MOCK_ELECTION_CONTROLLER_PORT_BASE: u64 = 60800;
 pub(crate) const MOCK_EVENT_LISTENER_PORT_BASE: u64 = 60900;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
-
 
 pub struct MockNode {
     pub(crate) node: Arc<Node<MockTypeConfig>>,
