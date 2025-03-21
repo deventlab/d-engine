@@ -161,9 +161,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             .await
         {
             debug!("BecomeLeader");
-            // if let Ok(new_role) = self.role.become_follower() {
-            //     self.role = new_role
-            // }
             if let Err(e) = role_tx.send(RoleEvent::BecomeLeader) {
                 error!(
                     "self.my_role_change_event_sender.send(RaftRole::Leader) failed: {:?}",
