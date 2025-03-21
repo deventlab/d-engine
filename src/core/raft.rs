@@ -172,9 +172,6 @@ where
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
                     warn!("[Raft:{}] shutdown signal received.", self.id);
-                    if let Err(e) = self.turn_off() {
-                        error!("turn off failed: {:?}", e);
-                    }
                     return Err(Error::Exit);
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election
@@ -352,26 +349,6 @@ where
         }
     }
 
-    pub fn turn_off(&self) -> crate::Result<()> {
-        info!("state:: before_shutdown...");
-        if let Err(e) = self
-            .ctx
-            .state_storage()
-            .save_hard_state(self.role.state().shared_state().hard_state)
-        {
-            error!("self.role.persist_state: {:?}", e);
-        }
-
-        info!("raft_log:: flush...");
-        self.ctx.raft_log.flush()?;
-
-        info!("state_machine:: before_shutdown...");
-        self.ctx.state_machine.flush()?;
-
-        info!("Graceful shutdown node state ...");
-        Ok(())
-    }
-
     #[cfg(test)]
     pub fn register_role_transition_listener(&mut self, tx: mpsc::UnboundedSender<i32>) {
         self.test_role_transition_listener.push(tx);
@@ -402,5 +379,34 @@ where
     #[cfg(test)]
     pub fn set_role(&mut self, role: RaftRole<T>) {
         self.role = role
+    }
+}
+
+impl<T> Drop for Raft<T>
+where
+    T: TypeConfig,
+{
+    fn drop(&mut self) {
+        info!("Raft been dropped.");
+
+        if let Err(e) = self
+            .ctx
+            .state_storage()
+            .save_hard_state(self.role.state().shared_state().hard_state)
+        {
+            error!("State storage persist node hard state failed: {:?}", e);
+        }
+
+        info!("raft_log:: flush...");
+        if let Err(e) = self.ctx.raft_log.flush() {
+            error!("Flush raft log failed: {:?}", e);
+        }
+
+        info!("state_machine:: before_shutdown...");
+        if let Err(e) = self.ctx.state_machine.flush() {
+            error!("Flush raft log failed: {:?}", e);
+        }
+
+        info!("Graceful shutdown node state ...");
     }
 }
