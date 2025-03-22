@@ -22,7 +22,7 @@ pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60400;
 pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60500;
 pub(crate) const MOCK_REPLICATION_HANDLER_PORT_BASE: u64 = 60600;
 pub(crate) const MOCK_CLUSTER_MEMBERSHIP_CONTROLLER_PORT_BASE: u64 = 60700;
-pub(crate) const MOCK_ELECTION_CONTROLLER_PORT_BASE: u64 = 60800;
+pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
 pub(crate) const MOCK_EVENT_LISTENER_PORT_BASE: u64 = 60900;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
@@ -31,26 +31,6 @@ pub struct MockNode {
 }
 
 impl MockNode {
-    // pub async fn new(
-    //     id: u32,
-    //     db_root_dir: String,
-    //     peers_meta: Vec<NodeMeta>,
-    //     address: String,
-    //     mut settings: Settings,
-    //     shutdown_signal: watch::Receiver<()>,
-    // ) -> Self {
-    //     settings.server_settings.id = id;
-    //     settings.server_settings.db_root_dir = db_root_dir;
-    //     settings.server_settings.initial_cluster = peers_meta;
-
-    //     let node = NodeBuilder::new(settings.clone(), shutdown_signal)
-    //         .build()
-    //         .ready()
-    //         .expect("should succeed");
-
-    //     MockNode { node }
-    // }
-
     pub async fn mock_listener(
         mock_service: MockRpcService,
         port: u64,

@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     alias::POF,
-    grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VotedFor},
+    grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VoteResponse, VotedFor},
     utils::util::error,
     AppendResponseWithUpdates, ElectionCore, ElectionTimer, Error, Membership, RaftContext,
     RaftEvent, ReplicationCore, RoleEvent, Settings, StateMachine, StateMachineHandler, TypeConfig,
@@ -193,42 +193,79 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();
         let my_id = self.shared_state.node_id;
+        let current_term = self.current_term();
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                if let Err(e) = ctx
+                let candidate_id = vote_request.candidate_id;
+                match ctx
                     .election_handler()
                     .handle_vote_request(
                         vote_request,
-                        sender,
                         self.current_term(),
                         self.voted_for().unwrap(),
                         raft_log,
                     )
                     .await
                 {
-                    error(
-                        "candidate::handle_raft_event::RaftEvent::ReceiveVoteRequest",
-                        &e,
-                    );
-                }
+                    Ok(voted_for) => {
+                        debug!(
+                            "candidate::handle_vote_request success with vote: {:?}",
+                            &voted_for
+                        );
+                        if let Some(v) = voted_for {
+                            if let Err(e) = self.update_voted_for(v) {
+                                error("candidate::update_voted_for", &e);
+                                return Err(e);
+                            }
+                        }
+
+                        let response = VoteResponse {
+                            term: current_term,
+                            vote_granted: voted_for.is_some(),
+                        };
+                        debug!(
+                            "Response candidate_{:?} with response: {:?}",
+                            candidate_id, response
+                        );
+
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error(
+                            "candidate::handle_raft_event::RaftEvent::ReceiveVoteRequest",
+                            &e,
+                        );
+                        return Err(e);
+                    }
+                };
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
                 let cluster_conf = ctx.membership().retrieve_cluster_membership_config();
-                if let Err(e) = sender.send(Ok(cluster_conf)) {
-                    error("handle_raft_event::follower::RaftEvent::ClusterConf", &e);
-                }
+                sender.send(Ok(cluster_conf)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+                return Ok(());
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
-                if let Err(e) = sender.send(Err(Status::permission_denied(
-                    "Not able to update cluster conf, as node is not Leader",
-                ))) {
-                    error(
-                        "handle_raft_event::follower::RaftEvent::ClusterConfUpdate",
-                        &e,
-                    );
-                }
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Not able to update cluster conf, as node is not Leader",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                return Ok(());
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 debug!(
@@ -282,15 +319,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                             self.update_current_term(term);
                         }
                         if let Some(commit) = commit_index_update {
-                            // if let Err(e) = self.update_commit_index(commit) {
-                            //     error!("Candidate::update_commit_index: {:?}", e);
-                            // }
-                            // debug!("send(RoleEvent::NotifyNewCommitIndex");
-                            // if let Err(e) = role_tx.send(RoleEvent::NotifyNewCommitIndex {
-                            //     new_commit_index: commit,
-                            // }) {
-                            //     error("role_tx.send(RoleEvent::NotifyNewCommitIndex)", &e);
-                            // }
                             if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
                                 error!(
                                     "update_commit_index_with_signal,commit={}, error: {:?}",
@@ -310,38 +338,45 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
                         debug!("follower's response: {:?}", response);
 
-                        if let Err(e) = sender
-                            .send(Ok(response))
-                            .map_err(|e| Error::RPCServerStatusError(format!("{:?}", e)))
-                        {
-                            error!("resp_tx.send AppendEntriesResponse: {:?}", e);
-                            return Err(e);
-                        }
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
                     }
                     Err(e) => {
                         error("Candidate::handle_raft_event", &e);
                         return Err(e);
                     }
                 }
+                return Ok(());
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
-                if let Err(e) = sender.send(Ok(ClientResponse::write_error(
-                    Error::AppendEntriesNotLeader,
-                ))) {
-                    error("handle_raft_event::follower::RaftEvent::ClientPropose", &e);
-                }
+                sender
+                    .send(Ok(ClientResponse::write_error(
+                        Error::AppendEntriesNotLeader,
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                return Ok(());
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
                 // If the request is linear request, ...
                 if client_read_request.linear {
-                    if let Err(e) = sender.send(Err(Status::unauthenticated(
-                        "Not leader. Send linearizable read requet to Leader only.",
-                    ))) {
-                        error("handle_raft_event::RaftEvent::ClientReadRequest", &e);
-                        return Err(Error::NodeIsNotLeaderError);
-                    }
+                    sender
+                        .send(Err(Status::unauthenticated(
+                            "Not leader. Send linearizable read requet to Leader only.",
+                        )))
+                        .map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
                 } else {
                     // Otherwise
                     let mut results = vec![];
@@ -353,14 +388,15 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     }
                     let response = ClientResponse::read_results(results);
                     debug!("handle_client_read response: {:?}", response);
-                    if let Err(e) = sender.send(Ok(response)) {
-                        error("handle_raft_event::RaftEvent::ClientReadRequest", &e);
-                    }
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
                 }
+                return Ok(());
             }
         }
-
-        Ok(())
     }
 }
 

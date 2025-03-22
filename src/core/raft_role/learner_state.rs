@@ -135,25 +135,33 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(_vote_request, _sender) => {
-                info!("handle_raft_event::ReceiveVoteRequest, will ignore vote request. Learner cannot vote.")
+                info!("handle_raft_event::ReceiveVoteRequest, will ignore vote request. Learner cannot vote.");
+                return Err(Error::LearnerCanNotVote);
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                if let Err(e) = sender.send(Err(Status::permission_denied(
-                    "Not able to respond to cluster conf request as node is Learner",
-                ))) {
-                    error("handle_raft_event::follower::RaftEvent::ClusterConf", &e);
-                }
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Not able to respond to cluster conf request as node is Learner",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                return Ok(());
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
-                if let Err(e) = sender.send(Err(Status::permission_denied(
-                    "Not able to update cluster conf, as node is not Leader",
-                ))) {
-                    error(
-                        "handle_raft_event::follower::RaftEvent::ClusterConfUpdate",
-                        &e,
-                    );
-                }
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Not able to update cluster conf, as node is not Leader",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                return Ok(());
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 // Important to confirm heartbeat from Leader immediatelly
@@ -186,15 +194,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                             self.update_current_term(term);
                         }
                         if let Some(commit) = commit_index_update {
-                            // if let Err(e) = self.update_commit_index(commit) {
-                            //     error!("Learner::update_commit_index: {:?}", e);
-                            // }
-                            // debug!("send(RoleEvent::NotifyNewCommitIndex");
-                            // if let Err(e) = role_tx.send(RoleEvent::NotifyNewCommitIndex {
-                            //     new_commit_index: commit,
-                            // }) {
-                            //     error("role_tx.send(RoleEvent::NotifyNewCommitIndex)", &e);
-                            // }
                             if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
                                 error!(
                                     "update_commit_index_with_signal,commit={}, error: {:?}",
@@ -214,34 +213,46 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
                         debug!("learner's response: {:?}", response);
 
-                        if let Err(e) = sender.send(Ok(response)) {
-                            error!("resp_tx.send AppendEntriesResponse: {:?}", e);
-                        }
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
                     }
                     Err(e) => {
                         error("Learner::handle_raft_event", &e);
+                        return Err(e);
                     }
                 }
+                return Ok(());
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
-                if let Err(e) = sender.send(Ok(ClientResponse::write_error(
-                    Error::AppendEntriesNotLeader,
-                ))) {
-                    error("handle_raft_event::follower::RaftEvent::ClientPropose", &e);
-                }
+                sender
+                    .send(Ok(ClientResponse::write_error(
+                        Error::AppendEntriesNotLeader,
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                return Ok(());
             }
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
-                if let Err(e) = sender.send(Err(Status::unauthenticated(
-                    "Learner can not process client read request",
-                ))) {
-                    error("handle_raft_event::RaftEvent::ClientReadRequest", &e);
-                    return Err(Error::ClientReadRequestFailed(format!("receiver dropped.")));
-                }
+                sender
+                    .send(Err(Status::unauthenticated(
+                        "Learner can not process client read request",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                return Ok(());
             }
         }
-        Ok(())
     }
 }
 

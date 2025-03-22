@@ -1,12 +1,9 @@
-use std::net::AddrParseError;
-
+use crate::{grpc::rpc_service::ClientRequestError, NewLeaderInfo, RoleEvent};
 use config::ConfigError;
 use prost::{DecodeError, EncodeError};
+use std::net::AddrParseError;
 use thiserror::Error;
 use tokio::{sync::mpsc::error::SendError, task::JoinError};
-use tonic::Status;
-
-use crate::{grpc::rpc_service::ClientRequestError, NewLeaderInfo};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -242,8 +239,10 @@ pub enum Error {
     ConfigError(#[from] ConfigError),
 
     //===== mspc send errors ====
-    #[error(transparent)]
-    SendError(#[from] SendError<String>),
+    #[error("tokio send RoleEvent error: {0}")]
+    TokioSendRoleEventError(#[from] SendError<RoleEvent>),
+    #[error("tokio send Tonic Status error: {0}")]
+    TokioSendStatusError(String),
 
     //===== Role responbilitiies errors ====
     #[error("Not Leader")]

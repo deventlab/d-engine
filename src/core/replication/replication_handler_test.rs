@@ -1,24 +1,13 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
-
-use tokio::sync::{mpsc, oneshot, watch};
-
-use crate::{
-    grpc::rpc_service::{AppendEntriesResponse, ClientCommand},
-    role_state::RaftRoleState,
-    test_utils::{
-        setup_raft_components, simulate_insert_proposal, MockNode, MockTypeConfig,
-        MOCK_RAFT_PORT_BASE, MOCK_REPLICATION_HANDLER_PORT_BASE,
-    },
-    utils::util::kv,
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
-    LeaderStateSnapshot, MockRaftLog, MockTransport, PeerUpdate, RaftRole, RaftTypeConfig,
-    StateSnapshot, FOLLOWER,
-};
-
 use super::{ReplicationCore, ReplicationHandler};
+use crate::{
+    test_utils::{
+        setup_raft_components, MockNode, MockTypeConfig, MOCK_REPLICATION_HANDLER_PORT_BASE,
+    },
+    AppendResults, ChannelWithAddressAndRole, Error, LeaderStateSnapshot, MockRaftLog,
+    MockTransport, PeerUpdate, StateSnapshot, FOLLOWER,
+};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::oneshot;
 
 /// # Case 1: No peers found
 /// ## Validation Criteria

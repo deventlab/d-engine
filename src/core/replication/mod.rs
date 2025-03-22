@@ -13,17 +13,12 @@ mod replication_handler_test;
 // -----------------------------------------------------------------------------
 use crate::{
     alias::{ROF, TROF},
-    grpc::rpc_service::{
-        AppendEntriesRequest, AppendEntriesResponse, ClientCommand, ClientResponse, Entry,
-    },
+    grpc::rpc_service::{AppendEntriesRequest, ClientCommand, ClientResponse, Entry},
     AppendResults, ChannelWithAddressAndRole, MaybeCloneOneshotSender, RaftSettings, Result,
-    Settings, TypeConfig,
+    TypeConfig,
 };
 use dashmap::DashMap;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tonic::{async_trait, Status};
 
 #[cfg(test)]

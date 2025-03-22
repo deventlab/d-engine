@@ -441,9 +441,6 @@ fn test_handle_role_event_case1_1() {
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
-    raft.handle_role_event(RoleEvent::UpdateTerm { new_term: 10 })
-        .expect("should succeed");
-    assert_eq!(raft.role.current_term(), 10);
 }
 
 /// # Case 1.2: Leader can not switch to candidate
@@ -703,17 +700,6 @@ async fn test_handle_role_event_state_update_case1_1() {
         graceful_rx,
         None,
     );
-    raft.handle_role_event(RoleEvent::UpdateTerm { new_term: 10 })
-        .expect("should succeed");
-    assert_eq!(raft.role.current_term(), 10);
-
-    let voted_for = VotedFor {
-        voted_for_id: 5,
-        voted_for_term: 5,
-    };
-    raft.handle_role_event(RoleEvent::UpdateVote { voted_for })
-        .expect("should succeed");
-    assert_eq!(raft.role.voted_for().unwrap(), Some(voted_for));
 
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -722,35 +708,6 @@ async fn test_handle_role_event_state_update_case1_1() {
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
 
-    let node_id = 3;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndex {
-        node_id,
-        new_match_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), None);
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    raft.handle_role_event(RoleEvent::UpdateNextIndex {
-        node_id,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.next_index(node_id), None);
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndexAndNextIndex {
-        node_id,
-        new_match_index,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), None);
-    assert_eq!(raft.role.next_index(node_id), None);
 }
 
 /// Case 1.2: as Candidate
@@ -768,17 +725,6 @@ async fn test_handle_role_event_state_update_case1_2() {
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
-    raft.handle_role_event(RoleEvent::UpdateTerm { new_term: 10 })
-        .expect("should succeed");
-    assert_eq!(raft.role.current_term(), 10);
-
-    let voted_for = VotedFor {
-        voted_for_id: 5,
-        voted_for_term: 5,
-    };
-    raft.handle_role_event(RoleEvent::UpdateVote { voted_for })
-        .expect("should succeed");
-    assert_eq!(raft.role.voted_for().unwrap(), Some(voted_for));
 
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -787,35 +733,6 @@ async fn test_handle_role_event_state_update_case1_2() {
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
 
-    let node_id = 3;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndex {
-        node_id,
-        new_match_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), None);
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    raft.handle_role_event(RoleEvent::UpdateNextIndex {
-        node_id,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.next_index(node_id), None);
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndexAndNextIndex {
-        node_id,
-        new_match_index,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), None);
-    assert_eq!(raft.role.next_index(node_id), None);
 }
 
 /// Case 1.3: as Leader
@@ -837,55 +754,12 @@ async fn test_handle_role_event_state_update_case1_3() {
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
-    // Assert state update
-    raft.handle_role_event(RoleEvent::UpdateTerm { new_term: 10 })
-        .expect("should succeed");
-    assert_eq!(raft.role.current_term(), 10);
-
-    let voted_for = VotedFor {
-        voted_for_id: 5,
-        voted_for_term: 5,
-    };
-    raft.handle_role_event(RoleEvent::UpdateVote { voted_for })
-        .expect("should succeed");
-    assert!(raft.role.voted_for().is_err());
-
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
-
-    let node_id = 3;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndex {
-        node_id,
-        new_match_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), Some(new_match_index));
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    raft.handle_role_event(RoleEvent::UpdateNextIndex {
-        node_id,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.next_index(node_id), Some(new_next_index));
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndexAndNextIndex {
-        node_id,
-        new_match_index,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), Some(new_match_index));
-    assert_eq!(raft.role.next_index(node_id), Some(new_next_index));
 }
 
 /// Case 1.4: as Learner
@@ -903,54 +777,12 @@ async fn test_handle_role_event_state_update_case1_4() {
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 
-    raft.handle_role_event(RoleEvent::UpdateTerm { new_term: 10 })
-        .expect("should succeed");
-    assert_eq!(raft.role.current_term(), 10);
-
-    let voted_for = VotedFor {
-        voted_for_id: 5,
-        voted_for_term: 5,
-    };
-    raft.handle_role_event(RoleEvent::UpdateVote { voted_for })
-        .expect("should succeed");
-    assert!(raft.role.voted_for().is_err());
-
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
-
-    let node_id = 3;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndex {
-        node_id,
-        new_match_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), None);
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    raft.handle_role_event(RoleEvent::UpdateNextIndex {
-        node_id,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.next_index(node_id), None);
-
-    let node_id = 3;
-    let new_next_index = 1001;
-    let new_match_index = 11;
-    raft.handle_role_event(RoleEvent::UpdateMatchIndexAndNextIndex {
-        node_id,
-        new_match_index,
-        new_next_index,
-    })
-    .expect("should succeed");
-    assert_eq!(raft.role.match_index(node_id), None);
-    assert_eq!(raft.role.next_index(node_id), None);
 }
 
 /// # Test before if raft is shutdown
