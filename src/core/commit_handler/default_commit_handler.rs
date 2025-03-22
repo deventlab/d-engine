@@ -9,8 +9,6 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tonic::async_trait;
 
-// const BATCH_SIZE_THRESHOLD: u64 = 100;
-
 pub struct DefaultCommitHandler<T>
 where
     T: TypeConfig,
@@ -107,7 +105,7 @@ where
 
     /// Dynamically adjusted timer
     /// Behavior: If multiple ticks are missed, the timer will wait for the next tick instead of firing immediately.
-    fn dynamic_interval(&self) -> tokio::time::Interval {
+    pub(crate) fn dynamic_interval(&self) -> tokio::time::Interval {
         let mut interval =
             tokio::time::interval(Duration::from_millis(self.commit_handle_interval_in_ms));
         debug!(
