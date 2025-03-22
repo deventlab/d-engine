@@ -295,7 +295,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let voting_members = ctx.voting_members(peer_channels);
         let raft_log = ctx.raft_log();
         let transport = ctx.transport();
         let settings = ctx.settings();
@@ -516,6 +515,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClientPropose(client_propose_request, sender) => {
+                let voting_members = ctx.voting_members(peer_channels);
                 if let Err(e) = self
                     .process_client_propose(
                         client_propose_request,
@@ -555,6 +555,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         };
 
                     if client_read_request.linear {
+                        let voting_members = ctx.voting_members(peer_channels);
                         if !self
                             .enforce_quorum_consensus(
                                 ctx.replication_handler(),

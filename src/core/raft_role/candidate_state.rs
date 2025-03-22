@@ -277,7 +277,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Ok(());
+                return Err(Error::NotLeader);
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 debug!(

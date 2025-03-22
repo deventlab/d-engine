@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
-use tonic::Status;
+use tonic::{Code, Status};
 
 use crate::{
     alias::POF,
-    grpc::rpc_service::{VoteRequest, VoteResponse},
+    grpc::rpc_service::{
+        ClusteMembershipChangeRequest, MetadataRequest, VoteRequest, VoteResponse,
+    },
     learner_state::LearnerState,
     role_state::RaftRoleState,
     test_utils::{mock_peer_channels, mock_raft_context, MockTypeConfig},
@@ -72,4 +74,68 @@ async fn test_handle_raft_event_case1() {
         .is_err());
 
     assert!(resp_rx.recv().await.is_err());
+}
+
+/// # Case 2: Receive ClusterConf Event
+#[tokio::test]
+async fn test_handle_raft_event_case2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    match resp_rx.recv().await {
+        Ok(r) => match r {
+            Ok(_) => assert!(false),
+            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
+        },
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 3: Receive ClusterConfUpdate Event
+#[tokio::test]
+async fn test_handle_raft_event_case3() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusteMembershipChangeRequest {
+            id: 1,
+            term: 1,
+            version: 1,
+            cluster_membership: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    match resp_rx.recv().await {
+        Ok(r) => match r {
+            Ok(_) => assert!(false),
+            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
+        },
+        Err(_) => assert!(false),
+    }
 }

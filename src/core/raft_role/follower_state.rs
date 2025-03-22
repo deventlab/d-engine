@@ -232,7 +232,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Ok(());
+                return Err(Error::NotLeader);
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 // Important to confirm heartbeat from Leader immediatelly

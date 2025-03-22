@@ -3,7 +3,8 @@ use crate::{
     alias::POF,
     grpc::rpc_service::{
         AppendEntriesRequest, ClientCommand, ClientProposeRequest, ClientReadRequest,
-        ClientRequestError, ClientResponse, VoteRequest, VoteResponse, VotedFor,
+        ClientRequestError, ClientResponse, ClusteMembershipChangeRequest, ClusterMembership,
+        MetadataRequest, VoteRequest, VoteResponse, VotedFor,
     },
     test_utils::{
         enable_logger, mock_peer_channels, mock_raft_context, setup_raft_components, MockBuilder,
@@ -11,7 +12,7 @@ use crate::{
     },
     utils::util::kv,
     AppendResponseWithUpdates, AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver,
-    MaybeCloneOneshotSender, MockElectionCore, MockRaftLog, MockReplicationCore,
+    MaybeCloneOneshotSender, MockElectionCore, MockMembership, MockRaftLog, MockReplicationCore,
     MockStateMachineHandler, MockTransport, NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot,
     RaftSettings, RoleEvent, Settings, StateUpdate,
 };
@@ -536,17 +537,139 @@ async fn test_handle_raft_event_case1_3() {
     assert!(role_rx.try_recv().is_err());
 }
 
-/// # Case 1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request
+/// # Case 2: Receive ClusterConf Event
+#[tokio::test]
+async fn test_handle_raft_event_case2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
+    let mut membership = MockMembership::new();
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .times(1)
+        .returning(|| ClusterMembership { nodes: vec![] });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    if let Ok(Ok(m)) = resp_rx.recv().await {
+        assert_eq!(m.nodes, vec![]);
+    } else {
+        assert!(false);
+    }
+}
+
+/// # Case 3.1: Receive ClusterConfUpdate Event
+///  and update successfully
+#[tokio::test]
+async fn test_handle_raft_event_case3_1() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_1", graceful_rx, None);
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _| true);
+    membership
+        .expect_get_cluster_conf_version()
+        .times(1)
+        .returning(|| 1);
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusteMembershipChangeRequest {
+            id: 1,
+            term: 1,
+            version: 1,
+            cluster_membership: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    match resp_rx.recv().await {
+        Ok(r) => match r {
+            Ok(response) => assert!(response.success),
+            Err(_) => assert!(false),
+        },
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 3.2: Receive ClusterConfUpdate Event
+///  and update failed
+#[tokio::test]
+async fn test_handle_raft_event_case3_2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_2", graceful_rx, None);
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _| false);
+    membership
+        .expect_get_cluster_conf_version()
+        .times(1)
+        .returning(|| 1);
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusteMembershipChangeRequest {
+            id: 1,
+            term: 1,
+            version: 1,
+            cluster_membership: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    match resp_rx.recv().await {
+        Ok(r) => match r {
+            Ok(response) => assert!(!response.success),
+            Err(_) => assert!(false),
+        },
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 4.1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request
 ///
 #[tokio::test]
-async fn test_handle_raft_event_append_entries_case1() {
+async fn test_handle_raft_event_case4_1() {
     // Prepare Leader State
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context(
-        "/tmp/test_handle_raft_event_append_entries_case1",
-        graceful_rx,
-        None,
-    );
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case4_1", graceful_rx, None);
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Update my term higher than request one
@@ -581,14 +704,14 @@ async fn test_handle_raft_event_append_entries_case1() {
     }
 }
 
-/// # Case 2: As Leader, if I receive append request with (my_term < append_entries_request.term)
+/// # Case 4.2: As Leader, if I receive append request with (my_term < append_entries_request.term)
 ///
 /// ## Criterias:
 /// 1. I should step down as Follower(receive RoleEvent::BecomeFollower event)
 /// 2. handle_append_entries should be triggered
 ///
 #[tokio::test]
-async fn test_handle_raft_event_append_entries_case2() {
+async fn test_handle_raft_event_case4_2() {
     // Prepare Leader State
     enable_logger();
 
@@ -613,7 +736,7 @@ async fn test_handle_raft_event_append_entries_case2() {
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_handle_raft_event_append_entries_case2")
+        .with_db_path("/tmp/test_handle_raft_event_case4_2")
         .with_replication_handler(replication_handler)
         .build_context();
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
@@ -658,10 +781,10 @@ async fn test_handle_raft_event_append_entries_case2() {
     }
 }
 
-/// # Case 1: if both peers failed to confirm leader's commit, the lread request should be failed
+/// # Case 6.1: if both peers failed to confirm leader's commit, the lread request should be failed
 ///
 #[tokio::test]
-async fn test_handle_raft_event_client_linear_read_request_case1() {
+async fn test_handle_raft_event_case6_1() {
     enable_logger();
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
@@ -673,7 +796,7 @@ async fn test_handle_raft_event_client_linear_read_request_case1() {
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_handle_raft_event_client_linear_read_request_case1")
+        .with_db_path("/tmp/test_handle_raft_event_case6_1")
         .with_replication_handler(replication_handler)
         .build_context();
 
@@ -709,7 +832,7 @@ async fn test_handle_raft_event_client_linear_read_request_case1() {
     }
 }
 
-/// # Case 2: if majority peers confirms, the response should be success
+/// # Case 6.2: if majority peers confirms, the response should be success
 ///
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
@@ -721,7 +844,7 @@ async fn test_handle_raft_event_client_linear_read_request_case1() {
 /// 2. event "RoleEvent::NotifyNewCommitIndex" should be received
 /// 3. resp_rx receives Ok()
 #[tokio::test]
-async fn test_handle_raft_event_client_linear_read_request_case2() {
+async fn test_handle_raft_event_case6_2() {
     enable_logger();
     let expect_new_commit_index = 3;
     // Prepare Leader State
@@ -761,7 +884,7 @@ async fn test_handle_raft_event_client_linear_read_request_case2() {
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_handle_raft_event_client_linear_read_request_case2")
+        .with_db_path("/tmp/test_handle_raft_event_case6_2")
         .with_raft_log(raft_log)
         .with_replication_handler(replication_handler)
         .build_context();
@@ -813,7 +936,7 @@ async fn test_handle_raft_event_client_linear_read_request_case2() {
     };
 }
 
-/// # Case 3: if new Leader found during the replication,
+/// # Case 6.3: if new Leader found during the replication,
 ///
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
@@ -825,7 +948,7 @@ async fn test_handle_raft_event_client_linear_read_request_case2() {
 /// 2. event "RoleEvent::BecomeFollower" should be received
 /// 3. resp_rx receives Err(e)
 #[tokio::test]
-async fn test_handle_raft_event_client_linear_read_request_case3() {
+async fn test_handle_raft_event_case6_3() {
     enable_logger();
     // Prepare Leader State
     let new_leader_id = 7;
@@ -850,7 +973,7 @@ async fn test_handle_raft_event_client_linear_read_request_case3() {
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_handle_raft_event_client_linear_read_request_case3")
+        .with_db_path("/tmp/test_handle_raft_event_case6_3")
         .with_replication_handler(replication_handler)
         .build_context();
 
