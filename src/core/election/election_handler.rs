@@ -2,8 +2,8 @@ use super::ElectionCore;
 use crate::{
     alias::{ROF, TROF},
     grpc::rpc_service::{VoteRequest, VotedFor},
-    ChannelWithAddressAndRole, Error, RaftEvent, RaftLog, Result, RoleEvent, Settings, Transport,
-    TypeConfig, API_SLO,
+    ChannelWithAddressAndRole, Error, RaftEvent, RaftLog, Result, RoleEvent, Settings, StateUpdate,
+    Transport, TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
 use log::{debug, error};
@@ -14,8 +14,7 @@ use tonic::async_trait;
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
     pub my_id: u32,
-    pub role_tx: mpsc::UnboundedSender<RoleEvent>, //cloned from Raft
-    pub event_tx: mpsc::Sender<RaftEvent>,         //cloned from Raft
+    pub event_tx: mpsc::Sender<RaftEvent>, //cloned from Raft
     _phantom: PhantomData<T>,
 }
 
@@ -90,9 +89,10 @@ where
         current_term: u64,
         voted_for_option: Option<VotedFor>,
         raft_log: &Arc<ROF<T>>,
-    ) -> Result<Option<VotedFor>> {
+    ) -> Result<StateUpdate> {
         debug!("VoteRequest::Received: {:?}", request);
         let mut new_voted_for = None;
+        let mut step_to_follower = false;
         let mut last_index = 0;
         let mut last_term = 0;
         if let Some(last) = raft_log.last() {
@@ -111,16 +111,9 @@ where
             debug!("switch to follower");
 
             //1. switch to follower
-            // self.become_follower().await;
-            if let Err(e) = self.role_tx.send(RoleEvent::BecomeFollower(None)) {
-                error!(
-                    "self.my_role_change_event_sender.send(RaftRole::Follower) failed: {:?}",
-                    e
-                );
-            }
+            step_to_follower = true;
 
             //2. update vote for
-            // state.update_vote_for(req);
             let term = request.term;
             debug!(
                 "updated my voted for: target node: {:?} with term:{:?}",
@@ -131,7 +124,10 @@ where
                 voted_for_term: term,
             });
         }
-        Ok(new_voted_for)
+        Ok(StateUpdate {
+            new_voted_for,
+            step_to_follower,
+        })
     }
 
     /// The function to check RPC request is leagal or not
@@ -183,14 +179,9 @@ impl<T> ElectionHandler<T>
 where
     T: TypeConfig,
 {
-    pub fn new(
-        my_id: u32,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-        event_tx: mpsc::Sender<RaftEvent>,
-    ) -> Self {
+    pub fn new(my_id: u32, event_tx: mpsc::Sender<RaftEvent>) -> Self {
         Self {
             my_id,
-            role_tx,
             event_tx,
             _phantom: PhantomData,
         }

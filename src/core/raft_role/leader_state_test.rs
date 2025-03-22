@@ -1,8 +1,9 @@
 use super::{leader_state::LeaderState, role_state::RaftRoleState};
 use crate::{
+    alias::POF,
     grpc::rpc_service::{
         AppendEntriesRequest, ClientCommand, ClientProposeRequest, ClientReadRequest,
-        ClientRequestError, ClientResponse,
+        ClientRequestError, ClientResponse, VoteRequest, VoteResponse, VotedFor,
     },
     test_utils::{
         enable_logger, mock_peer_channels, mock_raft_context, setup_raft_components, MockBuilder,
@@ -10,8 +11,9 @@ use crate::{
     },
     utils::util::kv,
     AppendResponseWithUpdates, AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver,
-    MockRaftLog, MockReplicationCore, MockStateMachineHandler, MockTransport, NewLeaderInfo,
-    PeerUpdate, RaftOneshot, RaftSettings, RoleEvent, Settings,
+    MaybeCloneOneshotSender, MockElectionCore, MockRaftLog, MockReplicationCore,
+    MockStateMachineHandler, MockTransport, NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot,
+    RaftSettings, RoleEvent, Settings, StateUpdate,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, watch};
@@ -379,6 +381,159 @@ async fn test_ensure_state_machine_upto_commit_index_case2() {
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
         .expect("should succeed");
+}
+
+fn setup_handle_raft_event_case1_params(
+    resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
+) -> (RaftEvent, Arc<POF<MockTypeConfig>>) {
+    let raft_event = crate::RaftEvent::ReceiveVoteRequest(
+        VoteRequest {
+            term: 1,
+            candidate_id: 1,
+            last_log_index: 0,
+            last_log_term: 0,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+    (raft_event, peer_channels)
+}
+
+/// # Case 1.1: Receive Vote Request Event
+///
+/// ## Preparation setup:
+/// 1. handle_vote_request return Ok(None) - reject this vote
+///
+/// ## Validate criterias
+/// 1. receive response with vote_granted = false
+/// 2. Role should not step to Follower
+#[tokio::test]
+async fn test_handle_raft_event_case1_1() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(|_, _, _, _| {
+            Ok(StateUpdate {
+                new_voted_for: None,
+                step_to_follower: false,
+            })
+        });
+    context.election_handler = election_handler;
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    // Receive response with vote_granted = false
+    match resp_rx.recv().await {
+        Ok(Ok(r)) => assert!(!r.vote_granted),
+        _ => assert!(false),
+    }
+
+    // No role event receives
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case 1.2: Receive Vote Request Event
+///
+/// ## Preparation setup:
+/// 1. handle_vote_request return Ok(Some(VotedFor)) - accept this vote
+///
+/// ## Validate criterias
+/// 1. receive response with vote_granted = true
+/// 2. Step to Follower
+#[tokio::test]
+async fn test_handle_raft_event_case1_2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(|_, _, _, _| {
+            Ok(StateUpdate {
+                new_voted_for: Some(VotedFor {
+                    voted_for_id: 1,
+                    voted_for_term: 1,
+                }),
+                step_to_follower: true,
+            })
+        });
+    context.election_handler = election_handler;
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+
+    let r = state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await;
+    println!("r:{:?}", r);
+    assert!(r.is_ok());
+
+    // Receive response with vote_granted = true
+    match resp_rx.recv().await {
+        Ok(Ok(r)) => assert!(r.vote_granted),
+        _ => assert!(false),
+    }
+
+    // Step to Follower
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(_))
+    ));
+}
+
+/// # Case 1.3: Receive Vote Request Event
+///
+/// ## Preparation setup:
+/// 1. handle_vote_request return Error
+///
+/// ## Validate criterias
+/// 1. receive response with ErrorEmpty
+/// 2. handle_raft_event returns Error
+/// 3. Role should not step to Follower
+#[tokio::test]
+async fn test_handle_raft_event_case1_3() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_3", graceful_rx, None);
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(|_, _, _, _| Err(Error::TokioSendStatusError("".to_string())));
+    context.election_handler = election_handler;
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    assert!(resp_rx.recv().await.is_err());
+
+    // No role event receives
+    assert!(role_rx.try_recv().is_err());
 }
 
 /// # Case 1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request
