@@ -375,13 +375,13 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Ok(());
+                return Err(Error::NotLeader);
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
                 // If the request is linear request, ...
                 if client_read_request.linear {
                     sender
-                        .send(Err(Status::unauthenticated(
+                        .send(Err(Status::permission_denied(
                             "Not leader. Send linearizable read requet to Leader only.",
                         )))
                         .map_err(|e| {
@@ -389,6 +389,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                             error!("Failed to send: {}", error_str);
                             Error::TokioSendStatusError(error_str)
                         })?;
+                    return Err(Error::NodeIsNotLeaderError);
                 } else {
                     // Otherwise
                     let mut results = vec![];

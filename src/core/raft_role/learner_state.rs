@@ -238,11 +238,11 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Ok(());
+                return Err(Error::NotLeader);
             }
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
                 sender
-                    .send(Err(Status::unauthenticated(
+                    .send(Err(Status::permission_denied(
                         "Learner can not process client read request",
                     )))
                     .map_err(|e| {
@@ -250,7 +250,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Ok(());
+                return Err(Error::LearnerCanNot);
             }
         }
     }

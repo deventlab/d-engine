@@ -247,6 +247,8 @@ pub enum Error {
     //===== Role responbilitiies errors ====
     #[error("Not Leader")]
     NotLeader,
+    #[error("Learner can not handle")]
+    LearnerCanNot,
     #[error("Illegal")]
     Illegal,
     #[error("Transition failed")]
