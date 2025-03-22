@@ -1,245 +1,235 @@
 use std::sync::Arc;
 
-use tokio::sync::watch;
-
+use tokio::sync::{
+    mpsc::{self, error::TryRecvError},
+    oneshot, watch,
+};
 use crate::{
     alias::{ROF, TROF},
-    grpc::rpc_service::{VoteRequest, VotedFor},
-    test_utils::{mock_raft, setup_raft_components, MockTypeConfig},
-    ElectionCore, MockRaftLog, MockTransport,
+    grpc::rpc_service::{Entry, VoteRequest, VotedFor},
+    test_utils::{
+        setup_raft_components, MockNode, MockTypeConfig, MOCK_ELECTION_HANDLER_PORT_BASE,
+    },
+    ChannelWithAddressAndRole, ElectionCore, ElectionHandler, Error, MockRaftLog, MockTransport
+    , RoleEvent, FOLLOWER,
 };
 
-/// Case 1:
-/// - as candidate
-/// - I have voted myself already
+struct TestConext {
+    election_handler: ElectionHandler<MockTypeConfig>,
+    voting_members: Vec<ChannelWithAddressAndRole>,
+    raft_log_mock: ROF<MockTypeConfig>,
+}
+async fn setup(port: u64, role_tx_option: Option<mpsc::UnboundedSender<RoleEvent>>) -> TestConext {
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    let election_handler =
+        ElectionHandler::<MockTypeConfig>::new(1, role_tx_option.unwrap_or(role_tx), event_tx);
+
+    // 2. Prepare Peers fake address
+    //  Simulate ChannelWithAddress: prepare rpc service for getting peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr = MockNode::simulate_mock_service_without_reps(port, rx1)
+        .await
+        .expect("should succeed");
+
+    // Prepare AppendResults
+    let voting_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {
+        id: 2,
+        channel_with_address: addr,
+        role: FOLLOWER,
+    }];
+
+    let mut raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
+    raft_log_mock.expect_last().times(1).returning(|| {
+        Some(Entry {
+            index: 1,
+            term: 1,
+            command: vec![],
+        })
+    });
+
+    TestConext {
+        election_handler,
+        voting_members,
+        raft_log_mock,
+    }
+}
+/// # Case 1: Receive election failed error if there is zero peers
 ///
-/// Criterias:
-/// - get_followers_candidates_channel_and_role will be called zero time
-/// - node term been increased
+/// ## Validation Criterias:
+/// 1. Receive Error::ElectionFailed error
 ///
 #[tokio::test]
 async fn test_broadcast_vote_requests_case1() {
-    // 1. Create a Raft instance
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft("/tmp/test_broadcast_vote_requests_case1", graceful_rx, None);
-    let election_handler = raft.ctx.election_handler();
+    // 1. Create a ElectionHandler instance
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
+    let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case1", None, false);
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, role_tx, event_tx);
 
     // 2.
     let term = 1;
     let voting_members = Vec::new();
-    let mut raft_log_mock: Arc<ROF<MockTypeConfig>> = Arc::new(MockRaftLog::new());
-    let mut transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
-    let settings = raft.settings.clone();
+    let raft_log_mock: Arc<ROF<MockTypeConfig>> = Arc::new(MockRaftLog::new());
+    let transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
 
-    election_handler
+    if let Err(Error::ElectionFailed(_)) = election_handler
         .broadcast_vote_requests(
             term,
             voting_members,
             &raft_log_mock,
             &transport_mock,
-            &settings,
+            &&ctx.arc_settings,
         )
-        .await;
-
-    // let c = test_utils::setup("/tmp/test_broadcast_vote_requests_case1", None).await;
-    // let raft = c.node.raft.clone();
-    // let state = raft.state();
-    // let my_id = raft.id();
-    // let my_current_term = state.current_term();
-
-    // //prepare the node as follower
-    // let mut cluster_membership_controller_mock = MockClusterMembershipControllerApis::new();
-    // cluster_membership_controller_mock
-    //     .expect_is_node_candidate()
-    //     .times(1)
-    //     .returning(|_| true);
-    // cluster_membership_controller_mock
-    //     .expect_get_followers_candidates_channel_and_role()
-    //     .times(0)
-    //     .returning(|| vec![]);
-
-    // // prepare I have voted myself already
-    // state.update_voted_for(VotedFor {
-    //     voted_for_id: my_id,
-    //     voted_for_term: my_current_term + 2, // make sure I can not vote myself anymore
-    // });
-
-    // let mut append_entries_controller_mock = MockLogReplicationController::new();
-    // append_entries_controller_mock
-    //     .expect_send_write_request()
-    //     .returning(|_| Ok(()));
-    // let mut mock_ctx = MockRaftContextApis::new();
-
-    // let controller = ElectionController::new(
-    //     Arc::new(mock_ctx),
-    //     raft.settings.clone(),
-    //     Arc::new(cluster_membership_controller_mock),
-    //     raft.raft_event_sender(),
-    //     Arc::new(append_entries_controller_mock),
-    //     raft.rpc_client(),
-    // );
-    // controller.broadcast_vote_requests().await.expect("should succeed");
-    // assert_eq!(my_current_term + 1, state.current_term());
+        .await
+    {
+        assert!(true);
+    } else {
+        assert!(false);
+    }
 }
 
-/// Case 2:
-/// - as candidate
-/// - I have not voted myself yet
-/// - I didn't receive majority votes from peers
+/// # Case 2: Test failed to receive majority peers' failed vote
 ///
-/// Criterias:
-/// - raft_event_receiver should not receive my role change event
-/// - node term been increased
-///
+/// ## Validation criterias:
+/// 1. Test should receive Err(Error::ElectionFailed)
 #[tokio::test]
 async fn test_broadcast_vote_requests_case2() {
-    // let c = test_utils::setup("/tmp/test_broadcast_vote_requests_case2", None).await;
-    // let raft = c.node.raft.clone();
-    // let state = raft.state();
-    // let my_id = raft.id();
-    // let peer2_id = 2;
-    // let my_current_term = state.current_term();
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
+    let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case2", None, false);
+    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 1;
+    let test_context = setup(port, None).await;
+    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
+    transport_mock
+        .expect_send_vote_requests()
+        .times(1)
+        .returning(|_, _, _| Ok(false));
+    let term = 1;
 
-    // //0. prepare a real Network address
-    // let port = MOCK_CLUSTER_MEMBERSHIP_CONTROLLER_PORT_BASE + 2;
-    // let (tx, rx) = oneshot::channel::<()>();
-    // let address = test_utils::MockNode::simulate_mock_service_without_reps(port, rx)
-    //     .await
-    //     .expect("should succeed");
-
-    // // 1. prepare cluster membership controller
-    // let mut cluster_membership_controller_mock = MockClusterMembershipControllerApis::new();
-    // // 1.2 prepare peer address so that we could compose ChannelWithAddressAndRole result
-    // cluster_membership_controller_mock
-    //     .expect_get_followers_candidates_channel_and_role()
-    //     .times(1)
-    //     .returning(move || {
-    //         vec![ChannelWithAddressAndRole {
-    //             id: peer2_id,
-    //             channel_with_address: address.clone(),
-    //             role: RaftRole::Follower,
-    //         }]
-    //     });
-    // // 1.2. prepare the node as follower
-    // cluster_membership_controller_mock
-    //     .expect_is_node_candidate()
-    //     .times(1)
-    //     .returning(|_| true);
-
-    // // 2. prepare I didn't receive majority votes from peers
-    // let mut rpc_client_mock = MockTransport::new();
-    // rpc_client_mock
-    //     .expect_send_vote_requests()
-    //     .returning(|_, _, _| Ok(false));
-
-    // let mut append_entries_controller_mock = MockLogReplicationController::new();
-    // append_entries_controller_mock
-    //     .expect_send_write_request()
-    //     .returning(|_| Ok(()));
-    // let (raft_event_sender, raft_event_receiver) = mpsc::unbounded_channel::<EventType>();
-    // let mut mock_ctx = MockRaftContextApis::new();
-
-    // let controller = ElectionController::new(
-    //     Arc::new(mock_ctx),
-    //     raft.settings.clone(),
-    //     Arc::new(cluster_membership_controller_mock),
-    //     raft_event_sender,
-    //     Arc::new(append_entries_controller_mock),
-    //     Arc::new(rpc_client_mock),
-    // );
-    // controller.broadcast_vote_requests().await.expect("should succeed");
-
-    // let event_listner = raft.event_listener();
-
-    // match event_listner.try_recv(raft_event_receiver).await {
-    //     Ok(_) => {
-    //         assert!(false, "Expected no event, but received one.");
-    //     }
-    //     Err(e) => {
-    //         assert!(true); // The channel is empty, as expected.
-    //     }
-    // }
-
-    // assert_eq!(my_current_term + 1, state.current_term());
+    if let Err(Error::ElectionFailed(_)) = test_context
+        .election_handler
+        .broadcast_vote_requests(
+            term,
+            test_context.voting_members,
+            &Arc::new(test_context.raft_log_mock),
+            &Arc::new(transport_mock),
+            &&ctx.arc_settings,
+        )
+        .await
+    {
+        assert!(true);
+    } else {
+        assert!(false);
+    }
 }
-
-/// Case 3:
-/// - as candidate
-/// - I have not voted myself yet
-/// - I receives majority votes from peers
+/// # Case 3: Test after receiving majority peers' success vote
 ///
-/// Criterias:
-/// - raft_event_receiver should receive my role change event as Leader
-/// - node term been increased
-///
+/// ## Validation criterias:
+/// 1. Test should receive Ok(())
 #[tokio::test]
 async fn test_broadcast_vote_requests_case3() {
-    // let c = test_utils::setup("/tmp/test_broadcast_vote_requests_case3", None).await;
-    // let raft = c.node.raft.clone();
-    // let state = raft.state();
-    // let my_id = raft.id();
-    // let peer2_id = 2;
-    // let my_current_term = state.current_term();
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
+    let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case3", None, false);
+    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 2;
+    let test_context = setup(port, None).await;
+    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
+    transport_mock
+        .expect_send_vote_requests()
+        .times(1)
+        .returning(|_, _, _| Ok(true));
 
-    // //0. prepare a real Network address
-    // let port = MOCK_CLUSTER_MEMBERSHIP_CONTROLLER_PORT_BASE + 3;
-    // let (tx, rx) = oneshot::channel::<()>();
-    // let address = test_utils::MockNode::simulate_mock_service_without_reps(port, rx)
-    //     .await
-    //     .expect("should succeed");
+    let term = 1;
 
-    // // 1. prepare cluster membership controller
-    // let mut cluster_membership_controller_mock = MockClusterMembershipControllerApis::new();
-    // // 1.2 prepare peer address so that we could compose ChannelWithAddressAndRole result
-    // cluster_membership_controller_mock
-    //     .expect_get_followers_candidates_channel_and_role()
-    //     .times(1)
-    //     .returning(move || {
-    //         vec![ChannelWithAddressAndRole {
-    //             id: peer2_id,
-    //             channel_with_address: address.clone(),
-    //             role: RaftRole::Follower,
-    //         }]
-    //     });
-    // // 1.2. prepare the node as follower
-    // cluster_membership_controller_mock
-    //     .expect_is_node_candidate()
-    //     .times(1)
-    //     .returning(|_| true);
+    assert!(test_context
+        .election_handler
+        .broadcast_vote_requests(
+            term,
+            test_context.voting_members,
+            &Arc::new(test_context.raft_log_mock),
+            &Arc::new(transport_mock),
+            &&ctx.arc_settings,
+        )
+        .await
+        .is_ok())
+}
 
-    // // 2. prepare I didn't receive majority votes from peers
-    // let mut rpc_client_mock = MockTransport::new();
-    // rpc_client_mock
-    //     .expect_send_vote_requests()
-    //     .returning(|_, _, _| Ok(true));
+/// # Case 1: Test if vote request is legal
+///
+/// ## Validation criterias:
+/// 1. Switch back to Follower
+/// 2. Returns with Ok(new_voted_for)
+#[tokio::test]
+async fn test_handle_vote_request_case1() {
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 2;
+    let test_context = setup(port, Some(role_tx)).await;
 
-    // let mut append_entries_controller_mock = MockLogReplicationController::new();
-    // append_entries_controller_mock
-    //     .expect_send_write_request()
-    //     .returning(|_| Ok(()));
-    // let (raft_event_sender, raft_event_receiver) = mpsc::unbounded_channel::<EventType>();
-    // let mut mock_ctx = MockRaftContextApis::new();
+    let current_term = 1;
+    let last_log_index = 1;
+    let last_log_term = 1;
 
-    // let controller = ElectionController::new(
-    //     Arc::new(mock_ctx),
-    //     raft.settings.clone(),
-    //     Arc::new(cluster_membership_controller_mock),
-    //     raft_event_sender,
-    //     Arc::new(append_entries_controller_mock),
-    //     Arc::new(rpc_client_mock),
-    // );
-    // controller.broadcast_vote_requests().await.expect("should succeed");
-    // let event_listner = raft.event_listener();
-    // match event_listner.try_recv(raft_event_receiver).await {
-    //     Ok(_) => {
-    //         assert!(true);
-    //     }
-    //     Err(e) => {
-    //         panic!("Unexpected error while checking channel: {:?}", e);
-    //     }
-    // }
+    let vote_request = VoteRequest {
+        term: current_term,
+        candidate_id: 1,
+        last_log_index: last_log_index + 1,
+        last_log_term,
+    };
+    let voted_for_option = None;
+    assert!(test_context
+        .election_handler
+        .handle_vote_request(
+            vote_request,
+            current_term,
+            voted_for_option,
+            &Arc::new(test_context.raft_log_mock),
+        )
+        .await
+        .is_ok());
 
-    // assert_eq!(my_current_term + 1, state.current_term());
+    match role_rx.try_recv() {
+        Ok(RoleEvent::BecomeFollower(None)) => assert!(true),
+        _ => assert!(false),
+    }
+}
+
+/// # Case 2: Test if vote request is illegal
+///     (current_term >= VoteRequest Term)
+///
+/// ## Validation criterias:
+/// 1. role_rx.try_recv with None
+/// 2. Returns with Ok(None)
+#[tokio::test]
+async fn test_handle_vote_request_case2() {
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 3;
+    let test_context = setup(port, Some(role_tx)).await;
+
+    let current_term = 10;
+    let last_log_index = 1;
+    let last_log_term = 1;
+
+    let vote_request = VoteRequest {
+        term: current_term - 1,
+        candidate_id: 1,
+        last_log_index: last_log_index + 1,
+        last_log_term,
+    };
+    let voted_for_option = None;
+    assert!(test_context
+        .election_handler
+        .handle_vote_request(
+            vote_request,
+            current_term,
+            voted_for_option,
+            &Arc::new(test_context.raft_log_mock),
+        )
+        .await
+        .is_ok());
+
+    assert_eq!(Err(TryRecvError::Empty), role_rx.try_recv());
 }
 
 /// Case 1.1: Term and local log index compare
@@ -370,9 +360,6 @@ async fn test_check_vote_request_is_legal_case_1_3() {
         last_log_index: last_log_index + 1,
         last_log_term,
     };
-    // let voted_id = 0;
-    // let voted_term = 0;
-
     assert!(election_controller.check_vote_request_is_legal(
         &vote_request,
         current_term,

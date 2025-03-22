@@ -6,7 +6,7 @@ use crate::{
     alias::{POF, REPOF, ROF, SMHOF, TROF},
     grpc::rpc_service::{
         AppendEntriesResponse, ClientCommand, ClientProposeRequest, ClientRequestError,
-        ClientResponse, ClusterConfUpdateResponse, VotedFor,
+        ClientResponse, ClusterConfUpdateResponse, VoteResponse, VotedFor,
     },
     utils::util::{self, error},
     AppendResponseWithUpdates, AppendResults, BatchBuffer, ChannelWithAddressAndRole,
@@ -314,29 +314,63 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // 2. Else:
             // - Reply with VoteGranted=false, currentTerm=currentTerm
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                if let Err(e) = ctx
+                let candidate_id = vote_request.candidate_id;
+                match ctx
                     .election_handler()
                     .handle_vote_request(
                         vote_request,
-                        sender,
                         self.current_term(),
                         self.voted_for().unwrap(),
                         raft_log,
                     )
                     .await
                 {
-                    error(
-                        "leader::handle_raft_event::RaftEvent::ReceiveVoteRequest",
-                        &e,
-                    );
-                }
+                    Ok(voted_for) => {
+                        debug!(
+                            "candidate::handle_vote_request success with vote: {:?}",
+                            &voted_for
+                        );
+                        if let Some(v) = voted_for {
+                            if let Err(e) = self.update_voted_for(v) {
+                                error("candidate::update_voted_for", &e);
+                                return Err(e);
+                            }
+                        }
+
+                        let response = VoteResponse {
+                            term: my_term,
+                            vote_granted: voted_for.is_some(),
+                        };
+                        debug!(
+                            "Response candidate_{:?} with response: {:?}",
+                            candidate_id, response
+                        );
+
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
+                    }
+                    Err(e) => {
+                        error(
+                            "leader::handle_raft_event::RaftEvent::ReceiveVoteRequest",
+                            &e,
+                        );
+                        return Err(e);
+                    }
+                };
+                return Ok(());
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
                 let cluster_conf = ctx.membership().retrieve_cluster_membership_config();
-                if let Err(e) = sender.send(Ok(cluster_conf)) {
-                    error("handle_raft_event::leader::RaftEvent::ClusterConf", &e);
-                }
+                sender.send(Ok(cluster_conf)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+                return Ok(());
             }
 
             RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender) => {
@@ -366,12 +400,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     "[peer-{}] update_cluster_conf response: {:?}",
                     my_id, &response
                 );
-                if let Err(e) = sender.send(Ok(response)) {
-                    error(
-                        "handle_raft_event::leader::RaftEvent::ClusterConfUpdate",
-                        &e,
-                    );
-                }
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+                return Ok(());
             }
 
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -404,19 +438,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     my_id
                 );
 
-                if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(Some(
-                    append_entries_request.leader_id,
-                ))) {
-                    error!(
-                        "self.my_role_change_event_sender.send(RaftRole::Follower) failed: {:?}",
-                        e
-                    );
-                } else {
-                    debug!(
-                        "my term is smaller than Append Request one, so I({}) become follower.",
-                        my_id
-                    );
-                }
+                role_tx
+                    .send(RoleEvent::BecomeFollower(Some(
+                        append_entries_request.leader_id,
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
 
                 // Handle append entries request as Follower, before become Follower (TODO)
                 match ctx
@@ -459,14 +489,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                         debug!("leader's response: {:?}", response);
 
-                        if let Err(e) = sender.send(Ok(response)) {
-                            error!("resp_tx.send AppendEntriesResponse: {:?}", e);
-                        }
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
                     }
                     Err(e) => {
                         error("Leader::handle_raft_event", &e);
+                        return Err(e);
                     }
                 }
+                return Ok(());
             }
 
             RaftEvent::ClientPropose(client_propose_request, sender) => {
@@ -485,7 +519,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     .await
                 {
                     error("Leader::process_client_propose", &e);
+                    return Err(e);
                 }
+
+                return Ok(());
             }
 
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
@@ -543,17 +580,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     "Leader::ClientReadRequest is going to response: {:?}",
                     &response
                 );
-                if let Err(e) = sender.send(response) {
-                    error("handle_raft_event::RaftEvent::ClientReadRequest", &e);
-                    return Err(Error::ClientReadRequestFailed(format!(
-                        "handle_raft_event::RaftEvent::ClientReadRequest failed: {:?}",
-                        e
-                    )));
-                }
+                sender.send(response).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+                return Ok(());
             }
         }
-
-        Ok(())
     }
 }
 

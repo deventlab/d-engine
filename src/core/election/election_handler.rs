@@ -1,18 +1,15 @@
-use std::{marker::PhantomData, sync::Arc};
-
-use autometrics::autometrics;
-use log::{debug, error};
-use tokio::sync::{mpsc, oneshot};
-use tonic::{async_trait, Status};
-
+use super::ElectionCore;
 use crate::{
     alias::{ROF, TROF},
-    grpc::rpc_service::{VoteRequest, VoteResponse, VotedFor},
-    ChannelWithAddressAndRole, Error, MaybeCloneOneshotSender, RaftEvent, RaftLog, Result,
-    RoleEvent, Settings, Transport, TypeConfig, API_SLO,
+    grpc::rpc_service::{VoteRequest, VotedFor},
+    ChannelWithAddressAndRole, Error, RaftEvent, RaftLog, Result, RoleEvent, Settings, Transport,
+    TypeConfig, API_SLO,
 };
-
-use super::ElectionCore;
+use autometrics::autometrics;
+use log::{debug, error};
+use std::{marker::PhantomData, sync::Arc};
+use tokio::sync::mpsc;
+use tonic::async_trait;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
@@ -27,8 +24,6 @@ impl<T> ElectionCore<T> for ElectionHandler<T>
 where
     T: TypeConfig,
 {
-    /// 1. Term Increment: A candidate increments its term immediately when it starts an election. This ensures that the candidate s term is higher than any previously known term, reflecting a new election round.
-    /// 2.	Voting for Itself: After incrementing its term, the candidate votes for itself before sending RequestVote RPCs to its peers.
     #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
         &self,
@@ -39,10 +34,6 @@ where
         settings: &Arc<Settings>,
     ) -> Result<()> {
         debug!("broadcast_vote_requests...");
-
-        // let peers = self
-        //     .cluster_membership_controller
-        //     .get_followers_candidates_channel_and_role();
 
         if voting_members.len() < 1 {
             error!("my(id={}) peers is empty.", self.my_id);
@@ -96,14 +87,12 @@ where
     async fn handle_vote_request(
         &self,
         request: VoteRequest,
-        resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
         current_term: u64,
         voted_for_option: Option<VotedFor>,
         raft_log: &Arc<ROF<T>>,
-    ) -> Result<()> {
+    ) -> Result<Option<VotedFor>> {
         debug!("VoteRequest::Received: {:?}", request);
-        let mut vote_granted = false;
-
+        let mut new_voted_for = None;
         let mut last_index = 0;
         let mut last_term = 0;
         if let Some(last) = raft_log.last() {
@@ -137,32 +126,12 @@ where
                 "updated my voted for: target node: {:?} with term:{:?}",
                 request.candidate_id, term
             );
-
-            if let Err(e) = self.role_tx.send(RoleEvent::UpdateVote {
-                voted_for: VotedFor {
-                    voted_for_id: request.candidate_id,
-                    voted_for_term: term,
-                },
-            }) {
-                error!("send RoleEvent::UpdateVote failed: {:?}", e);
-            }
-
-            vote_granted = true;
+            new_voted_for = Some(VotedFor {
+                voted_for_id: request.candidate_id,
+                voted_for_term: term,
+            });
         }
-
-        let response = VoteResponse {
-            term: current_term,
-            vote_granted,
-        };
-        debug!(
-            "Response to: {:?}. vote request response: {:?}",
-            request.candidate_id, response
-        );
-
-        if let Err(e) = resp_tx.send(Ok(response)) {
-            error!("resp_tx.send VoteResponse: {:?}", e);
-        }
-        Ok(())
+        Ok(new_voted_for)
     }
 
     /// The function to check RPC request is leagal or not

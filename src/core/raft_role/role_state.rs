@@ -128,10 +128,13 @@ pub trait RaftRoleState: Send + Sync + 'static {
             return Err(e);
         }
         debug!("send(RoleEvent::NotifyNewCommitIndex");
-        if let Err(e) = role_tx.send(RoleEvent::NotifyNewCommitIndex { new_commit_index }) {
-            error!("role_tx.send(RoleEvent::NotifyNewCommitIndex): {:?}", e);
-            return Err(Error::SendError(mpsc::error::SendError(e.to_string())));
-        }
+        role_tx
+            .send(RoleEvent::NotifyNewCommitIndex { new_commit_index })
+            .map_err(|e| {
+                let error_str = format!("{:?}", e);
+                error!("Failed to send: {}", error_str);
+                Error::TokioSendStatusError(error_str)
+            })?;
 
         Ok(())
     }

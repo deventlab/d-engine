@@ -267,63 +267,10 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::UpdateTerm { new_term } => {
-                debug!("RoleEvent::UpdateTerm: {}", new_term);
-                self.role.update_term(new_term);
-            }
-            RoleEvent::UpdateVote { voted_for } => {
-                debug!("RoleEvent::UpdateVote: {:?}", &voted_for);
-                if let Err(e) = self.role.update_voted_for(voted_for) {
-                    error!("self.role.update_voted_for: {:?}", e);
-                }
-            }
-
             RoleEvent::NotifyNewCommitIndex { new_commit_index } => {
                 debug!("RoleEvent::NotifyNewCommitIndex: {:?}", new_commit_index);
                 self.notify_new_commit(new_commit_index);
-            }
-            RoleEvent::UpdateMatchIndex {
-                node_id,
-                new_match_index,
-            } => {
-                debug!(
-                    "RoleEvent::UpdateMatchIndex: node_id:{}, new_match_index:{}",
-                    node_id, new_match_index,
-                );
-
-                if let Err(e) = self.role.update_match_index(node_id, new_match_index) {
-                    error!("self.role.update_match_index: {:?}", e);
-                }
-            }
-            RoleEvent::UpdateNextIndex {
-                node_id,
-                new_next_index,
-            } => {
-                debug!(
-                    "RoleEvent::UpdateNextIndex: node_id:{}, new_next_index:{}",
-                    node_id, new_next_index,
-                );
-
-                if let Err(e) = self.role.update_next_index(node_id, new_next_index) {
-                    error!("self.role.update_next_index: {:?}", e);
-                }
-            }
-            RoleEvent::UpdateMatchIndexAndNextIndex {
-                node_id,
-                new_match_index,
-                new_next_index,
-            } => {
-                debug!(
-                    "RoleEvent::UpdateMatchIndexAndNextIndex: node_id:{}, new_match_index:{}, new_next_index:{}",
-                    node_id, new_match_index, new_next_index
-                );
-                if let Err(e) = self.role.update_match_index(node_id, new_match_index) {
-                    error!("self.role.update_match_index: {:?}", e);
-                }
-                if let Err(e) = self.role.update_next_index(node_id, new_next_index) {
-                    error!("self.role.update_next_index: {:?}", e);
-                }
-            }
+            } 
         };
 
         Ok(())

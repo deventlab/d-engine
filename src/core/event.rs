@@ -15,29 +15,7 @@ pub enum RoleEvent {
     BecomeLeader,
     BecomeLearner,
 
-    UpdateTerm {
-        new_term: u64,
-    },
-    UpdateVote {
-        voted_for: VotedFor,
-    },
-    NotifyNewCommitIndex {
-        new_commit_index: u64,
-    },
-    UpdateMatchIndex {
-        node_id: u32,
-        new_match_index: u64,
-    },
-    UpdateNextIndex {
-        node_id: u32,
-        new_next_index: u64,
-    },
-    // Repliation events
-    UpdateMatchIndexAndNextIndex {
-        node_id: u32,
-        new_match_index: u64,
-        new_next_index: u64,
-    },
+    NotifyNewCommitIndex { new_commit_index: u64 },
 }
 
 #[derive(Debug)]
