@@ -308,17 +308,21 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                Ok(())
+                return Err(Error::NotLeader);
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
                 // If the request is linear request, ...
                 if client_read_request.linear {
-                    if let Err(e) = sender.send(Err(Status::unauthenticated(
-                        "Not leader. Send linearizable read requet to Leader only.",
-                    ))) {
-                        error("handle_raft_event::RaftEvent::ClientReadRequest", &e);
-                        return Err(Error::NodeIsNotLeaderError);
-                    }
+                    sender
+                        .send(Err(Status::permission_denied(
+                            "Not leader. Send linearizable read requet to Leader only.",
+                        )))
+                        .map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
+                    return Err(Error::NodeIsNotLeaderError);
                 } else {
                     // Otherwise
                     let mut results = vec![];

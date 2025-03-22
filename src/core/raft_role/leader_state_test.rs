@@ -20,18 +20,20 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, watch};
 use tonic::{Code, Status};
 
+struct TestContext {
+    state: LeaderState<MockTypeConfig>,
+    replication_handler: MockReplicationCore<MockTypeConfig>,
+    raft_log: Arc<MockRaftLog>,
+    transport: Arc<MockTransport>,
+    arc_settings: Arc<Settings>,
+}
+
 /// Initialize the test environment and return the core components
-pub async fn setup_test_case(
+async fn setup_test_case(
     test_name: &str,
     batch_threshold: usize,
     handle_client_proposal_in_batch_expect_times: usize,
-) -> (
-    LeaderState<MockTypeConfig>,
-    MockReplicationCore<MockTypeConfig>,
-    Arc<MockRaftLog>,
-    Arc<MockTransport>,
-    RaftSettings,
-) {
+) -> TestContext {
     let context = setup_raft_components(&format!("/tmp/{}", test_name), None, false);
 
     // Configure raft settings
@@ -41,11 +43,11 @@ pub async fn setup_test_case(
     };
 
     // Create Leader state
-    let settings = Settings {
+    let settings = Arc::new(Settings {
         raft_settings: raft_settings.clone(),
         ..context.settings.clone()
-    };
-    let mut state = LeaderState::new(1, Arc::new(settings));
+    });
+    let mut state = LeaderState::new(1, settings.clone());
     state
         .update_commit_index(4)
         .expect("Should succeed to update commit index");
@@ -86,13 +88,13 @@ pub async fn setup_test_case(
         .expect_calculate_majority_matched_index()
         .returning(|_, _, _| Some(5));
 
-    (
+    TestContext {
         state,
         replication_handler,
-        Arc::new(raft_log),
-        Arc::new(MockTransport::new()),
-        raft_settings,
-    )
+        raft_log: Arc::new(raft_log),
+        transport: Arc::new(MockTransport::new()),
+        arc_settings: settings,
+    }
 }
 
 /// Verify client response
@@ -138,8 +140,7 @@ pub async fn assert_client_response(
 #[tokio::test]
 async fn test_process_client_propose_case1_1() {
     // Initialize the test environment (threshold = 0 means immediate execution)
-    let (mut state, replication_handler, raft_log, transport, raft_settings) =
-        setup_test_case("/tmp/test_process_client_propose_case1_1", 0, 1).await;
+    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_1", 0, 1).await;
 
     // Prepare test request
     let request = ClientProposeRequest {
@@ -150,15 +151,16 @@ async fn test_process_client_propose_case1_1() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Execute test operation
-    let result = state
+    let result = test_context
+        .state
         .process_client_propose(
             request,
             tx,
-            &replication_handler,
+            &test_context.replication_handler,
             &vec![],
-            &raft_log,
-            &transport,
-            raft_settings,
+            &test_context.raft_log,
+            &test_context.transport,
+            test_context.arc_settings.raft_settings.clone(),
             false,
             &role_tx,
         )
@@ -174,9 +176,9 @@ async fn test_process_client_propose_case1_1() {
         }
     }
     assert!(result.is_ok(), "Operation should succeed");
-    assert_eq!(state.commit_index(), 5);
-    assert_eq!(state.next_index(2), Some(6));
-    assert_eq!(state.next_index(3), Some(6));
+    assert_eq!(test_context.state.commit_index(), 5);
+    assert_eq!(test_context.state.next_index(2), Some(6));
+    assert_eq!(test_context.state.next_index(3), Some(6));
     assert_client_response(rx).await;
 }
 
@@ -209,8 +211,7 @@ async fn test_process_client_propose_case1_1() {
 #[tokio::test]
 async fn test_process_client_propose_case1_2() {
     // Initialize the test environment (threshold = 0 means immediate execution)
-    let (mut state, replication_handler, raft_log, transport, raft_settings) =
-        setup_test_case("/tmp/test_process_client_propose_case1_2", 0, 2).await;
+    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_2", 0, 2).await;
 
     // Prepare test request
     let request = ClientProposeRequest {
@@ -222,29 +223,31 @@ async fn test_process_client_propose_case1_2() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Execute test operation
-    let result1 = state
+    let result1 = test_context
+        .state
         .process_client_propose(
             request.clone(),
             tx1,
-            &replication_handler,
+            &test_context.replication_handler,
             &vec![],
-            &raft_log,
-            &transport,
-            raft_settings.clone(),
+            &test_context.raft_log,
+            &test_context.transport,
+            test_context.arc_settings.raft_settings.clone(),
             true,
             &role_tx,
         )
         .await;
 
-    let result2 = state
+    let result2 = test_context
+        .state
         .process_client_propose(
             request,
             tx2,
-            &replication_handler,
+            &test_context.replication_handler,
             &vec![],
-            &raft_log,
-            &transport,
-            raft_settings,
+            &test_context.raft_log,
+            &test_context.transport,
+            test_context.arc_settings.raft_settings.clone(),
             true,
             &role_tx,
         )
@@ -261,9 +264,9 @@ async fn test_process_client_propose_case1_2() {
     }
     assert!(result1.is_ok(), "Operation should succeed");
     assert!(result2.is_ok(), "Operation should succeed");
-    assert_eq!(state.commit_index(), 5);
-    assert_eq!(state.next_index(2), Some(6));
-    assert_eq!(state.next_index(3), Some(6));
+    assert_eq!(test_context.state.commit_index(), 5);
+    assert_eq!(test_context.state.next_index(2), Some(6));
+    assert_eq!(test_context.state.next_index(3), Some(6));
     assert_client_response(rx1).await;
     assert_client_response(rx2).await;
 }
@@ -781,7 +784,40 @@ async fn test_handle_raft_event_case4_2() {
     }
 }
 
-/// # Case 6.1: if both peers failed to confirm leader's commit, the lread request should be failed
+/// # Case 5.1: Test handle client propose request
+///     if process_client_propose returns Ok()
+#[tokio::test]
+async fn test_handle_raft_event_case5_1() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case5_1", graceful_rx, None);
+
+    // New state
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Handle raft event
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::ClientPropose(
+        ClientProposeRequest {
+            client_id: 1,
+            commands: vec![],
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+}
+
+/// # Case 5.1: Test handle client propose request
+///     if process_client_propose returns Err()
+#[tokio::test]
+async fn test_handle_raft_event_case5_2() {}
+
+/// # Case 6.1: Test ClientReadRequest event
+///     if both peers failed to confirm leader's commit, the lread request should be failed
 ///
 #[tokio::test]
 async fn test_handle_raft_event_case6_1() {
@@ -832,7 +868,8 @@ async fn test_handle_raft_event_case6_1() {
     }
 }
 
-/// # Case 6.2: if majority peers confirms, the response should be success
+/// # Case 6.2: Test ClientReadRequest event
+///     if majority peers confirms, the response should be success
 ///
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
@@ -936,7 +973,8 @@ async fn test_handle_raft_event_case6_2() {
     };
 }
 
-/// # Case 6.3: if new Leader found during the replication,
+/// # Case 6.3: Test ClientReadRequest event
+///     if new Leader found during the replication,
 ///
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1

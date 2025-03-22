@@ -5,13 +5,13 @@ use super::candidate_state::CandidateState;
 use crate::{
     alias::POF,
     grpc::rpc_service::{
-        ClusteMembershipChangeRequest, ClusterMembership, MetadataRequest, VoteRequest,
-        VoteResponse, VotedFor,
+        ClientProposeRequest, ClientReadRequest, ClientRequestError, ClusteMembershipChangeRequest,
+        ClusterMembership, MetadataRequest, VoteRequest, VoteResponse, VotedFor,
     },
     role_state::RaftRoleState,
     test_utils::{mock_peer_channels, mock_raft_context, setup_raft_components, MockTypeConfig},
-    Error, MaybeCloneOneshot, MaybeCloneOneshotSender, MockElectionCore, MockMembership, RaftEvent,
-    RaftOneshot, RoleEvent, StateUpdate,
+    Error, MaybeCloneOneshot, MaybeCloneOneshotSender, MockElectionCore, MockMembership,
+    MockStateMachineHandler, RaftEvent, RaftOneshot, RoleEvent, StateUpdate,
 };
 use std::sync::Arc;
 
@@ -290,6 +290,111 @@ async fn test_handle_raft_event_case3() {
         Ok(r) => match r {
             Ok(_) => assert!(false),
             Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
+        },
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 5: Test handle client propose request
+///
+#[tokio::test]
+async fn test_handle_raft_event_case5() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
+
+    // New state
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    // Handle raft event
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::ClientPropose(
+        ClientProposeRequest {
+            client_id: 1,
+            commands: vec![],
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(matches!(
+        state
+            .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+            .await,
+        Err(Error::NotLeader)
+    ));
+
+    match resp_rx.recv().await {
+        Ok(Ok(r)) => assert_eq!(r.error_code, ClientRequestError::NotLeader as i32),
+        _ => assert!(false),
+    }
+}
+
+/// # Case 6.1: test ClientReadRequest with linear request
+#[tokio::test]
+async fn test_handle_raft_event_case6_1() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
+
+    // New state
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    let client_read_request = ClientReadRequest {
+        client_id: 1,
+        linear: true,
+        commands: vec![],
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(matches!(
+        state
+            .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+            .await,
+        Err(Error::NodeIsNotLeaderError)
+    ));
+
+    match resp_rx.recv().await {
+        Ok(r) => match r {
+            Ok(_) => assert!(false),
+            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
+        },
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 6.2: test ClientReadRequest with request(linear=false)
+#[tokio::test]
+async fn test_handle_raft_event_case6_2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case6_2", graceful_rx, None);
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_read_from_state_machine()
+        .times(1)
+        .returning(|_| Some(vec![]));
+    context.state_machine_handler = Arc::new(state_machine_handler);
+
+    // New state
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+
+    let client_read_request = ClientReadRequest {
+        client_id: 1,
+        linear: false,
+        commands: vec![],
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    match resp_rx.recv().await {
+        Ok(r) => match r {
+            Ok(r) => assert_eq!(r.error_code, ClientRequestError::NoError as i32),
+            Err(_) => assert!(false),
         },
         Err(_) => assert!(false),
     }
