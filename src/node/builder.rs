@@ -119,7 +119,7 @@ impl NodeBuilder {
             state_machine.clone(),
             self.state_storage.take().unwrap(),
             self.transport.take().unwrap(),
-            ElectionHandler::new(id, role_tx.clone(), event_tx.clone()),
+            ElectionHandler::new(id, event_tx.clone()),
             ReplicationHandler::new(id),
             state_machine_handler.clone(),
             Arc::new(RaftMembership::new(

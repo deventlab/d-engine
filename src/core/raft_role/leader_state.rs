@@ -87,11 +87,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Err(Error::Illegal)
     }
 
-    /// As Leader should not vote any more
+    /// As Leader might also be able to vote any more,
+    ///     if new legal Leader found
     ///
-    fn update_voted_for(&mut self, _voted_for: VotedFor) -> Result<()> {
-        warn!("update_voted_for - As Leader should not vote any more.");
-        Err(Error::Illegal)
+    fn update_voted_for(&mut self, voted_for: VotedFor) -> Result<()> {
+        self.shared_state_mut().update_voted_for(voted_for)
     }
 
     #[autometrics(objective = API_SLO)]
@@ -320,26 +320,38 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     .handle_vote_request(
                         vote_request,
                         self.current_term(),
-                        self.voted_for().unwrap(),
+                        None, // As Leader I don't have any votes, except myself
                         raft_log,
                     )
                     .await
                 {
-                    Ok(voted_for) => {
+                    Ok(state_update) => {
                         debug!(
-                            "candidate::handle_vote_request success with vote: {:?}",
-                            &voted_for
+                            "leader::handle_vote_request success with state_update: {:?}",
+                            &state_update
                         );
-                        if let Some(v) = voted_for {
+
+                        // 1. If switch to Follower
+                        if state_update.step_to_follower {
+                            role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+                                let error_str = format!("{:?}", e);
+                                error!("Failed to send: {}", error_str);
+                                Error::TokioSendStatusError(error_str)
+                            })?;
+                        }
+
+                        // 3. If update my voted_for
+                        let new_voted_for = state_update.new_voted_for;
+                        if let Some(v) = new_voted_for {
                             if let Err(e) = self.update_voted_for(v) {
-                                error("candidate::update_voted_for", &e);
+                                error("leader::update_voted_for", &e);
                                 return Err(e);
                             }
                         }
 
                         let response = VoteResponse {
                             term: my_term,
-                            vote_granted: voted_for.is_some(),
+                            vote_granted: new_voted_for.is_some(),
                         };
                         debug!(
                             "Response candidate_{:?} with response: {:?}",

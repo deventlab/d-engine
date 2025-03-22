@@ -1,29 +1,23 @@
-use std::sync::Arc;
-
-use tokio::sync::{
-    mpsc::{self, error::TryRecvError},
-    oneshot, watch,
-};
 use crate::{
     alias::{ROF, TROF},
     grpc::rpc_service::{Entry, VoteRequest, VotedFor},
     test_utils::{
         setup_raft_components, MockNode, MockTypeConfig, MOCK_ELECTION_HANDLER_PORT_BASE,
     },
-    ChannelWithAddressAndRole, ElectionCore, ElectionHandler, Error, MockRaftLog, MockTransport
-    , RoleEvent, FOLLOWER,
+    ChannelWithAddressAndRole, ElectionCore, ElectionHandler, Error, MockRaftLog, MockTransport,
+    FOLLOWER,
 };
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, watch};
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,
     voting_members: Vec<ChannelWithAddressAndRole>,
     raft_log_mock: ROF<MockTypeConfig>,
 }
-async fn setup(port: u64, role_tx_option: Option<mpsc::UnboundedSender<RoleEvent>>) -> TestConext {
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+async fn setup(port: u64) -> TestConext {
     let (event_tx, _event_rx) = mpsc::channel(1);
-    let election_handler =
-        ElectionHandler::<MockTypeConfig>::new(1, role_tx_option.unwrap_or(role_tx), event_tx);
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, event_tx);
 
     // 2. Prepare Peers fake address
     //  Simulate ChannelWithAddress: prepare rpc service for getting peer address
@@ -64,9 +58,8 @@ async fn test_broadcast_vote_requests_case1() {
     // 1. Create a ElectionHandler instance
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case1", None, false);
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
-    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, role_tx, event_tx);
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, event_tx);
 
     // 2.
     let term = 1;
@@ -99,7 +92,7 @@ async fn test_broadcast_vote_requests_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case2", None, false);
     let port = MOCK_ELECTION_HANDLER_PORT_BASE + 1;
-    let test_context = setup(port, None).await;
+    let test_context = setup(port).await;
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
     transport_mock
         .expect_send_vote_requests()
@@ -132,7 +125,7 @@ async fn test_broadcast_vote_requests_case3() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case3", None, false);
     let port = MOCK_ELECTION_HANDLER_PORT_BASE + 2;
-    let test_context = setup(port, None).await;
+    let test_context = setup(port).await;
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
     transport_mock
         .expect_send_vote_requests()
@@ -162,9 +155,8 @@ async fn test_broadcast_vote_requests_case3() {
 #[tokio::test]
 async fn test_handle_vote_request_case1() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 2;
-    let test_context = setup(port, Some(role_tx)).await;
+    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 10;
+    let test_context = setup(port).await;
 
     let current_term = 1;
     let last_log_index = 1;
@@ -177,7 +169,7 @@ async fn test_handle_vote_request_case1() {
         last_log_term,
     };
     let voted_for_option = None;
-    assert!(test_context
+    match test_context
         .election_handler
         .handle_vote_request(
             vote_request,
@@ -186,11 +178,11 @@ async fn test_handle_vote_request_case1() {
             &Arc::new(test_context.raft_log_mock),
         )
         .await
-        .is_ok());
-
-    match role_rx.try_recv() {
-        Ok(RoleEvent::BecomeFollower(None)) => assert!(true),
-        _ => assert!(false),
+    {
+        Ok(state_update) => {
+            assert!(state_update.step_to_follower);
+        }
+        Err(_) => assert!(false),
     }
 }
 
@@ -203,9 +195,8 @@ async fn test_handle_vote_request_case1() {
 #[tokio::test]
 async fn test_handle_vote_request_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 3;
-    let test_context = setup(port, Some(role_tx)).await;
+    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 11;
+    let test_context = setup(port).await;
 
     let current_term = 10;
     let last_log_index = 1;
@@ -218,7 +209,8 @@ async fn test_handle_vote_request_case2() {
         last_log_term,
     };
     let voted_for_option = None;
-    assert!(test_context
+
+    match test_context
         .election_handler
         .handle_vote_request(
             vote_request,
@@ -227,9 +219,13 @@ async fn test_handle_vote_request_case2() {
             &Arc::new(test_context.raft_log_mock),
         )
         .await
-        .is_ok());
-
-    assert_eq!(Err(TryRecvError::Empty), role_rx.try_recv());
+    {
+        Ok(state_update) => {
+            assert!(!state_update.step_to_follower);
+            assert!(state_update.new_voted_for.is_none());
+        }
+        Err(_) => assert!(false),
+    }
 }
 
 /// Case 1.1: Term and local log index compare

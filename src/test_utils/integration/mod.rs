@@ -149,7 +149,6 @@ pub fn setup_raft_components(
     settings.server_settings.initial_cluster = peers_meta.clone();
 
     let (event_tx, event_rx) = mpsc::channel(1024);
-    let (role_tx, role_rx) = mpsc::unbounded_channel();
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
@@ -173,7 +172,7 @@ pub fn setup_raft_components(
             event_tx.clone(),
             arc_settings.clone(),
         )),
-        election_handler: ElectionHandler::new(id, role_tx, event_tx),
+        election_handler: ElectionHandler::new(id, event_tx),
         replication_handler: ReplicationHandler::new(id),
         settings: settings_clone,
         arc_settings,

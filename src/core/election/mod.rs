@@ -9,7 +9,7 @@ mod election_handler_test;
 #[cfg(test)]
 use mockall::automock;
 use std::sync::Arc;
-use tonic::{async_trait, };
+use tonic::async_trait;
 
 use crate::{
     alias::{ROF, TROF},
@@ -21,6 +21,7 @@ use crate::{
 pub struct StateUpdate {
     // New votes, if there is
     pub new_voted_for: Option<VotedFor>,
+    pub step_to_follower: bool,
 }
 
 #[cfg_attr(test, automock)]
@@ -51,7 +52,7 @@ where
         current_term: u64,
         voted_for_option: Option<VotedFor>,
         raft_log: &Arc<ROF<T>>,
-    ) -> Result<Option<VotedFor>>;
+    ) -> Result<StateUpdate>;
 
     /// Validates vote request against Raft rules:
     /// 1. Requester's term must be ≥ current term
