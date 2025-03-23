@@ -99,6 +99,7 @@ fn setup_handle_raft_event_case1_params(
 /// ## Validate criterias
 /// 1. receive response with vote_granted = false
 /// 2. Role should not step to Follower
+/// 3. Term should not be updated
 #[tokio::test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -111,11 +112,13 @@ async fn test_handle_raft_event_case1_1() {
             Ok(StateUpdate {
                 new_voted_for: None,
                 step_to_follower: false,
+                term_update: None,
             })
         });
     context.election_handler = election_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    let term_before = state.current_term();
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -135,6 +138,9 @@ async fn test_handle_raft_event_case1_1() {
 
     // No role event receives
     assert!(role_rx.try_recv().is_err());
+
+    // Term should not be updated
+    assert_eq!(term_before, state.current_term());
 }
 
 /// # Case 1.2: Receive Vote Request Event
@@ -145,21 +151,26 @@ async fn test_handle_raft_event_case1_1() {
 /// ## Validate criterias
 /// 1. receive response with vote_granted = true
 /// 2. Step to Follower
+/// 3. Term should be updated
 #[tokio::test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
+
+    let updated_term = 100;
+
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
     election_handler
         .expect_handle_vote_request()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(move |_, _, _, _| {
             Ok(StateUpdate {
                 new_voted_for: Some(VotedFor {
                     voted_for_id: 1,
                     voted_for_term: 1,
                 }),
                 step_to_follower: true,
+                term_update: Some(updated_term),
             })
         });
     context.election_handler = election_handler;
@@ -187,6 +198,9 @@ async fn test_handle_raft_event_case1_2() {
         role_rx.try_recv(),
         Ok(RoleEvent::BecomeFollower(_))
     ));
+
+    // Term should be updated
+    assert_eq!(state.current_term(), updated_term);
 }
 
 /// # Case 1.3: Receive Vote Request Event
@@ -198,6 +212,7 @@ async fn test_handle_raft_event_case1_2() {
 /// 1. receive response with ErrorEmpty
 /// 2. handle_raft_event returns Error
 /// 3. Role should not step to Follower
+/// 4. Term should not be updated
 #[tokio::test]
 async fn test_handle_raft_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -210,6 +225,7 @@ async fn test_handle_raft_event_case1_3() {
     context.election_handler = election_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    let term_before = state.current_term();
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -225,6 +241,9 @@ async fn test_handle_raft_event_case1_3() {
 
     // No role event receives
     assert!(role_rx.try_recv().is_err());
+
+    // Term should not be updated
+    assert_eq!(state.current_term(), term_before);
 }
 
 /// # Case 2: Receive ClusterConf Event

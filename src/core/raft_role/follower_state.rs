@@ -168,16 +168,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             "follower::handle_vote_request success with state_update: {:?}",
                             &state_update
                         );
-                        // 1. If switch to Follower
-                        if state_update.step_to_follower {
-                            role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                                let error_str = format!("{:?}", e);
-                                error!("Failed to send: {}", error_str);
-                                Error::TokioSendStatusError(error_str)
-                            })?;
+                        // 1. Update term FIRST if needed
+                        if let Some(new_term) = state_update.term_update {
+                            self.update_current_term(new_term);
                         }
 
-                        // 3. If update my voted_for
+                        // 2. If update my voted_for
                         let new_voted_for = state_update.new_voted_for;
                         if let Some(v) = new_voted_for {
                             if let Err(e) = self.update_voted_for(v) {

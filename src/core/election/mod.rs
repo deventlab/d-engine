@@ -20,6 +20,7 @@ use crate::{
 #[derive(Debug)]
 pub struct StateUpdate {
     // New votes, if there is
+    pub term_update: Option<u64>,
     pub new_voted_for: Option<VotedFor>,
     pub step_to_follower: bool,
 }
@@ -32,6 +33,11 @@ where
 {
     /// Sends vote requests to all voting members. Returns Ok() if majority votes are received,
     /// otherwise returns Err. Initiates RPC calls via transport and evaluates collected responses.
+    ///
+    /// A vote can be granted only if all the following conditions are met:
+    /// •	The requests term is greater than the current_term.
+    /// •	The candidates log is sufficiently up-to-date.
+    /// •	The current node has not voted in the current term or has already voted for the candidate.
     async fn broadcast_vote_requests(
         &self,
         term: u64,

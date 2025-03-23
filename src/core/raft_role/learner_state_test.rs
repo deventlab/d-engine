@@ -35,6 +35,7 @@ async fn test_tick() {
 
 fn setup_handle_raft_event_case1_params(
     resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
+    term: u64,
 ) -> (
     RaftEvent,
     Arc<POF<MockTypeConfig>>,
@@ -42,7 +43,7 @@ fn setup_handle_raft_event_case1_params(
 ) {
     let raft_event = crate::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
-            term: 1,
+            term,
             candidate_id: 1,
             last_log_index: 0,
             last_log_term: 0,
@@ -54,10 +55,12 @@ fn setup_handle_raft_event_case1_params(
     (raft_event, peer_channels, role_tx)
 }
 
-/// # Case 1: Receive Vote Request Event
+/// # Case 1: Receive Vote Request Event with term is higher than mine
 ///
 /// ## Validate criterias
-/// 1. Always returns Error
+/// 1. Update to request term
+/// 2. receive reponse from Learner with vote_granted = false
+/// 3. handle_raft_event returns Ok()
 #[tokio::test]
 async fn test_handle_raft_event_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -67,14 +70,24 @@ async fn test_handle_raft_event_case1() {
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (raft_event, peer_channels, role_tx) = setup_handle_raft_event_case1_params(resp_tx);
+    let requet_term = state.current_term() + 10;
+    let (raft_event, peer_channels, role_tx) =
+        setup_handle_raft_event_case1_params(resp_tx, requet_term);
 
+    // handle_raft_event returns Ok()
     assert!(state
         .handle_raft_event(raft_event, peer_channels, &context, role_tx)
         .await
-        .is_err());
+        .is_ok());
 
-    assert!(resp_rx.recv().await.is_err());
+    // Update to request term
+    assert_eq!(state.current_term(), requet_term);
+
+    // Receive response with vote_granted = false
+    match resp_rx.recv().await {
+        Ok(Ok(r)) => assert!(!r.vote_granted),
+        _ => assert!(false),
+    }
 }
 
 /// # Case 2: Receive ClusterConf Event

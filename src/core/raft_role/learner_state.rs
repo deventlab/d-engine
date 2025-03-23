@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     alias::POF,
-    grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VotedFor},
+    grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VoteResponse, VotedFor},
     utils::util::error,
     AppendResponseWithUpdates, ElectionTimer, Error, Membership, RaftContext, RaftEvent,
     ReplicationCore, Result, RoleEvent, Settings, StateMachine, TypeConfig,
@@ -132,11 +132,32 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         let state_snapshot = self.state_snapshot();
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();
+        let my_term = self.current_term();
 
         match raft_event {
-            RaftEvent::ReceiveVoteRequest(_vote_request, _sender) => {
-                info!("handle_raft_event::ReceiveVoteRequest, will ignore vote request. Learner cannot vote.");
-                return Err(Error::LearnerCanNotVote);
+            RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
+                info!("handle_raft_event::ReceiveVoteRequest. Learner cannot vote.");
+                // 1. Update term FIRST if needed
+                if vote_request.term > my_term {
+                    self.update_current_term(vote_request.term);
+                }
+
+                // 2. Response sender with vote_granted=false
+                let response = VoteResponse {
+                    term: my_term,
+                    vote_granted: false,
+                };
+                debug!(
+                    "Response candidate_{:?} with response: {:?}",
+                    vote_request.candidate_id, response
+                );
+
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+                return Ok(());
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
