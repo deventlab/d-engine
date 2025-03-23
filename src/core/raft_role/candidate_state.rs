@@ -113,7 +113,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         Ok(RaftRole::Learner(self.into()))
     }
 
-    fn send_become_follower_event(&self, role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+    fn send_become_follower_event(&self, role_tx: &mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
@@ -196,12 +196,9 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let raft_log = ctx.raft_log();
         let state_snapshot = self.state_snapshot();
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();
-        let my_id = self.shared_state.node_id;
-        let my_term = self.current_term();
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
@@ -229,84 +226,15 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
-                debug!(
-                    "handle_raft_event::RaftEvent::AppendEntries: {:?}",
-                    &append_entries_request
-                );
-
-                // Important to confirm heartbeat from Leader immediatelly
-                if let Err(e) = self
-                    .recv_heartbeat(append_entries_request.leader_id, ctx)
-                    .await
-                {
-                    error!("recv_heartbeat: {:?}", e);
-                }
-
-                // Step down as Follower
-                role_tx
-                    .send(RoleEvent::BecomeFollower(Some(
-                        append_entries_request.leader_id,
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{:?}", e);
-                        error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
-                    })?;
-
-                // Handle replication request
-                match ctx
-                    .replication_handler()
-                    .handle_append_entries(
-                        append_entries_request,
-                        &state_snapshot,
-                        last_applied,
-                        // sender,
-                        raft_log,
-                    )
-                    .await
-                {
-                    Ok(AppendResponseWithUpdates {
-                        success,
-                        current_term,
-                        last_matched_id,
-                        term_update,
-                        commit_index_update,
-                    }) => {
-                        if let Some(term) = term_update {
-                            self.update_current_term(term);
-                        }
-                        if let Some(commit) = commit_index_update {
-                            if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
-                                error!(
-                                    "update_commit_index_with_signal,commit={}, error: {:?}",
-                                    commit, e
-                                );
-                                return Err(e);
-                            }
-                        }
-
-                        // Create a response
-                        let response = AppendEntriesResponse {
-                            id: self.node_id(),
-                            term: current_term,
-                            success,
-                            match_index: last_matched_id,
-                        };
-
-                        debug!("Candidate's response: {:?}", response);
-
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error("Candidate::handle_raft_event", &e);
-                        return Err(e);
-                    }
-                }
-                return Ok(());
+                self.handle_append_entries_request_workflow(
+                    append_entries_request,
+                    sender,
+                    ctx,
+                    role_tx,
+                    &state_snapshot,
+                    last_applied,
+                )
+                .await?;
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader

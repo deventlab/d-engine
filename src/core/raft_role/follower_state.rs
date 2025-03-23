@@ -5,12 +5,8 @@ use super::{
     role_state::RaftRoleState, HardState, RaftRole, SharedState, StateSnapshot,
 };
 use crate::{
-    alias::POF,
-    grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VoteResponse},
-    util::error,
-    AppendResponseWithUpdates, ElectionCore, ElectionTimer, Error, Membership, RaftContext,
-    RaftEvent, ReplicationCore, Result, RoleEvent, Settings, StateMachine, StateMachineHandler,
-    TypeConfig,
+    alias::POF, grpc::rpc_service::ClientResponse, ElectionTimer, Error, Membership, RaftContext,
+    RaftEvent, Result, RoleEvent, Settings, StateMachine, StateMachineHandler, TypeConfig,
 };
 use log::{debug, error, info, warn};
 use tokio::{sync::mpsc, time::Instant};
@@ -92,7 +88,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         Ok(RaftRole::Learner(self.into()))
     }
 
-    fn send_become_follower_event(&self, _role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+    fn send_become_follower_event(
+        &self,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -180,70 +179,15 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
-                debug!(
-                    "handle_raft_event::RaftEvent::AppendEntries: {:?}",
-                    &append_entries_request
-                );
-
-                // Important to confirm heartbeat from Leader immediatelly
-                if let Err(e) = self
-                    .recv_heartbeat(append_entries_request.leader_id, ctx)
-                    .await
-                {
-                    error!("recv_heartbeat: {:?}", e);
-                }
-
-                // Handle replication request
-                match ctx
-                    .replication_handler()
-                    .handle_append_entries(
-                        append_entries_request,
-                        &state_snapshot,
-                        last_applied,
-                        raft_log,
-                    )
-                    .await
-                {
-                    Ok(AppendResponseWithUpdates {
-                        success,
-                        current_term,
-                        last_matched_id,
-                        term_update,
-                        commit_index_update,
-                    }) => {
-                        if let Some(term) = term_update {
-                            self.update_current_term(term);
-                        }
-                        if let Some(commit) = commit_index_update {
-                            if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
-                                error!(
-                                    "update_commit_index_with_signal,commit={}, error: {:?}",
-                                    commit, e
-                                );
-                                return Err(e);
-                            }
-                        }
-                        // Create a response
-                        let response = AppendEntriesResponse {
-                            id: self.node_id(),
-                            term: current_term,
-                            success,
-                            match_index: last_matched_id,
-                        };
-
-                        debug!("Follower::AppendEntries response: {:?}", response);
-
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error("Follower::handle_raft_event", &e);
-                        return Err(e);
-                    }
-                }
+                self.handle_append_entries_request_workflow(
+                    append_entries_request,
+                    sender,
+                    ctx,
+                    role_tx,
+                    &state_snapshot,
+                    last_applied,
+                )
+                .await?;
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
