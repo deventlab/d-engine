@@ -8,7 +8,7 @@ use crate::{
 };
 use tonic::Status;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug)]
 pub enum RoleEvent {
     BecomeFollower(Option<u32>), // BecomeFollower(Option<leader_id>)
     BecomeCandidate,
@@ -16,6 +16,7 @@ pub enum RoleEvent {
     BecomeLearner,
 
     NotifyNewCommitIndex { new_commit_index: u64 },
+    ReprocessEvent(RaftEvent), //Replay the raft event when step down as another role
 }
 
 #[derive(Debug)]

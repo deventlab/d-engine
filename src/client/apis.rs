@@ -177,6 +177,7 @@ impl ClientApis for DengineClient {
 impl InnerClient {
     async fn new(config: ClientConfig) -> Result<Self> {
         let node_metas = Self::load_cluster_metadata(&config).await?;
+        println!("node_metas: {:?}", &node_metas);
         let w_client = Self::build_write_client(&node_metas, &config).await?;
         let r_clients = Self::build_read_clients(&node_metas, &config).await?;
 

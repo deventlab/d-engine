@@ -223,13 +223,8 @@ where
         //if there is no new entries need to insert, we just return the last local log index
         let mut last_matched_id = raft_log_last_index;
         let mut commit_index_update = None;
-        let mut term_update = None;
 
-        if current_term < request.term {
-            //The node need to sync its state with requested Leader
-            debug!("The node need to sync its state with requested Leader");
-            term_update = Some(request.term);
-        } else {
+        if current_term > request.term {
             debug!(
                 " current_term({}) >= req.term({}) ",
                 current_term, request.term
@@ -238,7 +233,6 @@ where
                 success: false,
                 current_term,
                 last_matched_id,
-                term_update,
                 commit_index_update,
             });
         }
@@ -284,7 +278,6 @@ where
             success,
             current_term,
             last_matched_id,
-            term_update,
             commit_index_update,
         })
     }

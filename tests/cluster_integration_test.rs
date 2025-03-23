@@ -83,6 +83,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 
     // Testing `put` command
     println!("Testing put command...");
+    println!("put 2 202");
     assert!(
         execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(202))
             .await
@@ -152,7 +153,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     //     .filter_level(log::LevelFilter::Debug)
     //     .init();
 
-    // reset("case2").await?;
+    reset("case2").await?;
 
     let bootstrap_urls: Vec<String> = vec![
         "http://127.0.0.1:19083".to_string(),

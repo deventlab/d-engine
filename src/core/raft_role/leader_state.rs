@@ -6,7 +6,7 @@ use crate::{
     alias::{POF, REPOF, ROF, SMHOF, TROF},
     grpc::rpc_service::{
         AppendEntriesResponse, ClientCommand, ClientProposeRequest, ClientRequestError,
-        ClientResponse, ClusterConfUpdateResponse, VotedFor,
+        ClientResponse, ClusterConfUpdateResponse, VoteResponse, VotedFor,
     },
     utils::util::{self, error},
     AppendResults, BatchBuffer, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
@@ -200,14 +200,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Err(Error::Illegal)
     }
 
-    fn send_become_follower_event(&self, role_tx: &mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
-        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-            let error_str = format!("{:?}", e);
-            error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
-        })
-    }
-
     fn is_timer_expired(&self) -> bool {
         self.timer.is_expired()
     }
@@ -284,11 +276,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
-    /// Maintenace leadership position in cluster members config
-    async fn recv_heartbeat(&mut self, _leader_id: u32, _ctx: &RaftContext<T>) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -308,13 +295,37 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // Leader receives RequestVote(term=X, candidate=Y)
             // 1. If X > currentTerm:
             // - Leader → Follower, currentTerm = X
-            // - As a follower, check if candidate's log is up-to-date
-            // - Reply with VoteGranted=true/false
+            // - Replay event
             // 2. Else:
             // - Reply with VoteGranted=false, currentTerm=currentTerm
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                self.handle_vote_request_workflow(vote_request, sender, ctx, role_tx)
-                    .await?;
+                debug!(
+                    "handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}",
+                    &vote_request
+                );
+
+                let my_term = self.current_term();
+                if my_term < vote_request.term {
+                    self.update_current_term(vote_request.term);
+                    // Step down as Follower
+                    self.send_become_follower_event(&role_tx)?;
+
+                    info!("Leader will not process Vote request, it should let Follower do it.");
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::ReceiveVoteRequest(vote_request, sender),
+                    )?;
+                } else {
+                    let response = VoteResponse {
+                        term: my_term,
+                        vote_granted: false,
+                    };
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                }
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
@@ -397,18 +408,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             Error::TokioSendStatusError(error_str)
                         })?;
 
-                    let response = AppendEntriesResponse {
-                        id: my_id,
-                        term: my_term,
-                        success: false,
-                        match_index: raft_log.last_entry_id(),
-                    };
-
-                    sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{:?}", e);
-                        error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
-                    })?;
+                    info!("Leader will not process append_entries_request, it should let Follower do it.");
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::AppendEntries(append_entries_request, sender),
+                    )?;
                 }
             }
 
@@ -517,6 +521,28 @@ impl<T: TypeConfig> LeaderState<T> {
             match_index: self.match_index.clone(),
             noop_log_id: self.noop_log_id.clone(),
         }
+    }
+
+    fn send_become_follower_event(&self, role_tx: &mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+            let error_str = format!("{:?}", e);
+            error!("Failed to send: {}", error_str);
+            Error::TokioSendStatusError(error_str)
+        })
+    }
+
+    fn send_replay_raft_event(
+        &self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        raft_event: RaftEvent,
+    ) -> Result<()> {
+        role_tx
+            .send(RoleEvent::ReprocessEvent(raft_event))
+            .map_err(|e| {
+                let error_str = format!("{:?}", e);
+                error!("Failed to send: {}", error_str);
+                Error::TokioSendStatusError(error_str)
+            })
     }
 
     /// # Params

@@ -42,10 +42,10 @@ pub struct LeaderStateUpdate {
 
 #[derive(Debug)]
 pub struct AppendResponseWithUpdates {
-    pub success: bool,                    // RPC success or failure
-    pub current_term: u64,                // Current node term (may have been updated)
-    pub last_matched_id: u64,             // Last matched log index
-    pub term_update: Option<u64>,         // Term to be updated (if a higher term is found)
+    pub success: bool,        // RPC success or failure
+    pub current_term: u64,    // Current node term (may have been updated)
+    pub last_matched_id: u64, // Last matched log index
+    // pub term_update: Option<u64>,         // Term to be updated (if a higher term is found)
     pub commit_index_update: Option<u64>, // Commit_index to be updated
 }
 

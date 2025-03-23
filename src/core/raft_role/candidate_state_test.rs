@@ -11,9 +11,8 @@ use crate::{
     },
     role_state::RaftRoleState,
     test_utils::{mock_peer_channels, mock_raft_context, setup_raft_components, MockTypeConfig},
-    AppendResponseWithUpdates, Error, MaybeCloneOneshot, MaybeCloneOneshotSender, MockElectionCore,
-    MockMembership, MockReplicationCore, MockStateMachineHandler, RaftEvent, RaftOneshot,
-    RoleEvent, StateUpdate,
+    MaybeCloneOneshot, MaybeCloneOneshotSender, MockElectionCore, MockMembership,
+    MockStateMachineHandler, RaftEvent, RaftOneshot, RoleEvent,
 };
 use std::sync::Arc;
 
@@ -80,10 +79,11 @@ async fn test_tick_case1() {
 
 fn setup_handle_raft_event_case1_params(
     resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
+    term: u64,
 ) -> (RaftEvent, Arc<POF<MockTypeConfig>>) {
     let raft_event = crate::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
-            term: 1,
+            term,
             candidate_id: 1,
             last_log_index: 0,
             last_log_term: 0,
@@ -94,9 +94,7 @@ fn setup_handle_raft_event_case1_params(
     (raft_event, peer_channels)
 }
 /// # Case 1.1: Receive Vote Request Event
-///
-/// ## Preparation setup:
-/// 1. handle_vote_request return Ok(None) - reject this vote
+///     and request term is lower or equal than mine
 ///
 /// ## Validate criterias
 /// 1. receive response with vote_granted = false
@@ -105,27 +103,16 @@ fn setup_handle_raft_event_case1_params(
 #[tokio::test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
-    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler
-        .expect_handle_vote_request()
-        .times(1)
-        .returning(|_, _, _, _| {
-            Ok(StateUpdate {
-                new_voted_for: None,
-                step_to_follower: false,
-                term_update: None,
-            })
-        });
-    context.election_handler = election_handler;
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
     let term_before = state.current_term();
+    let request_term = term_before;
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx, request_term);
 
     assert!(state
         .handle_raft_event(raft_event, peer_channels, &context, role_tx)
@@ -146,106 +133,47 @@ async fn test_handle_raft_event_case1_1() {
 }
 
 /// # Case 1.2: Receive Vote Request Event
-///
-/// ## Preparation setup:
-/// 1. handle_vote_request return Ok(Some(VotedFor)) - accept this vote
+///     and request term is higher than mine
 ///
 /// ## Validate criterias
-/// 1. receive response with vote_granted = true
+/// 1. Should not receive response.
 /// 2. Step to Follower
 /// 3. Term should be updated
+/// 4. Should receive replay event
 #[tokio::test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
 
     let updated_term = 100;
-
-    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler
-        .expect_handle_vote_request()
-        .times(1)
-        .returning(move |_, _, _, _| {
-            Ok(StateUpdate {
-                new_voted_for: Some(VotedFor {
-                    voted_for_id: 1,
-                    voted_for_term: 1,
-                }),
-                step_to_follower: true,
-                term_update: Some(updated_term),
-            })
-        });
-    context.election_handler = election_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx, updated_term);
 
     assert!(state
         .handle_raft_event(raft_event, peer_channels, &context, role_tx)
         .await
         .is_ok());
 
-    // Receive response with vote_granted = true
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(r.vote_granted),
-        _ => assert!(false),
-    }
-
     // Step to Follower
     assert!(matches!(
         role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
+        Ok(RoleEvent::BecomeFollower(None))
+    ));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
     ));
 
     // Term should be updated
     assert_eq!(state.current_term(), updated_term);
-}
 
-/// # Case 1.3: Receive Vote Request Event
-///
-/// ## Preparation setup:
-/// 1. handle_vote_request return Error
-///
-/// ## Validate criterias
-/// 1. receive response with ErrorEmpty
-/// 2. handle_raft_event returns Error
-/// 3. Role should not step to Follower
-/// 4. Term should not be updated
-#[tokio::test]
-async fn test_handle_raft_event_case1_3() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_3", graceful_rx, None);
-    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler
-        .expect_handle_vote_request()
-        .times(1)
-        .returning(|_, _, _, _| Err(Error::TokioSendStatusError("".to_string())));
-    context.election_handler = election_handler;
-
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
-    let term_before = state.current_term();
-
-    // Prepare function params
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
-
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
-
+    // Should not receive response, (let Follower handle it)
     assert!(resp_rx.recv().await.is_err());
-
-    // No role event receives
-    assert!(role_rx.try_recv().is_err());
-
-    // Term should not be updated
-    assert_eq!(state.current_term(), term_before);
 }
 
 /// # Case 2: Receive ClusterConf Event
@@ -317,7 +245,7 @@ async fn test_handle_raft_event_case3() {
 }
 
 /// # Case 4.1: As candidate, if I receive append request from Leader,
-///     and replication_handler::handle_append_entries successfully
+///     and request term is higher than mine
 ///
 /// ## Prepration Setup
 /// 1. receive Leader append request,
@@ -325,11 +253,13 @@ async fn test_handle_raft_event_case3() {
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
-/// 2. I should  receive BecomeFollower event
-/// 3. I should update term
-/// 4. I should send out new commit signal
-/// 5. send out AppendEntriesResponse with success=true
-/// 6. `handle_raft_event` fun returns Ok(())
+/// 2. I should update term
+/// 3. I should receive BecomeFollower event
+/// 4. I should replay the raft_event to let Follower continue handle it
+/// 5. I should not send out new commit signal
+/// 6. Should not receive response, (let Follower handle it)
+/// 7. `handle_raft_event` fun returns Ok(())
+/// 8. commit should not be updated. We should let Follower continue.
 ///
 #[tokio::test]
 async fn test_handle_raft_event_case4_1() {
@@ -338,22 +268,7 @@ async fn test_handle_raft_event_case4_1() {
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_1", graceful_rx, None);
     let follower_term = 1;
     let new_leader_term = follower_term + 1;
-    let expect_new_term = 3;
-    let expect_new_commit = 2;
-
-    // Mock replication handler
-    let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_handle_append_entries()
-        .returning(move |_, _, _, _| {
-            Ok(AppendResponseWithUpdates {
-                success: true,
-                current_term: new_leader_term,
-                last_matched_id: 1,
-                term_update: Some(expect_new_term),
-                commit_index_update: Some(expect_new_commit),
-            })
-        });
+    let new_leader_commit = 5;
 
     let mut membership = MockMembership::new();
 
@@ -367,11 +282,84 @@ async fn test_handle_raft_event_case4_1() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
 
     // New state
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
     state.update_current_term(follower_term);
+
+    // Prepare Append entries request
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: new_leader_commit,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Validation criterias: 7. `handle_raft_event` fun returns Ok(())
+    // Handle raft event
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    // Validation criterias
+    // 3. I should  receive BecomeFollower event
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(None))
+    ));
+    // 4. I should replay the raft_event to let Follower continue handle it
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
+
+    // Validation criterias
+    // 2. I should update term
+    assert_eq!(state.current_term(), new_leader_term);
+    // 8. commit should not be updated. We should let Follower continue.
+    assert!(state.commit_index() != new_leader_commit);
+
+    // 6. Should not receive response, (let Follower handle it)
+    assert!(resp_rx.recv().await.is_err());
+}
+
+/// # Case 4.2: As candidate, if I receive append request from Leader,
+///     and request term is lower or equal than mine
+///
+/// ## Validation criterias:
+/// 1. I should not mark new leader id in memberhip
+/// 2. I should not receive any event
+/// 3. My term shoud not be updated
+/// 4. send out AppendEntriesResponse with success=false
+/// 5. `handle_raft_event` fun returns Err(())
+///
+#[tokio::test]
+async fn test_handle_raft_event_case4_2() {
+    // Prepare Follower State
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
+    let term = 2;
+    let new_leader_term = term - 1;
+
+    let mut membership = MockMembership::new();
+    // Validation criterias
+    // 1. I should mark new leader id in memberhip
+    membership
+        .expect_mark_leader_id()
+        .returning(|_| {})
+        .times(0);
+    context.membership = Arc::new(membership);
+
+    // New state
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    state.update_current_term(term);
 
     // Prepare Append entries request
     let append_entries_request = AppendEntriesRequest {
@@ -395,107 +383,14 @@ async fn test_handle_raft_event_case4_1() {
         .is_ok());
 
     // Validation criterias
-    // 2. I should  receive BecomeFollower event
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::BecomeFollower(None)
-    ));
-    // 4. I should send out new commit signal
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::NotifyNewCommitIndex {
-            new_commit_index: _
-        }
-    ));
-
-    // Validation criterias
-    // 3. I should update term
-    assert_eq!(state.current_term(), expect_new_term);
-    assert_eq!(state.commit_index(), expect_new_commit);
-
-    // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.success),
-        Err(_) => assert!(false),
-    }
-}
-
-/// # Case 4.2: As candidate, if I receive append request from Leader,
-///     and replication_handler::handle_append_entries failed with Error
-///
-/// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with Error
-///
-/// ## Validation criterias:
-/// 1. I should mark new leader id in memberhip
-/// 2. I should not receive any event
-/// 3. My term shoud not be updated
-/// 4. send out AppendEntriesResponse with success=false
-/// 5. `handle_raft_event` fun returns Err(())
-///
-#[tokio::test]
-async fn test_handle_raft_event_case4_2() {
-    // Prepare Follower State
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
-    let follower_term = 1;
-    let new_leader_term = follower_term + 1;
-
-    // Mock replication handler
-    let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_handle_append_entries()
-        .returning(|_, _, _, _| Err(Error::GeneralServerError("test".to_string())));
-
-    let mut membership = MockMembership::new();
-
-    // Validation criterias
-    // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-        })
-        .times(1);
-
-    context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
-
-    // New state
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
-    state.update_current_term(follower_term);
-
-    // Prepare Append entries request
-    let append_entries_request = AppendEntriesRequest {
-        term: new_leader_term,
-        leader_id: 5,
-        prev_log_index: 0,
-        prev_log_term: 1,
-        entries: vec![],
-        leader_commit_index: 0,
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
-    // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
-
-    // Validation criterias
     // 2. I should not receive any event
     assert!(role_rx.try_recv().is_err());
 
     // Validation criterias
     // 3. My term shoud not be updated
-    assert_eq!(state.current_term(), follower_term);
+    assert_eq!(state.current_term(), term);
 
-    // 5. send out AppendEntriesResponse with success=true
+    // 5. send out AppendEntriesResponse with success=false
     match resp_rx.recv().await.expect("should succeed") {
         Ok(response) => assert!(!response.success),
         Err(_) => assert!(false),
@@ -601,4 +496,38 @@ async fn test_handle_raft_event_case6_2() {
         },
         Err(_) => assert!(false),
     }
+}
+
+#[test]
+fn test_send_replay_raft_event() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_send_replay_raft_event", graceful_rx, None);
+
+    let state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    assert!(state.send_become_follower_event(&role_tx).is_ok());
+    assert!(state
+        .send_replay_raft_event(
+            &role_tx,
+            RaftEvent::ReceiveVoteRequest(
+                VoteRequest {
+                    term: 1,
+                    candidate_id: 1,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+        )
+        .is_ok());
+
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::BecomeFollower(None)
+    ));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
 }
