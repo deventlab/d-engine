@@ -363,7 +363,7 @@ async fn test_handle_raft_event_case3() {
     assert!(state
         .handle_raft_event(raft_event, peer_channels, &context, role_tx)
         .await
-        .is_err());
+        .is_ok());
 
     match resp_rx.recv().await {
         Ok(r) => match r {
@@ -480,12 +480,10 @@ async fn test_handle_raft_event_case5() {
     );
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(matches!(
-        state
-            .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-            .await,
-        Err(Error::NotLeader)
-    ));
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
 
     match resp_rx.recv().await {
         Ok(Ok(r)) => assert_eq!(r.error_code, ClientRequestError::NotLeader as i32),
@@ -510,12 +508,10 @@ async fn test_handle_raft_event_case6_1() {
     let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(matches!(
-        state
-            .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-            .await,
-        Err(Error::NodeIsNotLeaderError)
-    ));
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
 
     match resp_rx.recv().await {
         Ok(r) => match r {

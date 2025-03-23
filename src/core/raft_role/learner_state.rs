@@ -157,7 +157,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     error!("Failed to send: {}", error_str);
                     Error::TokioSendStatusError(error_str)
                 })?;
-                return Ok(());
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
@@ -170,7 +169,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Err(Error::Illegal);
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
                 sender
@@ -182,7 +180,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Err(Error::NotLeader);
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 debug!(
@@ -250,7 +247,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         return Err(e);
                     }
                 }
-                return Ok(());
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
@@ -264,7 +260,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Err(Error::NotLeader);
             }
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
                 sender
@@ -276,9 +271,9 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Err(Error::LearnerCanNot);
             }
         }
+        return Ok(());
     }
 }
 

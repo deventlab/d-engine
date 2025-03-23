@@ -196,8 +196,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             error!("Failed to send: {}", error_str);
                             Error::TokioSendStatusError(error_str)
                         })?;
-
-                        return Ok(());
                     }
                     Err(e) => {
                         error(
@@ -216,7 +214,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     error!("Failed to send: {}", error_str);
                     Error::TokioSendStatusError(error_str)
                 })?;
-                return Ok(());
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
                 sender
@@ -228,7 +225,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Err(Error::NotLeader);
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 debug!(
@@ -295,7 +291,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         return Err(e);
                     }
                 }
-                return Ok(());
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
@@ -309,7 +304,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
-                return Err(Error::NotLeader);
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
                 // If the request is linear request, ...
@@ -323,7 +317,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             error!("Failed to send: {}", error_str);
                             Error::TokioSendStatusError(error_str)
                         })?;
-                    return Err(Error::NodeIsNotLeaderError);
                 } else {
                     // Otherwise
                     let mut results = vec![];
@@ -341,9 +334,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         Error::TokioSendStatusError(error_str)
                     })?;
                 }
-                Ok(())
             }
         }
+
+        return Ok(());
     }
 }
 
