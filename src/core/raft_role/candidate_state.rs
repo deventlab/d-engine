@@ -294,19 +294,15 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
 
                 // Step down as Follower
-                if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(Some(
-                    append_entries_request.leader_id,
-                ))) {
-                    error!(
-                        "self.my_role_change_event_sender.send(RaftRole::Follower) failed: {:?}",
-                        e
-                    );
-                } else {
-                    debug!(
-                        "my term is smaller than Append Request one, so I({}) become follower.",
-                        my_id
-                    );
-                }
+                role_tx
+                    .send(RoleEvent::BecomeFollower(Some(
+                        append_entries_request.leader_id,
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
 
                 // Handle replication request
                 match ctx
@@ -348,7 +344,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                             match_index: last_matched_id,
                         };
 
-                        debug!("follower's response: {:?}", response);
+                        debug!("Candidate's response: {:?}", response);
 
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{:?}", e);

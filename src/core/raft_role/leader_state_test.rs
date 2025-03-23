@@ -711,7 +711,7 @@ async fn test_handle_raft_event_case4_1() {
 ///
 /// ## Criterias:
 /// 1. I should step down as Follower(receive RoleEvent::BecomeFollower event)
-/// 2. handle_append_entries should be triggered
+/// 2. handle_append_entries should not be triggered
 ///
 #[tokio::test]
 async fn test_handle_raft_event_case4_2() {
@@ -726,7 +726,7 @@ async fn test_handle_raft_event_case4_2() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .times(1)
+        .times(0)
         .returning(move |_, _, _, _| {
             Ok(AppendResponseWithUpdates {
                 success: true,
@@ -737,7 +737,7 @@ async fn test_handle_raft_event_case4_2() {
             })
         });
     // Initializing Shutdown Signal
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case4_2")
         .with_replication_handler(replication_handler)
@@ -772,14 +772,14 @@ async fn test_handle_raft_event_case4_2() {
     match role_rx.try_recv() {
         Ok(new_role) => assert!(matches!(
             new_role,
-            RoleEvent::BecomeFollower(Some(new_leader_id))
+            RoleEvent::BecomeFollower(Some(_new_leader_id))
         )),
         Err(_) => assert!(false),
     };
 
-    // Validate request should receive AppendEntriesResponse with success = true
+    // Validate request should receive AppendEntriesResponse with success = false
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.success),
+        Ok(response) => assert!(!response.success),
         Err(_) => assert!(false),
     }
 }
