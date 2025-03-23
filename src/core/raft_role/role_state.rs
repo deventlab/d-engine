@@ -1,10 +1,12 @@
-use super::{RaftRole, SharedState};
+use super::{RaftRole, SharedState, StateSnapshot};
 use crate::{
     alias::POF,
-    grpc::rpc_service::{VoteRequest, VoteResponse, VotedFor},
+    grpc::rpc_service::{
+        AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse, VotedFor,
+    },
     util::error,
-    ElectionCore, Error, MaybeCloneOneshotSender, RaftContext, RaftEvent, Result, RoleEvent,
-    TypeConfig,
+    AppendResponseWithUpdates, ElectionCore, Error, MaybeCloneOneshotSender, RaftContext,
+    RaftEvent, RaftLog, ReplicationCore, Result, RoleEvent, TypeConfig,
 };
 use log::{debug, error, warn};
 use std::sync::Arc;
@@ -88,6 +90,14 @@ pub trait RaftRoleState: Send + Sync + 'static {
         warn!("become_learner Illegal");
         Err(Error::Illegal)
     }
+
+    fn send_become_follower_event(
+        &self,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn step_down(&self) -> Result<RaftRole<Self::T>> {
         warn!("step_down failed");
         Err(Error::Illegal)
@@ -208,7 +218,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
                 // 2. Transition to Follower if required
                 if state_update.step_to_follower {
-                    self.send_become_follower_event(role_tx)?;
+                    self.send_become_follower_event(&role_tx)?;
                 }
 
                 // 3. If update my voted_for
@@ -243,7 +253,95 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Ok(())
     }
 
-    fn send_become_follower_event(&self, _role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
-        Ok(())
+    async fn handle_append_entries_request_workflow(
+        &mut self,
+        append_entries_request: AppendEntriesRequest,
+        sender: MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>,
+        ctx: &RaftContext<Self::T>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        state_snapshot: &StateSnapshot,
+        last_applied: u64,
+    ) -> Result<()> {
+        debug!(
+            "handle_raft_event::RaftEvent::AppendEntries: {:?}",
+            &append_entries_request
+        );
+
+        // Important to confirm heartbeat from Leader immediatelly
+        self.recv_heartbeat(append_entries_request.leader_id, ctx)
+            .await?;
+
+        // Step down as Follower
+        self.send_become_follower_event(&role_tx)?;
+
+        // Handle replication request
+        match ctx
+            .replication_handler()
+            .handle_append_entries(
+                append_entries_request,
+                &state_snapshot,
+                last_applied,
+                ctx.raft_log(),
+            )
+            .await
+        {
+            Ok(AppendResponseWithUpdates {
+                success,
+                current_term,
+                last_matched_id,
+                term_update,
+                commit_index_update,
+            }) => {
+                if let Some(term) = term_update {
+                    self.update_current_term(term);
+                }
+                if let Some(commit) = commit_index_update {
+                    if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
+                        error!(
+                            "update_commit_index_with_signal,commit={}, error: {:?}",
+                            commit, e
+                        );
+                        return Err(e);
+                    }
+                }
+
+                // Create a response
+                let response = AppendEntriesResponse {
+                    id: self.node_id(),
+                    term: current_term,
+                    success,
+                    match_index: last_matched_id,
+                };
+
+                debug!("AppendEntriesResponse: {:?}", response);
+
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+            }
+            Err(e) => {
+                // Create a response
+                let raft_log_last_index = ctx.raft_log.last_entry_id();
+                let response = AppendEntriesResponse {
+                    id: self.node_id(),
+                    term: self.current_term(),
+                    success: false,
+                    match_index: raft_log_last_index,
+                };
+
+                debug!("AppendEntriesResponse: {:?}", response);
+
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+                error("handle_raft_event", &e);
+                return Err(e);
+            }
+        }
+        return Ok(());
     }
 }

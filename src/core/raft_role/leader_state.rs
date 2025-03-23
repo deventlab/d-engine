@@ -200,7 +200,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Err(Error::Illegal)
     }
 
-    fn send_become_follower_event(&self, role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+    fn send_become_follower_event(&self, role_tx: &mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
@@ -285,12 +285,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     }
 
     /// Maintenace leadership position in cluster members config
-    async fn recv_heartbeat(&mut self, leader_id: u32, _ctx: &RaftContext<T>) -> Result<()> {
-        warn!(
-            "Leader(myself: {}) receives heartbeat from another Leader({}) which is wrong.",
-            self.shared_state.node_id, leader_id
-        );
-
+    async fn recv_heartbeat(&mut self, _leader_id: u32, _ctx: &RaftContext<T>) -> Result<()> {
         Ok(())
     }
 

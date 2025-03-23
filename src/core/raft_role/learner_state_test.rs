@@ -6,13 +6,14 @@ use tonic::{Code, Status};
 use crate::{
     alias::POF,
     grpc::rpc_service::{
-        ClientProposeRequest, ClientReadRequest, ClientRequestError, ClusteMembershipChangeRequest,
-        MetadataRequest, VoteRequest, VoteResponse,
+        AppendEntriesRequest, ClientProposeRequest, ClientReadRequest, ClientRequestError,
+        ClusteMembershipChangeRequest, MetadataRequest, VoteRequest, VoteResponse,
     },
     learner_state::LearnerState,
     role_state::RaftRoleState,
     test_utils::{mock_peer_channels, mock_raft_context, MockTypeConfig},
-    Error, MaybeCloneOneshot, MaybeCloneOneshotSender, RaftEvent, RaftOneshot, RoleEvent,
+    AppendResponseWithUpdates, Error, MaybeCloneOneshot, MaybeCloneOneshotSender, MockMembership,
+    MockReplicationCore, RaftEvent, RaftOneshot, RoleEvent,
 };
 
 /// Validate Follower step up as Candidate in new election round
@@ -150,6 +151,188 @@ async fn test_handle_raft_event_case3() {
             Ok(_) => assert!(false),
             Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
         },
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 4.1: As learner, if I receive append request from Leader,
+///     and replication_handler::handle_append_entries successfully
+///
+/// ## Prepration Setup
+/// 1. receive Leader append request,
+///     with higher term and new commit index
+///
+/// ## Validation criterias:
+/// 1. I should mark new leader id in memberhip
+/// 2. I should not receive BecomeFollower event
+/// 3. I should update term
+/// 4. I should send out new commit signal
+/// 5. send out AppendEntriesResponse with success=true
+/// 6. `handle_raft_event` fun returns Ok(())
+///
+#[tokio::test]
+async fn test_handle_raft_event_case4_1() {
+    // Prepare Follower State
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_1", graceful_rx, None);
+    let follower_term = 1;
+    let new_leader_term = follower_term + 1;
+    let expect_new_term = 3;
+    let expect_new_commit = 2;
+
+    // Mock replication handler
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_handle_append_entries()
+        .returning(move |_, _, _, _| {
+            Ok(AppendResponseWithUpdates {
+                success: true,
+                current_term: new_leader_term,
+                last_matched_id: 1,
+                term_update: Some(expect_new_term),
+                commit_index_update: Some(expect_new_commit),
+            })
+        });
+
+    let mut membership = MockMembership::new();
+
+    // Validation criterias
+    // 1. I should mark new leader id in memberhip
+    membership
+        .expect_mark_leader_id()
+        .returning(|id| {
+            assert_eq!(id, 5);
+        })
+        .times(1);
+
+    context.membership = Arc::new(membership);
+    context.replication_handler = replication_handler;
+
+    // New state
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    state.update_current_term(follower_term);
+
+    // Prepare Append entries request
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
+    // Handle raft event
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    // Validation criterias
+    // 2. I should not receive BecomeFollower event
+    // 4. I should send out new commit signal
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::NotifyNewCommitIndex {
+            new_commit_index: _
+        }
+    ));
+
+    // Validation criterias
+    // 3. I should update term
+    assert_eq!(state.current_term(), expect_new_term);
+    assert_eq!(state.commit_index(), expect_new_commit);
+
+    // 5. send out AppendEntriesResponse with success=true
+    match resp_rx.recv().await.expect("should succeed") {
+        Ok(response) => assert!(response.success),
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 4.2: As learner, if I receive append request from Leader,
+///     and replication_handler::handle_append_entries failed with Error
+///
+/// ## Prepration Setup
+/// 1. receive Leader append request,
+///     with Error
+///
+/// ## Validation criterias:
+/// 1. I should mark new leader id in memberhip
+/// 2. I should not receive any event
+/// 3. My term shoud not be updated
+/// 4. send out AppendEntriesResponse with success=false
+/// 5. `handle_raft_event` fun returns Err(())
+///
+#[tokio::test]
+async fn test_handle_raft_event_case4_2() {
+    // Prepare Follower State
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
+    let follower_term = 1;
+    let new_leader_term = follower_term + 1;
+
+    // Mock replication handler
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_handle_append_entries()
+        .returning(|_, _, _, _| Err(Error::GeneralServerError("test".to_string())));
+
+    let mut membership = MockMembership::new();
+
+    // Validation criterias
+    // 1. I should mark new leader id in memberhip
+    membership
+        .expect_mark_leader_id()
+        .returning(|id| {
+            assert_eq!(id, 5);
+        })
+        .times(1);
+
+    context.membership = Arc::new(membership);
+    context.replication_handler = replication_handler;
+
+    // New state
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    state.update_current_term(follower_term);
+
+    // Prepare Append entries request
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
+    // Handle raft event
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    // Validation criterias
+    // 2. I should not receive any event
+    assert!(role_rx.try_recv().is_err());
+
+    // Validation criterias
+    // 3. My term shoud not be updated
+    assert_eq!(state.current_term(), follower_term);
+
+    // 5. send out AppendEntriesResponse with success=true
+    match resp_rx.recv().await.expect("should succeed") {
+        Ok(response) => assert!(!response.success),
         Err(_) => assert!(false),
     }
 }

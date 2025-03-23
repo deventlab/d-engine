@@ -113,11 +113,11 @@ where
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates>;
 
-    async fn upon_receive_append_request(
-        &self,
-        req: &AppendEntriesRequest,
-        state_snapshot: &StateSnapshot,
-        last_applied: u64,
-        raft_log: &Arc<ROF<T>>,
-    ) -> AppendResponseWithUpdates;
+    // async fn upon_receive_append_request(
+    //     &self,
+    //     req: &AppendEntriesRequest,
+    //     state_snapshot: &StateSnapshot,
+    //     last_applied: u64,
+    //     raft_log: &Arc<ROF<T>>,
+    // ) -> AppendResponseWithUpdates;
 }

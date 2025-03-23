@@ -205,7 +205,7 @@ where
         return peer_entries;
     }
 
-    /// As Follower/Candidate
+    /// As Follower only
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,
@@ -214,72 +214,52 @@ where
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates> {
         debug!(
-            "[F-{:?}] >> receive append request {:?}",
+            "[F-{:?}] >> receive leader append request {:?}",
             self.my_id, request
         );
-
-        // Filter out conflicts and append local logs
-        debug!("filter out conflicts and append local logs");
-        let response_with_updates: AppendResponseWithUpdates = self
-            .upon_receive_append_request(&request, state_snapshot, last_applied, raft_log)
-            .await;
-
-        // // Create a response
-        // let response = AppendEntriesResponse {
-        //     id: self.my_id,
-        //     term: current_term,
-        //     success,
-        //     match_index: matched_index,
-        // };
-
-        // debug!("follower's response: {:?}", response);
-
-        // if let Err(e) = resp_tx.send(Ok(response)) {
-        //     error!("resp_tx.send AppendEntriesResponse: {:?}", e);
-        // }
-        Ok(response_with_updates)
-    }
-
-    #[autometrics(objective = API_SLO)]
-    async fn upon_receive_append_request(
-        &self,
-        req: &AppendEntriesRequest,
-        state_snapshot: &StateSnapshot,
-        last_applied: u64,
-        raft_log: &Arc<ROF<T>>,
-    ) -> AppendResponseWithUpdates {
-        debug!("start processing leader's append request: {:?}", req);
         let current_term = state_snapshot.current_term;
         let raft_log_last_index = raft_log.last_entry_id();
         let success;
-        let last_matched_id;
+        //if there is no new entries need to insert, we just return the last local log index
+        let mut last_matched_id = raft_log_last_index;
         let mut commit_index_update = None;
         let mut term_update = None;
 
-        if current_term < req.term {
+        if current_term < request.term {
             //The node need to sync its state with requested Leader
             debug!("The node need to sync its state with requested Leader");
-            term_update = Some(req.term);
+            term_update = Some(request.term);
+        } else {
+            debug!(
+                " current_term({}) >= req.term({}) ",
+                current_term, request.term
+            );
+            return Ok(AppendResponseWithUpdates {
+                success: false,
+                current_term,
+                last_matched_id,
+                term_update,
+                commit_index_update,
+            });
         }
 
-        if raft_log.prev_log_ok(req.prev_log_index, req.prev_log_term, last_applied) {
+        if raft_log.prev_log_ok(request.prev_log_index, request.prev_log_term, last_applied) {
             //switch to follower listening state
             debug!("switch to follower listening state");
 
             success = true;
 
-            if !req.entries.is_empty() {
-                last_matched_id = raft_log
-                    .filter_out_conflicts_and_append(req.prev_log_index, req.entries.clone());
-            } else {
-                //if there is no new entries need to insert, we just return the last local log index
-                last_matched_id = raft_log_last_index;
+            if !request.entries.is_empty() {
+                last_matched_id = raft_log.filter_out_conflicts_and_append(
+                    request.prev_log_index,
+                    request.entries.clone(),
+                );
             }
 
             if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
                 state_snapshot.commit_index,
                 raft_log.last_entry_id(),
-                req.leader_commit_index,
+                request.leader_commit_index,
             ) {
                 debug!("new commit index received: {:?}", new_commit_index);
                 commit_index_update = Some(new_commit_index);
@@ -287,8 +267,8 @@ where
         } else {
             warn!("prev log is not ok on req");
             //bugfix: #112
-            last_matched_id = if req.prev_log_index < raft_log_last_index {
-                req.prev_log_index.saturating_sub(1)
+            last_matched_id = if request.prev_log_index < raft_log_last_index {
+                request.prev_log_index.saturating_sub(1)
             } else {
                 raft_log_last_index
             };
@@ -300,13 +280,13 @@ where
             success, current_term, last_matched_id
         );
 
-        AppendResponseWithUpdates {
+        Ok(AppendResponseWithUpdates {
             success,
             current_term,
             last_matched_id,
             term_update,
             commit_index_update,
-        }
+        })
     }
 
     ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
