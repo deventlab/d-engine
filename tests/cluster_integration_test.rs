@@ -2,9 +2,10 @@ mod commons;
 use commons::{execute_command, start_node, ClientCommands};
 use dengine::Error;
 use log::error;
+use std::path::Path;
 use std::time::Duration;
+use tokio::fs::{self, remove_dir_all};
 use tokio::net::TcpStream;
-use tokio::process::Command;
 use tokio::time;
 
 const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
@@ -12,30 +13,19 @@ const LATENCY_IN_MS: u64 = 10; // we are testing linearizable read from Leader d
 const ITERATIONS: u64 = 10; // to make sure the result is consistent
 
 async fn reset(case_name: &str) -> Result<(), std::io::Error> {
-    // Clean logs
-    let output_logs = Command::new("rm")
-        .args(&["-rf", "tests/logs/", case_name, "/*/d.log"])
-        .output()
-        .await?;
+    // Define path
+    let logs_dir = format!("tests/logs/{}", case_name);
+    let db_dir = format!("tests/db/{}", case_name);
 
-    if !output_logs.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Failed to clean logs",
-        ));
-    }
-    // Clean db
-    let output_db = Command::new("rm")
-        .args(&["-rf", "tests/db/", case_name, "/*"])
-        .output()
-        .await?;
+    // Make sure the parent directory exists
+    fs::create_dir_all("tests/logs").await?;
+    fs::create_dir_all("tests/db").await?;
 
-    if !output_db.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Failed to clean db",
-        ));
-    }
+    // Clean up the log directory (ignore errors that do not exist)
+    let _ = remove_dir_all(Path::new(&logs_dir)).await;
+
+    // Clean up the database directory (ignore errors that do not exist)
+    let _ = remove_dir_all(Path::new(&db_dir)).await;
 
     Ok(())
 }
