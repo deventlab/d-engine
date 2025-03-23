@@ -377,7 +377,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         return Err(e);
                     }
                 };
-                return Ok(());
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
@@ -387,7 +386,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     error!("Failed to send: {}", error_str);
                     Error::TokioSendStatusError(error_str)
                 })?;
-                return Ok(());
             }
 
             RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender) => {
@@ -422,7 +420,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     error!("Failed to send: {}", error_str);
                     Error::TokioSendStatusError(error_str)
                 })?;
-                return Ok(());
             }
 
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -475,7 +472,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         Error::TokioSendStatusError(error_str)
                     })?;
                 }
-                return Ok(());
             }
 
             RaftEvent::ClientPropose(client_propose_request, sender) => {
@@ -497,8 +493,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     error("Leader::process_client_propose", &e);
                     return Err(e);
                 }
-
-                return Ok(());
             }
 
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
@@ -562,9 +556,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     error!("Failed to send: {}", error_str);
                     Error::TokioSendStatusError(error_str)
                 })?;
-                return Ok(());
             }
         }
+        return Ok(());
     }
 }
 
