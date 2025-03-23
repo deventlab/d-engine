@@ -6,14 +6,13 @@ use crate::{
     alias::{POF, REPOF, ROF, SMHOF, TROF},
     grpc::rpc_service::{
         AppendEntriesResponse, ClientCommand, ClientProposeRequest, ClientRequestError,
-        ClientResponse, ClusterConfUpdateResponse, VoteResponse, VotedFor,
+        ClientResponse, ClusterConfUpdateResponse, VotedFor,
     },
     utils::util::{self, error},
-    AppendResponseWithUpdates, AppendResults, BatchBuffer, ChannelWithAddressAndRole,
-    ClientRequestWithSignal, ElectionCore, Error, MaybeCloneOneshot, MaybeCloneOneshotSender,
-    Membership, NewLeaderInfo, RaftContext, RaftEvent, RaftLog, RaftOneshot, RaftSettings,
-    ReplicationCore, ReplicationTimer, Result, RoleEvent, Settings, StateMachine,
-    StateMachineHandler, TypeConfig, API_SLO,
+    AppendResults, BatchBuffer, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
+    MaybeCloneOneshot, MaybeCloneOneshotSender, Membership, NewLeaderInfo, RaftContext, RaftEvent,
+    RaftLog, RaftOneshot, RaftSettings, ReplicationCore, ReplicationTimer, Result, RoleEvent,
+    Settings, StateMachine, StateMachineHandler, TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
 use log::{debug, error, info, trace, warn};
@@ -83,11 +82,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     /// As Leader should not vote any more
     ///
     fn voted_for(&self) -> Result<Option<VotedFor>> {
-        warn!("voted_for - As Leader should not vote any more.");
-        Err(Error::Illegal)
+        self.shared_state().voted_for()
     }
 
-    /// As Leader might also be able to vote any more,
+    /// As Leader might also be able to vote ,
     ///     if new legal Leader found
     ///
     fn update_voted_for(&mut self, voted_for: VotedFor) -> Result<()> {
@@ -202,6 +200,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Err(Error::Illegal)
     }
 
+    fn send_become_follower_event(&self, role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+            let error_str = format!("{:?}", e);
+            error!("Failed to send: {}", error_str);
+            Error::TokioSendStatusError(error_str)
+        })
+    }
+
     fn is_timer_expired(&self) -> bool {
         self.timer.is_expired()
     }
@@ -312,71 +318,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // 2. Else:
             // - Reply with VoteGranted=false, currentTerm=currentTerm
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                let candidate_id = vote_request.candidate_id;
-                match ctx
-                    .election_handler()
-                    .handle_vote_request(
-                        vote_request,
-                        self.current_term(),
-                        None, // As Leader I don't have any votes, except myself
-                        raft_log,
-                    )
-                    .await
-                {
-                    Ok(state_update) => {
-                        debug!(
-                            "leader::handle_vote_request success with state_update: {:?}",
-                            &state_update
-                        );
-
-                        // 1. Update term FIRST if needed
-                        if let Some(new_term) = state_update.term_update {
-                            self.update_current_term(new_term);
-                        }
-
-                        // 2. Transition to Follower if required
-                        if state_update.step_to_follower {
-                            role_tx
-                                .send(RoleEvent::BecomeFollower(Some(candidate_id)))
-                                .map_err(|e| {
-                                    let error_str = format!("{:?}", e);
-                                    error!("Failed to send: {}", error_str);
-                                    Error::TokioSendStatusError(error_str)
-                                })?;
-                        }
-
-                        // 3. If update my voted_for
-                        let new_voted_for = state_update.new_voted_for;
-                        if let Some(v) = new_voted_for {
-                            if let Err(e) = self.update_voted_for(v) {
-                                error("leader::update_voted_for", &e);
-                                return Err(e);
-                            }
-                        }
-
-                        let response = VoteResponse {
-                            term: my_term,
-                            vote_granted: new_voted_for.is_some(),
-                        };
-                        debug!(
-                            "Response candidate_{:?} with response: {:?}",
-                            candidate_id, response
-                        );
-
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error(
-                            "leader::handle_raft_event::RaftEvent::ReceiveVoteRequest",
-                            &e,
-                        );
-                        return Err(e);
-                    }
-                };
+                self.handle_vote_request_workflow(vote_request, sender, ctx, role_tx)
+                    .await?;
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {

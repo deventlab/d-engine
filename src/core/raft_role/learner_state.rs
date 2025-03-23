@@ -79,6 +79,11 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         warn!("I am Learner already");
         Err(Error::Illegal)
     }
+
+    fn send_become_follower_event(&self, _role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+        Ok(())
+    }
+
     /// As Leader should not vote any more
     ///
     fn voted_for(&self) -> Result<Option<VotedFor>> {

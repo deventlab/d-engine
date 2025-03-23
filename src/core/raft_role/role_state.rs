@@ -1,12 +1,15 @@
 use super::{RaftRole, SharedState};
 use crate::{
-    alias::POF, grpc::rpc_service::VotedFor, Error, RaftContext, RaftEvent, Result, RoleEvent,
+    alias::POF,
+    grpc::rpc_service::{VoteRequest, VoteResponse, VotedFor},
+    util::error,
+    ElectionCore, Error, MaybeCloneOneshotSender, RaftContext, RaftEvent, Result, RoleEvent,
     TypeConfig,
 };
 use log::{debug, error, warn};
 use std::sync::Arc;
 use tokio::{sync::mpsc, time::Instant};
-use tonic::async_trait;
+use tonic::{async_trait, Status};
 
 #[async_trait]
 pub trait RaftRoleState: Send + Sync + 'static {
@@ -172,4 +175,75 @@ pub trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>;
+
+    async fn handle_vote_request_workflow(
+        &mut self,
+        vote_request: VoteRequest,
+        sender: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
+        ctx: &RaftContext<Self::T>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        let candidate_id = vote_request.candidate_id;
+        let my_term = self.current_term();
+        match ctx
+            .election_handler()
+            .handle_vote_request(
+                vote_request,
+                my_term,
+                self.voted_for().unwrap(),
+                ctx.raft_log(),
+            )
+            .await
+        {
+            Ok(state_update) => {
+                debug!(
+                    "handle_vote_request success with state_update: {:?}",
+                    &state_update
+                );
+
+                // 1. Update term FIRST if needed
+                if let Some(new_term) = state_update.term_update {
+                    self.update_current_term(new_term);
+                }
+
+                // 2. Transition to Follower if required
+                if state_update.step_to_follower {
+                    self.send_become_follower_event(role_tx)?;
+                }
+
+                // 3. If update my voted_for
+                let new_voted_for = state_update.new_voted_for;
+                if let Some(v) = new_voted_for {
+                    if let Err(e) = self.update_voted_for(v) {
+                        error("update_voted_for", &e);
+                        return Err(e);
+                    }
+                }
+
+                let response = VoteResponse {
+                    term: my_term,
+                    vote_granted: new_voted_for.is_some(),
+                };
+                debug!(
+                    "Response candidate_{:?} with response: {:?}",
+                    candidate_id, response
+                );
+
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+            }
+            Err(e) => {
+                error("handle_raft_event::RaftEvent::ReceiveVoteRequest", &e);
+                return Err(e);
+            }
+        };
+        Ok(())
+    }
+
+    fn send_become_follower_event(&self, _role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+        Ok(())
+    }
 }
