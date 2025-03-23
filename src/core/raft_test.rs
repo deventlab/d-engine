@@ -421,272 +421,308 @@ async fn test_election_timeout_case4() {
 
 /// # Case 1.1: Leader can not switch to Learner
 ///
-#[test]
-fn test_handle_role_event_case1_1() {
+#[tokio::test]
+async fn test_handle_role_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
-
 }
 
 /// # Case 1.2: Leader can not switch to candidate
 ///
-#[test]
-fn test_handle_role_event_case1_2() {
+#[tokio::test]
+async fn test_handle_role_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_2", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 }
 
 /// # Case 1.3: Leader can not switch to Leader
 ///
-#[test]
-fn test_handle_role_event_case1_3() {
+#[tokio::test]
+async fn test_handle_role_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_3", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 }
 
 /// # Case 1.4: Leader can not switch to Follower
 ///
-#[test]
-fn test_handle_role_event_case1_4() {
+#[tokio::test]
+async fn test_handle_role_event_case1_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_4", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 }
 
 /// # Case 2.1: Candidate can switch to Leader
 ///
-#[test]
-fn test_handle_role_event_case2_1() {
+#[tokio::test]
+async fn test_handle_role_event_case2_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_1", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 }
 
 /// # Case 2.2: Candidate can switch to Follower
 ///
-#[test]
-fn test_handle_role_event_case2_2() {
+#[tokio::test]
+async fn test_handle_role_event_case2_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_2", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 }
 
 /// # Case 2.3: Candidate can switch to Learner
 ///
-#[test]
-fn test_handle_role_event_case2_3() {
+#[tokio::test]
+async fn test_handle_role_event_case2_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_3", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 }
 
 /// # Case 2.4: Candidate can not switch to Candidate
 ///
-#[test]
-fn test_handle_role_event_case2_4() {
+#[tokio::test]
+async fn test_handle_role_event_case2_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_4", graceful_rx, None);
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 }
 
 /// # Case 3.1: Follower can not switch to Leader
 ///
-#[test]
-fn test_handle_role_event_case3_1() {
+#[tokio::test]
+async fn test_handle_role_event_case3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_1", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 }
 /// # Case 3.2: Follower can switch to Candidate
 ///
-#[test]
-fn test_handle_role_event_case3_2() {
+#[tokio::test]
+async fn test_handle_role_event_case3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_2", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
     let old_term = raft.role.current_term();
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 }
 
 /// # Case 3.3: Follower can switch to Learner
 ///
-#[test]
-fn test_handle_role_event_case3_3() {
+#[tokio::test]
+async fn test_handle_role_event_case3_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_3", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 }
 
 /// # Case 3.4: Follower can not switch to Follower
 ///
-#[test]
-fn test_handle_role_event_case3_4() {
+#[tokio::test]
+async fn test_handle_role_event_case3_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_4", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 }
 
 /// # Case 4.1: Learner can not switch to Leader
 ///
-#[test]
-fn test_handle_role_event_case4_1() {
+#[tokio::test]
+async fn test_handle_role_event_case4_1() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case4_1", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 }
 
 /// # Case 4.2: Learner can not switch to Candidate
 ///
-#[test]
-fn test_handle_role_event_case4_2() {
+#[tokio::test]
+async fn test_handle_role_event_event_case4_2() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case4_2", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 }
 
 /// # Case 4.3: Learner can switch to Follower
 ///
-#[test]
-fn test_handle_role_event_case4_3() {
+#[tokio::test]
+async fn test_handle_role_event_event_case4_3() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case4_3", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
         .expect("should succeed");
     assert!(is_follower(raft.role.as_i32()));
 }
 
 /// # Case 4.4: Learner can not switch to Learner
 ///
-#[test]
-fn test_handle_role_event_case4_4() {
+#[tokio::test]
+async fn test_handle_role_event_event_case4_4() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case4_4", graceful_rx, None);
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 }
@@ -705,9 +741,9 @@ async fn test_handle_role_event_state_update_case1_1() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
+        .await
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
-
 }
 
 /// Case 1.2: as Candidate
@@ -722,17 +758,17 @@ async fn test_handle_role_event_state_update_case1_2() {
 
     // Prepare node as Candidate
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
-
 
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
+        .await
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
-
 }
 
 /// Case 1.3: as Leader
@@ -747,10 +783,12 @@ async fn test_handle_role_event_state_update_case1_3() {
 
     // Prepare node as Leader
     raft.handle_role_event(RoleEvent::BecomeCandidate)
+        .await
         .expect("should succeed");
     assert!(is_candidate(raft.role.as_i32()));
 
     raft.handle_role_event(RoleEvent::BecomeLeader)
+        .await
         .expect("should succeed");
     assert!(is_leader(raft.role.as_i32()));
 
@@ -758,6 +796,7 @@ async fn test_handle_role_event_state_update_case1_3() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
+        .await
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
 }
@@ -774,6 +813,7 @@ async fn test_handle_role_event_state_update_case1_4() {
 
     // Prepare node as Candidate
     raft.handle_role_event(RoleEvent::BecomeLearner)
+        .await
         .expect("should succeed");
     assert!(is_learner(raft.role.as_i32()));
 
@@ -781,6 +821,7 @@ async fn test_handle_role_event_state_update_case1_4() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
+        .await
         .expect("should succeed");
     assert_eq!(rx.recv().await.unwrap(), new_commit_index);
 }

@@ -80,13 +80,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         Err(Error::Illegal)
     }
 
-    fn send_become_follower_event(
-        &self,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     /// As Leader should not vote any more
     ///
     fn voted_for(&self) -> Result<Option<VotedFor>> {
@@ -122,13 +115,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         Ok(())
     }
 
-    async fn recv_heartbeat(&mut self, leader_id: u32, ctx: &RaftContext<T>) -> Result<()> {
-        // Keep syncing leader_id
-        ctx.membership_ref().mark_leader_id(leader_id);
-
-        Ok(())
-    }
-
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -136,7 +122,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let raft_log = ctx.raft_log();
         let state_snapshot = self.state_snapshot();
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();

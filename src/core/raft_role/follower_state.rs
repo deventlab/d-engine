@@ -5,8 +5,11 @@ use super::{
     role_state::RaftRoleState, HardState, RaftRole, SharedState, StateSnapshot,
 };
 use crate::{
-    alias::POF, grpc::rpc_service::ClientResponse, ElectionTimer, Error, Membership, RaftContext,
-    RaftEvent, Result, RoleEvent, Settings, StateMachine, StateMachineHandler, TypeConfig,
+    alias::POF,
+    grpc::rpc_service::{ClientResponse, VoteResponse},
+    utils::util::error,
+    ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, Result, RoleEvent,
+    Settings, StateMachine, StateMachineHandler, TypeConfig,
 };
 use log::{debug, error, info, warn};
 use tokio::{sync::mpsc, time::Instant};
@@ -88,13 +91,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         Ok(RaftRole::Learner(self.into()))
     }
 
-    fn send_become_follower_event(
-        &self,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     //--- Timer releated ---
     fn is_timer_expired(&self) -> bool {
         self.timer.is_expired()
@@ -131,15 +127,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         Ok(())
     }
 
-    async fn recv_heartbeat(&mut self, leader_id: u32, ctx: &RaftContext<T>) -> Result<()> {
-        self.reset_timer();
-
-        // Keep syncing leader_id
-        ctx.membership().mark_leader_id(leader_id);
-
-        Ok(())
-    }
-
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -147,16 +134,72 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let raft_log = ctx.raft_log();
         let state_snapshot = self.state_snapshot();
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();
-        let my_term = self.current_term();
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                self.handle_vote_request_workflow(vote_request, sender, ctx, role_tx)
-                    .await?;
+                let candidate_id = vote_request.candidate_id;
+                let my_term = self.current_term();
+                match ctx
+                    .election_handler()
+                    .handle_vote_request(
+                        vote_request,
+                        my_term,
+                        self.voted_for().unwrap(),
+                        ctx.raft_log(),
+                    )
+                    .await
+                {
+                    Ok(state_update) => {
+                        debug!(
+                            "handle_vote_request success with state_update: {:?}",
+                            &state_update
+                        );
+
+                        // 1. Update term FIRST if needed
+                        if let Some(new_term) = state_update.term_update {
+                            self.update_current_term(new_term);
+                        }
+                        // 2. If update my voted_for
+                        let new_voted_for = state_update.new_voted_for;
+                        if let Some(v) = new_voted_for {
+                            if let Err(e) = self.update_voted_for(v) {
+                                error("update_voted_for", &e);
+                                return Err(e);
+                            }
+                        }
+
+                        let response = VoteResponse {
+                            term: my_term,
+                            vote_granted: new_voted_for.is_some(),
+                        };
+                        debug!(
+                            "Response candidate_{:?} with response: {:?}",
+                            candidate_id, response
+                        );
+
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
+                    }
+                    Err(e) => {
+                        let response = VoteResponse {
+                            term: my_term,
+                            vote_granted: false,
+                        };
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            Error::TokioSendStatusError(error_str)
+                        })?;
+                        error("handle_raft_event::RaftEvent::ReceiveVoteRequest", &e);
+                        return Err(e);
+                    }
+                }
             }
             // RaftEvent::ReceiveVoteResponse(_, vote_response) => todo!(),
             RaftEvent::ClusterConf(_metadata_request, sender) => {

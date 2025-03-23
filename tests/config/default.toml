@@ -117,7 +117,7 @@ cluster_healthcheck_probe_service_name = "rpc_service.RpcService"
 #############################################
 [rpc_connection_settings]
 # // connect_timeout is the timeout for grpc connection.
-connect_timeout_in_ms = 20
+connect_timeout_in_ms = 100
 
 # // request_timeout is the timeout for grpc requests.
 request_timeout_in_ms = 100

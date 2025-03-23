@@ -196,7 +196,7 @@ where
                 // P2: Role events
                 Some(role_event) = self.role_rx.recv() => {
                     debug!("receive role event: {:?}", role_event);
-                    if let Err(e) = self.handle_role_event(role_event) {
+                    if let Err(e) = self.handle_role_event(role_event).await {
                         error!("handle_role_event: {:?}", e);
                     }
                 }
@@ -220,12 +220,10 @@ where
 
     /// `handle_role_event` will be responsbile to process role trasnsition and
     /// role state events.
-    pub fn handle_role_event(&mut self, role_event: RoleEvent) -> Result<()> {
+    pub async fn handle_role_event(&mut self, role_event: RoleEvent) -> Result<()> {
         // All inbound and outbound raft event
 
         match role_event {
-            // Election
-            // New Join / Leader->Follower,
             RoleEvent::BecomeFollower(leader_id_option) => {
                 debug!("BecomeFollower");
                 if let Ok(role) = self.role.become_follower() {
@@ -237,7 +235,6 @@ where
 
                 //TODO: update membership
             }
-            // Follower->Candidate
             RoleEvent::BecomeCandidate => {
                 debug!("BecomeCandidate");
                 if let Ok(role) = self.role.become_candidate() {
@@ -247,7 +244,6 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            // Candidate->Leader
             RoleEvent::BecomeLeader => {
                 debug!("BecomeLeader");
                 if let Ok(role) = self.role.become_leader() {
@@ -257,7 +253,6 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            //  Follower->Learner, Candidate->Learner
             RoleEvent::BecomeLearner => {
                 debug!("BecomeLearner");
                 if let Ok(role) = self.role.become_learner() {
@@ -270,7 +265,16 @@ where
             RoleEvent::NotifyNewCommitIndex { new_commit_index } => {
                 debug!("RoleEvent::NotifyNewCommitIndex: {:?}", new_commit_index);
                 self.notify_new_commit(new_commit_index);
-            } 
+            }
+
+            RoleEvent::ReprocessEvent(raft_event) => {
+                info!("Replay the RaftEvent: {:?}", &raft_event);
+                self.event_tx.send(raft_event).await.map_err(|e| {
+                    let error_str = format!("{:?}", e);
+                    error!("Failed to send: {}", error_str);
+                    Error::TokioSendStatusError(error_str)
+                })?;
+            }
         };
 
         Ok(())

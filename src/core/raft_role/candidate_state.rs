@@ -5,12 +5,11 @@ use super::{
 use crate::{
     alias::POF,
     grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VoteResponse, VotedFor},
-    utils::util::error,
-    AppendResponseWithUpdates, ElectionCore, ElectionTimer, Error, Membership, RaftContext,
-    RaftEvent, ReplicationCore, RoleEvent, Settings, StateMachine, StateMachineHandler, TypeConfig,
+    ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, RaftLog, RoleEvent,
+    Settings, StateMachineHandler, TypeConfig,
 };
 use log::{debug, error, info, warn};
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, sync::Arc};
 use tokio::{sync::mpsc, time::Instant};
 use tonic::{async_trait, Status};
 
@@ -19,7 +18,6 @@ pub struct CandidateState<T: TypeConfig> {
     pub shared_state: SharedState,
 
     pub(super) timer: ElectionTimer,
-    pub(super) votes: HashMap<u32, bool>,
 
     // Shared global settings
     pub(super) settings: Arc<Settings>,
@@ -113,14 +111,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         Ok(RaftRole::Learner(self.into()))
     }
 
-    fn send_become_follower_event(&self, role_tx: &mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
-        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-            let error_str = format!("{:?}", e);
-            error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
-        })
-    }
-
     fn reset_timer(&mut self) {
         self.timer.reset()
     }
@@ -180,15 +170,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         Ok(())
     }
 
-    async fn recv_heartbeat(&mut self, leader_id: u32, ctx: &RaftContext<T>) -> Result<()> {
-        self.reset_timer();
-
-        // Keep syncing leader_id
-        ctx.membership_ref().mark_leader_id(leader_id);
-
-        Ok(())
-    }
-
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -196,14 +177,34 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let state_snapshot = self.state_snapshot();
-        let state_machine = ctx.state_machine();
-        let last_applied = state_machine.last_applied();
-
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                self.handle_vote_request_workflow(vote_request, sender, ctx, role_tx)
-                    .await?;
+                debug!(
+                    "handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}",
+                    &vote_request
+                );
+                let my_term = self.current_term();
+                if my_term < vote_request.term {
+                    self.update_current_term(vote_request.term);
+                    // Step down as Follower
+                    self.send_become_follower_event(&role_tx)?;
+
+                    info!("Candiate will not process ReceiveVoteRequest, it should let Follower do it.");
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::ReceiveVoteRequest(vote_request, sender),
+                    )?;
+                } else {
+                    let response = VoteResponse {
+                        term: my_term,
+                        vote_granted: false,
+                    };
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                }
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
@@ -226,15 +227,46 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
-                self.handle_append_entries_request_workflow(
-                    append_entries_request,
-                    sender,
-                    ctx,
-                    role_tx,
-                    &state_snapshot,
-                    last_applied,
-                )
-                .await?;
+                debug!(
+                    "handle_raft_event::RaftEvent::AppendEntries: {:?}",
+                    &append_entries_request
+                );
+
+                // Important to reset timer immediatelly
+                self.reset_timer();
+
+                let my_term = self.current_term();
+                if my_term > append_entries_request.term {
+                    let raft_log_last_index = ctx.raft_log.last_entry_id();
+                    let response = AppendEntriesResponse {
+                        id: self.node_id(),
+                        term: self.current_term(),
+                        success: false,
+                        match_index: raft_log_last_index,
+                    };
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
+                    return Ok(());
+                }
+
+                // Keep syncing leader_id
+                ctx.membership_ref()
+                    .mark_leader_id(append_entries_request.leader_id);
+
+                if my_term < append_entries_request.term {
+                    self.update_current_term(append_entries_request.term);
+                    // Step down as Follower
+                    self.send_become_follower_event(&role_tx)?;
+
+                    info!("Candiate will not process AppendEntries request, it should let Follower do it.");
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::AppendEntries(append_entries_request, sender),
+                    )?;
+                }
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
@@ -308,19 +340,6 @@ impl<T: TypeConfig> CandidateState<T> {
         })
     }
 
-    #[cfg(test)]
-    pub fn new(node_id: u32, settings: Arc<Settings>) -> Self {
-        Self {
-            shared_state: SharedState::new(node_id, None, None),
-            votes: HashMap::new(),
-            timer: ElectionTimer::new((1, 2)),
-            settings,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T: TypeConfig> CandidateState<T> {
     /// The fun will retrieve current state snapshot
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
@@ -329,13 +348,48 @@ impl<T: TypeConfig> CandidateState<T> {
             commit_index: self.commit_index(),
         }
     }
+
+    pub(super) fn send_become_follower_event(
+        &self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+            let error_str = format!("{:?}", e);
+            error!("Failed to send: {}", error_str);
+            Error::TokioSendStatusError(error_str)
+        })
+    }
+
+    pub(super) fn send_replay_raft_event(
+        &self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        raft_event: RaftEvent,
+    ) -> Result<()> {
+        debug!("send_replay_raft_event, raft_event:{:?}", &raft_event);
+        role_tx
+            .send(RoleEvent::ReprocessEvent(raft_event))
+            .map_err(|e| {
+                let error_str = format!("{:?}", e);
+                error!("Failed to send: {}", error_str);
+                Error::TokioSendStatusError(error_str)
+            })
+    }
+
+    #[cfg(test)]
+    pub fn new(node_id: u32, settings: Arc<Settings>) -> Self {
+        Self {
+            shared_state: SharedState::new(node_id, None, None),
+            timer: ElectionTimer::new((1, 2)),
+            settings,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
     fn from(follower: &FollowerState<T>) -> Self {
         Self {
             shared_state: follower.shared_state.clone(),
-            votes: HashMap::new(),
             timer: ElectionTimer::new((
                 follower.settings.raft_settings.election_timeout_min,
                 follower.settings.raft_settings.election_timeout_max,
