@@ -434,82 +434,40 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         match_index: raft_log.last_entry_id(),
                     };
 
-                    if let Err(e) = sender.send(Ok(response)) {
-                        error(
-                            "handle_raft_event::AppendEntries::AppendEntriesResponse.",
-                            &e,
-                        );
-                    }
-                    return Ok(());
-                }
-
-                // Step down as Follower as new Leader found
-                info!(
-                    "my({}) term < request one, now I will step down to Follower",
-                    my_id
-                );
-
-                role_tx
-                    .send(RoleEvent::BecomeFollower(Some(
-                        append_entries_request.leader_id,
-                    )))
-                    .map_err(|e| {
+                    sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
                         Error::TokioSendStatusError(error_str)
                     })?;
+                } else {
+                    // Step down as Follower as new Leader found
+                    info!(
+                        "my({}) term < request one, now I will step down to Follower",
+                        my_id
+                    );
 
-                // Handle append entries request as Follower, before become Follower (TODO)
-                match ctx
-                    .replication_handler()
-                    .handle_append_entries(
-                        append_entries_request,
-                        &state_snapshot,
-                        last_applied,
-                        raft_log,
-                    )
-                    .await
-                {
-                    Ok(AppendResponseWithUpdates {
-                        success,
-                        current_term,
-                        last_matched_id,
-                        term_update,
-                        commit_index_update,
-                    }) => {
-                        if let Some(term) = term_update {
-                            self.update_current_term(term);
-                        }
-                        if let Some(commit) = commit_index_update {
-                            if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
-                                error!(
-                                    "update_commit_index_with_signal,commit={}, error: {:?}",
-                                    commit, e
-                                );
-                                return Err(e);
-                            }
-                        }
-
-                        // Create a response
-                        let response = AppendEntriesResponse {
-                            id: self.node_id(),
-                            term: current_term,
-                            success,
-                            match_index: last_matched_id,
-                        };
-
-                        debug!("leader's response: {:?}", response);
-
-                        sender.send(Ok(response)).map_err(|e| {
+                    role_tx
+                        .send(RoleEvent::BecomeFollower(Some(
+                            append_entries_request.leader_id,
+                        )))
+                        .map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
                             Error::TokioSendStatusError(error_str)
                         })?;
-                    }
-                    Err(e) => {
-                        error("Leader::handle_raft_event", &e);
-                        return Err(e);
-                    }
+
+                    let response = AppendEntriesResponse {
+                        id: my_id,
+                        term: my_term,
+                        success: false,
+                        match_index: raft_log.last_entry_id(),
+                    };
+
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        Error::TokioSendStatusError(error_str)
+                    })?;
                 }
                 return Ok(());
             }

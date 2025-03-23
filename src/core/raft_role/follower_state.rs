@@ -235,6 +235,11 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Err(Error::NotLeader);
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
+                debug!(
+                    "handle_raft_event::RaftEvent::AppendEntries: {:?}",
+                    &append_entries_request
+                );
+
                 // Important to confirm heartbeat from Leader immediatelly
                 if let Err(e) = self
                     .recv_heartbeat(append_entries_request.leader_id, ctx)
