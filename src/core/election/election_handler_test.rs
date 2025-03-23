@@ -151,7 +151,11 @@ async fn test_broadcast_vote_requests_case3() {
 ///
 /// ## Validation criterias:
 /// 1. Switch back to Follower
-/// 2. Returns with Ok(new_voted_for)
+/// 2. Returns with Ok(state_update)
+///     - step_to_follower = true
+///     - voted_for_option = Some(x)
+///     - term_update = Some(y)
+///
 #[tokio::test]
 async fn test_handle_vote_request_case1() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
@@ -162,8 +166,9 @@ async fn test_handle_vote_request_case1() {
     let last_log_index = 1;
     let last_log_term = 1;
 
+    let request_term = current_term + 1;
     let vote_request = VoteRequest {
-        term: current_term,
+        term: request_term,
         candidate_id: 1,
         last_log_index: last_log_index + 1,
         last_log_term,
@@ -181,6 +186,8 @@ async fn test_handle_vote_request_case1() {
     {
         Ok(state_update) => {
             assert!(state_update.step_to_follower);
+            assert!(state_update.new_voted_for.is_some());
+            assert_eq!(state_update.term_update.unwrap(), request_term);
         }
         Err(_) => assert!(false),
     }

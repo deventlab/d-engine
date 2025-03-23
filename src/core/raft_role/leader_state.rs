@@ -298,7 +298,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let raft_log = ctx.raft_log();
         let transport = ctx.transport();
         let settings = ctx.settings();
-        let state_snapshot = self.state_snapshot();
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();
         let my_id = self.shared_state.node_id;
@@ -330,13 +329,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             &state_update
                         );
 
-                        // 1. If switch to Follower
+                        // 1. Update term FIRST if needed
+                        if let Some(new_term) = state_update.term_update {
+                            self.update_current_term(new_term);
+                        }
+
+                        // 2. Transition to Follower if required
                         if state_update.step_to_follower {
-                            role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                                let error_str = format!("{:?}", e);
-                                error!("Failed to send: {}", error_str);
-                                Error::TokioSendStatusError(error_str)
-                            })?;
+                            role_tx
+                                .send(RoleEvent::BecomeFollower(Some(candidate_id)))
+                                .map_err(|e| {
+                                    let error_str = format!("{:?}", e);
+                                    error!("Failed to send: {}", error_str);
+                                    Error::TokioSendStatusError(error_str)
+                                })?;
                         }
 
                         // 3. If update my voted_for

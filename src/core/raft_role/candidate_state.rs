@@ -214,7 +214,12 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                             &state_update
                         );
 
-                        // 1. If switch to Follower
+                        // 1. Update term FIRST if needed
+                        if let Some(new_term) = state_update.term_update {
+                            self.update_current_term(new_term);
+                        }
+
+                        // 2. Transition to Follower if required
                         if state_update.step_to_follower {
                             role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
                                 let error_str = format!("{:?}", e);

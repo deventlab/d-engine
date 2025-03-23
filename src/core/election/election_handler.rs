@@ -92,6 +92,7 @@ where
     ) -> Result<StateUpdate> {
         debug!("VoteRequest::Received: {:?}", request);
         let mut new_voted_for = None;
+        let mut term_update = None;
         let mut step_to_follower = false;
         let mut last_index = 0;
         let mut last_term = 0;
@@ -109,12 +110,15 @@ where
             voted_for_option,
         ) {
             debug!("switch to follower");
+            let term = request.term;
 
-            //1. switch to follower
+            // 1. Update term
+            term_update = Some(term);
+
+            //2. switch to follower
             step_to_follower = true;
 
-            //2. update vote for
-            let term = request.term;
+            //3. update vote for
             debug!(
                 "updated my voted for: target node: {:?} with term:{:?}",
                 request.candidate_id, term
@@ -127,6 +131,7 @@ where
         Ok(StateUpdate {
             new_voted_for,
             step_to_follower,
+            term_update,
         })
     }
 
