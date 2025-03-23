@@ -113,6 +113,14 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         Ok(RaftRole::Learner(self.into()))
     }
 
+    fn send_become_follower_event(&self, role_tx: mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+            let error_str = format!("{:?}", e);
+            error!("Failed to send: {}", error_str);
+            Error::TokioSendStatusError(error_str)
+        })
+    }
+
     fn reset_timer(&mut self) {
         self.timer.reset()
     }
@@ -197,69 +205,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                let candidate_id = vote_request.candidate_id;
-                match ctx
-                    .election_handler()
-                    .handle_vote_request(
-                        vote_request,
-                        self.current_term(),
-                        self.voted_for().unwrap(),
-                        raft_log,
-                    )
-                    .await
-                {
-                    Ok(state_update) => {
-                        debug!(
-                            "candidate::handle_vote_request success with state_update: {:?}",
-                            &state_update
-                        );
-
-                        // 1. Update term FIRST if needed
-                        if let Some(new_term) = state_update.term_update {
-                            self.update_current_term(new_term);
-                        }
-
-                        // 2. Transition to Follower if required
-                        if state_update.step_to_follower {
-                            role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                                let error_str = format!("{:?}", e);
-                                error!("Failed to send: {}", error_str);
-                                Error::TokioSendStatusError(error_str)
-                            })?;
-                        }
-
-                        // 3. If update my voted_for
-                        let new_voted_for = state_update.new_voted_for;
-                        if let Some(v) = new_voted_for {
-                            if let Err(e) = self.update_voted_for(v) {
-                                error("candidate::update_voted_for", &e);
-                                return Err(e);
-                            }
-                        }
-
-                        let response = VoteResponse {
-                            term: my_term,
-                            vote_granted: new_voted_for.is_some(),
-                        };
-                        debug!(
-                            "Response candidate_{:?} with response: {:?}",
-                            candidate_id, response
-                        );
-
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error(
-                            "candidate::handle_raft_event::RaftEvent::ReceiveVoteRequest",
-                            &e,
-                        );
-                        return Err(e);
-                    }
-                };
+                self.handle_vote_request_workflow(vote_request, sender, ctx, role_tx)
+                    .await?;
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
