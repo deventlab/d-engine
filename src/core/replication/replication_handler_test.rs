@@ -1,10 +1,11 @@
 use super::{ReplicationCore, ReplicationHandler};
 use crate::{
-    grpc::rpc_service::Entry,
+    grpc::rpc_service::{ClientCommand, Entry},
     test_utils::{
         setup_raft_components, simulate_insert_proposal, MockNode, MockTypeConfig,
         MOCK_REPLICATION_HANDLER_PORT_BASE,
     },
+    utils::util::kv,
     AppendResults, ChannelWithAddressAndRole, Error, LeaderStateSnapshot, MockRaftLog,
     MockTransport, PeerUpdate, RaftLog, RaftTypeConfig, StateSnapshot, FOLLOWER,
 };
@@ -275,6 +276,67 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
     };
 }
 
+/// # Case 1: Test with empty commands
+///
+/// ## Validation criterias:
+/// 1. fun returns Ok(vec![])
+/// 2. no update on local raft log
+///
+#[test]
+fn test_generate_new_entries_case1() {
+    let context = setup_raft_components("/tmp/test_generate_new_entries_case1", None, false);
+    let my_id = 1;
+    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let last_id = context.raft_log.last_entry_id();
+    let commands = vec![];
+    let current_term = 1;
+    let r = handler.generate_new_entries(commands, current_term, &context.raft_log);
+    assert_eq!(r.unwrap(), vec![]);
+    assert_eq!(context.raft_log.last_entry_id(), last_id);
+}
+
+/// # Case 2: Test with one command
+///
+/// ## Validation criterias:
+/// 1. fun returns Ok(vec![log-1])
+/// 2. update on local raft log with one extra entry
+///
+#[test]
+fn test_generate_new_entries_case2() {
+    let context = setup_raft_components("/tmp/test_generate_new_entries_case2", None, false);
+    let my_id = 1;
+    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let last_id = context.raft_log.last_entry_id();
+    let commands = vec![ClientCommand::get(kv(1))];
+    let current_term = 1;
+    if let Ok(r) = handler.generate_new_entries(commands, current_term, &context.raft_log) {
+        assert_eq!(r.len(), 1);
+    } else {
+        assert!(false);
+    }
+    assert_eq!(context.raft_log.last_entry_id(), last_id + 1);
+}
+
+/// # Case 1: Test
+///
+/// ## Validation criterias:
+///
+#[test]
+fn test_build_append_request_case1() {
+    let context = setup_raft_components("/tmp/test_build_append_request_case1", None, false);
+    let my_id = 1;
+    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let last_id = context.raft_log.last_entry_id();
+    let commands = vec![ClientCommand::get(kv(1))];
+    let current_term = 1;
+    if let Ok(r) = handler.generate_new_entries(commands, current_term, &context.raft_log) {
+        assert_eq!(r.len(), 1);
+    } else {
+        assert!(false);
+    }
+    assert_eq!(context.raft_log.last_entry_id(), last_id + 1);
+}
+
 /// # Case 1: No peers found
 /// ## Validation Criteria
 /// 1. Return Error::AppendEntriesNoPeerFound
@@ -327,6 +389,7 @@ async fn test_handle_client_proposal_in_batch_case1() {
 
 /// # Case 2.1: Successful Client Proposal Replication
 /// Validates leader behavior when sending heartbeat(empty commands)
+///     (not exceeding the max_legacy_entries_per_peer)
 ///
 /// ## Scenario Setup
 /// Log State Initialization:
