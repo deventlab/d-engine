@@ -51,96 +51,54 @@ where
         raft_settings: RaftSettings,
     ) -> Result<AppendResults> {
         debug!("-------- handle_client_proposal_in_batch --------");
+        debug!("commands: {:?}", &commands);
 
+        // ----------------------
+        // Phase 1: Pre-Checks
+        // ----------------------
         if replication_members.len() < 1 {
             warn!("no peer found for leader({})", self.my_id);
             return Err(Error::AppendEntriesNoPeerFound);
         }
 
-        let leader_last_index_before_inserting_new_entries = raft_log.last_entry_id();
+        // ----------------------
+        // Phase 2: Process Client Commands
+        // ----------------------
+        let new_entries =
+            self.generate_new_entries(commands, state_snapshot.current_term, raft_log)?;
 
-        let mut entries: Vec<Entry> = Vec::new();
+        // ----------------------
+        // Phase 3: Prepare Replication Data
+        // ----------------------
+        let replication_data = ReplicationData {
+            leader_last_index_before: raft_log.last_entry_id(),
+            current_term: state_snapshot.current_term,
+            commit_index: state_snapshot.commit_index,
+            peer_next_indices: leader_state_snapshot.next_index,
+        };
 
-        let current_term = state_snapshot.current_term;
-        let commit_index = state_snapshot.commit_index;
-        let peer_next_indices = leader_state_snapshot.next_index;
-
-        for c in commands {
-            let raft_log_new_index = raft_log.pre_allocate_raft_logs_next_index();
-            debug!("raft_log_new_index: {:?}", raft_log_new_index);
-            entries.push(Entry {
-                index: raft_log_new_index,
-                term: current_term,
-                command: c.encode_to_vec(),
-            });
-        }
-
-        if entries.len() > 0 {
-            // Step 1: insert into local log
-            if let Err(e) = raft_log.insert_batch(entries.clone()) {
-                error!("insert_batch_commands failed: {:?}", e);
-                return Err(Error::GeneralLocalLogIOError);
-            }
-        }
-
-        let peer_entries: DashMap<u32, Vec<Entry>> = self.retrieve_to_be_synced_logs_for_peers(
-            entries,
-            leader_last_index_before_inserting_new_entries,
+        let entries_per_peer = self.prepare_peer_entries(
+            &new_entries,
+            &replication_data,
             raft_settings.append_entries_max_entries_per_replication,
-            &peer_next_indices,
             raft_log,
         );
 
-        let mut peer_ids = vec![];
-
-        //(peer_id, peer_address, peer_request)
-        let append_entries_requests_with_peer_address: Vec<(
-            u32,
-            ChannelWithAddress,
-            AppendEntriesRequest,
-        )> = replication_members
+        // ----------------------
+        // Phase 4: Build Requests
+        // ----------------------
+        let requests = replication_members
             .iter()
             .map(|peer| {
-                peer_ids.push(peer.id);
-                //TODO: prev_log_index from state might be an bug?
-                let peer_next_id = peer_next_indices.get(&peer.id).copied().unwrap_or(0);
-                let prev_log_index = if peer_next_id > 0 {
-                    peer_next_id - 1
-                } else {
-                    0
-                };
-                let prev_log_term = raft_log.prev_log_term(peer.id, prev_log_index);
-                let entries = peer_entries
-                    .get(&peer.id)
-                    .map(|v| v.clone())
-                    .unwrap_or_else(Vec::new);
-
-                debug!(
-                    "[L_{}->F_{}]going to replicate, entries:{:?}",
-                    self.my_id, peer.id, &entries
-                );
-                (
-                    peer.id,
-                    peer.channel_with_address.clone(),
-                    AppendEntriesRequest {
-                        term: current_term,
-                        leader_id: self.my_id,
-                        prev_log_index,
-                        prev_log_term,
-                        entries: entries, // Assuming entries need to be cloned for each request
-                        leader_commit_index: commit_index,
-                    },
-                )
+                self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data)
             })
             .collect();
 
-        debug!("start append_entries..");
+        // ----------------------
+        // Phase 5: Send Requests
+        // ----------------------
         transport
-            .send_append_requests(
-                current_term,
-                append_entries_requests_with_peer_address,
-                raft_settings.clone(),
-            )
+            .send_append_requests(replication_data.current_term, requests, raft_settings)
             .await
     }
 
@@ -284,6 +242,13 @@ where
     }
 }
 
+pub(super) struct ReplicationData {
+    leader_last_index_before: u64,
+    current_term: u64,
+    commit_index: u64,
+    peer_next_indices: HashMap<u32, u64>,
+}
+
 impl<T> ReplicationHandler<T>
 where
     T: TypeConfig,
@@ -293,5 +258,100 @@ where
             my_id,
             _phantom: PhantomData,
         }
+    }
+
+    /// Generate a new log entry
+    ///     including insert them into local raft log
+    pub(super) fn generate_new_entries(
+        &self,
+        commands: Vec<ClientCommand>,
+        current_term: u64,
+        raft_log: &Arc<ROF<T>>,
+    ) -> Result<Vec<Entry>> {
+        let mut entries = Vec::with_capacity(commands.len());
+
+        for command in commands {
+            let index = raft_log.pre_allocate_raft_logs_next_index();
+            debug!("Allocated log index: {}", index);
+
+            entries.push(Entry {
+                index,
+                term: current_term,
+                command: command.encode_to_vec(),
+            });
+        }
+
+        if !entries.is_empty() {
+            raft_log.insert_batch(entries.clone()).map_err(|e| {
+                error!("Failed to insert batch: {:?}", e);
+                Error::GeneralLocalLogIOError
+            })?;
+        }
+
+        Ok(entries)
+    }
+
+    /// Prepare the items that need to be synchronized for each node
+    pub(super) fn prepare_peer_entries(
+        &self,
+        new_entries: &[Entry],
+        data: &ReplicationData,
+        max_legacy_entries: u64,
+        raft_log: &Arc<ROF<T>>,
+    ) -> DashMap<u32, Vec<Entry>> {
+        self.retrieve_to_be_synced_logs_for_peers(
+            new_entries.to_vec(),
+            data.leader_last_index_before,
+            max_legacy_entries,
+            &data.peer_next_indices,
+            raft_log,
+        )
+    }
+
+    /// Build an append request for a single node
+    pub(super) fn build_append_request(
+        &self,
+        raft_log: &Arc<ROF<T>>,
+        peer: &ChannelWithAddressAndRole,
+        entries_per_peer: &DashMap<u32, Vec<Entry>>,
+        data: &ReplicationData,
+    ) -> (u32, ChannelWithAddress, AppendEntriesRequest) {
+        let peer_id = peer.id;
+
+        // Calculate prev_log metadata
+        let (prev_log_index, prev_log_term) =
+            data.peer_next_indices
+                .get(&peer_id)
+                .map_or((0, 0), |next_id| {
+                    let prev_index = next_id.saturating_sub(1);
+                    let term = raft_log.prev_log_term(peer_id, prev_index);
+                    (prev_index, term)
+                });
+
+        // Get the items to be sent
+        let entries = entries_per_peer
+            .get(&peer_id)
+            .map(|e| e.clone())
+            .unwrap_or_default();
+
+        debug!(
+            "[Leader {} -> Follower {}] Replicating {} entries",
+            self.my_id,
+            peer_id,
+            entries.len()
+        );
+
+        (
+            peer_id,
+            peer.channel_with_address.clone(),
+            AppendEntriesRequest {
+                term: data.current_term,
+                leader_id: self.my_id,
+                prev_log_index,
+                prev_log_term,
+                entries,
+                leader_commit_index: data.commit_index,
+            },
+        )
     }
 }
