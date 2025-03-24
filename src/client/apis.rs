@@ -17,7 +17,7 @@ use crate::{
     },
     is_follower, is_leader,
     util::{self, address_str},
-    Error, RaftRole, Result,
+    Error, Result,
 };
 
 pub struct DengineClient {
