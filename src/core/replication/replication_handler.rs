@@ -243,10 +243,10 @@ where
 }
 
 pub(super) struct ReplicationData {
-    leader_last_index_before: u64,
-    current_term: u64,
-    commit_index: u64,
-    peer_next_indices: HashMap<u32, u64>,
+    pub(super) leader_last_index_before: u64,
+    pub(super) current_term: u64,
+    pub(super) commit_index: u64,
+    pub(super) peer_next_indices: HashMap<u32, u64>,
 }
 
 impl<T> ReplicationHandler<T>

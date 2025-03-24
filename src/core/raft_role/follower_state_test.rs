@@ -157,7 +157,7 @@ fn setup_handle_raft_event_case1_params(
 }
 /// # Case 1.1: Receive Vote Request Event
 ///
-/// ## Preparation setup:
+/// ## Scenario Setup:
 /// 1. handle_vote_request return Ok(None) - reject this vote
 ///
 /// ## Validate criterias
@@ -209,7 +209,7 @@ async fn test_handle_raft_event_case1_1() {
 
 /// # Case 1.2: Receive Vote Request Event
 ///
-/// ## Preparation setup:
+/// ## Scenario Setup:
 /// 1. handle_vote_request return Ok(Some(VotedFor)) - accept this vote
 ///
 /// ## Validate criterias
@@ -265,7 +265,7 @@ async fn test_handle_raft_event_case1_2() {
 
 /// # Case 1.3: Receive Vote Request Event
 ///
-/// ## Preparation setup:
+/// ## Scenario Setup:
 /// 1. handle_vote_request return Error
 ///
 /// ## Validate criterias
