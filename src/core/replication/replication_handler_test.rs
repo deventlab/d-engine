@@ -339,10 +339,13 @@ async fn test_build_append_request_case() {
 
     // Simulate ChannelWithAddress: prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 =
-        MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 1, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_mock_service_without_reps(
+        MOCK_REPLICATION_HANDLER_PORT_BASE + 1,
+        rx1,
+        true,
+    )
+    .await
+    .expect("should succeed");
     let peer: ChannelWithAddressAndRole = ChannelWithAddressAndRole {
         id: peer2_id,
         channel_with_address: addr1,
@@ -493,10 +496,13 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
 
     // Simulate ChannelWithAddress: prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 =
-        MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 10, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_mock_service_without_reps(
+        MOCK_REPLICATION_HANDLER_PORT_BASE + 10,
+        rx1,
+        true,
+    )
+    .await
+    .expect("should succeed");
 
     // Prepare AppendResults
     let replication_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {
@@ -597,10 +603,13 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
 
     // Simulate ChannelWithAddress: prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 =
-        MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 11, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_mock_service_without_reps(
+        MOCK_REPLICATION_HANDLER_PORT_BASE + 11,
+        rx1,
+        true,
+    )
+    .await
+    .expect("should succeed");
 
     // Prepare AppendResults
     let replication_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {

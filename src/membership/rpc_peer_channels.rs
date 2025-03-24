@@ -282,4 +282,8 @@ impl RpcPeerChannels {
                 Error::ConnectError
             })
     }
+    #[cfg(test)]
+    pub(crate) fn set_peer_channel(&self, node_id: u32, address: ChannelWithAddress) {
+        self.channels.insert(node_id, address);
+    }
 }

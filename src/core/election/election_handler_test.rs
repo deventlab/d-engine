@@ -22,7 +22,7 @@ async fn setup(port: u64) -> TestConext {
     // 2. Prepare Peers fake address
     //  Simulate ChannelWithAddress: prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr = MockNode::simulate_mock_service_without_reps(port, rx1)
+    let addr = MockNode::simulate_mock_service_without_reps(port, rx1, true)
         .await
         .expect("should succeed");
 
