@@ -76,10 +76,9 @@ where
 
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
-        peer_ids: Vec<u32>,
         new_entries: Vec<Entry>,
         leader_last_index_before_inserting_new_entries: u64,
-        max_entries: u64, //Maximum number of entries
+        max_legacy_entries_per_peer: u64, //Maximum number of entries
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
     ) -> DashMap<u32, Vec<Entry>>;

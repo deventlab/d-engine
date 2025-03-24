@@ -38,7 +38,7 @@ where
     /// 3. Ensure unsynced entries are prepended to the entries queue
     ///    before actual entries get pushed
     ///
-    /// Leader state will be updated after return
+    /// Leader state will be updated by LeaderState only(follows SRP).
     ///
     async fn handle_client_proposal_in_batch(
         &self,
@@ -83,20 +83,7 @@ where
             }
         }
 
-        // Step2: update leader match index
-        // let leader_last_index_after = raft_log.last_entry_id();
-        // if leader_last_index_after > leader_last_index_before_inserting_new_entries {
-        // if let Err(e) = self.role_tx.send(RoleEvent::UpdateMatchIndex {
-        //     node_id: self.my_id,
-        //     new_match_index: leader_last_index_after,
-        // }) {
-        //     error!("send RoleEvent::UpdateMatchIndex failed: {:?}", e);
-        // }
-        // debug!("leader_last_index: {:?}", leader_last_index_after);
-        // }
-
         let peer_entries: DashMap<u32, Vec<Entry>> = self.retrieve_to_be_synced_logs_for_peers(
-            replication_members.iter().map(|peer| peer.id).collect(),
             entries,
             leader_last_index_before_inserting_new_entries,
             raft_settings.append_entries_max_entries_per_replication,
@@ -160,10 +147,9 @@ where
     #[autometrics(objective = API_SLO)]
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
-        peer_ids: Vec<u32>,
         new_entries: Vec<Entry>,
         leader_last_index_before_inserting_new_entries: u64,
-        max_entries: u64, //Maximum number of entries
+        max_legacy_entries_per_peer: u64, //Maximum number of entries
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
     ) -> DashMap<u32, Vec<Entry>> {
@@ -172,16 +158,16 @@ where
             "retrieve_to_be_synced_logs_for_peers::leader_last_index: {}",
             leader_last_index_before_inserting_new_entries
         );
-        peer_ids.into_iter().for_each(|id| {
-            let peer_next_id = peer_next_indices.get(&id).copied().unwrap_or(0);
+        peer_next_indices.keys().for_each(|&id| {
+            let peer_next_id = peer_next_indices.get(&id).copied().unwrap_or(1);
 
             debug!("peer: {} next: {}", id, peer_next_id);
             let mut entries = Vec::new();
             if leader_last_index_before_inserting_new_entries >= peer_next_id {
                 let until_index = if (leader_last_index_before_inserting_new_entries - peer_next_id)
-                    > max_entries
+                    >= max_legacy_entries_per_peer
                 {
-                    peer_next_id + max_entries
+                    peer_next_id + max_legacy_entries_per_peer - 1
                 } else {
                     leader_last_index_before_inserting_new_entries
                 };
