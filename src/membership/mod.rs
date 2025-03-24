@@ -4,11 +4,10 @@ mod rpc_peer_channels;
 
 pub use raft_membership::*;
 pub use rpc_peer_channels::*;
-use tokio::sync::mpsc;
 
-///-----------------------------------------------
-/// Membership behavior definition
-///
+#[cfg(test)]
+mod rpc_peer_channels_test;
+
 use crate::{
     alias::POF,
     grpc::rpc_service::{ClusteMembershipChangeRequest, ClusterMembership},
@@ -18,6 +17,9 @@ use dashmap::DashMap;
 #[cfg(test)]
 use mockall::automock;
 use std::sync::Arc;
+///-----------------------------------------------
+/// Membership behavior definition
+use tokio::sync::mpsc;
 use tonic::{async_trait, transport::Channel};
 
 #[derive(Clone, Debug)]
