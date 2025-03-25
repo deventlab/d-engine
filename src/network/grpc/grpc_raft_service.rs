@@ -32,17 +32,9 @@ where
             .send(RaftEvent::ReceiveVoteRequest(request.into_inner(), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
-
-        let response = resp_rx
-            .await
-            .map_err(|e| {
-                debug!("request_vote::Channel error: {:?}", e);
-                Status::deadline_exceeded("Response timeout")
-            })?
-            .map(Response::new);
-        debug!("request_vote::Response: {:?}", &response);
-
-        response
+        let timeout_duration =
+            Duration::from_millis(self.settings.raft_settings.election_timeout_min);
+        handle_rpc_timeout(resp_rx, timeout_duration, "request_vote").await
     }
 
     // 1: compare request.term and current_term
@@ -67,16 +59,12 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let response = resp_rx
-            .await
-            .map_err(|e| {
-                debug!("append_entries::Channel error: {:?}", e);
-                Status::deadline_exceeded("Response timeout")
-            })?
-            .map(Response::new);
-        debug!("append_entries::Response: {:?}", &response);
-
-        response
+        let timeout_duration = Duration::from_millis(
+            self.settings
+                .raft_settings
+                .rpc_election_timeout_duration_in_ms,
+        );
+        handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }
 
     #[autometrics(objective = API_SLO)]
@@ -97,16 +85,12 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let response = resp_rx
-            .await
-            .map_err(|e| {
-                debug!("update_cluster_conf::Channel error: {:?}", e);
-                Status::deadline_exceeded("Response timeout")
-            })?
-            .map(Response::new);
-        debug!("update_cluster_conf::Response: {:?}", &response);
-
-        response
+        let timeout_duration = Duration::from_millis(
+            self.settings
+                .raft_settings
+                .cluster_membership_sync_timeout_duration_in_ms,
+        );
+        handle_rpc_timeout(resp_rx, timeout_duration, "update_cluster_conf").await
     }
 
     //----------------- External request handler---------------------
@@ -142,10 +126,11 @@ where
 
         let remote_addr = request.remote_addr();
         let event_tx = self.event_tx.clone();
-        let leader_propose_timeout_duration_in_ms = self
-            .settings
-            .raft_settings
-            .leader_propose_timeout_duration_in_ms;
+        let timeout_duration = Duration::from_millis(
+            self.settings
+                .raft_settings
+                .leader_propose_timeout_duration_in_ms,
+        );
 
         let request_future = async move {
             debug!(
@@ -164,28 +149,7 @@ where
                 .await
                 .map_err(|_| Status::internal("Event channel closed"))?;
 
-            match timeout(
-                Duration::from_millis(leader_propose_timeout_duration_in_ms),
-                resp_rx,
-            )
-            .await
-            {
-                Ok(Ok(Ok(client_response))) => {
-                    debug!(
-                        "handle_client_propose: client_response: {:?}",
-                        &client_response
-                    );
-                    Ok(Response::new(client_response))
-                }
-                Ok(Ok(Err(status))) => {
-                    error!("handle_client_propose, status: {:?}", &status);
-                    Err(status)
-                }
-                Ok(Err(_oneshot_error)) => {
-                    Err(Status::deadline_exceeded("channel has been closed"))
-                }
-                Err(_timeout_error) => Err(Status::deadline_exceeded("Response timeout")),
-            }
+            handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_propose").await
         };
 
         let cancellation_future = async move {
@@ -220,16 +184,12 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let response = resp_rx
-            .await
-            .map_err(|e| {
-                debug!("get_cluster_metadata::Channel error: {:?}", e);
-                Status::deadline_exceeded("Response timeout")
-            })?
-            .map(Response::new);
-        debug!("get_cluster_metadata::Response: {:?}", &response);
-
-        response
+        let timeout_duration = Duration::from_millis(
+            self.settings
+                .raft_settings
+                .general_raft_timeout_duration_in_ms,
+        );
+        handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
     }
 
     #[autometrics(objective = API_SLO)]
@@ -249,16 +209,12 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let response = resp_rx
-            .await
-            .map_err(|e| {
-                debug!("handle_client_read::Channel error: {:?}", e);
-                Status::deadline_exceeded("Response timeout")
-            })?
-            .map(Response::new);
-        debug!("handle_client_read::Response: {:?}", &response);
-
-        response
+        let timeout_duration = Duration::from_millis(
+            self.settings
+                .raft_settings
+                .general_raft_timeout_duration_in_ms,
+        );
+        handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
     }
 }
 
@@ -285,4 +241,37 @@ where
     });
 
     select_task.await.unwrap()
+}
+
+/// Generic timeout handler for RPC response channels
+async fn handle_rpc_timeout<T, E>(
+    resp_rx: impl Future<Output = Result<Result<T, Status>, E>>,
+    timeout_duration: Duration,
+    rpc_name: &'static str,
+) -> Result<Response<T>, Status>
+where
+    T: std::fmt::Debug,
+    E: std::fmt::Debug,
+{
+    match timeout(timeout_duration, resp_rx).await {
+        Ok(Ok(Ok(response))) => {
+            debug!("[{}] Success response: {:?}", rpc_name, &response);
+            Ok(Response::new(response))
+        }
+        Ok(Ok(Err(status))) => {
+            error!("[{}] Error status: {:?}", rpc_name, &status);
+            Err(status)
+        }
+        Ok(Err(e)) => {
+            error!("[{}] Channel error: {:?}", rpc_name, e);
+            Err(Status::deadline_exceeded("RPC channel closed"))
+        }
+        Err(_) => {
+            warn!(
+                "[{}] Response timeout after {:?}",
+                rpc_name, timeout_duration
+            );
+            Err(Status::deadline_exceeded("RPC timeout exceeded"))
+        }
+    }
 }

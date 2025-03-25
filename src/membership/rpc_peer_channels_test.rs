@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use crate::{
-    test_utils::{mock_raft_context, MockNode, MOCK_MEMBERSHIP_PORT_BASE},
+    test_utils::{MockNode, MOCK_MEMBERSHIP_PORT_BASE},
     PeerChannels, PeerChannelsFactory, RpcPeerChannels, Settings,
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 
 /// Case 1: test failed to connect with peers
 ///
 #[tokio::test]
 async fn test_check_cluster_is_ready_case1() {
     let mut settings = Settings::new().expect("success");
-    settings.cluster_settings.cluster_healtcheck_max_retries = 1;
+    settings.raft_settings.cluster_healtcheck_max_retries = 1;
 
     let peer2_id = 2;
     let peer2_port = MOCK_MEMBERSHIP_PORT_BASE + 1;
@@ -39,7 +39,7 @@ async fn test_check_cluster_is_ready_case2() {
     let peer2_port = MOCK_MEMBERSHIP_PORT_BASE + 3;
 
     let mut settings = Settings::new().expect("success");
-    settings.cluster_settings.cluster_healtcheck_max_retries = 1;
+    settings.raft_settings.cluster_healtcheck_max_retries = 1;
 
     let peer_channels: RpcPeerChannels = PeerChannelsFactory::create(1, Arc::new(settings));
 

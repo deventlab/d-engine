@@ -85,10 +85,7 @@ pub struct RaftSettings {
     pub internal_rpc_client_request_id: u32,
 
     pub leader_propose_timeout_duration_in_ms: u64,
-}
-#[derive(Debug, Deserialize, Clone, Default)]
-#[allow(unused)]
-pub struct ClusterSettings {
+
     pub cluster_membership_sync_max_retries: usize,
     pub cluster_membership_sync_exponential_backoff_duration_in_ms: u64,
     pub cluster_membership_sync_timeout_duration_in_ms: u64,
@@ -96,6 +93,8 @@ pub struct ClusterSettings {
     pub cluster_healtcheck_timeout_duration_in_ms: u64,
     pub cluster_healtcheck_exponential_backoff_duration_in_ms: u64,
     pub cluster_healthcheck_probe_service_name: String,
+
+    pub general_raft_timeout_duration_in_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -110,9 +109,8 @@ pub struct CommitHandlerSettings {
 #[allow(unused)]
 pub struct Settings {
     pub server_settings: ServerSettings,
-    pub election_timeout_control_settings: ElectionTimeoutControlSettings,
+    pub election_timeout_controller_settings: ElectionTimeoutControlSettings,
     pub raft_settings: RaftSettings,
-    pub cluster_settings: ClusterSettings,
     pub rpc_connection_settings: RpcConnectionSettings,
     pub commit_handler_settings: CommitHandlerSettings,
 }
