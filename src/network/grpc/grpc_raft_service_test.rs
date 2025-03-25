@@ -1,15 +1,14 @@
 use super::rpc_service::{rpc_service_server::RpcService, ClientProposeRequest};
 use crate::{
     grpc::rpc_service::{
-        AppendEntriesRequest, ClientCommand, ClientReadRequest, ClientResponse,
-        ClusteMembershipChangeRequest, ClusterMembership, MetadataRequest, VoteRequest,
+        AppendEntriesRequest, ClientCommand, ClientReadRequest, ClusteMembershipChangeRequest,
+        ClusterMembership, MetadataRequest, VoteRequest,
     },
     test_utils::{enable_logger, mock_node, MockBuilder, MockTypeConfig},
     utils::util::kv,
-    MockMembership, RaftEvent, Settings,
+    AppendResults, MockMembership, MockReplicationCore, Settings,
 };
-use log::debug;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
     time,
@@ -160,92 +159,116 @@ async fn test_server_is_not_ready() {
     assert_eq!(result.err().unwrap().code(), Code::Unavailable);
 }
 
-/// # Case: Test successful handle vote request
+/// # Case: Test handle rpc services successful
 ///
 #[tokio::test]
-async fn test_handle_request_vote_case() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let node = mock_node("/tmp/test_handle_request_vote_case", graceful_rx, None);
-    // Force the server to not be ready (implementation-specific)
-    node.set_ready(true);
-
-    // Vote request
-    let result = node
-        .request_vote(Request::new(VoteRequest {
-            term: 1,
-            candidate_id: 1,
-            last_log_index: 0,
-            last_log_term: 0,
-        }))
-        .await;
-}
-
-/// # Case: Test successful client propose
-///
-#[tokio::test]
-async fn test_handle_client_propose_case() {
-    let _ = tokio::time::pause();
-    // let node = mock_node("/tmp/test_handle_client_propose_case3", None);
+async fn test_handle_rpc_services_successfully() {
     enable_logger();
     let mut settings = Settings::new().expect("Should succeed to init Settings.");
+    settings.raft_settings.general_raft_timeout_duration_in_ms = 200;
     settings.server_settings.db_root_dir = format!(
         "{}",
         "/tmp/
-    test_handle_client_propose_case3"
+    test_handle_rpc_services_successfully"
     );
     let mut membership = MockMembership::<MockTypeConfig>::new();
     membership.expect_mark_leader_id().returning(|_| Ok(()));
     membership.expect_voting_members().returning(|_| vec![]);
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .returning(|_, _| Ok(()));
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .returning(|| ClusterMembership { nodes: vec![] });
+    let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    replication_handler
+        .expect_handle_client_proposal_in_batch()
+        .returning(|_, _, _, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::new(),
+            })
+        });
+
     // Initializing Shutdown Signal
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = MockBuilder::new(graceful_rx)
         .with_membership(membership)
+        .with_replication_handler(replication_handler)
         .with_settings(settings)
         .build_node();
     node.set_ready(true);
-
-    // Prepare client propose request
-    let mut commands = Vec::new();
-    for id in 1..=2 {
-        commands.push(ClientCommand::insert(kv(id), kv(id)));
-    }
-    let request = Request::new(ClientProposeRequest {
-        client_id: 1,
-        commands,
-    });
-    let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<RaftEvent>();
 
     // Start Raft run thread
     let raft_lock = node.raft_core.clone();
     let raft_handle = tokio::spawn(async move {
         let mut raft = raft_lock.lock().await;
-        raft.register_raft_event_listener(monitor_tx);
-        let _ = time::timeout(Duration::from_millis(20), raft.run()).await;
+        let _ = time::timeout(Duration::from_millis(500), raft.run()).await;
     });
 
-    tokio::time::advance(Duration::from_millis(10)).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
-    // Handle client propose request and wait for propose result
-    let handle1 = tokio::spawn(async move { node.handle_client_propose(request).await });
 
-    // Raft run thread should send out the ClientPropose event
-    let handle2 = tokio::spawn(async move {
-        match monitor_rx.recv().await {
-            Some(RaftEvent::ClientPropose(_, sender)) => {
-                let response = ClientResponse::write_success();
-                sender.send(Ok(response)).expect("should succeed");
-            }
-            Some(e) => {
-                debug!("receive other event: {:?}", &e);
-            }
-            _ => {
-                assert!(false)
-            }
-        }
+    let service_handler = tokio::spawn(async move {
+        assert!(node
+            .request_vote(Request::new(VoteRequest {
+                term: 1,
+                candidate_id: 1,
+                last_log_index: 0,
+                last_log_term: 0,
+            }))
+            .await
+            .is_ok());
+
+        assert!(node
+            .append_entries(Request::new(AppendEntriesRequest {
+                term: 1,
+                leader_id: 1,
+                prev_log_index: 0,
+                prev_log_term: 0,
+                entries: vec![],
+                leader_commit_index: 1,
+            }))
+            .await
+            .is_ok());
+
+        assert!(node
+            .update_cluster_conf(Request::new(ClusteMembershipChangeRequest {
+                id: 1,
+                term: 1,
+                version: 1,
+                cluster_membership: Some(ClusterMembership { nodes: vec![] }),
+            }))
+            .await
+            .is_ok());
+
+        assert!(node
+            .handle_client_propose(Request::new(ClientProposeRequest {
+                client_id: 1,
+                commands: vec![ClientCommand::get(kv(1))],
+            }))
+            .await
+            .is_ok());
+
+        assert!(node
+            .get_cluster_metadata(Request::new(MetadataRequest {}))
+            .await
+            .is_ok());
+
+        assert!(node
+            .handle_client_read(Request::new(ClientReadRequest {
+                client_id: 1,
+                linear: false,
+                commands: vec![],
+            }))
+            .await
+            .is_ok());
     });
 
-    let (_, r1, _) = tokio::join!(raft_handle, handle1, handle2);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (_, service_response) = tokio::join!(raft_handle, service_handler,);
 
     // Assert if the handle client propose result is ok.
-    assert!(r1.is_ok());
+    assert!(service_response.is_ok());
 }

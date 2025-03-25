@@ -64,6 +64,7 @@ where
                 .raft_settings
                 .rpc_election_timeout_duration_in_ms,
         );
+
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }
 
@@ -253,6 +254,8 @@ where
     T: std::fmt::Debug,
     E: std::fmt::Debug,
 {
+    debug!("grpc_raft_serice::handle_rpc_timeout::{}", rpc_name);
+
     match timeout(timeout_duration, resp_rx).await {
         Ok(Ok(Ok(response))) => {
             debug!("[{}] Success response: {:?}", rpc_name, &response);
