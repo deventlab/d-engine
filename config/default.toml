@@ -21,7 +21,7 @@ prometheus_metrics_port = 8080
 tokio_console_enabled = false
 
 
-[election_timeout_control_settings]
+[election_timeout_controller_settings]
 
 # Turn on or off the feature
 is_on = false
@@ -84,18 +84,9 @@ internal_rpc_client_request_id = 0
 ### -------- Leader Propose CONFIGURE -----------------##
 leader_propose_timeout_duration_in_ms = 100
 
-#############################################
-#### commit_handler_settings ######################
-#############################################
-[commit_handler_settings]
-batch_size_threshold = 100
-commit_handle_interval_in_ms = 10
-max_entries_per_chunk = 100
 
-#############################################
-#### cluster_settings #######################
-#############################################
-[cluster_settings]
+### -------- CLISTER MEMBERSHIP CONFIGURE -----------------##
+
 # when there is a cluster membership changes, the max time to retry the sync.
 # cluster membership sync can not failed. otherwise, server will panic!
 # try for 10+ min = 120 * 500
@@ -111,6 +102,16 @@ cluster_healtcheck_timeout_duration_in_ms = 100
 cluster_healtcheck_exponential_backoff_duration_in_ms = 1000
 cluster_healthcheck_probe_service_name = "rpc_service.RpcService"
 
+### -------- General RPC CONFIGURE -----------------##
+general_raft_timeout_duration_in_ms = 50
+
+#############################################
+#### commit_handler_settings ######################
+#############################################
+[commit_handler_settings]
+batch_size_threshold = 100
+commit_handle_interval_in_ms = 10
+max_entries_per_chunk = 100
 
 #############################################
 #### rpc_connection_settings ################

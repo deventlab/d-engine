@@ -7,8 +7,8 @@ use crate::{
         VoteRequest,
     },
     if_new_leader_found, is_learner, task_with_timeout_and_exponential_backoff, util,
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, ClusterSettings, Error,
-    NewLeaderInfo, PeerUpdate, RaftSettings, Result, RoleEvent, Transport, API_SLO,
+    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, Error, NewLeaderInfo, PeerUpdate,
+    RaftSettings, Result, Transport, API_SLO,
 };
 use autometrics::autometrics;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -17,7 +17,7 @@ use std::{
     collections::{HashMap, HashSet},
     time::Duration,
 };
-use tokio::{sync::mpsc, task};
+use tokio::task;
 use tonic::{async_trait, codec::CompressionEncoding};
 
 pub struct GrpcTransport {
@@ -31,7 +31,7 @@ impl Transport for GrpcTransport {
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: ClusteMembershipChangeRequest,
-        cluster_settings: ClusterSettings,
+        raft_settings: RaftSettings,
     ) -> Result<bool> {
         debug!("-------- send cluster_membership requests --------");
         if peers.len() < 1 {
@@ -63,12 +63,12 @@ impl Transport for GrpcTransport {
             let task_handle = task::spawn(async move {
                 match task_with_timeout_and_exponential_backoff(
                     closure,
-                    cluster_settings.cluster_membership_sync_max_retries,
+                    raft_settings.cluster_membership_sync_max_retries,
                     Duration::from_millis(
-                        cluster_settings.cluster_membership_sync_exponential_backoff_duration_in_ms,
+                        raft_settings.cluster_membership_sync_exponential_backoff_duration_in_ms,
                     ),
                     Duration::from_millis(
-                        cluster_settings.cluster_membership_sync_timeout_duration_in_ms,
+                        raft_settings.cluster_membership_sync_timeout_duration_in_ms,
                     ),
                 )
                 .await

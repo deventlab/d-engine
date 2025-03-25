@@ -1,6 +1,9 @@
 use super::rpc_service::{rpc_service_server::RpcService, ClientProposeRequest};
 use crate::{
-    grpc::rpc_service::{ClientCommand, ClientResponse},
+    grpc::rpc_service::{
+        AppendEntriesRequest, ClientCommand, ClientReadRequest, ClientResponse,
+        ClusteMembershipChangeRequest, ClusterMembership, MetadataRequest, VoteRequest,
+    },
     test_utils::{enable_logger, mock_node, MockBuilder, MockTypeConfig},
     utils::util::kv,
     MockMembership, RaftEvent, Settings,
@@ -13,43 +16,174 @@ use tokio::{
 };
 use tonic::{Code, Request};
 
-/// # Test client propose timeout
+/// # Case: Test RPC services timeout
 ///
 #[tokio::test]
-async fn test_handle_client_propose_case1() {
+async fn test_handle_service_timeout() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let node = mock_node("/tmp/test_handle_client_propose_case1", graceful_rx, None);
-    let request = Request::new(ClientProposeRequest {
-        commands: vec![],
-        client_id: 1,
-    });
-    let r = node.handle_client_propose(request).await;
-    assert!(r.is_err());
+    let node = mock_node("/tmp/test_handle_service_timeout", graceful_rx, None);
+
+    // Vote request
+    assert!(node
+        .request_vote(Request::new(VoteRequest {
+            term: 1,
+            candidate_id: 1,
+            last_log_index: 0,
+            last_log_term: 0,
+        }))
+        .await
+        .is_err());
+
+    // Append Entries request
+    assert!(node
+        .append_entries(Request::new(AppendEntriesRequest {
+            term: 1,
+            leader_id: 1,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit_index: 1
+        }))
+        .await
+        .is_err());
+
+    // Update cluster conf request
+    assert!(node
+        .update_cluster_conf(Request::new(ClusteMembershipChangeRequest {
+            id: 1,
+            term: 1,
+            version: 1,
+            cluster_membership: Some(ClusterMembership { nodes: vec![] })
+        }))
+        .await
+        .is_err());
+
+    // Client Propose request
+    assert!(node
+        .handle_client_propose(Request::new(ClientProposeRequest {
+            commands: vec![],
+            client_id: 1,
+        }))
+        .await
+        .is_err());
+
+    // Metadata request
+    assert!(node
+        .get_cluster_metadata(Request::new(MetadataRequest {}))
+        .await
+        .is_err());
+
+    // Client read request
+    assert!(node
+        .handle_client_read(Request::new(ClientReadRequest {
+            client_id: 1,
+            linear: true,
+            commands: vec![]
+        }))
+        .await
+        .is_err());
 }
 
-/// # Test server is not ready
+/// # Case: Test server is not ready
 ///
 #[tokio::test]
-async fn test_handle_client_propose_case2() {
+async fn test_server_is_not_ready() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let node = mock_node("/tmp/test_handle_client_propose_case2", graceful_rx, None);
+    let node = mock_node("/tmp/test_server_is_not_ready", graceful_rx, None);
     // Force the server to not be ready (implementation-specific)
     node.set_ready(false);
 
-    let request = Request::new(ClientProposeRequest {
-        client_id: 1,
-        commands: vec![],
-    });
+    // Vote request
+    let result = node
+        .request_vote(Request::new(VoteRequest {
+            term: 1,
+            candidate_id: 1,
+            last_log_index: 0,
+            last_log_term: 0,
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
 
-    let result = node.handle_client_propose(request).await;
+    // Append Entries request
+    let result = node
+        .append_entries(Request::new(AppendEntriesRequest {
+            term: 1,
+            leader_id: 1,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit_index: 1,
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
+
+    // Update cluster conf request
+    let result = node
+        .update_cluster_conf(Request::new(ClusteMembershipChangeRequest {
+            id: 1,
+            term: 1,
+            version: 1,
+            cluster_membership: Some(ClusterMembership { nodes: vec![] }),
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
+
+    // Client Propose request
+    let result = node
+        .handle_client_propose(Request::new(ClientProposeRequest {
+            client_id: 1,
+            commands: vec![],
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
+
+    // Metadata request
+    let result = node
+        .get_cluster_metadata(Request::new(MetadataRequest {}))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
+
+    // Client read request
+    let result = node
+        .handle_client_read(Request::new(ClientReadRequest {
+            client_id: 1,
+            linear: true,
+            commands: vec![],
+        }))
+        .await;
     assert!(result.is_err());
     assert_eq!(result.err().unwrap().code(), Code::Unavailable);
 }
 
-/// # Test successful client propose
+/// # Case: Test successful handle vote request
 ///
 #[tokio::test]
-async fn test_handle_client_propose_case3() {
+async fn test_handle_request_vote_case() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let node = mock_node("/tmp/test_handle_request_vote_case", graceful_rx, None);
+    // Force the server to not be ready (implementation-specific)
+    node.set_ready(true);
+
+    // Vote request
+    let result = node
+        .request_vote(Request::new(VoteRequest {
+            term: 1,
+            candidate_id: 1,
+            last_log_index: 0,
+            last_log_term: 0,
+        }))
+        .await;
+}
+
+/// # Case: Test successful client propose
+///
+#[tokio::test]
+async fn test_handle_client_propose_case() {
     let _ = tokio::time::pause();
     // let node = mock_node("/tmp/test_handle_client_propose_case3", None);
     enable_logger();

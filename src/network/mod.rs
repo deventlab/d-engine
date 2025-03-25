@@ -17,8 +17,7 @@ use tonic::async_trait;
 
 use crate::{
     grpc::rpc_service::{AppendEntriesRequest, ClusteMembershipChangeRequest, VoteRequest},
-    ChannelWithAddress, ChannelWithAddressAndRole, ClusterSettings, RaftSettings, Result,
-    RoleEvent,
+    ChannelWithAddress, ChannelWithAddressAndRole, RaftSettings, Result,
 };
 
 // Define a structured return value
@@ -51,7 +50,7 @@ pub trait Transport: Send + Sync + 'static {
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: ClusteMembershipChangeRequest,
-        cluster_settings: ClusterSettings,
+        raft_settings: RaftSettings,
     ) -> Result<bool>;
 
     /// Only when Majority receives, true will be returned.
