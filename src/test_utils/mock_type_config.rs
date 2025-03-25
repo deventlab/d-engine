@@ -65,7 +65,7 @@ impl Clone for MockPeerChannels {
 }
 
 impl PeerChannelsFactory for MockPeerChannels {
-    fn create(_id: u32, _event_tx: mpsc::Sender<RaftEvent>, _settings: Arc<Settings>) -> Self {
+    fn create(_id: u32, _settings: Arc<Settings>) -> Self {
         MockPeerChannels::new()
     }
 }

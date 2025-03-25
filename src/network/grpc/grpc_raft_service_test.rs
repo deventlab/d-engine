@@ -60,7 +60,7 @@ async fn test_handle_client_propose_case3() {
     test_handle_client_propose_case3"
     );
     let mut membership = MockMembership::<MockTypeConfig>::new();
-    membership.expect_mark_leader_id().returning(|_| {});
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     membership.expect_voting_members().returning(|_| vec![]);
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());

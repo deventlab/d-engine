@@ -138,8 +138,8 @@ pub enum Error {
     DispatchClientNoLeaderChannelError,
     //===== Cluster membership sync errors =====
     //
-    #[error("Failed to sync cluster membership to some peers")]
-    ClusterMembershipSyncFailed,
+    #[error("Failed to update cluster membership from leader, {0}")]
+    ClusterMembershipUpdateFailed(String),
 
     //===== Cluster Metadata errors =====
     //

@@ -8,10 +8,16 @@ pub use rpc_peer_channels::*;
 #[cfg(test)]
 mod rpc_peer_channels_test;
 
+#[cfg(test)]
+mod health_checker_test;
+
+#[cfg(test)]
+mod raft_membership_test;
+
 use crate::{
     alias::POF,
     grpc::rpc_service::{ClusteMembershipChangeRequest, ClusterMembership},
-    RaftEvent, Result, Settings, TypeConfig,
+    Result, Settings, TypeConfig,
 };
 use dashmap::DashMap;
 #[cfg(test)]
@@ -19,7 +25,6 @@ use mockall::automock;
 use std::sync::Arc;
 ///-----------------------------------------------
 /// Membership behavior definition
-use tokio::sync::mpsc;
 use tonic::{async_trait, transport::Channel};
 
 #[derive(Clone, Debug)]
@@ -36,7 +41,7 @@ pub struct ChannelWithAddressAndRole {
 
 #[cfg_attr(test, automock)]
 pub trait PeerChannelsFactory {
-    fn create(node_id: u32, event_tx: mpsc::Sender<RaftEvent>, settings: Arc<Settings>) -> Self;
+    fn create(node_id: u32, settings: Arc<Settings>) -> Self;
 }
 
 // #[allow(unused)]
@@ -65,7 +70,7 @@ where
         channels: &DashMap<u32, ChannelWithAddress>,
     ) -> Vec<ChannelWithAddressAndRole>;
 
-    fn mark_leader_id(&self, leader_id: u32);
+    fn mark_leader_id(&self, leader_id: u32) -> Result<()>;
 
     fn current_leader(&self) -> Option<u32>;
 
@@ -83,7 +88,7 @@ where
         &self,
         my_current_term: u64,
         cluster_conf_change_req: &ClusteMembershipChangeRequest,
-    ) -> bool;
+    ) -> Result<()>;
 
     fn get_cluster_conf_version(&self) -> u64;
 

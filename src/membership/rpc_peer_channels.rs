@@ -1,15 +1,27 @@
+//! Manages persistent RPC connections between cluster peers.
+//!
+//! This module:
+//! - Maintains a connection pool to all cluster nodes
+//! - Handles initial connection setup using configured cluster addresses
+//! - Provides access to active peer channels for Raft RPC communication
+//! - Implements connection health checks and reconnection logic
+//!
+//! The channel connections are established at cluster startup based on the initial
+//! configuration and must be properly initialized before `raft_membership` can operate.
+//! This layer abstracts network implementation details from the consensus algorithm.
+//!
 use super::{ChannelWithAddress, PeerChannels, PeerChannelsFactory};
 use crate::{
     grpc::rpc_service::NodeMeta,
     membership::health_checker::{HealthChecker, HealthCheckerApis},
     utils::util::{self, address_str},
-    ClusterSettings, Error, RaftEvent, Result, RpcConnectionSettings, Settings,
+    ClusterSettings, Error, Result, RpcConnectionSettings, Settings,
 };
 use dashmap::DashMap;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use log::{debug, error, info, warn};
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::mpsc, task};
+use tokio::task;
 use tonic::{
     async_trait,
     transport::{Channel, Endpoint},
@@ -18,18 +30,17 @@ use tonic::{
 #[derive(Clone)]
 pub struct RpcPeerChannels {
     pub(super) node_id: u32,
-    pub(super) event_tx: mpsc::Sender<RaftEvent>,
+
     pub(super) channels: DashMap<u32, ChannelWithAddress>, //store peers connection
     pub(super) settings: Arc<Settings>,
 }
 
 impl PeerChannelsFactory for RpcPeerChannels {
-    fn create(node_id: u32, event_tx: mpsc::Sender<RaftEvent>, settings: Arc<Settings>) -> Self {
+    fn create(node_id: u32, settings: Arc<Settings>) -> Self {
         Self {
+            node_id,
             channels: DashMap::new(),
             settings,
-            node_id,
-            event_tx,
         }
     }
 }

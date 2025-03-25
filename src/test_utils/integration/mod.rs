@@ -169,8 +169,6 @@ pub fn setup_raft_components(
         membership: Arc::new(RaftMembership::new(
             id,
             arc_settings.server_settings.initial_cluster.clone(),
-            event_tx.clone(),
-            arc_settings.clone(),
         )),
         election_handler: ElectionHandler::new(id, event_tx),
         replication_handler: ReplicationHandler::new(id),
