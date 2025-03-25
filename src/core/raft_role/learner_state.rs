@@ -153,6 +153,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
+                debug!("Learner receive ClusterConf request...");
                 sender
                     .send(Err(Status::permission_denied(
                         "Not able to respond to cluster conf request as node is Learner",

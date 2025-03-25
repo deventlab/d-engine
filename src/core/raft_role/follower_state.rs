@@ -204,6 +204,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             // RaftEvent::ReceiveVoteResponse(_, vote_response) => todo!(),
             RaftEvent::ClusterConf(_metadata_request, sender) => {
                 let cluster_conf = ctx.membership().retrieve_cluster_membership_config();
+                debug!("Follower receive ClusterConf: {:?}", &cluster_conf);
+
                 sender.send(Ok(cluster_conf)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);

@@ -323,7 +323,7 @@ where
         debug!("unit test:: notify new raft event: {:?}", &event);
 
         for tx in &self.test_raft_event_listener {
-            tx.send(event.clone()).expect("should succeed");
+            assert!(tx.send(event.clone()).is_ok(), "should succeed");
         }
     }
 
