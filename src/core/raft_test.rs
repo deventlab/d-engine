@@ -387,7 +387,9 @@ async fn test_election_timeout_case4() {
     mock_membership
         .expect_voting_members()
         .returning(move |_| requests_with_peer_address.clone());
-    mock_membership.expect_mark_leader_id().returning(|_| {});
+    mock_membership
+        .expect_mark_leader_id()
+        .returning(|_| Ok(()));
     raft.ctx.set_membership(Arc::new(mock_membership));
 
     let mut mock_transport = MockTransport::new();

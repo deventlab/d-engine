@@ -28,12 +28,8 @@ impl<T> Node<T>
 where
     T: TypeConfig,
 {
-    async fn connect_with_peers(
-        node_id: u32,
-        event_tx: mpsc::Sender<RaftEvent>,
-        settings: Arc<Settings>,
-    ) -> Result<POF<T>> {
-        let mut peer_channels = T::P::create(node_id, event_tx.clone(), settings.clone());
+    async fn connect_with_peers(node_id: u32, settings: Arc<Settings>) -> Result<POF<T>> {
+        let mut peer_channels = T::P::create(node_id, settings.clone());
         peer_channels
             .connect_with_peers(node_id, settings.clone())
             .await?;
@@ -43,8 +39,7 @@ where
 
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
-        let peer_channels =
-            Self::connect_with_peers(self.id, self.event_tx.clone(), self.settings.clone()).await?;
+        let peer_channels = Self::connect_with_peers(self.id, self.settings.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
         peer_channels.check_cluster_is_ready().await?;

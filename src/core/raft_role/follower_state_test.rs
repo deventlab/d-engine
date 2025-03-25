@@ -419,6 +419,7 @@ async fn test_handle_raft_event_case4_1() {
         .expect_mark_leader_id()
         .returning(|id| {
             assert_eq!(id, 5);
+            Ok(())
         })
         .times(1);
 
@@ -498,6 +499,7 @@ async fn test_handle_raft_event_case4_2() {
         .expect_mark_leader_id()
         .returning(|id| {
             assert_eq!(id, 5);
+            Ok(())
         })
         .times(0);
 
@@ -579,6 +581,7 @@ async fn test_handle_raft_event_case4_3() {
         .expect_mark_leader_id()
         .returning(|id| {
             assert_eq!(id, 5);
+            Ok(())
         })
         .times(1);
 

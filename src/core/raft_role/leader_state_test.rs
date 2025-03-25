@@ -531,7 +531,7 @@ async fn test_handle_raft_event_case3_1() {
     membership
         .expect_update_cluster_conf_from_leader()
         .times(1)
-        .returning(|_, _| true);
+        .returning(|_, _| Ok(()));
     membership
         .expect_get_cluster_conf_version()
         .times(1)
@@ -578,7 +578,7 @@ async fn test_handle_raft_event_case3_2() {
     membership
         .expect_update_cluster_conf_from_leader()
         .times(1)
-        .returning(|_, _| false);
+        .returning(|_, _| Err(Error::ClusterMembershipUpdateFailed("".to_string())));
     membership
         .expect_get_cluster_conf_version()
         .times(1)

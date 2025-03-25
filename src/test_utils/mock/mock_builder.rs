@@ -316,7 +316,7 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     membership
         .expect_update_node_role()
         .returning(|_, _| Ok(()));
-    membership.expect_mark_leader_id().returning(|_| {});
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|| ClusterMembership { nodes: vec![] });

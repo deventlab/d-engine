@@ -351,7 +351,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         my_current_term,
                         &cluste_membership_change_request,
                     )
-                    .await;
+                    .await
+                    .is_ok();
 
                 let response = ClusterConfUpdateResponse {
                     id: my_id,

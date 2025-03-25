@@ -125,8 +125,6 @@ impl NodeBuilder {
             Arc::new(RaftMembership::new(
                 id,
                 settings_arc.server_settings.initial_cluster.clone(),
-                event_tx.clone(),
-                settings_arc.clone(),
             )),
             settings_arc.clone(),
             role_tx,
