@@ -1,3 +1,19 @@
+//! The core node implementation for Raft consensus protocol execution.
+//!
+//! ## Key Responsibilities
+//! - Manages the Raft finite state machine lifecycle
+//! - Coordinates peer networking through [`PeerChannels`]
+//! - Maintains node readiness state for cluster coordination
+//! - Executes the main event processing loop inside Raft
+//!
+//! ## Example Usage
+//! ```rust,no_run
+//! let node = NodeBuilder::new(settings).build().ready().unwrap();
+//! tokio::spawn(async move {
+//!     node.run().await.expect("Raft node execution failed");
+//! });
+//! ```
+
 use crate::membership::PeerChannelsFactory;
 use crate::{alias::POF, PeerChannels, Raft, RaftEvent, Result, TypeConfig};
 use std::sync::{
@@ -5,7 +21,6 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{mpsc, Mutex};
-
 use super::Settings;
 
 pub struct Node<T>
