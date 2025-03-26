@@ -34,7 +34,8 @@
 //! - Cluster formation and interaction tests
 //! - Failure scenario testing with real component interactions
 
-use crate::init_sled_storages;
+use crate::grpc::rpc_service::Entry;
+use crate::utils::util::kv;
 use crate::{
     alias::{MOF, ROF, SMOF, SSOF, TROF},
     grpc::{grpc_transport::GrpcTransport, rpc_service::NodeMeta},
@@ -43,8 +44,13 @@ use crate::{
     RaftStateMachine, RaftTypeConfig, ReplicationHandler, Settings, SledRaftLog, SledStateStorage,
     StateMachine, TypeConfig,
 };
+use crate::{init_sled_storages, RaftLog, StateStorage};
+use log::error;
+use sled::Batch;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
+
+use super::generate_insert_commands;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
@@ -200,4 +206,43 @@ pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
 pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
     println!("[Test] reuse_dbs ...");
     init_sled_storages(db_path.to_string()).expect("init storage failed.")
+}
+
+pub(crate) fn insert_raft_log(raft_log: &ROF<RaftTypeConfig>, ids: Vec<u64>, term: u64) {
+    let mut entries = Vec::new();
+    for id in ids {
+        let log = Entry {
+            index: raft_log.pre_allocate_raft_logs_next_index(),
+            term,
+            command: generate_insert_commands(vec![id]),
+        };
+        entries.push(log);
+    }
+    if let Err(e) = raft_log.insert_batch(entries) {
+        error!("error: {:?}", e);
+        assert!(false);
+    }
+}
+pub(crate) fn insert_state_storage(state_storage: &SSOF<RaftTypeConfig>, ids: Vec<u64>) {
+    for i in ids {
+        if let Err(e) = state_storage.insert(kv(i), kv(i)) {
+            error!("error: {:?}", e);
+            assert!(false);
+        }
+    }
+}
+
+pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Vec<u64>) {
+    let mut batch = Batch::default();
+    for i in ids {
+        batch.insert(kv(i), kv(i));
+    }
+    if let Err(e) = state_machine.apply_batch(batch) {
+        error!("error: {:?}", e);
+        assert!(false);
+    }
+}
+
+pub(crate) fn settings() -> Settings {
+    Settings::new().expect("Settings should be inited successfully.")
 }
