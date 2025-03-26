@@ -172,7 +172,7 @@ where
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
                     warn!("[Raft:{}] shutdown signal received.", self.id);
-                    return Err(Error::Exit);
+                    return Ok(());
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election
                 _ = tick => {

@@ -865,7 +865,7 @@ async fn test_raft_shutdown() {
     // 4. Time advancement control (step-by-step trigger Tick)
     tokio::time::advance(Duration::from_millis(2)).await;
     tokio::time::sleep(Duration::from_millis(2)).await;
-    if let Ok(Err(Error::Exit)) = raft_handle.await {
+    if let Ok(Ok(())) = raft_handle.await {
         assert!(true);
     } else {
         assert!(false);

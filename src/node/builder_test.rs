@@ -10,9 +10,7 @@ use tokio::sync::watch;
 
 #[test]
 fn test_new_initializes_default_components() {
-    let mut settings = settings();
-    settings.server_settings.db_root_dir =
-        "/tmp/test_new_initializes_default_components".to_string();
+    let settings = settings("/tmp/test_new_initializes_default_components");
 
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new(settings, shutdown_rx);
@@ -31,9 +29,7 @@ fn test_new_initializes_default_components() {
 fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let db_path = "/tmp/test_set_raft_log_replaces_default";
-
-    let mut settings = settings();
-    settings.server_settings.db_root_dir = db_path.to_string();
+    let settings = settings(db_path);
 
     let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
         reset_dbs(db_path);
@@ -79,8 +75,7 @@ fn test_set_raft_log_replaces_default() {
 
 #[tokio::test]
 async fn test_build_creates_node() {
-    let mut settings = settings();
-    settings.server_settings.db_root_dir = "/tmp/test_build_creates_node".to_string();
+    let settings = settings("/tmp/test_build_creates_node");
 
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new(settings, shutdown_rx).build();
@@ -91,8 +86,7 @@ async fn test_build_creates_node() {
 
 #[test]
 fn test_ready_fails_without_build() {
-    let mut settings = settings();
-    settings.server_settings.db_root_dir = "/tmp/test_ready_fails_without_build".to_string();
+    let settings = settings("/tmp/test_ready_fails_without_build");
 
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new(settings, shutdown_rx);
@@ -104,8 +98,7 @@ fn test_ready_fails_without_build() {
 #[tokio::test]
 #[should_panic(expected = "failed to start RPC server")]
 async fn test_start_rpc_panics_without_node() {
-    let mut settings = settings();
-    settings.server_settings.db_root_dir = "/tmp/test_start_rpc_panics_without_node".to_string();
+    let settings = settings("/tmp/test_start_rpc_panics_without_node");
 
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new(settings, shutdown_rx);
@@ -117,10 +110,9 @@ async fn test_start_rpc_panics_without_node() {
 // No panic
 #[tokio::test]
 async fn test_metrics_server_starts_on_correct_port() {
-    let mut settings = settings();
-    settings.server_settings.db_root_dir =
-        "/tmp/test_metrics_server_starts_on_correct_port".to_string();
+    let mut settings = settings("/tmp/test_metrics_server_starts_on_correct_port");
     settings.server_settings.prometheus_metrics_port = 12345; // Set the test port
+
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
     NodeBuilder::new(settings, shutdown_rx)

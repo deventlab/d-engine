@@ -163,16 +163,6 @@ impl PeerChannels for RpcPeerChannels {
 }
 
 impl RpcPeerChannels {
-    /// Creates a new `RaftMembership` instance.
-    // pub fn new(node_id: u32, event_tx: mpsc::Sender<RaftEvent>, settings: Settings) -> Self {
-    //     Self {
-    //         channels: DashMap::new(),
-    //         settings,
-    //         node_id,
-    //         event_tx,
-    //     }
-    // }
-
     /// Spawns asynchronous tasks to connect with each peer.
     fn spawn_connection_tasks(
         &self,

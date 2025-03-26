@@ -243,6 +243,8 @@ pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Ve
     }
 }
 
-pub(crate) fn settings() -> Settings {
-    Settings::new().expect("Settings should be inited successfully.")
+pub(crate) fn settings(db_path: &str) -> Settings {
+    let mut s = Settings::new().expect("Settings should be inited successfully.");
+    s.server_settings.db_root_dir = db_path.to_string();
+    s
 }
