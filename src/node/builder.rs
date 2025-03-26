@@ -1,3 +1,32 @@
+//! A builder pattern implementation for constructing a [`Node`] instance in a Raft cluster.
+//!
+//! The [`NodeBuilder`] provides a fluent interface to configure and assemble components required by the Raft node,
+//! including storage layers (log, state machine, membership), transport, and asynchronous handlers.
+//!
+//! ## Key Design Points
+//! - **Default Components**: Initializes with production-ready defaults (Sled-based storage, gRPC transport).
+//! - **Customization**: Allows overriding defaults via setter methods (e.g., `raft_log()`, `transport()`).
+//! - **Lifecycle Management**:
+//!   - `build()`: Assembles the [`Node`] and spawns background tasks (e.g., [`CommitHandler`]).
+//!   - `start_metrics_server()`/`start_rpc_server()`: Launches auxiliary services.
+//!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
+//!
+//! ## Example
+//! ```rust,no_run
+//! let (shutdown_tx, shutdown_rx) = watch::channel(());
+//! let node = NodeBuilder::new(settings, shutdown_rx)
+//!     .raft_log(custom_raft_log)  // Optional override
+//!     .build()
+//!     .start_metrics_server(shutdown_tx.subscribe())
+//!     .start_rpc_server().await
+//!     .ready()
+//!     .unwrap();
+//! ```
+//!
+//! ## Notes
+//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
+//! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
+
 use super::{RaftTypeConfig, ServerSettings, Settings};
 use crate::{
     alias::{COF, MOF, ROF, SMHOF, SMOF, SSOF, TROF},
@@ -12,17 +41,17 @@ use tokio::sync::{mpsc, watch, Mutex};
 
 pub struct NodeBuilder {
     id: u32,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    membership: Option<MOF<RaftTypeConfig>>,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
-    transport: Option<TROF<RaftTypeConfig>>,
-    commit_handler: Option<COF<RaftTypeConfig>>,
-    state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
-    settings: Settings,
-    shutdown_signal: watch::Receiver<()>,
+    pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
+    pub(super) membership: Option<MOF<RaftTypeConfig>>,
+    pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
+    pub(super) state_storage: Option<SSOF<RaftTypeConfig>>,
+    pub(super) transport: Option<TROF<RaftTypeConfig>>,
+    pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
+    pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
+    pub(super) settings: Settings,
+    pub(super) shutdown_signal: watch::Receiver<()>,
 
-    node: Option<Arc<Node<RaftTypeConfig>>>,
+    pub(super) node: Option<Arc<Node<RaftTypeConfig>>>,
 }
 
 impl NodeBuilder {
@@ -53,13 +82,16 @@ impl NodeBuilder {
             state_machine.clone(),
         ));
 
+        let raft_membership =
+            RaftMembership::new(id, settings.server_settings.initial_cluster.clone());
+
         Self {
             id,
             raft_log: Some(sled_raft_log),
-            membership: None,
             state_machine: Some(state_machine),
             state_storage: Some(sled_state_storage),
             transport: Some(grpc_transport),
+            membership: Some(raft_membership),
             settings,
             shutdown_signal,
             commit_handler: None,
@@ -93,6 +125,11 @@ impl NodeBuilder {
         self
     }
 
+    pub fn membership(mut self, membership: MOF<RaftTypeConfig>) -> Self {
+        self.membership = Some(membership);
+        self
+    }
+
     pub fn settings(mut self, settings: Settings) -> Self {
         self.settings = settings;
         self
@@ -108,6 +145,7 @@ impl NodeBuilder {
         let state_machine = self.state_machine.take().unwrap();
         let raft_log = self.raft_log.take().unwrap();
         let state_machine_handler = self.state_machine_handler.take().unwrap();
+        let membership = self.membership.take().unwrap();
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(1024);
 
@@ -122,10 +160,7 @@ impl NodeBuilder {
             ElectionHandler::new(id, event_tx.clone()),
             ReplicationHandler::new(id),
             state_machine_handler.clone(),
-            Arc::new(RaftMembership::new(
-                id,
-                settings_arc.server_settings.initial_cluster.clone(),
-            )),
+            Arc::new(membership),
             settings_arc.clone(),
             role_tx,
             role_rx,

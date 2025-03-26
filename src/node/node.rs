@@ -1,6 +1,5 @@
 use crate::membership::PeerChannelsFactory;
 use crate::{alias::POF, PeerChannels, Raft, RaftEvent, Result, TypeConfig};
-use log::info;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

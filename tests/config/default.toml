@@ -119,7 +119,7 @@ max_entries_per_chunk = 100
 #############################################
 [rpc_connection_settings]
 # // connect_timeout is the timeout for grpc connection.
-connect_timeout_in_ms = 100
+connect_timeout_in_ms = 500
 
 # // request_timeout is the timeout for grpc requests.
 request_timeout_in_ms = 100
