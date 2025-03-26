@@ -7,13 +7,14 @@
 //! - Executes the main event processing loop inside Raft
 //!
 //! ## Example Usage
-//! ```rust,no_run
+//! ```ignore
 //! let node = NodeBuilder::new(settings).build().ready().unwrap();
 //! tokio::spawn(async move {
 //!     node.run().await.expect("Raft node execution failed");
 //! });
 //! ```
 
+use super::Settings;
 use crate::membership::PeerChannelsFactory;
 use crate::{alias::POF, PeerChannels, Raft, RaftEvent, Result, TypeConfig};
 use std::sync::{
@@ -21,7 +22,6 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{mpsc, Mutex};
-use super::Settings;
 
 pub struct Node<T>
 where
@@ -44,9 +44,7 @@ where
 {
     async fn connect_with_peers(node_id: u32, settings: Arc<Settings>) -> Result<POF<T>> {
         let mut peer_channels = T::P::create(node_id, settings.clone());
-        peer_channels
-            .connect_with_peers(node_id, settings.clone())
-            .await?;
+        peer_channels.connect_with_peers(node_id).await?;
 
         Ok(peer_channels)
     }

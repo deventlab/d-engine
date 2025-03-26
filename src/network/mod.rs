@@ -163,13 +163,6 @@ mod tests {
 
     use super::*;
 
-    // pub async fn update_cluster_conf(
-    //     &mut self,
-    //     request: impl tonic::IntoRequest<super::ClusteMembershipChangeRequest>,
-    // ) -> std::result::Result<
-    //     tonic::Response<super::ClusterConfUpdateResponse>,
-    //     tonic::Status,
-    // >
     async fn async_ok(
         number: u64,
     ) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {

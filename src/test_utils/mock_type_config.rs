@@ -70,7 +70,7 @@ impl PeerChannelsFactory for MockPeerChannels {
         peer_channels
             .expect_connect_with_peers()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_| Ok(()));
         peer_channels
             .expect_check_cluster_is_ready()
             .times(1)

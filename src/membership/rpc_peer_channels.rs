@@ -49,13 +49,13 @@ impl PeerChannelsFactory for RpcPeerChannels {
 impl PeerChannels for RpcPeerChannels {
     /// When peer channel setup during server bootstrap stage,
     ///  cluster membership listener is not ready yet.
-    async fn connect_with_peers(&mut self, my_id: u32, settings: Arc<Settings>) -> Result<()> {
-        let initial_cluster = &settings.server_settings.initial_cluster;
+    async fn connect_with_peers(&mut self, my_id: u32) -> Result<()> {
+        let initial_cluster = &self.settings.server_settings.initial_cluster;
         info!("Connecting with peers: {:?}", initial_cluster);
 
         let cluster_size = initial_cluster.len();
-        let raft_settings = settings.raft_settings.clone();
-        let rpc_settings = &settings.rpc_connection_settings;
+        let raft_settings = self.settings.raft_settings.clone();
+        let rpc_settings = &self.settings.rpc_connection_settings;
 
         let tasks =
             self.spawn_connection_tasks(my_id, initial_cluster, raft_settings, rpc_settings);
@@ -164,7 +164,7 @@ impl PeerChannels for RpcPeerChannels {
 
 impl RpcPeerChannels {
     /// Spawns asynchronous tasks to connect with each peer.
-    fn spawn_connection_tasks(
+    pub(super) fn spawn_connection_tasks(
         &self,
         my_id: u32,
         peers: &[NodeMeta],
@@ -208,7 +208,7 @@ impl RpcPeerChannels {
     }
 
     /// Collects results from connection tasks and validates success count.
-    async fn collect_connections(
+    pub(super) async fn collect_connections(
         &self,
         mut tasks: FuturesUnordered<task::JoinHandle<Result<(u32, ChannelWithAddress)>>>,
         expected_count: usize,
@@ -239,7 +239,7 @@ impl RpcPeerChannels {
     }
 
     /// Attempts to connect to a peer with retries and exponential backoff.
-    async fn connect_with_retry(
+    pub(super) async fn connect_with_retry(
         node_meta: &NodeMeta,
         raft_settings: &RaftSettings,
         rpc_settings: &RpcConnectionSettings,
