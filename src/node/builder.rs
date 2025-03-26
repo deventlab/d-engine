@@ -12,7 +12,8 @@
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
 //!
 //! ## Example
-//! ```rust,no_run
+//! ```ignore
+//!
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(settings, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override

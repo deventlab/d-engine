@@ -48,7 +48,7 @@ pub trait PeerChannelsFactory {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait PeerChannels: Sync + Send + 'static {
-    async fn connect_with_peers(&mut self, my_id: u32, settings: Arc<Settings>) -> Result<()>;
+    async fn connect_with_peers(&mut self, my_id: u32) -> Result<()>;
     async fn check_cluster_is_ready(&self) -> Result<()>;
 
     /// Get all peers channel regardless peer's role
