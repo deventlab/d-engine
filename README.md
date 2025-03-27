@@ -79,6 +79,7 @@ sequenceDiagram
 ## Architecture Principles
 
 - Single Responsibility Principle (SRP)
+- Error Handling Design Principles
 
 ## Key Components
 
