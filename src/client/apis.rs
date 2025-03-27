@@ -137,6 +137,8 @@ impl ClientApis for DengineClient {
                             ClientRequestError::NoError
                         ) {
                             return Ok(());
+                        } else {
+                            error!("handle_client_propose error_code:{:?}", error_code);
                         }
                     }
                 }
