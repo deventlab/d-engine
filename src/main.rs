@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     let settings = Settings::new()?;
 
     // Initializing Logs
-    let _guard = init_observability(&settings.server_settings)?;
+    let _guard = init_observability(&settings.cluster)?;
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
@@ -74,7 +74,7 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) -> Result<()> {
 
 pub fn init_observability(settings: &ServerSettings) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
-        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.id)),
+        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
     )?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);

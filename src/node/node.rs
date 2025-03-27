@@ -27,7 +27,7 @@ pub struct Node<T>
 where
     T: TypeConfig,
 {
-    pub(crate) id: u32,
+    pub(crate) node_id: u32,
     pub(crate) raft_core: Arc<Mutex<Raft<T>>>,
 
     // Network & Storage events, (copied from Raft)
@@ -51,7 +51,7 @@ where
 
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
-        let peer_channels = Self::connect_with_peers(self.id, self.settings.clone()).await?;
+        let peer_channels = Self::connect_with_peers(self.node_id, self.settings.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
         peer_channels.check_cluster_is_ready().await?;

@@ -7,7 +7,7 @@ use crate::{grpc::rpc_service::NodeMeta, Error, Result};
 #[derive(Debug, Deserialize, Clone, Default)]
 #[allow(unused)]
 pub struct ServerSettings {
-    pub id: u32,
+    pub node_id: u32,
     pub listen_address: String,
     pub initial_cluster: Vec<NodeMeta>,
     pub db_root_dir: String,
@@ -108,7 +108,7 @@ pub struct CommitHandlerSettings {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[allow(unused)]
 pub struct Settings {
-    pub server_settings: ServerSettings,
+    pub cluster: ServerSettings,
     pub election_timeout_controller_settings: ElectionTimeoutControlSettings,
     pub raft_settings: RaftSettings,
     pub rpc_connection_settings: RpcConnectionSettings,

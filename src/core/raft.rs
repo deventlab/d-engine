@@ -14,7 +14,7 @@ pub struct Raft<T>
 where
     T: TypeConfig,
 {
-    pub id: u32,
+    pub node_id: u32,
     pub role: RaftRole<T>,
     pub ctx: RaftContext<T>,
     pub settings: Arc<Settings>,
@@ -50,7 +50,7 @@ where
     T: TypeConfig,
 {
     pub fn new(
-        id: u32,
+        node_id: u32,
         raft_log: ROF<T>,
         state_machine: Arc<SMOF<T>>,
         state_storage: SSOF<T>,
@@ -70,7 +70,7 @@ where
         let last_applied_index = state_machine.last_entry_index();
 
         let ctx = Self::build_context(
-            id,
+            node_id,
             raft_log,
             state_machine,
             state_storage,
@@ -84,13 +84,13 @@ where
 
         // let ctx = Box::new(ctx);
         let role = RaftRole::Follower(FollowerState::new(
-            id,
+            node_id,
             settings.clone(),
             ctx.state_storage.load_hard_state(),
             last_applied_index,
         ));
         Raft {
-            id,
+            node_id,
             ctx,
             role,
             settings: settings.clone(),
@@ -171,7 +171,7 @@ where
                 biased;
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
-                    warn!("[Raft:{}] shutdown signal received.", self.id);
+                    warn!("[Raft:{}] shutdown signal received.", self.node_id);
                     return Ok(());
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election
