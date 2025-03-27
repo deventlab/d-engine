@@ -166,7 +166,7 @@ async fn test_handle_rpc_services_successfully() {
     enable_logger();
     let mut settings = Settings::new().expect("Should succeed to init Settings.");
     settings.raft_settings.general_raft_timeout_duration_in_ms = 200;
-    settings.server_settings.db_root_dir = format!(
+    settings.cluster.db_root_dir = format!(
         "{}",
         "/tmp/
     test_handle_rpc_services_successfully"

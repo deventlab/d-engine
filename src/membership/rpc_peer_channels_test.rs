@@ -31,7 +31,7 @@ fn crate_peer_channes(
 ) -> RpcPeerChannels {
     let mut settings = settings(db_path);
     settings.raft_settings.cluster_membership_sync_max_retries = 1;
-    settings.server_settings.initial_cluster = vec![
+    settings.cluster.initial_cluster = vec![
         NodeMeta {
             id: 1,
             ip: "127.0.0.1".to_string(),
@@ -210,7 +210,7 @@ async fn test_connection_task_spawning() {
 
     // Execute connection flow
     let settings = peer_channels.settings.clone();
-    let initial_cluster = settings.server_settings.initial_cluster.clone();
+    let initial_cluster = settings.cluster.initial_cluster.clone();
     let tasks = peer_channels.spawn_connection_tasks(
         1,
         &initial_cluster,

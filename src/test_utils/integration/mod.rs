@@ -151,8 +151,8 @@ pub fn setup_raft_components(
 
     // Each unit test db path will be different
     let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.server_settings.db_root_dir = format!("{}", db_path);
-    settings.server_settings.initial_cluster = peers_meta.clone();
+    settings.cluster.db_root_dir = format!("{}", db_path);
+    settings.cluster.initial_cluster = peers_meta.clone();
 
     let (event_tx, event_rx) = mpsc::channel(1024);
 
@@ -174,7 +174,7 @@ pub fn setup_raft_components(
         transport: Arc::new(grpc_transport),
         membership: Arc::new(RaftMembership::new(
             id,
-            arc_settings.server_settings.initial_cluster.clone(),
+            arc_settings.cluster.initial_cluster.clone(),
         )),
         election_handler: ElectionHandler::new(id, event_tx),
         replication_handler: ReplicationHandler::new(id),
@@ -250,6 +250,6 @@ pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Ve
 
 pub(crate) fn settings(db_path: &str) -> Settings {
     let mut s = Settings::new().expect("Settings should be inited successfully.");
-    s.server_settings.db_root_dir = db_path.to_string();
+    s.cluster.db_root_dir = db_path.to_string();
     s
 }

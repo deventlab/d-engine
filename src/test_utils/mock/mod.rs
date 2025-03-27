@@ -58,9 +58,9 @@ pub fn mock_node(
     enable_logger();
 
     let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.server_settings.db_root_dir = format!("{}", db_path);
+    settings.cluster.db_root_dir = format!("{}", db_path);
     if peers_meta_option.is_some() {
-        settings.server_settings.initial_cluster = peers_meta_option.unwrap();
+        settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
     // Initializing Shutdown Signal
     // let (graceful_tx, graceful_rx) = watch::channel(());
@@ -77,9 +77,9 @@ pub fn mock_raft(
     enable_logger();
 
     let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.server_settings.db_root_dir = format!("{}", db_path);
+    settings.cluster.db_root_dir = format!("{}", db_path);
     if peers_meta_option.is_some() {
-        settings.server_settings.initial_cluster = peers_meta_option.unwrap();
+        settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
 
     MockBuilder::new(shutdown_signal)
@@ -95,9 +95,9 @@ pub fn mock_raft_context(
     enable_logger();
 
     let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.server_settings.db_root_dir = format!("{}", db_path);
+    settings.cluster.db_root_dir = format!("{}", db_path);
     if peers_meta_option.is_some() {
-        settings.server_settings.initial_cluster = peers_meta_option.unwrap();
+        settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
 
     MockBuilder::new(shutdown_signal)

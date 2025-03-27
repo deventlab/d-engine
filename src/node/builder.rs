@@ -41,7 +41,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::{mpsc, watch, Mutex};
 
 pub struct NodeBuilder {
-    id: u32,
+    node_id: u32,
     pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
@@ -58,23 +58,25 @@ pub struct NodeBuilder {
 impl NodeBuilder {
     pub fn new(settings: Settings, shutdown_signal: watch::Receiver<()>) -> Self {
         let ServerSettings {
-            id, db_root_dir, ..
-        } = settings.server_settings.clone();
+            node_id,
+            db_root_dir,
+            ..
+        } = settings.cluster.clone();
 
         let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-            init_sled_storages(format!("{}/{}", db_root_dir.clone(), id))
+            init_sled_storages(format!("{}/{}", db_root_dir.clone(), node_id))
                 .expect("init storage failed.");
 
         let raft_log_db = Arc::new(raft_log_db);
         let state_machine_db = Arc::new(state_machine_db);
         let state_storage_db = Arc::new(state_storage_db);
 
-        let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone());
+        let sled_state_machine = RaftStateMachine::new(node_id, state_machine_db.clone());
         let last_applied_index = sled_state_machine.last_entry_index();
         let sled_raft_log = SledRaftLog::new(raft_log_db, last_applied_index);
         let sled_state_storage = SledStateStorage::new(state_storage_db);
 
-        let grpc_transport = GrpcTransport { my_id: id };
+        let grpc_transport = GrpcTransport { my_id: node_id };
 
         let state_machine = Arc::new(sled_state_machine);
         let state_machine_handler = Arc::new(DefaultStateMachineHandler::new(
@@ -84,10 +86,10 @@ impl NodeBuilder {
         ));
 
         let raft_membership =
-            RaftMembership::new(id, settings.server_settings.initial_cluster.clone());
+            RaftMembership::new(node_id, settings.cluster.initial_cluster.clone());
 
         Self {
-            id,
+            node_id,
             raft_log: Some(sled_raft_log),
             state_machine: Some(state_machine),
             state_storage: Some(sled_state_storage),
@@ -137,7 +139,7 @@ impl NodeBuilder {
     }
 
     pub fn build(mut self) -> Self {
-        let id = self.id;
+        let node_id = self.node_id;
         let settings = self.settings.clone();
 
         // Init CommitHandler
@@ -153,13 +155,13 @@ impl NodeBuilder {
         let settings_arc = Arc::new(settings);
         let shutdown_signal = self.shutdown_signal.clone();
         let mut raft_core = Raft::<RaftTypeConfig>::new(
-            id,
+            node_id,
             raft_log,
             state_machine.clone(),
             self.state_storage.take().unwrap(),
             self.transport.take().unwrap(),
-            ElectionHandler::new(id, event_tx.clone()),
-            ReplicationHandler::new(id),
+            ElectionHandler::new(node_id, event_tx.clone()),
+            ReplicationHandler::new(node_id),
             state_machine_handler.clone(),
             Arc::new(membership),
             settings_arc.clone(),
@@ -202,7 +204,7 @@ impl NodeBuilder {
 
         let event_tx = raft_core.event_tx.clone();
         let node = Node::<RaftTypeConfig> {
-            id,
+            node_id,
             raft_core: Arc::new(Mutex::new(raft_core)),
             event_tx: event_tx.clone(),
             ready: AtomicBool::new(false),
@@ -215,7 +217,7 @@ impl NodeBuilder {
 
     pub fn start_metrics_server(self, shutdown_signal: watch::Receiver<()>) -> Self {
         println!("start metric server!");
-        let port = self.settings.server_settings.prometheus_metrics_port;
+        let port = self.settings.cluster.prometheus_metrics_port;
         tokio::spawn(async move {
             metrics::start_server(port, shutdown_signal).await;
         });
@@ -227,7 +229,7 @@ impl NodeBuilder {
         if let Some(ref node) = self.node {
             let node_clone = node.clone();
             let shutdown = self.shutdown_signal.clone();
-            let listen_address = self.settings.server_settings.listen_address.clone();
+            let listen_address = self.settings.cluster.listen_address.clone();
             let rpc_connection_settings = self.settings.rpc_connection_settings.clone();
             tokio::spawn(async move {
                 if let Err(e) = grpc::start_rpc_server(

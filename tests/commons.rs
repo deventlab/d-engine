@@ -58,7 +58,7 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
     let settings = Settings::from_file(config_path)?;
 
     // Initialize logs
-    let _guard = init_observability(&settings.server_settings)?;
+    let _guard = init_observability(&settings.cluster)?;
 
     // Build and start the node
     let node = NodeBuilder::new(settings, graceful_rx)
@@ -82,7 +82,7 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
 }
 pub fn init_observability2(settings: &ServerSettings) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
-        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.id)),
+        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
     )?;
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
     let log_writer = non_blocking; // 统一写入器
@@ -120,7 +120,7 @@ pub fn init_observability2(settings: &ServerSettings) -> Result<WorkerGuard> {
 
 pub fn init_observability(settings: &ServerSettings) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
-        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.id)),
+        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
     )?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);

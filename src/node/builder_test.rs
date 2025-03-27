@@ -111,7 +111,7 @@ async fn test_start_rpc_panics_without_node() {
 #[tokio::test]
 async fn test_metrics_server_starts_on_correct_port() {
     let mut settings = settings("/tmp/test_metrics_server_starts_on_correct_port");
-    settings.server_settings.prometheus_metrics_port = 12345; // Set the test port
+    settings.cluster.prometheus_metrics_port = 12345; // Set the test port
 
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 

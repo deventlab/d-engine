@@ -188,7 +188,7 @@ impl MockBuilder {
         let event_tx = raft.event_tx.clone();
         let settings = raft.settings.clone();
         Node::<MockTypeConfig> {
-            id: raft.id,
+            node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             event_tx,
             ready: AtomicBool::new(false),
@@ -251,7 +251,7 @@ impl MockBuilder {
 
     pub fn with_db_path(mut self, db_root_dir: &str) -> Self {
         let mut settings = Settings::new().expect("Should succeed to init Settings.");
-        settings.server_settings.db_root_dir = format!("{}", db_root_dir);
+        settings.cluster.db_root_dir = format!("{}", db_root_dir);
         self.settings = Some(settings);
         self
     }

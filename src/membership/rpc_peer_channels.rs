@@ -50,7 +50,7 @@ impl PeerChannels for RpcPeerChannels {
     /// When peer channel setup during server bootstrap stage,
     ///  cluster membership listener is not ready yet.
     async fn connect_with_peers(&mut self, my_id: u32) -> Result<()> {
-        let initial_cluster = &self.settings.server_settings.initial_cluster;
+        let initial_cluster = &self.settings.cluster.initial_cluster;
         info!("Connecting with peers: {:?}", initial_cluster);
 
         let cluster_size = initial_cluster.len();
