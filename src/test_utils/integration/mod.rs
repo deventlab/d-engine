@@ -232,12 +232,17 @@ pub(crate) fn insert_state_storage(state_storage: &SSOF<RaftTypeConfig>, ids: Ve
     }
 }
 
-pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Vec<u64>) {
-    let mut batch = Batch::default();
-    for i in ids {
-        batch.insert(kv(i), kv(i));
+pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Vec<u64>, term: u64) {
+    let mut entries = Vec::new();
+    for id in ids {
+        let log = Entry {
+            index: id,
+            term,
+            command: generate_insert_commands(vec![id]),
+        };
+        entries.push(log);
     }
-    if let Err(e) = state_machine.apply_batch(batch) {
+    if let Err(e) = state_machine.apply_chunk(entries) {
         error!("error: {:?}", e);
         assert!(false);
     }

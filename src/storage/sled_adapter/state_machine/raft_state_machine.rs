@@ -23,6 +23,7 @@ use tonic::async_trait;
 #[derive(Debug)]
 pub struct RaftStateMachine {
     node_id: u32,
+
     /// Volatile state on all servers:
     /// index of highest log entry applied to state machine (initialized to 0, increases monotonically)
     last_applied: AtomicU64,
@@ -68,16 +69,12 @@ impl StateMachine for RaftStateMachine {
     }
 
     #[autometrics(objective = API_SLO)]
-    fn apply_batch(&self, batch: Batch) -> Result<()> {
-        if let Err(e) = self.tree.apply_batch(batch) {
-            error!("state_machine apply_batch failed: {}", e);
-            return Err(Error::SledError(e));
-        }
-        Ok(())
-    }
-
-    #[autometrics(objective = API_SLO)]
     fn apply_snapshot(&self, entry: SnapshotEntry) -> Result<()> {
+        if self.is_running() {
+            return Err(Error::StateMachinneError(
+                "state machine is still running while applying snapshot".to_string(),
+            ));
+        }
         let key = entry.key;
         if let Err(e) = self.tree.insert(key.clone(), entry.value) {
             error!("apply_snapshot insert error: {}", e);
@@ -145,13 +142,15 @@ impl StateMachine for RaftStateMachine {
         self.last_applied.store(new_id, Ordering::SeqCst);
     }
 
-    async fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()> {
+    fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()> {
+        let mut highest_index = None;
         let mut batch = Batch::default();
         for entry in chunk {
             if entry.command.len() < 1 {
                 warn!("why entry command is empty?");
                 continue;
             }
+            highest_index = Some(entry.index);
 
             debug!("[ConverterEngine] prepare to insert entry({:?})", entry);
             let req = match ClientCommand::decode(entry.command.as_slice()) {
@@ -189,18 +188,14 @@ impl StateMachine for RaftStateMachine {
             info!("COMMITTED_LOG_METRIC: {} ", &msg_id);
         }
 
-        // Calculate the duration
-        // info!(
-        //     "get_entries_between loop range ({:?}), takes: [{:?}] ms",
-        //     &range,
-        //     start_time.elapsed().as_millis()
-        // );
-
         if let Err(e) = self.apply_batch(batch) {
             error!("local insert commit entry into kv store failed: {:?}", e);
             return Err(Error::MessageIOError);
         } else {
             debug!("[ConverterEngine] convert bath successfully! ");
+            if highest_index.is_some() {
+                self.update_last_applied(highest_index.unwrap());
+            }
             Ok(())
         }
     }
@@ -231,9 +226,13 @@ impl RaftStateMachine {
             }
         }
     }
-    pub(crate) fn before_shutdown(&self) -> crate::Result<()> {
-        info!("state machine:: before_shutdown...");
-        self.flush()?;
+
+    #[autometrics(objective = API_SLO)]
+    pub(super) fn apply_batch(&self, batch: Batch) -> Result<()> {
+        if let Err(e) = self.tree.apply_batch(batch) {
+            error!("state_machine apply_batch failed: {}", e);
+            return Err(Error::SledError(e));
+        }
         Ok(())
     }
 }

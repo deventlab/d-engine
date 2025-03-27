@@ -46,7 +46,7 @@ fn test_set_raft_log_replaces_default() {
 
     let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone());
     let expected_state_machine_ids = vec![1, 2, 3];
-    insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone());
+    insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
 
     let sled_state_storage = SledStateStorage::new(state_storage_db);
     let expected_state_storage_ids = vec![1, 2, 3, 4, 5];
