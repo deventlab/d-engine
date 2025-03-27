@@ -26,13 +26,9 @@ pub trait StateMachine: Send + Sync + 'static {
     fn last_applied(&self) -> u64;
     fn get(&self, key_buffer: &Vec<u8>) -> Result<Option<Vec<u8>>>;
     fn iter(&self) -> StateMachineIter;
-    // fn handle_commit(&self, new_commit_index: u64) -> Result<()>;
 
-    /// The operation is based on the underlying storage engine
-    // #[deprecated(note = "This method is deprecated. Use `apply_chunk` instead.")]
-    fn apply_batch(&self, batch: Batch) -> Result<()>;
     /// Apply log entries in chunks
-    async fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()>;
+    fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()>;
 
     fn last_entry_index(&self) -> Option<u64>;
     fn flush(&self) -> Result<()>;

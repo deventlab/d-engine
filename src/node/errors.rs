@@ -119,8 +119,8 @@ pub enum Error {
     #[error("Raft state error: {0}")]
     NodeStateError(String),
 
-    #[error("State Machine error")]
-    StateMachinneError,
+    #[error("State Machine error: {0}")]
+    StateMachinneError(String),
 
     // received term smaller than mine
     #[error("Illegal term")]

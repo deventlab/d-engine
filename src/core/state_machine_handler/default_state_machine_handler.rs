@@ -85,7 +85,7 @@ where
                 .map(|chunk| {
                     let sm = self.state_machine.clone();
                     let chunk = chunk.to_vec(); // Transfer ownership of chunk to the closure
-                    tokio::spawn(async move { sm.apply_chunk(chunk).await })
+                    tokio::spawn(async move { sm.apply_chunk(chunk) })
                 })
                 .collect();
 

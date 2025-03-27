@@ -92,13 +92,19 @@ pub(crate) fn simulate_delete_proposal(
 ///
 pub(crate) fn simulate_state_machine_insert_commands(
     state_machine: Arc<SMOF<RaftTypeConfig>>,
-    range: RangeInclusive<u64>,
+    id_range: RangeInclusive<u64>,
+    term: u64,
 ) {
-    let mut batch = Batch::default();
-    for id in range {
-        batch.insert(kv(id), kv(id));
+    let mut entries = Vec::new();
+    for id in id_range {
+        let log = Entry {
+            index: id,
+            term,
+            command: generate_delete_commands(id..=id),
+        };
+        entries.push(log);
     }
-    state_machine.apply_batch(batch).expect("should succeed");
+    state_machine.apply_chunk(entries).expect("should succeed");
 }
 
 pub(crate) fn prepare_locallog_entry_with_specify_ids_and_term(
