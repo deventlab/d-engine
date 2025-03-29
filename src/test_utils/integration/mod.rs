@@ -40,8 +40,8 @@ use crate::{
     alias::{MOF, ROF, SMOF, SSOF, TROF},
     grpc::{grpc_transport::GrpcTransport, rpc_service::NodeMeta},
     test_utils::{enable_logger, MockTypeConfig},
-    DefaultStateMachineHandler, ElectionHandler, RaftContext, RaftMembership, RaftRole,
-    RaftStateMachine, RaftTypeConfig, ReplicationHandler, Settings, SledRaftLog, SledStateStorage,
+    DefaultStateMachineHandler, ElectionHandler, RaftContext, RaftMembership, RaftNodeConfig,
+    RaftRole, RaftStateMachine, RaftTypeConfig, ReplicationHandler, SledRaftLog, SledStateStorage,
     StateMachine, TypeConfig,
 };
 use crate::{init_sled_storages, RaftLog, StateStorage};
@@ -75,8 +75,8 @@ where
     pub replication_handler: ReplicationHandler<T>,
     pub state_machine_handler: DefaultStateMachineHandler<T>,
 
-    pub settings: Settings,
-    pub arc_settings: Arc<Settings>,
+    pub settings: RaftNodeConfig,
+    pub arc_settings: Arc<RaftNodeConfig>,
 }
 
 // If param `restart` is true, we will not reset dbs
@@ -150,7 +150,7 @@ pub fn setup_raft_components(
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
-    let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+    let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
     settings.cluster.db_root_dir = PathBuf::from(db_path);
     settings.cluster.initial_cluster = peers_meta.clone();
 
@@ -248,8 +248,8 @@ pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Ve
     }
 }
 
-pub(crate) fn settings(db_path: &str) -> Settings {
-    let mut s = Settings::load(None).expect("Settings should be inited successfully.");
+pub(crate) fn settings(db_path: &str) -> RaftNodeConfig {
+    let mut s = RaftNodeConfig::load(None).expect("RaftNodeConfig should be inited successfully.");
     s.cluster.db_root_dir = PathBuf::from(db_path);
     s
 }

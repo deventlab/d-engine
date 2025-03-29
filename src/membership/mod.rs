@@ -17,7 +17,7 @@ mod raft_membership_test;
 use crate::{
     alias::POF,
     grpc::rpc_service::{ClusteMembershipChangeRequest, ClusterMembership},
-    Result, Settings, TypeConfig,
+    Result, RaftNodeConfig, TypeConfig,
 };
 use dashmap::DashMap;
 #[cfg(test)]
@@ -41,7 +41,7 @@ pub struct ChannelWithAddressAndRole {
 
 #[cfg_attr(test, automock)]
 pub trait PeerChannelsFactory {
-    fn create(node_id: u32, settings: Arc<Settings>) -> Self;
+    fn create(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self;
 }
 
 // #[allow(unused)]

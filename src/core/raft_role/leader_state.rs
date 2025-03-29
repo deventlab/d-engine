@@ -12,7 +12,7 @@ use crate::{
     AppendResults, BatchBuffer, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
     MaybeCloneOneshot, MaybeCloneOneshotSender, Membership, NewLeaderInfo, RaftConfig, RaftContext,
     RaftEvent, RaftLog, RaftOneshot, ReplicationConfig, ReplicationCore, ReplicationTimer, Result,
-    RetryPolicies, RoleEvent, Settings, StateMachine, StateMachineHandler, TypeConfig, API_SLO,
+    RetryPolicies, RoleEvent, RaftNodeConfig, StateMachine, StateMachineHandler, TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
 use log::{debug, error, info, trace, warn};
@@ -43,7 +43,7 @@ pub struct LeaderState<T: TypeConfig> {
     timer: ReplicationTimer,
 
     // Shared global settings
-    pub(super) settings: Arc<Settings>,
+    pub(super) settings: Arc<RaftNodeConfig>,
 
     _marker: PhantomData<T>,
 }
@@ -907,7 +907,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
 impl<T: TypeConfig> LeaderState<T> {
     #[cfg(test)]
-    pub fn new(node_id: u32, settings: Arc<Settings>) -> Self {
+    pub fn new(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
         let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
             rpc_append_entries_batch_process_delay_in_ms,

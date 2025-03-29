@@ -15,7 +15,7 @@ use crate::{
     grpc::rpc_service::NodeMeta,
     membership::health_checker::{HealthChecker, HealthCheckerApis},
     utils::util::{self, address_str},
-    Error, NetworkConfig, RaftConfig, Result, RetryPolicies, Settings,
+    Error, NetworkConfig, RaftNodeConfig, Result, RetryPolicies,
 };
 use dashmap::DashMap;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -32,11 +32,11 @@ pub struct RpcPeerChannels {
     pub(super) node_id: u32,
 
     pub(super) channels: DashMap<u32, ChannelWithAddress>, //store peers connection
-    pub(super) settings: Arc<Settings>,
+    pub(super) settings: Arc<RaftNodeConfig>,
 }
 
 impl PeerChannelsFactory for RpcPeerChannels {
-    fn create(node_id: u32, settings: Arc<Settings>) -> Self {
+    fn create(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
         Self {
             node_id,
             channels: DashMap::new(),

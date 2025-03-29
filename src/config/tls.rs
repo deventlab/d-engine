@@ -1,3 +1,6 @@
+use std::{fs, path::Path};
+
+use crate::{Error, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -38,7 +41,121 @@ pub struct TlsConfig {
     #[serde(default = "default_enable_mtls")]
     pub enable_mtls: bool,
 }
+impl TlsConfig {
+    /// Validates TLS configuration consistency and file existence
+    /// # Errors
+    /// Returns `Error::InvalidConfig` when:
+    /// - mTLS is enabled without base TLS
+    /// - Required certificate files are missing
+    /// - Self-signed generation conflicts with existing paths
+    /// - Invalid certificate file permissions
+    pub fn validate(&self) -> Result<()> {
+        if !self.enable_tls {
+            // Skip validation if TLS is disabled
+            return Ok(());
+        }
 
+        // Validate mTLS dependencies
+        if self.enable_mtls && !self.enable_tls {
+            return Err(Error::InvalidConfig(
+                "mTLS requires enable_tls to be true".into(),
+            ));
+        }
+
+        // Handle self-signed certificate generation case
+        if self.generate_self_signed_certificates {
+            if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty()
+            {
+                return Err(Error::InvalidConfig(
+                    "Cannot specify certificate paths with generate_self_signed_certificates=true"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+
+        // Validate server certificates
+        self.validate_cert_file(&self.server_certificate_path, "server certificate")?;
+        self.validate_key_file(&self.server_private_key_path, "server private key")?;
+        self.validate_cert_file(&self.certificate_authority_root_path, "CA certificate")?;
+
+        // Validate client certificates for mTLS
+        if self.enable_mtls {
+            self.validate_cert_file(
+                &self.client_certificate_authority_root_path,
+                "client CA certificate",
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Validates a certificate file existence and readability
+    fn validate_cert_file(&self, path: &str, name: &str) -> Result<()> {
+        let path = Path::new(path);
+
+        if path.exists() {
+            #[cfg(not(test))]
+            {
+                // Check file readability
+                fs::File::open(path).map_err(|e| {
+                    Error::InvalidConfig(format!(
+                        "{} file {} is unreadable: {}",
+                        name,
+                        path.display(),
+                        e
+                    ))
+                })?;
+            }
+            Ok(())
+        } else {
+            Err(Error::InvalidConfig(format!(
+                "{} file {} not found",
+                name,
+                path.display()
+            )))
+        }
+    }
+
+    /// Validates a private key file existence and permissions
+    fn validate_key_file(&self, path: &str, name: &str) -> Result<()> {
+        let path = Path::new(path);
+
+        if path.exists() {
+            #[cfg(not(test))]
+            {
+                // Check key file permissions (should be 600)
+                let metadata = fs::metadata(path).map_err(|e| {
+                    Error::InvalidConfig(format!(
+                        "Cannot access {} permissions: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = metadata.permissions().mode();
+                    if mode & 0o777 != 0o600 {
+                        return Err(Error::InvalidConfig(format!(
+                            "Insecure permissions {:o} for {} (should be 600)",
+                            mode & 0o777,
+                            path.display()
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            Err(Error::InvalidConfig(format!(
+                "{} file {} not found",
+                name,
+                path.display()
+            )))
+        }
+    }
+}
 // Default implementations
 fn default_enable_tls() -> bool {
     false

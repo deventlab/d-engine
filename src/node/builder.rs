@@ -33,9 +33,8 @@ use crate::{
     alias::{COF, MOF, ROF, SMHOF, SMOF, SSOF, TROF},
     grpc::{self, grpc_transport::GrpcTransport},
     init_sled_storages, metrics, ClusterConfig, CommitHandler, DefaultCommitHandler,
-    DefaultStateMachineHandler, ElectionHandler, Error, Node, Raft, RaftMembership,
-    RaftStateMachine, ReplicationHandler, Result, Settings, SledRaftLog, SledStateStorage,
-    StateMachine,
+    DefaultStateMachineHandler, ElectionHandler, Error, Node, Raft, RaftMembership, RaftNodeConfig,
+    RaftStateMachine, ReplicationHandler, Result, SledRaftLog, SledStateStorage, StateMachine,
 };
 use log::{debug, error, info};
 use std::sync::{atomic::AtomicBool, Arc};
@@ -43,7 +42,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 
 pub struct NodeBuilder {
     node_id: u32,
-    pub(super) settings: Settings,
+    pub(super) settings: RaftNodeConfig,
     pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
@@ -66,7 +65,7 @@ impl NodeBuilder {
     /// # Panics
     /// Will panic if configuration loading fails (consider returning Result instead)
     pub fn new(cluster_path: Option<&str>, shutdown_signal: watch::Receiver<()>) -> Self {
-        let settings = Settings::load(cluster_path).expect("Load settings successfully!");
+        let settings = RaftNodeConfig::load(cluster_path).expect("Load settings successfully!");
         Self::init(settings, shutdown_signal)
     }
 
@@ -84,13 +83,13 @@ impl NodeBuilder {
         cluster_config: ClusterConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let mut settings = Settings::load(None).expect("Load settings successfully!");
+        let mut settings = RaftNodeConfig::load(None).expect("Load settings successfully!");
         settings.cluster = cluster_config;
         Self::init(settings, shutdown_signal)
     }
 
     /// Core initialization logic shared by all construction paths
-    pub fn init(settings: Settings, shutdown_signal: watch::Receiver<()>) -> Self {
+    pub fn init(settings: RaftNodeConfig, shutdown_signal: watch::Receiver<()>) -> Self {
         let node_id = settings.cluster.node_id;
         let db_root_dir = settings.cluster.db_root_dir.clone();
 
@@ -172,7 +171,7 @@ impl NodeBuilder {
         self
     }
 
-    pub fn settings(mut self, settings: Settings) -> Self {
+    pub fn settings(mut self, settings: RaftNodeConfig) -> Self {
         self.settings = settings;
         self
     }
@@ -295,7 +294,7 @@ impl NodeBuilder {
     pub fn new_from_db_path(db_path: &str, shutdown_signal: watch::Receiver<()>) -> Self {
         use std::path::PathBuf;
 
-        let mut settings = Settings::load(None).expect("Load settings successfully!");
+        let mut settings = RaftNodeConfig::load(None).expect("Load settings successfully!");
         settings.cluster.db_root_dir = PathBuf::from(db_path);
 
         Self::init(settings, shutdown_signal)

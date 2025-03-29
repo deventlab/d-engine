@@ -14,7 +14,7 @@ use crate::{
     utils::util::kv,
     AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver, MaybeCloneOneshotSender,
     MockMembership, MockRaftLog, MockReplicationCore, MockStateMachineHandler, MockTransport,
-    NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot, ReplicationConfig, RoleEvent, Settings,
+    NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot, ReplicationConfig, RoleEvent, RaftNodeConfig,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, watch};
@@ -25,7 +25,7 @@ struct TestContext {
     replication_handler: MockReplicationCore<MockTypeConfig>,
     raft_log: Arc<MockRaftLog>,
     transport: Arc<MockTransport>,
-    arc_settings: Arc<Settings>,
+    arc_settings: Arc<RaftNodeConfig>,
 }
 
 /// Initialize the test environment and return the core components
@@ -46,7 +46,7 @@ async fn setup_test_case(
     };
 
     // Create Leader state
-    let settings = Arc::new(Settings {
+    let settings = Arc::new(RaftNodeConfig {
         raft: raft.clone(),
         ..context.settings.clone()
     });
@@ -296,7 +296,7 @@ async fn test_process_client_propose_case2() {
         },
         ..context.settings.raft.clone()
     };
-    let settings = Settings {
+    let settings = RaftNodeConfig {
         raft: raft.clone(),
         ..context.settings.clone()
     };

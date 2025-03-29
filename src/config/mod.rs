@@ -23,6 +23,9 @@ pub use raft::*;
 pub use retry::*;
 pub use tls::*;
 
+#[cfg(test)]
+mod raft_test;
+
 //---
 use crate::{Error, Result};
 use config::{Config, Environment, File};
@@ -39,7 +42,7 @@ struct MainConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Settings {
+pub struct RaftNodeConfig {
     /// Cluster topology and node configuration
     pub cluster: ClusterConfig,
     /// Metrics and monitoring settings
@@ -54,7 +57,7 @@ pub struct Settings {
     pub tls: TlsConfig,
 }
 
-impl Settings {
+impl RaftNodeConfig {
     /// Load configuration from multiple sources with priority:
     /// 1. Base config files
     /// 2. Environment-specific config
@@ -107,9 +110,24 @@ impl Settings {
                 .try_parsing(true),
         );
 
-        config
+        let settings: Self = config
             .build()?
             .try_deserialize()
-            .map_err(|e| Error::ConfigError(e.into()))
+            .map_err(|e| Error::ConfigError(e.into()))?;
+
+        settings.validate()?;
+
+        Ok(settings)
+    }
+
+    /// Validate all configuration components
+    pub fn validate(&self) -> Result<()> {
+        self.cluster.validate()?;
+        self.monitoring.validate()?;
+        self.raft.validate()?;
+        self.network.validate()?;
+        self.tls.validate()?;
+        self.retry.validate()?;
+        Ok(())
     }
 }

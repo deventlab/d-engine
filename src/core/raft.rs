@@ -1,7 +1,7 @@
 use super::{follower_state::FollowerState, RaftContext, RaftEvent, RaftRole, RoleEvent};
 use crate::{
     alias::{EOF, MOF, POF, REPOF, ROF, SMHOF, SMOF, SSOF, TROF},
-    Error, RaftLog, Result, Settings, StateMachine, StateStorage, TypeConfig,
+    Error, RaftLog, Result, RaftNodeConfig, StateMachine, StateStorage, TypeConfig,
 };
 use log::{debug, error, info, trace, warn};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ where
     pub node_id: u32,
     pub role: RaftRole<T>,
     pub ctx: RaftContext<T>,
-    pub settings: Arc<Settings>,
+    pub settings: Arc<RaftNodeConfig>,
 
     // Channels with peers
     // PeersChannel will be used inside Transport::spawn when sending peers messages
@@ -59,7 +59,7 @@ where
         replication_handler: REPOF<T>,
         state_machine_handler: Arc<SMHOF<T>>,
         membership: Arc<MOF<T>>,
-        settings: Arc<Settings>,
+        settings: Arc<RaftNodeConfig>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
         role_rx: mpsc::UnboundedReceiver<RoleEvent>,
         event_tx: mpsc::Sender<RaftEvent>,
@@ -130,7 +130,7 @@ where
 
         membership: Arc<MOF<T>>,
 
-        settings: Arc<Settings>,
+        settings: Arc<RaftNodeConfig>,
     ) -> RaftContext<T> {
         RaftContext {
             node_id: id,

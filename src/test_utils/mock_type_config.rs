@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use crate::MockCommitHandler;
 use crate::MockElectionCore;
 use crate::MockMembership;
@@ -14,7 +12,7 @@ use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::PeerChannelsFactory;
 use crate::RaftEvent;
-use crate::Settings;
+use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
@@ -65,7 +63,7 @@ impl Clone for MockPeerChannels {
 }
 
 impl PeerChannelsFactory for MockPeerChannels {
-    fn create(_id: u32, _settings: Arc<Settings>) -> Self {
+    fn create(_id: u32, _settings: Arc<RaftNodeConfig>) -> Self {
         let mut peer_channels = MockPeerChannels::new();
         peer_channels
             .expect_connect_with_peers()
