@@ -16,7 +16,6 @@ rpc_append_entries_in_batch_threshold = 100
 rpc_append_entries_batch_process_delay_in_ms = 1
 # timeout in ms
 
-### -------- REPLICATE ENTRIES RETRY CONFIGURE -----------------##
 # if a follower is very slow to catch up with leader, we should limit the max number of the entries could sync per time
 append_entries_max_entries_per_replication = 100
 
@@ -27,15 +26,14 @@ election_timeout_max = 1000
 # check rpc connection health per 30 sec
 rpc_peer_connectinon_monitor_interval_in_sec = 30
 internal_rpc_client_request_id = 0
-### -------- CLISTER MEMBERSHIP CONFIGURE -----------------##
-cluster_healthcheck_probe_service_name = "rpc_service.RpcService"
 
-### -------- General RPC CONFIGURE -----------------##
 general_raft_timeout_duration_in_ms = 50
-
 
 
 [raft.commit_handler]
 batch_size = 100
 process_interval_ms = 10
 max_entries_per_chunk = 100
+
+[raft.membership]
+cluster_healthcheck_probe_service_name = "rpc_service.RpcService"

@@ -1,8 +1,6 @@
-use log::info;
-
 use crate::{
     alias::{EOF, MOF, POF, REPOF, ROF, SMHOF, SMOF, SSOF, TROF},
-    ChannelWithAddressAndRole, Membership, Settings, TypeConfig,
+    ChannelWithAddressAndRole, Membership, RaftNodeConfig, TypeConfig,
 };
 use std::sync::Arc;
 
@@ -28,8 +26,8 @@ where
     pub replication_handler: REPOF<T>,
     pub state_machine_handler: Arc<SMHOF<T>>, //it was used in both commit_handlers and other places
 
-    // Settings
-    pub settings: Arc<Settings>,
+    // RaftNodeConfig
+    pub settings: Arc<RaftNodeConfig>,
 }
 
 impl<T> RaftContext<T>
@@ -57,7 +55,7 @@ where
     pub fn election_handler(&self) -> &EOF<T> {
         &self.election_handler
     }
-    pub fn settings(&self) -> Arc<Settings> {
+    pub fn settings(&self) -> Arc<RaftNodeConfig> {
         self.settings.clone()
     }
 

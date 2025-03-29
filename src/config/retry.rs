@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::{Error, Result};
+
 /// Basic retry policy template
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 pub struct BackoffPolicy {
@@ -71,6 +73,86 @@ impl Default for RetryPolicies {
         }
     }
 }
+impl BackoffPolicy {
+    /// Validates backoff policy parameters
+    /// # Errors
+    /// Returns `Error::InvalidConfig` when:
+    /// - Timeout exceeds maximum delay
+    /// - Base delay > max delay
+    /// - Infinite retries without proper safeguards
+    pub fn validate(&self, policy_name: &str) -> Result<()> {
+        // Validate retry limits
+        if self.max_retries == 0 {
+            return Err(Error::InvalidConfig(format!(
+                "{}: max_retries=0 means infinite retries - dangerous for {} operations",
+                policy_name, policy_name
+            )));
+        }
+
+        // Validate timeout constraints
+        if self.timeout_ms == 0 {
+            return Err(Error::InvalidConfig(format!(
+                "{}: timeout_ms cannot be 0",
+                policy_name
+            )));
+        }
+
+        // Validate delay progression
+        if self.base_delay_ms >= self.max_delay_ms {
+            return Err(Error::InvalidConfig(format!(
+                "{}: base_delay_ms({}) must be less than max_delay_ms({})",
+                policy_name, self.base_delay_ms, self.max_delay_ms
+            )));
+        }
+
+        // Ensure reasonable maximums
+        if self.max_delay_ms > 120_000 {
+            // 2 minutes
+            return Err(Error::InvalidConfig(format!(
+                "{}: max_delay_ms({}) exceeds 2min limit",
+                policy_name, self.max_delay_ms
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+impl RetryPolicies {
+    /// Validates all retry policies according to Raft protocol requirements
+    pub fn validate(&self) -> Result<()> {
+        self.validate_append_entries()?;
+        self.validate_election()?;
+        self.validate_membership()?;
+        self.validate_healthcheck()?;
+        Ok(())
+    }
+
+    fn validate_append_entries(&self) -> Result<()> {
+        self.append_entries.validate("append_entries")?;
+
+        Ok(())
+    }
+
+    fn validate_election(&self) -> Result<()> {
+        self.election.validate("election")?;
+
+        Ok(())
+    }
+
+    fn validate_membership(&self) -> Result<()> {
+        self.membership.validate("membership")?;
+
+        Ok(())
+    }
+
+    fn validate_healthcheck(&self) -> Result<()> {
+        self.healthcheck.validate("healthcheck")?;
+
+        Ok(())
+    }
+}
+
 fn default_max_retries() -> usize {
     3
 }

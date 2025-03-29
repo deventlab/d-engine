@@ -2,7 +2,7 @@ use super::ElectionCore;
 use crate::{
     alias::{ROF, TROF},
     grpc::rpc_service::{VoteRequest, VotedFor},
-    ChannelWithAddressAndRole, Error, RaftEvent, RaftLog, Result, RoleEvent, Settings, StateUpdate,
+    ChannelWithAddressAndRole, Error, RaftEvent, RaftLog, Result, RoleEvent, RaftNodeConfig, StateUpdate,
     Transport, TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
@@ -30,7 +30,7 @@ where
         voting_members: Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        settings: &Arc<Settings>,
+        settings: &Arc<RaftNodeConfig>,
     ) -> Result<()> {
         debug!("broadcast_vote_requests...");
 

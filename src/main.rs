@@ -1,7 +1,7 @@
 use core::panic;
 use dengine::utils::util;
 use dengine::{Error, Result};
-use dengine::{NodeBuilder, Settings};
+use dengine::{NodeBuilder, RaftNodeConfig};
 use log::{error, info};
 use std::path::{Path, PathBuf};
 use tokio::signal::unix::{signal, SignalKind};
@@ -13,7 +13,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    let settings = Settings::load(None)?;
+    let settings = RaftNodeConfig::load(None)?;
 
     // Initializing Logs
     let _guard = init_observability(settings.cluster.node_id, &settings.cluster.log_dir)?;

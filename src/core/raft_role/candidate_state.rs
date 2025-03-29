@@ -6,7 +6,7 @@ use crate::{
     alias::POF,
     grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VoteResponse, VotedFor},
     ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, RaftLog, RoleEvent,
-    Settings, StateMachineHandler, TypeConfig,
+    RaftNodeConfig, StateMachineHandler, TypeConfig,
 };
 use log::{debug, error, info, warn};
 use std::{marker::PhantomData, sync::Arc};
@@ -20,7 +20,7 @@ pub struct CandidateState<T: TypeConfig> {
     pub(super) timer: ElectionTimer,
 
     // Shared global settings
-    pub(super) settings: Arc<Settings>,
+    pub(super) settings: Arc<RaftNodeConfig>,
     _marker: PhantomData<T>,
 }
 
@@ -378,7 +378,7 @@ impl<T: TypeConfig> CandidateState<T> {
     }
 
     #[cfg(test)]
-    pub fn new(node_id: u32, settings: Arc<Settings>) -> Self {
+    pub fn new(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
         Self {
             shared_state: SharedState::new(node_id, None, None),
             timer: ElectionTimer::new((1, 2)),

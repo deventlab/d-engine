@@ -22,12 +22,12 @@ mod grpc_transport_test;
 // Start RPC Server
 
 use crate::{grpc::rpc_service::rpc_service_server::RpcServiceServer, Error, Node, Result};
-use crate::{Settings, TlsConfig, TypeConfig};
+use crate::{RaftNodeConfig, TlsConfig, TypeConfig};
 use futures::FutureExt;
 use log::{debug, error, info, warn};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use std::net::SocketAddr;
-use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use tokio::sync::watch;
 use tonic::codec::CompressionEncoding;
@@ -41,7 +41,7 @@ use tonic_health::server::health_reporter;
 pub(crate) async fn start_rpc_server<T>(
     node: Arc<Node<T>>,
     listen_address: SocketAddr,
-    config: Settings,
+    config: RaftNodeConfig,
     mut shutdown_signal: watch::Receiver<()>,
 ) -> Result<()>
 where

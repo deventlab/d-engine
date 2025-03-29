@@ -14,7 +14,7 @@ use tonic::async_trait;
 use crate::{
     alias::{ROF, TROF},
     grpc::rpc_service::{VoteRequest, VotedFor},
-    ChannelWithAddressAndRole, Result, Settings, TypeConfig,
+    ChannelWithAddressAndRole, Result, RaftNodeConfig, TypeConfig,
 };
 
 #[derive(Debug)]
@@ -44,7 +44,7 @@ where
         voting_members: Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        settings: &Arc<Settings>,
+        settings: &Arc<RaftNodeConfig>,
     ) -> Result<()>;
 
     /// Processes incoming vote requests: validates request legality via check_vote_request_is_legal,

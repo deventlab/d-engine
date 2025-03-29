@@ -170,7 +170,7 @@ async fn test_check_cluster_is_ready_case2() {
 
     // Simulate ChannelWithAddress: prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(peer2_port, rx1, false)
+    let addr1 = MockNode::simulate_mock_service_without_reps(peer2_port, rx1, true)
         .await
         .expect("should succeed");
 
@@ -178,7 +178,12 @@ async fn test_check_cluster_is_ready_case2() {
     peer_channels.set_peer_channel(peer2_id, addr1);
 
     // Test health status
-    assert!(peer_channels.check_cluster_is_ready().await.is_ok());
+    if let Err(e) = peer_channels.check_cluster_is_ready().await {
+        eprintln!("peer_channels.check_cluster_is_ready failed with: {:?}", e);
+        assert!(false);
+    } else {
+        assert!(true);
+    }
 }
 
 /// Tests connection task spawning logic

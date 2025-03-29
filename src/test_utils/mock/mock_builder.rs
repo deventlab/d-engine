@@ -2,7 +2,7 @@ use crate::{
     grpc::rpc_service::ClusterMembership, ElectionConfig, MockElectionCore, MockMembership,
     MockPeerChannels, MockRaftLog, MockReplicationCore, MockStateMachine, MockStateMachineHandler,
     MockStateStorage, MockTransport, Node, Raft, RaftConfig, RaftContext, RaftEvent, RoleEvent,
-    Settings,
+    RaftNodeConfig,
 };
 use dashmap::DashMap;
 use std::{
@@ -24,7 +24,7 @@ pub struct MockBuilder {
     pub replication_handler: Option<MockReplicationCore<MockTypeConfig>>,
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
     pub peer_channels: Option<MockPeerChannels>,
-    pub settings: Option<Settings>,
+    pub settings: Option<RaftNodeConfig>,
     shutdown_signal: watch::Receiver<()>,
 
     pub event_tx: Option<mpsc::Sender<RaftEvent>>,
@@ -93,7 +93,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
             self.settings
-                .unwrap_or_else(|| Settings::load(None).expect("Should succeed to init Settings")),
+                .unwrap_or_else(|| RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig")),
             self.role_tx.unwrap_or_else(|| role_tx),
             self.role_rx.unwrap_or_else(|| role_rx),
             self.event_tx.unwrap_or_else(|| event_tx),
@@ -149,7 +149,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
             self.settings
-                .unwrap_or_else(|| Settings::load(None).expect("Should succeed to init Settings")),
+                .unwrap_or_else(|| RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig")),
             self.role_tx.unwrap_or_else(|| role_tx),
             self.role_rx.unwrap_or_else(|| role_rx),
             self.event_tx.unwrap_or_else(|| event_tx),
@@ -166,7 +166,7 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
             membership,
-            Arc::new(Settings {
+            Arc::new(RaftNodeConfig {
                 raft: RaftConfig {
                     election: ElectionConfig {
                         election_timeout_min: 1,
@@ -251,13 +251,13 @@ impl MockBuilder {
         self
     }
 
-    pub fn with_settings(mut self, settings: Settings) -> Self {
+    pub fn with_settings(mut self, settings: RaftNodeConfig) -> Self {
         self.settings = Some(settings);
         self
     }
 
     pub fn with_db_path(mut self, db_root_dir: &str) -> Self {
-        let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+        let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
         settings.cluster.db_root_dir = PathBuf::from(db_root_dir);
         self.settings = Some(settings);
         self
@@ -348,7 +348,7 @@ fn mock_raft_context_internal(
     election_handler: MockElectionCore<MockTypeConfig>,
     replication_handler: MockReplicationCore<MockTypeConfig>,
     state_machine_handler: Arc<MockStateMachineHandler<MockTypeConfig>>,
-    settings: Settings,
+    settings: RaftNodeConfig,
 ) -> RaftContext<MockTypeConfig> {
     RaftContext {
         node_id: id,

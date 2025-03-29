@@ -1,7 +1,7 @@
 use dengine::{
     client_config::ClientConfig,
     utils::util::{self, kv, vk},
-    ClientApis, ClusterConfig, DengineClient, Error, NodeBuilder, Result, Settings,
+    ClientApis, ClusterConfig, DengineClient, Error, NodeBuilder, Result, RaftNodeConfig,
 };
 use log::{error, info};
 use std::path::Path;
@@ -55,7 +55,7 @@ pub async fn start_node(
 
 async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result<()> {
     // Load configuration from the specified path
-    let settings = Settings::load(Some(config_path)).expect("init settings successfully.");
+    let settings = RaftNodeConfig::load(Some(config_path)).expect("init settings successfully.");
 
     // Initialize logs
     let _guard = init_observability(&settings.cluster)?;

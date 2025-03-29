@@ -9,7 +9,7 @@ use crate::{
     grpc::rpc_service::{ClientResponse, VoteResponse},
     utils::util::error,
     ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, Result, RoleEvent,
-    Settings, StateMachine, StateMachineHandler, TypeConfig,
+    RaftNodeConfig, StateMachine, StateMachineHandler, TypeConfig,
 };
 use log::{debug, error, info, warn};
 use tokio::{sync::mpsc, time::Instant};
@@ -19,7 +19,7 @@ pub struct FollowerState<T: TypeConfig> {
     pub shared_state: SharedState,
     pub(super) timer: ElectionTimer,
     // Shared global settings
-    pub(super) settings: Arc<Settings>,
+    pub(super) settings: Arc<RaftNodeConfig>,
 
     _marker: PhantomData<T>,
 }
@@ -286,7 +286,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
 impl<T: TypeConfig> FollowerState<T> {
     pub fn new(
         node_id: u32,
-        settings: Arc<Settings>,
+        settings: Arc<RaftNodeConfig>,
         hard_state_from_db: Option<HardState>,
         last_applied_index_option: Option<u64>,
     ) -> Self {

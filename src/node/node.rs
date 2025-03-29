@@ -15,7 +15,7 @@
 //! ```
 
 use crate::membership::PeerChannelsFactory;
-use crate::Settings;
+use crate::RaftNodeConfig;
 use crate::{alias::POF, PeerChannels, Raft, RaftEvent, Result, TypeConfig};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -35,14 +35,14 @@ where
     pub event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) ready: AtomicBool,
 
-    pub settings: Arc<Settings>,
+    pub settings: Arc<RaftNodeConfig>,
 }
 
 impl<T> Node<T>
 where
     T: TypeConfig,
 {
-    async fn connect_with_peers(node_id: u32, settings: Arc<Settings>) -> Result<POF<T>> {
+    async fn connect_with_peers(node_id: u32, settings: Arc<RaftNodeConfig>) -> Result<POF<T>> {
         let mut peer_channels = T::P::create(node_id, settings.clone());
         peer_channels.connect_with_peers(node_id).await?;
 

@@ -5,7 +5,7 @@ use super::{
 use crate::{
     alias::POF,
     grpc::rpc_service::{ClientResponse, VoteResponse, VotedFor},
-    ElectionTimer, Error, RaftContext, RaftEvent, Result, RoleEvent, Settings, StateMachine,
+    ElectionTimer, Error, RaftContext, RaftEvent, Result, RoleEvent, RaftNodeConfig, StateMachine,
     TypeConfig,
 };
 use log::{debug, error, info, warn};
@@ -20,7 +20,7 @@ pub struct LearnerState<T: TypeConfig> {
     pub shared_state: SharedState,
     pub(super) timer: ElectionTimer,
     // Shared global settings
-    pub(super) settings: Arc<Settings>,
+    pub(super) settings: Arc<RaftNodeConfig>,
 
     _marker: PhantomData<T>,
 }
@@ -226,7 +226,7 @@ impl<T: TypeConfig> LearnerState<T> {
 }
 
 impl<T: TypeConfig> LearnerState<T> {
-    pub fn new(node_id: u32, settings: Arc<Settings>) -> Self {
+    pub fn new(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
         LearnerState {
             shared_state: SharedState::new(node_id, None, None),
             timer: ElectionTimer::new((
