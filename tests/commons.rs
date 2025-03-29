@@ -1,14 +1,14 @@
 use dengine::{
     client_config::ClientConfig,
     utils::util::{self, kv, vk},
-    ClientApis, DengineClient, Error, NodeBuilder, Result, ServerSettings, Settings,
+    ClientApis, ClusterConfig, DengineClient, Error, NodeBuilder, Result, Settings,
 };
 use log::{error, info};
 use std::path::Path;
 use tokio::sync::watch;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
-    fmt, layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Layer, Registry,
+    fmt, layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Layer,
 };
 
 pub enum ClientCommands {
@@ -55,13 +55,13 @@ pub async fn start_node(
 
 async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result<()> {
     // Load configuration from the specified path
-    let settings = Settings::from_file(config_path)?;
+    let settings = Settings::load(Some(config_path)).expect("init settings successfully.");
 
     // Initialize logs
     let _guard = init_observability(&settings.cluster)?;
 
     // Build and start the node
-    let node = NodeBuilder::new(settings, graceful_rx)
+    let node = NodeBuilder::new(Some(config_path), graceful_rx)
         .build()
         .start_rpc_server()
         .await
@@ -80,7 +80,7 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
     drop(node);
     Ok(())
 }
-pub fn init_observability2(settings: &ServerSettings) -> Result<WorkerGuard> {
+pub fn init_observability2(settings: &ClusterConfig) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
         Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
     )?;
@@ -118,7 +118,7 @@ pub fn init_observability2(settings: &ServerSettings) -> Result<WorkerGuard> {
     Ok(guard)
 }
 
-pub fn init_observability(settings: &ServerSettings) -> Result<WorkerGuard> {
+pub fn init_observability(settings: &ClusterConfig) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
         Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
     )?;

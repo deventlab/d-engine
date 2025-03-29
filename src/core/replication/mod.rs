@@ -14,8 +14,8 @@ mod replication_handler_test;
 use crate::{
     alias::{ROF, TROF},
     grpc::rpc_service::{AppendEntriesRequest, ClientCommand, ClientResponse, Entry},
-    AppendResults, ChannelWithAddressAndRole, MaybeCloneOneshotSender, RaftSettings, Result,
-    TypeConfig,
+    AppendResults, ChannelWithAddressAndRole, MaybeCloneOneshotSender, RaftConfig, Result,
+    RetryPolicies, TypeConfig,
 };
 use dashmap::DashMap;
 use std::{collections::HashMap, sync::Arc};
@@ -65,7 +65,8 @@ where
         replication_members: &Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        raft_settings: RaftSettings,
+        raft: &RaftConfig,
+        retry: &RetryPolicies,
     ) -> Result<AppendResults>;
 
     fn if_update_commit_index_as_follower(

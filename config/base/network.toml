@@ -1,0 +1,40 @@
+[network]
+# // connect_timeout is the timeout for grpc connection.
+connect_timeout_in_ms = 20
+# // request_timeout is the timeout for grpc requests.
+request_timeout_in_ms = 200
+# // concurrency_limit_per_connection: set the concurrency limit applied to on requests inbound per connection.
+concurrency_limit_per_connection = 8192
+
+# HTTP2/Multiplexing：
+# Assume the server sets SETTINGS_MAX_CONCURRENT_STREAMS = 10:
+# - After the client receives this setting, it can only initiate a maximum of 10 outstanding requests on the same connection at the same time.
+# - When the 11th request is attempted to be sent, the client will block and wait for the existing stream to complete (or trigger a timeout).
+max_concurrent_streams = 500
+
+tcp_nodelay = true
+
+# // tcp_keepalive is the keepalive duration for tcp connection.
+tcp_keepalive_in_secs = 3600
+
+# // http2_keep_alive_interval is the interval for http2 keep alive.
+http2_keep_alive_interval_in_secs = 300
+
+# // http2_keep_alive_timeout is the timeout for http2 keep alive.
+http2_keep_alive_timeout_in_secs = 20
+
+# // max_frame_size is the max frame size for grpc, default is 12mb = 12 * 1024 * 1024.
+max_frame_size = 16777215
+
+# 2MB
+initial_stream_window_size = 2097152
+
+# // initial_connection_window_size is the initial window size for grpc, default is 12mb = 12 * 1024 * 1024.
+initial_connection_window_size = 12582912
+# // buffer_size is the buffer size for grpc, default is 64kb = 64 * 1024.
+buffer_size = 65536
+
+# /// Sets whether to use an adaptive flow control. Defaults to false.
+# /// Enabling this will override the limits set in http2_initial_stream_window_size and
+# /// http2_initial_connection_window_size.
+http2_adaptive_window = false

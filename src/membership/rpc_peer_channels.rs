@@ -15,7 +15,7 @@ use crate::{
     grpc::rpc_service::NodeMeta,
     membership::health_checker::{HealthChecker, HealthCheckerApis},
     utils::util::{self, address_str},
-    Error, RaftSettings, Result, RpcConnectionSettings, Settings,
+    Error, NetworkConfig, RaftConfig, Result, RetryPolicies, Settings,
 };
 use dashmap::DashMap;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -54,11 +54,12 @@ impl PeerChannels for RpcPeerChannels {
         info!("Connecting with peers: {:?}", initial_cluster);
 
         let cluster_size = initial_cluster.len();
-        let raft_settings = self.settings.raft_settings.clone();
-        let rpc_settings = &self.settings.rpc_connection_settings;
-
-        let tasks =
-            self.spawn_connection_tasks(my_id, initial_cluster, raft_settings, rpc_settings);
+        let tasks = self.spawn_connection_tasks(
+            my_id,
+            initial_cluster,
+            self.settings.retry.clone(),
+            &self.settings.network,
+        );
         let channels = self.collect_connections(tasks, cluster_size - 1).await?;
 
         self.channels = channels;
@@ -69,8 +70,9 @@ impl PeerChannels for RpcPeerChannels {
         info!("check_cluster_is_ready...");
         let mut tasks = FuturesUnordered::new();
 
-        let settings = self.settings.rpc_connection_settings.clone();
-        let raft_settings = self.settings.raft_settings.clone();
+        let settings = self.settings.network.clone();
+        let raft = self.settings.raft.clone();
+        let retry = self.settings.retry.clone();
 
         let mut peer_ids = Vec::new();
         for peer in self.voting_members().iter() {
@@ -81,8 +83,10 @@ impl PeerChannels for RpcPeerChannels {
             let addr: String = peer_channel_with_addr.address.clone();
 
             let settings = settings.clone();
-            let cluster_healthcheck_probe_service_name =
-                raft_settings.cluster_healthcheck_probe_service_name.clone();
+            let cluster_healthcheck_probe_service_name = raft
+                .membership
+                .cluster_healthcheck_probe_service_name
+                .clone();
 
             let task_handle = task::spawn(async move {
                 match util::task_with_timeout_and_exponential_backoff(
@@ -93,11 +97,9 @@ impl PeerChannels for RpcPeerChannels {
                             cluster_healthcheck_probe_service_name.clone(),
                         )
                     },
-                    raft_settings.cluster_healtcheck_max_retries,
-                    Duration::from_millis(
-                        raft_settings.cluster_healtcheck_exponential_backoff_duration_in_ms,
-                    ),
-                    Duration::from_millis(raft_settings.cluster_healtcheck_timeout_duration_in_ms),
+                    retry.membership.max_retries,
+                    Duration::from_millis(retry.membership.base_delay_ms),
+                    Duration::from_millis(retry.membership.timeout_ms),
                 )
                 .await
                 {
@@ -168,8 +170,8 @@ impl RpcPeerChannels {
         &self,
         my_id: u32,
         peers: &[NodeMeta],
-        raft_settings: RaftSettings,
-        rpc_settings: &RpcConnectionSettings,
+        retry: RetryPolicies,
+        rpc_settings: &NetworkConfig,
     ) -> FuturesUnordered<task::JoinHandle<Result<(u32, ChannelWithAddress)>>> {
         let tasks = FuturesUnordered::new();
 
@@ -178,8 +180,7 @@ impl RpcPeerChannels {
                 continue; // Skip self
             }
 
-            let task =
-                self.spawn_connection_task(node_meta.clone(), raft_settings.clone(), rpc_settings);
+            let task = self.spawn_connection_task(node_meta.clone(), retry.clone(), rpc_settings);
             tasks.push(task);
         }
 
@@ -190,13 +191,12 @@ impl RpcPeerChannels {
     fn spawn_connection_task(
         &self,
         node_meta: NodeMeta,
-        raft_settings: RaftSettings,
-        rpc_settings: &RpcConnectionSettings,
+        retry: RetryPolicies,
+        rpc_settings: &NetworkConfig,
     ) -> task::JoinHandle<Result<(u32, ChannelWithAddress)>> {
         let rpc_settings = rpc_settings.clone();
         task::spawn(async move {
-            let channel =
-                Self::connect_with_retry(&node_meta, &raft_settings, &rpc_settings).await?;
+            let channel = Self::connect_with_retry(&node_meta, &retry, &rpc_settings).await?;
             let address = address_str(&node_meta.ip, node_meta.port as u16);
 
             debug!(
@@ -241,21 +241,19 @@ impl RpcPeerChannels {
     /// Attempts to connect to a peer with retries and exponential backoff.
     pub(super) async fn connect_with_retry(
         node_meta: &NodeMeta,
-        raft_settings: &RaftSettings,
-        rpc_settings: &RpcConnectionSettings,
+        retry: &RetryPolicies,
+        rpc_settings: &NetworkConfig,
     ) -> Result<Channel> {
         util::task_with_timeout_and_exponential_backoff(
             || Self::connect(node_meta.clone(), rpc_settings.clone()),
-            raft_settings.cluster_membership_sync_max_retries,
-            Duration::from_millis(
-                raft_settings.cluster_membership_sync_exponential_backoff_duration_in_ms,
-            ),
-            Duration::from_millis(raft_settings.cluster_membership_sync_timeout_duration_in_ms),
+            retry.membership.max_retries,
+            Duration::from_millis(retry.membership.base_delay_ms),
+            Duration::from_millis(retry.membership.timeout_ms),
         )
         .await
     }
 
-    async fn connect(node_meta: NodeMeta, settings: RpcConnectionSettings) -> Result<Channel> {
+    async fn connect(node_meta: NodeMeta, settings: NetworkConfig) -> Result<Channel> {
         let addr = address_str(&node_meta.ip, node_meta.port as u16);
         Endpoint::try_from(addr.clone())?
             .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))

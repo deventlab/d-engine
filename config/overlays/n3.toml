@@ -1,6 +1,3 @@
-#############################################
-#### cluster ########################
-#############################################
 [cluster]
 node_id = 3
 listen_address = "127.0.0.1:9083"
@@ -12,4 +9,5 @@ initial_cluster = [
 db_root_dir = "./db/3"
 log_dir = "./logs"
 
-prometheus_metrics_port = 8083
+[monitoring]
+prometheus_port = 8083

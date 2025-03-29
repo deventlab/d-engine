@@ -6,7 +6,7 @@ use crate::{
     test_utils::{
         self, setup_raft_components, MockNode, MockRpcService, MOCK_RPC_CLIENT_PORT_BASE,
     },
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RaftSettings, Settings,
+    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RetryPolicies, Settings,
     Transport, CANDIDATE, FOLLOWER,
 };
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ async fn test_send_append_requests_case1() {
     let my_id = 1;
     let client = GrpcTransport { my_id };
     if let Err(Error::AppendEntriesNoPeerFound) = client
-        .send_append_requests(1, vec![], RaftSettings::default())
+        .send_append_requests(1, vec![], &RetryPolicies::default())
         .await
     {
         assert!(true);
@@ -110,12 +110,12 @@ async fn test_send_append_requests_case2() {
     //     .times(0)
     //     .returning(|_, _| {});
 
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
     if let Err(e) = client
-        .send_append_requests(1, requests_with_peer_address, settings.raft_settings)
+        .send_append_requests(1, requests_with_peer_address, &settings.retry)
         .await
     {
         assert!(matches!(e, Error::FoundNewLeaderError(_)));
@@ -186,12 +186,12 @@ async fn test_send_append_requests_case3() {
         (peer_3_id, peer_3_address, peer_req),
     ];
 
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client
-        .send_append_requests(1, requests_with_peer_address, settings.raft_settings)
+        .send_append_requests(1, requests_with_peer_address, &settings.retry)
         .await
     {
         Ok(AppendResults {
@@ -273,11 +273,11 @@ async fn test_send_append_requests_case4() {
         (peer_3_id, peer_3_address, peer_req),
     ];
 
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client
-        .send_append_requests(1, requests_with_peer_address, settings.raft_settings)
+        .send_append_requests(1, requests_with_peer_address, &settings.retry)
         .await
     {
         Ok(AppendResults {
@@ -336,10 +336,10 @@ async fn test_send_append_requests_case5() {
     };
     let requests_with_peer_address = vec![(leader_id, leader_address, peer_req)];
 
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
     let client = GrpcTransport { my_id: leader_id };
     if let Err(Error::AppendEntriesNoPeerFound) = client
-        .send_append_requests(1, vec![], settings.raft_settings.clone())
+        .send_append_requests(1, vec![], &settings.retry)
         .await
     {
         assert!(true);
@@ -409,11 +409,11 @@ async fn test_send_append_requests_case6() {
         (peer_2_id, peer_2_address, peer_req.clone()),
         (peer_3_id, peer_3_address, peer_req),
     ];
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     let client = GrpcTransport { my_id: leader_id };
     match client
-        .send_append_requests(1, requests_with_peer_address, settings.raft_settings)
+        .send_append_requests(1, requests_with_peer_address, &settings.retry)
         .await
     {
         Ok(AppendResults {
@@ -544,14 +544,14 @@ async fn test_send_append_requests_case7() {
         .collect::<Vec<_>>();
 
     // 5. Test - Send AppendEntries RPCs
-    let settings = Settings::new().expect("Should succeed to init settings");
+    let settings = Settings::load(None).expect("Should succeed to init settings");
     let client = GrpcTransport { my_id: leader_id };
 
     match client
         .send_append_requests(
             leader_current_term,
             requests_with_peer_address,
-            settings.raft_settings,
+            &settings.retry,
         )
         .await
     {
@@ -595,7 +595,7 @@ async fn test_send_vote_requests_case1() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
     let request = VoteRequest {
         term: 1,
         candidate_id: my_id,
@@ -604,7 +604,7 @@ async fn test_send_vote_requests_case1() {
     };
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(vec![], request, &settings.raft_settings)
+        .send_vote_requests(vec![], request, &settings.retry)
         .await
     {
         Ok(res) => assert!(!res),
@@ -622,7 +622,7 @@ async fn test_send_vote_requests_case2() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
@@ -647,7 +647,7 @@ async fn test_send_vote_requests_case2() {
     }];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.raft_settings)
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
         .await
     {
         Ok(res) => assert!(!res),
@@ -669,7 +669,7 @@ async fn test_send_vote_requests_case3() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -708,7 +708,7 @@ async fn test_send_vote_requests_case3() {
     ];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.raft_settings)
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
         .await
     {
         Ok(res) => assert!(res),
@@ -729,7 +729,7 @@ async fn test_send_vote_requests_case4() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -763,7 +763,7 @@ async fn test_send_vote_requests_case4() {
     ];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.raft_settings)
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
         .await
     {
         Ok(res) => assert!(!res),
@@ -784,7 +784,7 @@ async fn test_send_vote_requests_case5() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = Settings::new().expect("Should succeed to init Settings.");
+    let settings = Settings::load(None).expect("Should succeed to init Settings.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -833,7 +833,7 @@ async fn test_send_vote_requests_case5() {
     ];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.raft_settings)
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
         .await
     {
         Ok(res) => assert!(res),

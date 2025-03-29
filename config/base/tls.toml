@@ -1,0 +1,9 @@
+[tls]
+generate_self_signed_certificates = false
+certificate_authority_root_path = "/etc/ssl/certs/sample_ca.pem"
+server_certificate_path = "./certs/certificate.pem"
+server_private_key_path = "./certs/private.key"
+client_certificate_authority_root_path = "/etc/ssl/certs/sample_ca.pem"
+enable_mtls = false
+
+enable_tls = false

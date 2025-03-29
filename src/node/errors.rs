@@ -266,6 +266,11 @@ pub enum Error {
     //
     #[error("Client error: {0}")]
     ClientError(String),
+
+    //===== Config errors =====
+    //
+    #[error("Invalid config: {0}")]
+    InvalidConfig(String),
 }
 
 define_error_mapping!(

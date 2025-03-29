@@ -216,7 +216,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Important to confirm heartbeat from Leader immediatelly
         // Keep syncing leader_id
         ctx.membership()
-            .mark_leader_id(append_entries_request.leader_id);
+            .mark_leader_id(append_entries_request.leader_id)?;
 
         if my_term < append_entries_request.term {
             self.update_current_term(append_entries_request.term);

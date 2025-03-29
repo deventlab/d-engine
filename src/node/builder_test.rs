@@ -10,10 +10,9 @@ use tokio::sync::watch;
 
 #[test]
 fn test_new_initializes_default_components() {
-    let settings = settings("/tmp/test_new_initializes_default_components");
-
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new(settings, shutdown_rx);
+    let builder =
+        NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
 
     assert!(builder.raft_log.is_some());
     assert!(builder.state_machine.is_some());
@@ -29,7 +28,6 @@ fn test_new_initializes_default_components() {
 fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let db_path = "/tmp/test_set_raft_log_replaces_default";
-    let settings = settings(db_path);
 
     let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
         reset_dbs(db_path);
@@ -53,7 +51,7 @@ fn test_set_raft_log_replaces_default() {
     insert_state_storage(&sled_state_storage, expected_state_storage_ids.clone());
 
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new(settings, shutdown_rx)
+    let builder = NodeBuilder::new_from_db_path(db_path, shutdown_rx)
         .raft_log(sled_raft_log)
         .state_storage(sled_state_storage)
         .state_machine(sled_state_machine);
@@ -75,10 +73,9 @@ fn test_set_raft_log_replaces_default() {
 
 #[tokio::test]
 async fn test_build_creates_node() {
-    let settings = settings("/tmp/test_build_creates_node");
-
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new(settings, shutdown_rx).build();
+    let builder =
+        NodeBuilder::new_from_db_path("/tmp/test_build_creates_node", shutdown_rx).build();
 
     // Verify that the node instance is generated
     assert!(builder.node.is_some());
@@ -86,10 +83,8 @@ async fn test_build_creates_node() {
 
 #[test]
 fn test_ready_fails_without_build() {
-    let settings = settings("/tmp/test_ready_fails_without_build");
-
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new(settings, shutdown_rx);
+    let builder = NodeBuilder::new_from_db_path("/tmp/test_ready_fails_without_build", shutdown_rx);
 
     let result = builder.ready();
     assert!(matches!(result, Err(Error::ServerFailedToStartError)));
@@ -98,10 +93,9 @@ fn test_ready_fails_without_build() {
 #[tokio::test]
 #[should_panic(expected = "failed to start RPC server")]
 async fn test_start_rpc_panics_without_node() {
-    let settings = settings("/tmp/test_start_rpc_panics_without_node");
-
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new(settings, shutdown_rx);
+    let builder =
+        NodeBuilder::new_from_db_path("/tmp/test_start_rpc_panics_without_node", shutdown_rx);
 
     // If start the RPC service directly without calling build(), the service should panic.
     let _ = builder.start_rpc_server().await;
@@ -111,11 +105,11 @@ async fn test_start_rpc_panics_without_node() {
 #[tokio::test]
 async fn test_metrics_server_starts_on_correct_port() {
     let mut settings = settings("/tmp/test_metrics_server_starts_on_correct_port");
-    settings.cluster.prometheus_metrics_port = 12345; // Set the test port
+    settings.monitoring.prometheus_port = 12345; // Set the test port
 
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
-    NodeBuilder::new(settings, shutdown_rx)
+    NodeBuilder::init(settings, shutdown_rx)
         .build()
         .start_metrics_server(shutdown_tx.subscribe());
 }

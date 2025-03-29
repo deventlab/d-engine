@@ -245,7 +245,7 @@ async fn test_handle_raft_event_case3() {
 }
 
 /// # Case 4.1: As candidate, if I receive append request from Leader,
-///     and request term is higher than mine
+///     and request term is equal as mine
 ///
 /// ## Prepration Setup
 /// 1. receive Leader append request,
@@ -253,7 +253,7 @@ async fn test_handle_raft_event_case3() {
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
-/// 2. I should update term
+/// 2. I should not update term
 /// 3. I should receive BecomeFollower event
 /// 4. I should replay the raft_event to let Follower continue handle it
 /// 5. I should not send out new commit signal
@@ -266,8 +266,8 @@ async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_1", graceful_rx, None);
-    let follower_term = 1;
-    let new_leader_term = follower_term + 1;
+    let term = 1;
+    let new_leader_term = term;
     let new_leader_commit = 5;
 
     let mut membership = MockMembership::new();
@@ -286,7 +286,7 @@ async fn test_handle_raft_event_case4_1() {
 
     // New state
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
-    state.update_current_term(follower_term);
+    state.update_current_term(term);
 
     // Prepare Append entries request
     let append_entries_request = AppendEntriesRequest {
@@ -332,6 +332,93 @@ async fn test_handle_raft_event_case4_1() {
 }
 
 /// # Case 4.2: As candidate, if I receive append request from Leader,
+///     and request term is higher than mine
+///
+/// ## Prepration Setup
+/// 1. receive Leader append request,
+///     with higher term and new commit index
+///
+/// ## Validation criterias:
+/// 1. I should mark new leader id in memberhip
+/// 2. I should update term
+/// 3. I should receive BecomeFollower event
+/// 4. I should replay the raft_event to let Follower continue handle it
+/// 5. I should not send out new commit signal
+/// 6. Should not receive response, (let Follower handle it)
+/// 7. `handle_raft_event` fun returns Ok(())
+/// 8. commit should not be updated. We should let Follower continue.
+///
+#[tokio::test]
+async fn test_handle_raft_event_case4_2() {
+    // Prepare Follower State
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
+    let term = 1;
+    let new_leader_term = term + 1;
+    let new_leader_commit = 5;
+
+    let mut membership = MockMembership::new();
+
+    // Validation criterias
+    // 1. I should mark new leader id in memberhip
+    membership
+        .expect_mark_leader_id()
+        .returning(|id| {
+            assert_eq!(id, 5);
+            Ok(())
+        })
+        .times(1);
+
+    context.membership = Arc::new(membership);
+
+    // New state
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    state.update_current_term(term);
+
+    // Prepare Append entries request
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: new_leader_commit,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Validation criterias: 7. `handle_raft_event` fun returns Ok(())
+    // Handle raft event
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    // Validation criterias
+    // 3. I should  receive BecomeFollower event
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(None))
+    ));
+    // 4. I should replay the raft_event to let Follower continue handle it
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
+
+    // Validation criterias
+    // 2. I should update term
+    assert_eq!(state.current_term(), new_leader_term);
+    // 8. commit should not be updated. We should let Follower continue.
+    assert!(state.commit_index() != new_leader_commit);
+
+    // 6. Should not receive response, (let Follower handle it)
+    assert!(resp_rx.recv().await.is_err());
+}
+
+/// # Case 4.3: As candidate, if I receive append request from Leader,
 ///     and request term is lower or equal than mine
 ///
 /// ## Validation criterias:
@@ -342,10 +429,10 @@ async fn test_handle_raft_event_case4_1() {
 /// 5. `handle_raft_event` fun returns Err(())
 ///
 #[tokio::test]
-async fn test_handle_raft_event_case4_2() {
+async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_3", graceful_rx, None);
     let term = 2;
     let new_leader_term = term - 1;
 

@@ -6,23 +6,24 @@ use crate::{grpc::rpc_service::NodeMeta, Error, Result};
 
 #[derive(Debug, Deserialize, Clone, Default)]
 #[allow(unused)]
-pub struct ServerSettings {
+pub struct ClusterConfig {
     pub node_id: u32,
     pub listen_address: String,
     pub initial_cluster: Vec<NodeMeta>,
     pub db_root_dir: String,
     pub log_dir: String,
-
-    pub prometheus_metrics_port: u16,
-    pub prometheus_enabled: bool,
-
-    #[cfg(test)]
-    pub tokio_console_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 #[allow(unused)]
-pub struct RpcConnectionSettings {
+pub struct MonitoringConfig {
+    pub prometheus_port: u16,
+    pub prometheus_enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[allow(unused)]
+pub struct NetworkConfig {
     pub connect_timeout_in_ms: u64,
     pub request_timeout_in_ms: u64,
     pub concurrency_limit_per_connection: usize,
@@ -36,6 +37,11 @@ pub struct RpcConnectionSettings {
     pub initial_connection_window_size: u32,
     pub initial_stream_window_size: u32,
     pub buffer_size: usize,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[allow(unused)]
+pub struct TlsConfig {
     pub enable_tls: bool,
     pub generate_self_signed_certificates: bool,
     pub certificate_authority_root_path: String,
@@ -63,7 +69,7 @@ pub struct ElectionTimeoutControlSettings {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 #[allow(unused)]
-pub struct RaftSettings {
+pub struct RaftConfig {
     pub learner_raft_log_gap: u64,
     pub rpc_append_entries_clock_in_ms: u64,
     pub rpc_append_entries_in_batch_threshold: usize,
@@ -84,7 +90,7 @@ pub struct RaftSettings {
 
     pub internal_rpc_client_request_id: u32,
 
-    pub leader_propose_timeout_duration_in_ms: u64,
+    pub general_raft_timeout_duration_in_ms: u64,
 
     pub cluster_membership_sync_max_retries: usize,
     pub cluster_membership_sync_exponential_backoff_duration_in_ms: u64,
@@ -107,15 +113,17 @@ pub struct CommitHandlerSettings {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 #[allow(unused)]
-pub struct Settings {
-    pub cluster: ServerSettings,
+pub struct OldSettings {
+    pub cluster: ClusterConfig,
+    pub monitoring: MonitoringConfig,
+    pub network: NetworkConfig,
+    pub tls: TlsConfig,
     pub election_timeout_controller_settings: ElectionTimeoutControlSettings,
-    pub raft_settings: RaftSettings,
-    pub rpc_connection_settings: RpcConnectionSettings,
+    pub raft: RaftConfig,
     pub commit_handler_settings: CommitHandlerSettings,
 }
 
-impl Settings {
+impl OldSettings {
     pub fn new() -> Result<Self> {
         let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "dev".into());
 

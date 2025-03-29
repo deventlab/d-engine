@@ -8,7 +8,7 @@ use crate::{
     },
     if_new_leader_found, is_learner, task_with_timeout_and_exponential_backoff, util,
     AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, Error, NewLeaderInfo, PeerUpdate,
-    RaftSettings, Result, Transport, API_SLO,
+    Result, RetryPolicies, Transport, API_SLO,
 };
 use autometrics::autometrics;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -31,7 +31,7 @@ impl Transport for GrpcTransport {
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: ClusteMembershipChangeRequest,
-        raft_settings: RaftSettings,
+        retry: &RetryPolicies,
     ) -> Result<bool> {
         debug!("-------- send cluster_membership requests --------");
         if peers.len() < 1 {
@@ -60,16 +60,15 @@ impl Transport for GrpcTransport {
                 async move { client.update_cluster_conf(tonic::Request::new(req)).await }
             };
 
+            let max_retries = retry.membership.max_retries;
+            let base_delay_ms = retry.membership.base_delay_ms;
+            let timeout_ms = retry.membership.timeout_ms;
             let task_handle = task::spawn(async move {
                 match task_with_timeout_and_exponential_backoff(
                     closure,
-                    raft_settings.cluster_membership_sync_max_retries,
-                    Duration::from_millis(
-                        raft_settings.cluster_membership_sync_exponential_backoff_duration_in_ms,
-                    ),
-                    Duration::from_millis(
-                        raft_settings.cluster_membership_sync_timeout_duration_in_ms,
-                    ),
+                    max_retries,
+                    Duration::from_millis(base_delay_ms),
+                    Duration::from_millis(timeout_ms),
                 )
                 .await
                 {
@@ -130,7 +129,7 @@ impl Transport for GrpcTransport {
         // role_tx: mpsc::UnboundedSender<RoleEvent>,
         leader_current_term: u64,
         requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
-        raft_settings: RaftSettings,
+        retry: &RetryPolicies,
     ) -> Result<AppendResults> {
         debug!("-------- send append entries requests --------");
         if requests_with_peer_address.len() < 1 {
@@ -174,14 +173,15 @@ impl Transport for GrpcTransport {
                 async move { client.append_entries(tonic::Request::new(req)).await }
             };
 
+            let max_retries = retry.append_entries.max_retries;
+            let base_delay_ms = retry.append_entries.base_delay_ms;
+            let timeout_ms = retry.append_entries.timeout_ms;
             let task_handle = task::spawn(async move {
                 match task_with_timeout_and_exponential_backoff(
                     closure,
-                    raft_settings.rpc_append_entries_max_retries,
-                    Duration::from_millis(
-                        raft_settings.rpc_append_entries_exponential_backoff_duration_in_ms,
-                    ),
-                    Duration::from_millis(raft_settings.rpc_append_entries_timeout_duration_in_ms),
+                    max_retries,
+                    Duration::from_millis(base_delay_ms),
+                    Duration::from_millis(timeout_ms),
                 )
                 .await
                 {
@@ -281,7 +281,7 @@ impl Transport for GrpcTransport {
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: VoteRequest,
-        raft_settings: &RaftSettings,
+        retry: &RetryPolicies,
     ) -> Result<bool> {
         debug!("-------- send vote request --------");
         if peers.len() < 1 {
@@ -325,11 +325,9 @@ impl Transport for GrpcTransport {
                 async move { client.request_vote(tonic::Request::new(req)).await }
             };
 
-            let rpc_election_max_retries = raft_settings.rpc_election_max_retries;
-            let rpc_election_exponential_backoff_duration_in_ms =
-                raft_settings.rpc_election_exponential_backoff_duration_in_ms;
-            let rpc_election_timeout_duration_in_ms =
-                raft_settings.rpc_election_timeout_duration_in_ms;
+            let rpc_election_max_retries = retry.election.max_retries;
+            let rpc_election_exponential_backoff_duration_in_ms = retry.election.base_delay_ms;
+            let rpc_election_timeout_duration_in_ms = retry.election.timeout_ms;
             let task_handle = task::spawn(async move {
                 match task_with_timeout_and_exponential_backoff(
                     closure,

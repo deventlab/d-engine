@@ -1,0 +1,17 @@
+# Load the basic configuration template
+includes = [
+"base/cluster.toml",
+"base/monitoring.toml",
+"base/network.toml",
+"base/raft.toml",
+"base/retry.toml",
+"base/tls.toml",
+]
+
+# Load the overlay configuration based on the environment variable
+env = "${APP_ENV:-dev}"
+
+[env_config]
+dev = "overlays/dev.toml"
+prod = "overlays/prod.toml"
+docker = "overlays/docker.toml"

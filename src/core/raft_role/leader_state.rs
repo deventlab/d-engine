@@ -10,9 +10,9 @@ use crate::{
     },
     utils::util::{self, error},
     AppendResults, BatchBuffer, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
-    MaybeCloneOneshot, MaybeCloneOneshotSender, Membership, NewLeaderInfo, RaftContext, RaftEvent,
-    RaftLog, RaftOneshot, RaftSettings, ReplicationCore, ReplicationTimer, Result, RoleEvent,
-    Settings, StateMachine, StateMachineHandler, TypeConfig, API_SLO,
+    MaybeCloneOneshot, MaybeCloneOneshotSender, Membership, NewLeaderInfo, RaftConfig, RaftContext,
+    RaftEvent, RaftLog, RaftOneshot, ReplicationConfig, ReplicationCore, ReplicationTimer, Result,
+    RetryPolicies, RoleEvent, Settings, StateMachine, StateMachineHandler, TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
 use log::{debug, error, info, trace, warn};
@@ -226,10 +226,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let voting_members = ctx.voting_members(peer_channels);
         let raft_log = ctx.raft_log();
         let transport = ctx.transport();
-        let raft_settings = ctx.settings.raft_settings.clone();
         let replication_handler = ctx.replication_handler();
         // Keep syncing leader_id
-        ctx.membership_ref().mark_leader_id(self.node_id());
+        ctx.membership_ref().mark_leader_id(self.node_id())?;
 
         // Batch trigger check (should be prioritized before heartbeat check)
         if now >= self.timer.batch_deadline() {
@@ -247,7 +246,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     &voting_members,
                     raft_log,
                     transport,
-                    raft_settings.clone(),
+                    &ctx.settings.raft,
+                    &ctx.settings.retry,
                 )
                 .await?;
             }
@@ -268,7 +268,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 &voting_members,
                 raft_log,
                 transport,
-                raft_settings,
+                &ctx.settings.raft,
+                &ctx.settings.retry,
             )
             .await?;
         }
@@ -429,7 +430,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         &voting_members,
                         raft_log,
                         transport,
-                        settings.raft_settings.clone(),
+                        &settings.raft,
+                        &settings.retry,
                         false,
                         &role_tx,
                     )
@@ -465,7 +467,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 &voting_members,
                                 raft_log,
                                 transport,
-                                settings.raft_settings.clone(),
+                                &settings.raft,
+                                &settings.retry,
                                 &role_tx,
                             )
                             .await
@@ -559,7 +562,8 @@ impl<T: TypeConfig> LeaderState<T> {
         voting_members: &Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        raft_settings: RaftSettings,
+        raft_config: &RaftConfig,
+        retry_policies: &RetryPolicies,
         exexute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -590,7 +594,8 @@ impl<T: TypeConfig> LeaderState<T> {
                 voting_members,
                 raft_log,
                 transport,
-                raft_settings,
+                raft_config,
+                retry_policies,
             )
             .await?;
         }
@@ -606,7 +611,8 @@ impl<T: TypeConfig> LeaderState<T> {
         voting_members: &Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        settings: RaftSettings,
+        raft_config: &RaftConfig,
+        retry_policies: &RetryPolicies,
     ) -> Result<()> {
         let commands: Vec<ClientCommand> = batch
             .iter()
@@ -624,7 +630,8 @@ impl<T: TypeConfig> LeaderState<T> {
                 &voting_members,
                 raft_log,
                 transport,
-                settings,
+                raft_config,
+                retry_policies,
             )
             .await;
 
@@ -794,11 +801,12 @@ impl<T: TypeConfig> LeaderState<T> {
         voting_members: &Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        raft_settings: RaftSettings,
+        raft_config: &RaftConfig,
+        retry_policies: &RetryPolicies,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> bool {
         let client_propose_request = ClientProposeRequest {
-            client_id: self.settings.raft_settings.internal_rpc_client_request_id,
+            client_id: self.settings.raft.election.internal_rpc_client_request_id,
             commands: vec![],
         };
 
@@ -812,7 +820,8 @@ impl<T: TypeConfig> LeaderState<T> {
                 voting_members,
                 raft_log,
                 transport,
-                raft_settings,
+                raft_config,
+                retry_policies,
                 true,
                 role_tx,
             )
@@ -822,11 +831,7 @@ impl<T: TypeConfig> LeaderState<T> {
             return false;
         } else {
             match timeout(
-                Duration::from_millis(
-                    self.settings
-                        .raft_settings
-                        .leader_propose_timeout_duration_in_ms,
-                ),
+                Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
                 resp_rx,
             )
             .await
@@ -872,12 +877,12 @@ impl<T: TypeConfig> LeaderState<T> {
 
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
     fn from(candidate: &CandidateState<T>) -> Self {
-        let RaftSettings {
+        let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
             rpc_append_entries_batch_process_delay_in_ms,
             rpc_append_entries_clock_in_ms,
             ..
-        } = candidate.settings.raft_settings;
+        } = candidate.settings.raft.replication;
 
         Self {
             shared_state: candidate.shared_state.clone(),
@@ -903,12 +908,12 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 impl<T: TypeConfig> LeaderState<T> {
     #[cfg(test)]
     pub fn new(node_id: u32, settings: Arc<Settings>) -> Self {
-        let RaftSettings {
+        let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
             rpc_append_entries_batch_process_delay_in_ms,
             rpc_append_entries_clock_in_ms,
             ..
-        } = settings.raft_settings;
+        } = settings.raft.replication;
 
         LeaderState {
             shared_state: SharedState::new(node_id, None, None),

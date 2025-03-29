@@ -3,7 +3,7 @@ use crate::{
     alias::{ROF, TROF},
     grpc::rpc_service::{AppendEntriesRequest, ClientCommand, Entry},
     AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, Error, LeaderStateSnapshot,
-    RaftLog, RaftSettings, Result, StateSnapshot, Transport, TypeConfig, API_SLO,
+    RaftConfig, RaftLog, Result, RetryPolicies, StateSnapshot, Transport, TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
 use dashmap::DashMap;
@@ -48,7 +48,8 @@ where
         replication_members: &Vec<ChannelWithAddressAndRole>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
-        raft_settings: RaftSettings,
+        raft: &RaftConfig,
+        retry: &RetryPolicies,
     ) -> Result<AppendResults> {
         debug!("-------- handle_client_proposal_in_batch --------");
         debug!("commands: {:?}", &commands);
@@ -80,7 +81,7 @@ where
         let entries_per_peer = self.prepare_peer_entries(
             &new_entries,
             &replication_data,
-            raft_settings.append_entries_max_entries_per_replication,
+            raft.replication.append_entries_max_entries_per_replication,
             raft_log,
         );
 
@@ -98,7 +99,7 @@ where
         // Phase 5: Send Requests
         // ----------------------
         transport
-            .send_append_requests(replication_data.current_term, requests, raft_settings)
+            .send_append_requests(replication_data.current_term, requests, retry)
             .await
     }
 

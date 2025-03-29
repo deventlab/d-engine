@@ -33,7 +33,7 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
         let timeout_duration =
-            Duration::from_millis(self.settings.raft_settings.election_timeout_min);
+            Duration::from_millis(self.settings.raft.election.election_timeout_min);
         handle_rpc_timeout(resp_rx, timeout_duration, "request_vote").await
     }
 
@@ -59,11 +59,7 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(
-            self.settings
-                .raft_settings
-                .rpc_election_timeout_duration_in_ms,
-        );
+        let timeout_duration = Duration::from_millis(self.settings.retry.election.timeout_ms);
 
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }
@@ -86,11 +82,7 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(
-            self.settings
-                .raft_settings
-                .cluster_membership_sync_timeout_duration_in_ms,
-        );
+        let timeout_duration = Duration::from_millis(self.settings.retry.membership.timeout_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "update_cluster_conf").await
     }
 
@@ -127,11 +119,8 @@ where
 
         let remote_addr = request.remote_addr();
         let event_tx = self.event_tx.clone();
-        let timeout_duration = Duration::from_millis(
-            self.settings
-                .raft_settings
-                .leader_propose_timeout_duration_in_ms,
-        );
+        let timeout_duration =
+            Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
 
         let request_future = async move {
             debug!(
@@ -185,11 +174,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(
-            self.settings
-                .raft_settings
-                .general_raft_timeout_duration_in_ms,
-        );
+        let timeout_duration =
+            Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
     }
 
@@ -210,11 +196,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(
-            self.settings
-                .raft_settings
-                .general_raft_timeout_duration_in_ms,
-        );
+        let timeout_duration =
+            Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
     }
 }

@@ -293,8 +293,8 @@ impl<T: TypeConfig> FollowerState<T> {
         Self {
             shared_state: SharedState::new(node_id, hard_state_from_db, last_applied_index_option),
             timer: ElectionTimer::new((
-                settings.raft_settings.election_timeout_min,
-                settings.raft_settings.election_timeout_max,
+                settings.raft.election.election_timeout_min,
+                settings.raft.election.election_timeout_max,
             )),
             settings,
             _marker: PhantomData,
@@ -315,8 +315,8 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
         Self {
             shared_state: candidate_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                candidate_state.settings.raft_settings.election_timeout_min,
-                candidate_state.settings.raft_settings.election_timeout_max,
+                candidate_state.settings.raft.election.election_timeout_min,
+                candidate_state.settings.raft.election.election_timeout_max,
             )),
             settings: candidate_state.settings.clone(),
             _marker: PhantomData,
@@ -328,8 +328,8 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
         Self {
             shared_state: leader_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                leader_state.settings.raft_settings.election_timeout_min,
-                leader_state.settings.raft_settings.election_timeout_max,
+                leader_state.settings.raft.election.election_timeout_min,
+                leader_state.settings.raft.election.election_timeout_max,
             )),
             settings: leader_state.settings.clone(),
             _marker: PhantomData,
@@ -342,8 +342,8 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
             //TODO: should we copy or new?
             shared_state: learner_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                learner_state.settings.raft_settings.election_timeout_min,
-                learner_state.settings.raft_settings.election_timeout_max,
+                learner_state.settings.raft.election.election_timeout_min,
+                learner_state.settings.raft.election.election_timeout_max,
             )),
             settings: learner_state.settings.clone(),
             _marker: PhantomData,
