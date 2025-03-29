@@ -8,11 +8,8 @@ use crate::{
     utils::util::kv,
     AppendResults, MockMembership, MockReplicationCore, Settings,
 };
-use std::{collections::HashMap, time::Duration};
-use tokio::{
-    sync::{mpsc, watch},
-    time,
-};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
+use tokio::{sync::watch, time};
 use tonic::{Code, Request};
 
 /// # Case: Test RPC services timeout
@@ -164,12 +161,11 @@ async fn test_server_is_not_ready() {
 #[tokio::test]
 async fn test_handle_rpc_services_successfully() {
     enable_logger();
-    let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.raft_settings.general_raft_timeout_duration_in_ms = 200;
-    settings.cluster.db_root_dir = format!(
-        "{}",
+    let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+    settings.raft.general_raft_timeout_duration_in_ms = 200;
+    settings.cluster.db_root_dir = PathBuf::from(
         "/tmp/
-    test_handle_rpc_services_successfully"
+    test_handle_rpc_services_successfully",
     );
     let mut membership = MockMembership::<MockTypeConfig>::new();
     membership.expect_mark_leader_id().returning(|_| Ok(()));
@@ -184,7 +180,7 @@ async fn test_handle_rpc_services_successfully() {
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_client_proposal_in_batch()
-        .returning(|_, _, _, _, _, _, _| {
+        .returning(|_, _, _, _, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::new(),

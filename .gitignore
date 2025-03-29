@@ -27,3 +27,4 @@ examples
 tests/db
 tests/logs
 benchmark/Cargo.lock
+config/local.toml

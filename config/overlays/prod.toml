@@ -1,0 +1,11 @@
+# Production environment coverage configuration
+[cluster]
+data_dir = "/mnt/ssd/raft-data"
+
+[network]
+tcp_keepalive_secs = 7200 # Extend the production environment Keepalive
+
+[raft.replication]
+### -------- REPLICATE ENTRIES RETRY CONFIGURE -----------------##
+# if a follower is very slow to catch up with leader, we should limit the max number of the entries could sync per time
+append_entries_max_entries_per_replication = 1000

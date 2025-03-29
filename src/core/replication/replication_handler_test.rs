@@ -428,7 +428,6 @@ async fn test_handle_client_proposal_in_batch_case1() {
 
     let raft_log = MockRaftLog::new();
     let transport = MockTransport::new();
-    let raft_settings = context.settings.raft_settings.clone();
 
     if let Err(Error::AppendEntriesNoPeerFound) = handler
         .handle_client_proposal_in_batch(
@@ -438,7 +437,8 @@ async fn test_handle_client_proposal_in_batch_case1() {
             &replication_members,
             &Arc::new(raft_log),
             &Arc::new(transport),
-            raft_settings,
+            &context.settings.raft,
+            &context.settings.retry,
         )
         .await
     {
@@ -535,7 +535,6 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
     transport
         .expect_send_append_requests()
         .returning(move |_, _, _| Ok(append_result_clone.clone()));
-    let raft_settings = context.settings.raft_settings.clone();
 
     if let Ok(append_result) = handler
         .handle_client_proposal_in_batch(
@@ -545,7 +544,8 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
             &replication_members,
             &Arc::new(raft_log),
             &Arc::new(transport),
-            raft_settings,
+            &context.settings.raft,
+            &context.settings.retry,
         )
         .await
     {
@@ -634,7 +634,6 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
                 leader_id: 7,
             }))
         });
-    let raft_settings = context.settings.raft_settings.clone();
 
     if let Err(Error::FoundNewLeaderError(new_leader)) = handler
         .handle_client_proposal_in_batch(
@@ -644,7 +643,8 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
             &replication_members,
             &Arc::new(raft_log),
             &Arc::new(transport),
-            raft_settings,
+            &context.settings.raft,
+            &context.settings.retry,
         )
         .await
     {

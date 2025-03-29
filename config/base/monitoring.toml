@@ -1,0 +1,4 @@
+
+[monitoring]
+prometheus_enabled = true
+prometheus_port = 8080

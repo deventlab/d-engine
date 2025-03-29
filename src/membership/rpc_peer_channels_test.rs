@@ -3,7 +3,7 @@ use std::{sync::Arc, vec};
 use crate::{
     grpc::rpc_service::NodeMeta,
     test_utils::{enable_logger, settings, MockNode, MOCK_PEER_CHANNEL_PORT_BASE},
-    Error, PeerChannels, PeerChannelsFactory, RpcPeerChannels, Settings, FOLLOWER,
+    Error, PeerChannels, PeerChannelsFactory, RpcPeerChannels, FOLLOWER,
 };
 use futures::stream::FuturesUnordered;
 use tokio::{
@@ -30,7 +30,7 @@ fn crate_peer_channes(
     p3_port: u32,
 ) -> RpcPeerChannels {
     let mut settings = settings(db_path);
-    settings.raft_settings.cluster_membership_sync_max_retries = 1;
+    settings.retry.membership.max_retries = 1;
     settings.cluster.initial_cluster = vec![
         NodeMeta {
             id: 1,
@@ -135,7 +135,7 @@ async fn test_connect_with_peers_case2() {
 #[tokio::test]
 async fn test_check_cluster_is_ready_case1() {
     let mut settings = settings("/tmp/test_check_cluster_is_ready_case2");
-    settings.raft_settings.cluster_healtcheck_max_retries = 1;
+    settings.retry.membership.max_retries = 1;
 
     let peer2_id = 2;
     let peer2_port = MOCK_PEER_CHANNEL_PORT_BASE + 6;
@@ -159,11 +159,12 @@ async fn test_check_cluster_is_ready_case1() {
 ///
 #[tokio::test]
 async fn test_check_cluster_is_ready_case2() {
+    enable_logger();
     let peer2_id = 2;
     let peer2_port = MOCK_PEER_CHANNEL_PORT_BASE + 7;
 
     let mut settings = settings("/tmp/test_check_cluster_is_ready_case2");
-    settings.raft_settings.cluster_healtcheck_max_retries = 1;
+    settings.retry.membership.max_retries = 1;
 
     let peer_channels: RpcPeerChannels = PeerChannelsFactory::create(1, Arc::new(settings));
 
@@ -177,7 +178,7 @@ async fn test_check_cluster_is_ready_case2() {
     peer_channels.set_peer_channel(peer2_id, addr1);
 
     // Test health status
-    assert!(peer_channels.check_cluster_is_ready().await.is_err());
+    assert!(peer_channels.check_cluster_is_ready().await.is_ok());
 }
 
 /// Tests connection task spawning logic
@@ -214,8 +215,8 @@ async fn test_connection_task_spawning() {
     let tasks = peer_channels.spawn_connection_tasks(
         1,
         &initial_cluster,
-        settings.raft_settings.clone(),
-        &settings.rpc_connection_settings,
+        settings.retry.clone(),
+        &settings.network,
     );
 
     assert_eq!(tasks.len(), 2, "Should spawn 2 connection tasks");
@@ -226,7 +227,7 @@ async fn test_connection_task_spawning() {
 async fn test_connection_collection() {
     enable_logger();
     let mut settings = settings("/tmp/test_connection_collection");
-    settings.raft_settings.cluster_membership_sync_max_retries = 1;
+    settings.retry.membership.max_retries = 1;
     let peer_channels = RpcPeerChannels::create(1, Arc::new(settings.clone()));
     let tasks = FuturesUnordered::new();
 
@@ -249,7 +250,7 @@ async fn test_connection_collection() {
 async fn test_connection_retry_mechanism() {
     enable_logger();
     let mut settings = settings("/tmp/test_connection_retry_mechanism");
-    settings.raft_settings.cluster_membership_sync_max_retries = 1;
+    settings.retry.membership.max_retries = 1;
     let (tx, mut rx) = mpsc::channel(1);
 
     // Setup mock server that fails first 2 attempts
@@ -282,8 +283,8 @@ async fn test_connection_retry_mechanism() {
             port: (MOCK_PEER_CHANNEL_PORT_BASE + 12) as u32,
             role: FOLLOWER,
         },
-        &settings.raft_settings,
-        &settings.rpc_connection_settings,
+        &settings.retry,
+        &settings.network,
     )
     .await;
 

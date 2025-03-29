@@ -4,10 +4,9 @@ use super::{
 };
 use crate::{
     alias::POF,
-    grpc::rpc_service::{AppendEntriesResponse, ClientResponse, VoteResponse, VotedFor},
-    utils::util::error,
-    AppendResponseWithUpdates, ElectionTimer, Error, Membership, RaftContext, RaftEvent,
-    ReplicationCore, Result, RoleEvent, Settings, StateMachine, TypeConfig,
+    grpc::rpc_service::{ClientResponse, VoteResponse, VotedFor},
+    ElectionTimer, Error, RaftContext, RaftEvent, Result, RoleEvent, Settings, StateMachine,
+    TypeConfig,
 };
 use log::{debug, error, info, warn};
 use std::{marker::PhantomData, sync::Arc};
@@ -231,8 +230,8 @@ impl<T: TypeConfig> LearnerState<T> {
         LearnerState {
             shared_state: SharedState::new(node_id, None, None),
             timer: ElectionTimer::new((
-                settings.raft_settings.election_timeout_min,
-                settings.raft_settings.election_timeout_max,
+                settings.raft.election.election_timeout_min,
+                settings.raft.election.election_timeout_max,
             )),
             settings,
             _marker: PhantomData,
@@ -244,8 +243,8 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
         Self {
             shared_state: follower_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                follower_state.settings.raft_settings.election_timeout_min,
-                follower_state.settings.raft_settings.election_timeout_max,
+                follower_state.settings.raft.election.election_timeout_min,
+                follower_state.settings.raft.election.election_timeout_max,
             )),
             settings: follower_state.settings.clone(),
             _marker: PhantomData,
@@ -257,8 +256,8 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
         Self {
             shared_state: candidate_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                candidate_state.settings.raft_settings.election_timeout_min,
-                candidate_state.settings.raft_settings.election_timeout_max,
+                candidate_state.settings.raft.election.election_timeout_min,
+                candidate_state.settings.raft.election.election_timeout_max,
             )),
             settings: candidate_state.settings.clone(),
             _marker: PhantomData,

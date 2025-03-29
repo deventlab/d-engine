@@ -1,4 +1,5 @@
 mod client;
+mod config;
 mod core;
 mod membership;
 mod metrics;
@@ -9,6 +10,7 @@ mod type_config;
 pub mod utils;
 
 pub use client::*;
+pub use config::*;
 pub use core::*;
 pub use membership::*;
 pub use metrics::*;

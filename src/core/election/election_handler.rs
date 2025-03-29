@@ -58,7 +58,7 @@ where
         };
 
         match transport
-            .send_vote_requests(voting_members, request, &settings.raft_settings)
+            .send_vote_requests(voting_members, request, &settings.retry)
             .await
         {
             Ok(is_won) => {

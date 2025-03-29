@@ -1,9 +1,9 @@
 use core::panic;
 use dengine::utils::util;
-use dengine::{Error, Result, ServerSettings};
+use dengine::{Error, Result};
 use dengine::{NodeBuilder, Settings};
 use log::{error, info};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -13,16 +13,16 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    let settings = Settings::new()?;
+    let settings = Settings::load(None)?;
 
     // Initializing Logs
-    let _guard = init_observability(&settings.cluster)?;
+    let _guard = init_observability(settings.cluster.node_id, &settings.cluster.log_dir)?;
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     // Build Node
-    let node = NodeBuilder::new(settings, graceful_rx.clone())
+    let node = NodeBuilder::init(settings, graceful_rx.clone())
         .build()
         .start_metrics_server(graceful_rx.clone()) //default: prometheus metrics server starts
         .start_rpc_server()
@@ -72,10 +72,9 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) -> Result<()> {
     Ok(())
 }
 
-pub fn init_observability(settings: &ServerSettings) -> Result<WorkerGuard> {
-    let log_file = util::open_file_for_append(
-        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
-    )?;
+pub fn init_observability(node_id: u32, log_dir: &PathBuf) -> Result<WorkerGuard> {
+    let log_file =
+        util::open_file_for_append(Path::new(log_dir).join(format!("{}/d.log", node_id)))?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
     let base_subscriber = tracing_subscriber::fmt::layer()

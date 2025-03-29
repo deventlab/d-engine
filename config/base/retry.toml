@@ -1,0 +1,30 @@
+
+
+[retry.append_entries]
+max_retries = 1     # Maximum number of retries (recommended: 3-5)
+timeout_ms = 100    # Single request timeout (recommended: 100-200ms)
+base_delay_ms = 50  # Initial backoff delay (recommended: 50-100ms)
+max_delay_ms = 1000 # Maximum backoff delay (recommended: <=1s)
+
+[retry.election]
+max_retries = 3    # Need higher fault tolerance
+timeout_ms = 100    # Appropriately relax the timeout
+base_delay_ms = 50 # Avoid being too aggressive
+max_delay_ms = 5000 # Elections cannot wait indefinitely
+
+[retry.membership]
+# when there is a cluster membership changes, the max time to retry the sync.
+# cluster membership sync can not failed. otherwise, server will panic!
+# try for 10+ min = 120 * 500
+max_retries = 120    # 10-minute fault tolerance (120*500ms=60s)
+timeout_ms = 3000 # Wait for the cluster to stabilize
+base_delay_ms = 500     # Member changes need to be more relaxed
+max_delay_ms = 60000 # Upper limit 1 minute
+
+[retry.healthcheck]
+max_retries = 10000  # Nearly infinite retries
+timeout_ms = 100     # Fast failure
+base_delay_ms = 1000 # 1 second interval check
+max_delay_ms = 10000 # Maximum 10 second interval
+
+

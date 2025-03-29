@@ -40,6 +40,8 @@ mod mock_builder;
 mod mock_rpc;
 mod mock_rpc_service;
 
+use std::path::PathBuf;
+
 pub use mock_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
@@ -57,8 +59,8 @@ pub fn mock_node(
 ) -> Node<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.cluster.db_root_dir = format!("{}", db_path);
+    let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+    settings.cluster.db_root_dir = PathBuf::from(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
@@ -76,8 +78,8 @@ pub fn mock_raft(
 ) -> Raft<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.cluster.db_root_dir = format!("{}", db_path);
+    let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+    settings.cluster.db_root_dir = PathBuf::from(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
@@ -94,8 +96,8 @@ pub fn mock_raft_context(
 ) -> RaftContext<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.cluster.db_root_dir = format!("{}", db_path);
+    let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+    settings.cluster.db_root_dir = PathBuf::from(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }

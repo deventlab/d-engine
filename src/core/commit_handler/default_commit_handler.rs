@@ -17,7 +17,7 @@ where
     raft_log: Arc<ROF<T>>,
     new_commit_rx: Option<mpsc::UnboundedReceiver<u64>>,
     batch_size_threshold: u64,
-    commit_handle_interval_in_ms: u64,
+    process_interval_ms: u64,
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
 }
@@ -76,7 +76,7 @@ where
         raft_log: Arc<ROF<T>>,
         new_commit_rx: mpsc::UnboundedReceiver<u64>,
         batch_size_threshold: u64,
-        commit_handle_interval_in_ms: u64,
+        process_interval_ms: u64,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
@@ -84,7 +84,7 @@ where
             raft_log,
             new_commit_rx: Some(new_commit_rx),
             batch_size_threshold,
-            commit_handle_interval_in_ms,
+            process_interval_ms,
             shutdown_signal,
         }
     }
@@ -106,12 +106,8 @@ where
     /// Dynamically adjusted timer
     /// Behavior: If multiple ticks are missed, the timer will wait for the next tick instead of firing immediately.
     pub(crate) fn dynamic_interval(&self) -> tokio::time::Interval {
-        let mut interval =
-            tokio::time::interval(Duration::from_millis(self.commit_handle_interval_in_ms));
-        debug!(
-            "commit_handle_interval_in_ms: {}",
-            self.commit_handle_interval_in_ms
-        );
+        let mut interval = tokio::time::interval(Duration::from_millis(self.process_interval_ms));
+        debug!("process_interval_ms: {}", self.process_interval_ms);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval
     }

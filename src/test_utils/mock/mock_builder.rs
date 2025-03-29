@@ -1,10 +1,14 @@
 use crate::{
-    grpc::rpc_service::ClusterMembership, MockElectionCore, MockMembership, MockPeerChannels,
-    MockRaftLog, MockReplicationCore, MockStateMachine, MockStateMachineHandler, MockStateStorage,
-    MockTransport, Node, Raft, RaftContext, RaftEvent, RaftSettings, RoleEvent, Settings,
+    grpc::rpc_service::ClusterMembership, ElectionConfig, MockElectionCore, MockMembership,
+    MockPeerChannels, MockRaftLog, MockReplicationCore, MockStateMachine, MockStateMachineHandler,
+    MockStateStorage, MockTransport, Node, Raft, RaftConfig, RaftContext, RaftEvent, RoleEvent,
+    Settings,
 };
 use dashmap::DashMap;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::{
+    path::PathBuf,
+    sync::{atomic::AtomicBool, Arc},
+};
 use tokio::sync::{mpsc, watch, Mutex};
 
 use super::MockTypeConfig;
@@ -89,7 +93,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
             self.settings
-                .unwrap_or_else(|| Settings::new().expect("Should succeed to init Settings")),
+                .unwrap_or_else(|| Settings::load(None).expect("Should succeed to init Settings")),
             self.role_tx.unwrap_or_else(|| role_tx),
             self.role_rx.unwrap_or_else(|| role_rx),
             self.event_tx.unwrap_or_else(|| event_tx),
@@ -145,7 +149,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
             self.settings
-                .unwrap_or_else(|| Settings::new().expect("Should succeed to init Settings")),
+                .unwrap_or_else(|| Settings::load(None).expect("Should succeed to init Settings")),
             self.role_tx.unwrap_or_else(|| role_tx),
             self.role_rx.unwrap_or_else(|| role_rx),
             self.event_tx.unwrap_or_else(|| event_tx),
@@ -163,10 +167,13 @@ impl MockBuilder {
             state_machine_handler,
             membership,
             Arc::new(Settings {
-                raft_settings: RaftSettings {
-                    election_timeout_min: 1,
-                    election_timeout_max: 2,
-                    ..settings.raft_settings
+                raft: RaftConfig {
+                    election: ElectionConfig {
+                        election_timeout_min: 1,
+                        election_timeout_max: 2,
+                        ..settings.raft.election
+                    },
+                    ..settings.raft
                 },
                 ..settings
             }),
@@ -250,8 +257,8 @@ impl MockBuilder {
     }
 
     pub fn with_db_path(mut self, db_root_dir: &str) -> Self {
-        let mut settings = Settings::new().expect("Should succeed to init Settings.");
-        settings.cluster.db_root_dir = format!("{}", db_root_dir);
+        let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+        settings.cluster.db_root_dir = PathBuf::from(db_root_dir);
         self.settings = Some(settings);
         self
     }

@@ -1,20 +1,20 @@
 use super::{leader_state::LeaderState, role_state::RaftRoleState};
 use crate::{
     alias::POF,
+    config::RaftConfig,
     grpc::rpc_service::{
         AppendEntriesRequest, ClientCommand, ClientProposeRequest, ClientReadRequest,
         ClientRequestError, ClientResponse, ClusteMembershipChangeRequest, ClusterMembership,
-        MetadataRequest, VoteRequest, VoteResponse, VotedFor,
+        MetadataRequest, VoteRequest, VoteResponse,
     },
     test_utils::{
         enable_logger, mock_peer_channels, mock_raft_context, setup_raft_components, MockBuilder,
         MockTypeConfig,
     },
     utils::util::kv,
-    AppendResponseWithUpdates, AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver,
-    MaybeCloneOneshotSender, MockElectionCore, MockMembership, MockRaftLog, MockReplicationCore,
-    MockStateMachineHandler, MockTransport, NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot,
-    RaftSettings, RoleEvent, Settings, StateUpdate,
+    AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver, MaybeCloneOneshotSender,
+    MockMembership, MockRaftLog, MockReplicationCore, MockStateMachineHandler, MockTransport,
+    NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot, ReplicationConfig, RoleEvent, Settings,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, watch};
@@ -37,14 +37,17 @@ async fn setup_test_case(
     let context = setup_raft_components(&format!("/tmp/{}", test_name), None, false);
 
     // Configure raft settings
-    let raft_settings = RaftSettings {
-        rpc_append_entries_in_batch_threshold: batch_threshold,
-        ..context.settings.raft_settings.clone()
+    let raft = RaftConfig {
+        replication: ReplicationConfig {
+            rpc_append_entries_in_batch_threshold: batch_threshold,
+            ..context.settings.raft.replication.clone()
+        },
+        ..context.settings.raft.clone()
     };
 
     // Create Leader state
     let settings = Arc::new(Settings {
-        raft_settings: raft_settings.clone(),
+        raft: raft.clone(),
         ..context.settings.clone()
     });
     let mut state = LeaderState::new(1, settings.clone());
@@ -60,7 +63,7 @@ async fn setup_test_case(
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(handle_client_proposal_in_batch_expect_times)
-        .returning(move |_, _, _, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -160,7 +163,8 @@ async fn test_process_client_propose_case1_1() {
             &vec![],
             &test_context.raft_log,
             &test_context.transport,
-            test_context.arc_settings.raft_settings.clone(),
+            &test_context.arc_settings.raft,
+            &test_context.arc_settings.retry,
             false,
             &role_tx,
         )
@@ -232,7 +236,8 @@ async fn test_process_client_propose_case1_2() {
             &vec![],
             &test_context.raft_log,
             &test_context.transport,
-            test_context.arc_settings.raft_settings.clone(),
+            &test_context.arc_settings.raft,
+            &test_context.arc_settings.retry,
             true,
             &role_tx,
         )
@@ -247,7 +252,8 @@ async fn test_process_client_propose_case1_2() {
             &vec![],
             &test_context.raft_log,
             &test_context.transport,
-            test_context.arc_settings.raft_settings.clone(),
+            &test_context.arc_settings.raft,
+            &test_context.arc_settings.retry,
             true,
             &role_tx,
         )
@@ -283,12 +289,15 @@ async fn test_process_client_propose_case1_2() {
 async fn test_process_client_propose_case2() {
     let context = setup_raft_components("/tmp/test_process_client_propose_case2", None, false);
 
-    let raft_settings = RaftSettings {
-        rpc_append_entries_in_batch_threshold: 100,
-        ..context.settings.raft_settings.clone()
+    let raft = RaftConfig {
+        replication: ReplicationConfig {
+            rpc_append_entries_in_batch_threshold: 100,
+            ..context.settings.raft.replication.clone()
+        },
+        ..context.settings.raft.clone()
     };
     let settings = Settings {
-        raft_settings: raft_settings.clone(),
+        raft: raft.clone(),
         ..context.settings.clone()
     };
     let mut state = LeaderState::<MockTypeConfig>::new(1, Arc::new(settings));
@@ -315,7 +324,8 @@ async fn test_process_client_propose_case2() {
             &voting_members,
             &Arc::new(raft_log),
             &Arc::new(transport),
-            raft_settings,
+            &raft,
+            &context.settings.retry,
             false,
             &role_tx
         )
@@ -760,7 +770,7 @@ async fn test_handle_raft_event_case6_1() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _, _, _| Err(Error::AppendEntriesCommitNotConfirmed));
+        .returning(|_, _, _, _, _, _, _, _| Err(Error::AppendEntriesCommitNotConfirmed));
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
@@ -822,7 +832,7 @@ async fn test_handle_raft_event_case6_2() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _, _, _| {
+        .returning(|_, _, _, _, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -923,12 +933,11 @@ async fn test_handle_raft_event_case6_3() {
     enable_logger();
     // Prepare Leader State
     let new_leader_id = 7;
-    let new_leader_id_clone = new_leader_id;
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _, _, _| {
             Err(Error::FoundNewLeaderError(NewLeaderInfo {
                 term: 1,
                 leader_id: new_leader_id,

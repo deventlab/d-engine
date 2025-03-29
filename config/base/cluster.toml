@@ -1,14 +1,11 @@
+# Cluster core configuration (required parameters)
 [cluster]
-node_id = 3
-listen_address = "127.0.0.1:9083"
+node_id = 1
+listen_address = "127.0.0.1:9081"
 initial_cluster = [
     { id = 1, name = "n1", ip = "127.0.0.1", port = 9081, role = 1 },
     { id = 2, name = "n2", ip = "127.0.0.1", port = 9082, role = 1 },
     { id = 3, name = "n3", ip = "127.0.0.1", port = 9083, role = 1 },
 ]
-db_root_dir = "./tests/db/case1"
-log_dir = "./tests/logs/case1"
-
-[monitoring]
-prometheus_enabled = false
-prometheus_port = 8083
+db_root_dir = "/tmp/db"
+log_dir = "/tmp/logs"

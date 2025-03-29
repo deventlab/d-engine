@@ -46,7 +46,7 @@ use crate::{
 };
 use crate::{init_sled_storages, RaftLog, StateStorage};
 use log::error;
-use sled::Batch;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
@@ -150,8 +150,8 @@ pub fn setup_raft_components(
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
-    let mut settings = Settings::new().expect("Should succeed to init Settings.");
-    settings.cluster.db_root_dir = format!("{}", db_path);
+    let mut settings = Settings::load(None).expect("Should succeed to init Settings.");
+    settings.cluster.db_root_dir = PathBuf::from(db_path);
     settings.cluster.initial_cluster = peers_meta.clone();
 
     let (event_tx, event_rx) = mpsc::channel(1024);
@@ -159,7 +159,7 @@ pub fn setup_raft_components(
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
         last_applied_index_option,
-        settings.commit_handler_settings.max_entries_per_chunk,
+        settings.raft.commit_handler.max_entries_per_chunk,
         state_machine.clone(),
     );
 
@@ -249,7 +249,7 @@ pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Ve
 }
 
 pub(crate) fn settings(db_path: &str) -> Settings {
-    let mut s = Settings::new().expect("Settings should be inited successfully.");
-    s.cluster.db_root_dir = db_path.to_string();
+    let mut s = Settings::load(None).expect("Settings should be inited successfully.");
+    s.cluster.db_root_dir = PathBuf::from(db_path);
     s
 }

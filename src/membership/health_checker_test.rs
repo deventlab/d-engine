@@ -1,7 +1,7 @@
 use crate::{
     membership::health_checker::{HealthChecker, HealthCheckerApis},
     test_utils::{self, MockNode, MockRpcService},
-    RpcConnectionSettings,
+    NetworkConfig,
 };
 use tokio::{net::TcpStream, sync::oneshot};
 
@@ -31,7 +31,7 @@ async fn test_check_peer_is_ready_case1() {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    let mut settings = RpcConnectionSettings::default();
+    let mut settings = NetworkConfig::default();
     settings.connect_timeout_in_ms = 100;
     settings.request_timeout_in_ms = 100;
     settings.concurrency_limit_per_connection = 8192;
@@ -77,7 +77,7 @@ async fn test_check_peer_is_ready_case2() {
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
-    let mut settings = RpcConnectionSettings::default();
+    let mut settings = NetworkConfig::default();
     settings.connect_timeout_in_ms = 100;
     settings.request_timeout_in_ms = 100;
     settings.concurrency_limit_per_connection = 8192;

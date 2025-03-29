@@ -2,7 +2,7 @@ mod commons;
 use commons::{execute_command, start_node, ClientCommands};
 use dengine::Error;
 use log::error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs::{self, remove_dir_all};
 use tokio::net::TcpStream;
@@ -58,11 +58,20 @@ async fn check_cluster_is_ready(peer_addr: &str, timeout_secs: u64) -> Result<()
         }
     }
 }
+fn get_project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the cluster
 ///
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
+    let project_root = get_project_root();
+    println!(
+        "Resolved path: {}",
+        project_root.join("config/main.toml").display()
+    );
     reset("case1").await?;
     let bootstrap_urls: Vec<String> = vec![
         "http://127.0.0.1:9083".to_string(),
@@ -288,6 +297,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
 
 // Helper function to verify linearizable reads
 async fn verify_read(urls: &Vec<String>, key: u64, expected_value: u64, iterations: u64) {
+    println!("read: {}", key);
     for _ in 0..iterations {
         match execute_command(ClientCommands::LREAD, urls, key, None).await {
             Ok(v) => assert_eq!(

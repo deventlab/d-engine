@@ -238,7 +238,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 self.reset_timer();
 
                 let my_term = self.current_term();
-                if my_term > append_entries_request.term {
+                if append_entries_request.term < my_term {
                     let raft_log_last_index = ctx.raft_log.last_entry_id();
                     let response = AppendEntriesResponse {
                         id: self.node_id(),
@@ -252,14 +252,14 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         Error::TokioSendStatusError(error_str)
                     })?;
                     return Ok(());
-                }
+                } else {
+                    // Keep syncing leader_id
+                    ctx.membership_ref()
+                        .mark_leader_id(append_entries_request.leader_id)?;
 
-                // Keep syncing leader_id
-                ctx.membership_ref()
-                    .mark_leader_id(append_entries_request.leader_id);
-
-                if my_term < append_entries_request.term {
-                    self.update_current_term(append_entries_request.term);
+                    if append_entries_request.term > my_term {
+                        self.update_current_term(append_entries_request.term);
+                    }
                     // Step down as Follower
                     self.send_become_follower_event(&role_tx)?;
 
@@ -393,8 +393,8 @@ impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
         Self {
             shared_state: follower.shared_state.clone(),
             timer: ElectionTimer::new((
-                follower.settings.raft_settings.election_timeout_min,
-                follower.settings.raft_settings.election_timeout_max,
+                follower.settings.raft.election.election_timeout_min,
+                follower.settings.raft.election.election_timeout_max,
             )),
             settings: follower.settings.clone(),
             _marker: PhantomData,

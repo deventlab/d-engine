@@ -1,4 +1,4 @@
-use crate::{Error, Result, RpcConnectionSettings};
+use crate::{Error, NetworkConfig, Result};
 use log::error;
 use std::time::Duration;
 use tonic::{async_trait, transport::Channel};
@@ -15,7 +15,7 @@ use mockall::{automock, predicate::*};
 pub(crate) trait HealthCheckerApis {
     async fn check_peer_is_ready(
         peer_addr: String,
-        settings: RpcConnectionSettings,
+        settings: NetworkConfig,
         service: String,
     ) -> Result<()>;
 }
@@ -24,7 +24,7 @@ pub(crate) struct HealthChecker {
 }
 
 impl HealthChecker {
-    async fn connect(addr: &str, settings: RpcConnectionSettings) -> Result<Self> {
+    async fn connect(addr: &str, settings: NetworkConfig) -> Result<Self> {
         let channel = Channel::from_shared(addr.to_string())
             .map_err(|_| Error::InvalidURI(addr.into()))?
             .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))
@@ -57,7 +57,7 @@ impl HealthCheckerApis for HealthChecker {
     ///
     async fn check_peer_is_ready(
         peer_addr: String,
-        settings: RpcConnectionSettings,
+        settings: NetworkConfig,
         service: String,
     ) -> Result<()> {
         let mut checker = Self::connect(&peer_addr, settings).await?;

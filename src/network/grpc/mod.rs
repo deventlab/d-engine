@@ -21,11 +21,8 @@ mod grpc_transport_test;
 //-------------------------------------------------------------------------------
 // Start RPC Server
 
-use crate::TypeConfig;
-use crate::{
-    grpc::rpc_service::rpc_service_server::RpcServiceServer, Error, Node, Result,
-    RpcConnectionSettings,
-};
+use crate::{grpc::rpc_service::rpc_service_server::RpcServiceServer, Error, Node, Result};
+use crate::{Settings, TlsConfig, TypeConfig};
 use futures::FutureExt;
 use log::{debug, error, info, warn};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
@@ -43,8 +40,8 @@ use tonic_health::server::health_reporter;
 ///
 pub(crate) async fn start_rpc_server<T>(
     node: Arc<Node<T>>,
-    listen_address: String,
-    config: RpcConnectionSettings,
+    listen_address: SocketAddr,
+    config: Settings,
     mut shutdown_signal: watch::Receiver<()>,
 ) -> Result<()>
 where
@@ -59,40 +56,42 @@ where
         .await;
 
     let mut server_builder = tonic::transport::Server::builder()
-        .concurrency_limit_per_connection(config.concurrency_limit_per_connection)
-        .timeout(Duration::from_millis(config.connect_timeout_in_ms))
-        .initial_stream_window_size(config.initial_stream_window_size)
-        .initial_connection_window_size(config.initial_connection_window_size)
-        .max_concurrent_streams(config.max_concurrent_streams)
-        .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_in_secs)))
-        .tcp_nodelay(config.tcp_nodelay)
+        .concurrency_limit_per_connection(config.network.concurrency_limit_per_connection)
+        .timeout(Duration::from_millis(config.network.connect_timeout_in_ms))
+        .initial_stream_window_size(config.network.initial_stream_window_size)
+        .initial_connection_window_size(config.network.initial_connection_window_size)
+        .max_concurrent_streams(config.network.max_concurrent_streams)
+        .tcp_keepalive(Some(Duration::from_secs(
+            config.network.tcp_keepalive_in_secs,
+        )))
+        .tcp_nodelay(config.network.tcp_nodelay)
         .http2_keepalive_interval(Some(Duration::from_secs(
-            config.http2_keep_alive_interval_in_secs,
+            config.network.http2_keep_alive_interval_in_secs,
         )))
         .http2_keepalive_timeout(Some(Duration::from_secs(
-            config.http2_keep_alive_timeout_in_secs,
+            config.network.http2_keep_alive_timeout_in_secs,
         )))
-        .http2_adaptive_window(Some(config.http2_adaptive_window))
-        .max_frame_size(Some(config.max_frame_size));
+        .http2_adaptive_window(Some(config.network.http2_adaptive_window))
+        .max_frame_size(Some(config.network.max_frame_size));
 
-    if config.enable_tls {
-        if config.generate_self_signed_certificates {
-            if Path::new(&config.certificate_authority_root_path).exists() {
+    if config.tls.enable_tls {
+        if config.tls.generate_self_signed_certificates {
+            if Path::new(&config.tls.certificate_authority_root_path).exists() {
                 warn!("Certificate authority root already exists, remove the file if you want to generate new certificates. Skipping self signed certificates generation.");
             } else {
                 info!("Generating self signed certificates");
-                generate_self_signed_certificates(config.clone());
+                generate_self_signed_certificates(config.tls.clone());
             }
         }
-        let cert = std::fs::read_to_string(config.server_certificate_path.clone())
+        let cert = std::fs::read_to_string(config.tls.server_certificate_path.clone())
             .expect("error, failed to read server certificat");
-        let key = std::fs::read_to_string(config.server_private_key_path.clone())
+        let key = std::fs::read_to_string(config.tls.server_private_key_path.clone())
             .expect("error, failed to read server private key");
         let server_identity = Identity::from_pem(cert, key);
         let tls = ServerTlsConfig::new().identity(server_identity);
-        if config.enable_mtls {
+        if config.tls.enable_mtls {
             let client_ca_cert =
-                std::fs::read_to_string(config.client_certificate_authority_root_path.clone())
+                std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
                     .expect("error, failed to read client certificate authority root");
             let client_ca_cert = Certificate::from_pem(client_ca_cert);
             let tls = tls.client_ca_root(client_ca_cert);
@@ -116,7 +115,8 @@ where
                 .send_compressed(CompressionEncoding::Gzip),
         )
         .serve_with_shutdown(
-            SocketAddr::from_str(&listen_address).map_err(|e| Error::AddrParseError(e))?,
+            // SocketAddr::from_str(&listen_address).map_err(|e| Error::AddrParseError(e))?,
+            listen_address,
             shutdown_signal.changed().map(|_s| {
                 warn!("Stopping RPC server. {}", listen_address);
             }),
@@ -131,7 +131,7 @@ where
 }
 
 // Implement the certificate generation function
-fn generate_self_signed_certificates(config: RpcConnectionSettings) {
+fn generate_self_signed_certificates(config: TlsConfig) {
     // Example using rcgen to generate self-signed certificates
     let subject_alt_names = vec!["localhost".to_string()];
     let CertifiedKey { cert, key_pair } =

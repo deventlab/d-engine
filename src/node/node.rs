@@ -14,8 +14,8 @@
 //! });
 //! ```
 
-use super::Settings;
 use crate::membership::PeerChannelsFactory;
+use crate::Settings;
 use crate::{alias::POF, PeerChannels, Raft, RaftEvent, Result, TypeConfig};
 use std::sync::{
     atomic::{AtomicBool, Ordering},

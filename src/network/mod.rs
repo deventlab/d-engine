@@ -2,7 +2,7 @@
 //!
 //! This module provides network communication facilities with configurable timeout policies
 //! for distributed system operations. All network operations are governed by timeout parameters
-//! defined in [`RaftSettings`] to ensure system responsiveness.
+//! defined in [`RaftConfig`] to ensure system responsiveness.
 //!
 pub mod grpc;
 
@@ -17,7 +17,7 @@ use tonic::async_trait;
 
 use crate::{
     grpc::rpc_service::{AppendEntriesRequest, ClusteMembershipChangeRequest, VoteRequest},
-    ChannelWithAddress, ChannelWithAddressAndRole, RaftSettings, Result,
+    ChannelWithAddress, ChannelWithAddressAndRole, RaftConfig, Result, RetryPolicies,
 };
 
 // Define a structured return value
@@ -50,7 +50,7 @@ pub trait Transport: Send + Sync + 'static {
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: ClusteMembershipChangeRequest,
-        raft_settings: RaftSettings,
+        retry: &RetryPolicies,
     ) -> Result<bool>;
 
     /// Only when Majority receives, true will be returned.
@@ -68,7 +68,7 @@ pub trait Transport: Send + Sync + 'static {
         // role_tx: mpsc::UnboundedSender<RoleEvent>,
         leader_term: u64,
         requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
-        raft_settings: RaftSettings,
+        retry: &RetryPolicies,
     ) -> Result<AppendResults>;
 
     /// Send vote request to either Candidate or Followers,
@@ -87,7 +87,7 @@ pub trait Transport: Send + Sync + 'static {
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: VoteRequest,
-        raft_settings: &RaftSettings,
+        retry: &RetryPolicies,
     ) -> Result<bool>;
 }
 
@@ -96,10 +96,7 @@ pub trait Transport: Send + Sync + 'static {
 use crate::Error;
 use log::{debug, error, warn};
 use std::{collections::HashMap, time::Duration};
-use tokio::{
-    sync::mpsc,
-    time::{sleep, timeout},
-};
+use tokio::time::{sleep, timeout};
 use tonic::Code;
 /// As soon as task has return we should return from this function
 ///
