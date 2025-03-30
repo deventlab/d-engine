@@ -232,7 +232,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         // Batch trigger check (should be prioritized before heartbeat check)
         if now >= self.timer.batch_deadline() {
-            debug!("reset_batch timer");
+            trace!("reset_batch timer");
             self.timer.reset_batch();
 
             if self.batch_buffer.should_flush() {

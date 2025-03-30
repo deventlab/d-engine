@@ -28,7 +28,7 @@ use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
 use learner_state::LearnerState;
-use log::debug;
+use log::{debug, trace};
 use role_state::RaftRoleState;
 use serde::{ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
 use std::{collections::HashMap, sync::Arc};
@@ -241,7 +241,7 @@ impl<T: TypeConfig> RaftRole<T> {
     where
         T: TypeConfig,
     {
-        debug!("raft_role:tick");
+        trace!("raft_role:tick");
         self.state_mut()
             .tick(role_tx, event_tx, peer_channels, ctx)
             .await

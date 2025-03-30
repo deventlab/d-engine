@@ -20,7 +20,7 @@ use std::{
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::{debug, error, warn};
+use log::{debug, error, trace, warn};
 use tonic::async_trait;
 
 use crate::{
@@ -58,7 +58,7 @@ where
 
     #[autometrics(objective = API_SLO)]
     fn mark_leader_id(&self, leader_id: u32) -> Result<()> {
-        debug!("mark {} as Leader", leader_id);
+        trace!("mark {} as Leader", leader_id);
 
         // Step 1: Reset the role of any old leader (if any)
         if let Err(e) = self.reset_leader() {
@@ -95,7 +95,7 @@ where
     #[autometrics(objective = API_SLO)]
     fn update_node_role(&self, node_id: u32, new_role: i32) -> Result<()> {
         if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
-            debug!(
+            trace!(
                 "update_node_role(in cluster membership meta={:?}): id({})'s role been changed to: {}",
                 &node_meta, node_id, new_role
             );
