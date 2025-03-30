@@ -5,6 +5,7 @@
 # ///     situation is that leader will keep convert a node between learner and follower
 # /// 
 learner_raft_log_gap = 10
+general_raft_timeout_duration_in_ms = 50
 
 
 [raft.replication]
@@ -26,8 +27,6 @@ election_timeout_max = 1000
 # check rpc connection health per 30 sec
 rpc_peer_connectinon_monitor_interval_in_sec = 30
 internal_rpc_client_request_id = 0
-
-general_raft_timeout_duration_in_ms = 50
 
 
 [raft.commit_handler]

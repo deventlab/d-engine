@@ -1,12 +1,25 @@
-mod channel_pool;
-mod client_pool;
-mod new_client;
-pub use channel_pool::*;
-pub use client_pool::*;
-pub use new_client::*;
-mod apis;
+// mod apis;
+mod builder;
+// mod channel_pool;
+mod client;
+// mod client_pool;
+mod cluster;
+mod config;
+mod kv;
+// mod new_client;
+mod pool;
 
-pub use apis::*;
+// pub use apis::*;
+pub use builder::*;
+// pub use channel_pool::*;
+pub use client::*;
+// pub use client_pool::*;
+pub use cluster::*;
+pub use config::*;
+pub use kv::*;
+use log::error;
+// pub use new_client::*;
+pub use pool::*;
 
 use crate::{
     grpc::rpc_service::{
@@ -18,22 +31,25 @@ use crate::{
 pub mod client_config;
 
 impl ClientCommand {
-    pub fn get(key: Vec<u8>) -> Self {
+    pub fn get(key: impl AsRef<[u8]>) -> Self {
         Self {
-            command: Some(client_command::Command::Get(key)),
+            command: Some(client_command::Command::Get(key.as_ref().to_vec())),
         }
     }
 
-    pub fn insert(key: Vec<u8>, value: Vec<u8>) -> Self {
-        let insert_cmd = client_command::Insert { key, value };
+    pub fn insert(key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Self {
+        let insert_cmd = client_command::Insert {
+            key: key.as_ref().to_vec(),
+            value: value.as_ref().to_vec(),
+        };
         Self {
             command: Some(client_command::Command::Insert(insert_cmd)),
         }
     }
 
-    pub fn delete(key: Vec<u8>) -> Self {
+    pub fn delete(key: impl AsRef<[u8]>) -> Self {
         Self {
-            command: Some(client_command::Command::Delete(key)),
+            command: Some(client_command::Command::Delete(key.as_ref().to_vec())),
         }
     }
 
@@ -83,12 +99,25 @@ impl ClientResponse {
         })
     }
 
-    pub fn into_read_results(&self) -> Result<Vec<ClientResult>> {
+    pub fn into_read_results(&self) -> Result<Vec<Option<ClientResult>>> {
         self.validate_error()?;
-        Ok(match &self.result {
-            Some(client_response::Result::ReadResults(r)) => r.results.clone(),
-            _ => Vec::new(),
-        })
+        match &self.result {
+            Some(client_response::Result::ReadResults(read_results)) => read_results
+                .results
+                .clone()
+                .into_iter()
+                .map(|item| {
+                    Ok(Some(ClientResult {
+                        key: item.key.to_vec(),
+                        value: item.value.to_vec(),
+                    }))
+                })
+                .collect(),
+            _ => {
+                error!("Invalid response type for read operation");
+                Err(Error::InvalidResponseType)
+            }
+        }
     }
 
     fn validate_error(&self) -> Result<()> {
