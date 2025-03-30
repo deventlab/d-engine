@@ -1,25 +1,22 @@
-// mod apis;
 mod builder;
-// mod channel_pool;
 mod client;
-// mod client_pool;
 mod cluster;
 mod config;
 mod kv;
-// mod new_client;
 mod pool;
 
-// pub use apis::*;
 pub use builder::*;
-// pub use channel_pool::*;
 pub use client::*;
-// pub use client_pool::*;
 pub use cluster::*;
 pub use config::*;
 pub use kv::*;
 use log::error;
-// pub use new_client::*;
 pub use pool::*;
+
+#[cfg(test)]
+mod pool_test;
+
+//---
 
 use crate::{
     grpc::rpc_service::{
@@ -28,7 +25,6 @@ use crate::{
     },
     Error, Result,
 };
-pub mod client_config;
 
 impl ClientCommand {
     pub fn get(key: impl AsRef<[u8]>) -> Self {

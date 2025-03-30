@@ -40,7 +40,7 @@ impl ConnectionPool {
         })
     }
 
-    async fn create_channel(addr: String, config: &ClientConfig) -> Result<Channel> {
+    pub(super) async fn create_channel(addr: String, config: &ClientConfig) -> Result<Channel> {
         debug!("create_channel, addr = {:?}", &addr);
         Endpoint::try_from(addr)?
             .connect_timeout(config.connect_timeout)
@@ -64,7 +64,7 @@ impl ConnectionPool {
     }
 
     /// Discover cluster metadata by probing nodes
-    async fn load_cluster_metadata(
+    pub(super) async fn load_cluster_metadata(
         endpoints: &[String],
         config: &ClientConfig,
     ) -> Result<Vec<NodeMeta>> {
@@ -80,14 +80,20 @@ impl ConnectionPool {
                         Err(_) => continue, // Try next node
                     }
                 }
-                Err(_) => continue, // Connection failed, try next
+                Err(e) => {
+                    error!(
+                        "load_cluster_metadata from addr: {:?}, failed: {:?}",
+                        &addr, e
+                    );
+                    continue;
+                } // Connection failed, try next
             }
         }
         Err(Error::ClusterUnavailable)
     }
 
     /// Extract leader address from metadata
-    fn parse_cluster_metadata(nodes: Vec<NodeMeta>) -> Result<(String, Vec<String>)> {
+    pub(super) fn parse_cluster_metadata(nodes: Vec<NodeMeta>) -> Result<(String, Vec<String>)> {
         let mut leader_addr = None;
         let mut followers = Vec::new();
 
