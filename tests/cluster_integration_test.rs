@@ -1,6 +1,7 @@
 mod commons;
 use commons::{execute_command, start_node, ClientCommands};
 use dengine::Error;
+use env_logger::Env;
 use log::error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -68,14 +69,10 @@ fn get_project_root() -> PathBuf {
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
     env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
+        .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
         .init();
 
-    let project_root = get_project_root();
-    println!(
-        "Resolved path: {}",
-        project_root.join("config/main.toml").display()
-    );
     reset("case1").await?;
     let bootstrap_urls: Vec<String> = vec![
         "http://127.0.0.1:9083".to_string(),
@@ -163,7 +160,8 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 #[tokio::test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
+        .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
         .init();
 
     reset("case2").await?;
