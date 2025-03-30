@@ -1,16 +1,14 @@
 use dengine::{
-    client_config::ClientConfig,
     utils::util::{self, kv, vk},
-    ClientApis, ClusterConfig, DengineClient, Error, NodeBuilder, Result, RaftNodeConfig,
+    ClusterConfig, Error, NodeBuilder, RaftNodeConfig, Result,
 };
-use log::{error, info};
-use std::path::Path;
+use log::{debug, error, info};
+use std::{path::Path, time::Duration};
 use tokio::sync::watch;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{
-    fmt, layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Layer,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+#[derive(Debug)]
 pub enum ClientCommands {
     PUT,
     READ,
@@ -69,55 +67,17 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
         .expect("Should succeed to start node");
 
     info!("Node started with config: {}", config_path);
-    println!("Node started with config: {}", config_path);
+    debug!("Node started with config: {}", config_path);
 
     // Run the node until shutdown
     if let Err(e) = node.run().await {
         error!("Node error: {:?}", e);
     }
 
-    println!("Exiting program: {:?}", config_path);
+    debug!("Exiting program: {:?}", config_path);
     drop(node);
     Ok(())
 }
-pub fn init_observability2(settings: &ClusterConfig) -> Result<WorkerGuard> {
-    let log_file = util::open_file_for_append(
-        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
-    )?;
-    let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
-    let log_writer = non_blocking; // 统一写入器
-
-    // 初始日志层
-    let log_layer = tracing_subscriber::fmt::layer().with_writer(log_writer.clone()); // 使用 clone 的写入器
-
-    let filter = EnvFilter::from_default_env();
-    let filtered_layer = log_layer.with_filter(filter);
-
-    // 使用 reload 功能
-    let (subscriber, reload_handle) = reload::Layer::new(filtered_layer);
-
-    tracing_subscriber::registry()
-        .with(subscriber)
-        .try_init()
-        .map_err(|_| Error::GeneralLocalLogIOError)?;
-
-    // 错误处理分支中保持相同写入器类型
-    let new_log_layer = tracing_subscriber::fmt::layer()
-        .with_writer(log_writer) // 使用相同的写入器
-        .with_ansi(true);
-
-    let new_filter = EnvFilter::from_default_env();
-    let new_filtered_layer = new_log_layer.with_filter(new_filter);
-
-    reload_handle
-        .modify(|layer| {
-            *layer = new_filtered_layer;
-        })
-        .map_err(|e| Error::GeneralServerError(format!("{:?}", e)))?;
-
-    Ok(guard)
-}
-
 pub fn init_observability(settings: &ClusterConfig) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
         Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
@@ -131,7 +91,7 @@ pub fn init_observability(settings: &ClusterConfig) -> Result<WorkerGuard> {
         .with(base_subscriber)
         .try_init()
     {
-        eprintln!("{:?}", e);
+        error!("{:?}", e);
     }
 
     Ok(guard)
@@ -143,101 +103,87 @@ pub async fn execute_command(
     key: u64,
     value: Option<u64>,
 ) -> Result<u64> {
-    let cfg = ClientConfig {
-        bootstrap_urls: bootstrap_urls.clone(),
-        connect_timeout_in_ms: 100,
-        request_timeout_in_ms: 200,
-        concurrency_limit_per_connection: 8192,
-        tcp_keepalive_in_secs: 3600,
-        http2_keep_alive_interval_in_secs: 300,
-        http2_keep_alive_timeout_in_secs: 20,
-        max_frame_size: 12582912,
-        initial_connection_window_size: 12582912,
-        initial_stream_window_size: 12582912,
-        buffer_size: 65536,
-    };
-
-    let mut client = match DengineClient::new(cfg).await {
+    let client = match dengine::ClientBuilder::new(bootstrap_urls.clone())
+        .connect_timeout(Duration::from_secs(3))
+        .request_timeout(Duration::from_secs(2))
+        .enable_compression(true)
+        .build()
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("DengineClient::new failed: {:?}", e);
-            return Err(Error::ClientError(format!(
-                "DengineClient::new failed: {:?}",
-                e
-            )));
+            error!("execute_command, {:?}", e);
+            return Err(e);
         }
     };
 
+    debug!("recevied command = {:?}", &command);
     // Handle subcommands
     match command {
         ClientCommands::PUT => {
             let value = value.unwrap();
 
-            println!("put {}:{}", key, value);
+            info!("put {}:{}", key, value);
 
-            match client.write(kv(key), kv(value)).await {
+            match client.kv().put(kv(key), kv(value)).await {
                 Ok(res) => {
-                    println!("Put Success: {:?}", res);
+                    debug!("Put Success: {:?}", res);
                     return Ok(key);
                 }
                 Err(Error::NodeIsNotLeaderError) => {
-                    eprintln!("node is not leader");
+                    error!("node is not leader");
                     return Err(Error::NodeIsNotLeaderError);
                 }
                 Err(e) => {
-                    eprintln!("Error: {:?}", e);
+                    error!("Error: {:?}", e);
                     return Err(Error::ClientError(format!("Error: {:?}", e)));
                 }
             }
         }
-        ClientCommands::DELETE => match client.delete(kv(key)).await {
+        ClientCommands::DELETE => match client.kv().delete(kv(key)).await {
             Ok(res) => {
-                println!("Delete Success: {:?}", res);
+                debug!("Delete Success: {:?}", res);
                 return Ok(key);
             }
             Err(Error::NodeIsNotLeaderError) => {
-                eprintln!("node is not leader");
+                error!("node is not leader");
                 return Err(Error::NodeIsNotLeaderError);
             }
             Err(e) => {
-                eprintln!("Error: {:?}", e);
+                error!("Error: {:?}", e);
                 return Err(Error::ClientError(format!("Error: {:?}", e)));
             }
         },
-        ClientCommands::READ => match client.read(kv(key)).await {
-            Ok(client_results) => {
-                if client_results.len() > 0 {
-                    let v = vk(&client_results[0].value);
-                    println!("Success: {:?}", v);
-                    return Ok(v);
-                } else {
-                    println!("entry(k={}) not exist.", key);
-                    return Err(Error::ClientError(format!("entry(k={}) not exist.", key)));
-                }
+        ClientCommands::READ => match client.kv().get(kv(key), false).await? {
+            Some(r) => {
+                let v = vk(&r.value);
+                debug!("Success: {:?}", v);
+                return Ok(v);
             }
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-                return Err(Error::ClientError(format!("Error: {:?}", e)));
+            None => {
+                error!("No entry found for key: {}", key);
+                return Err(Error::ClientError(format!(
+                    "No entry found for key: {}",
+                    key
+                )));
             }
         },
-        ClientCommands::LREAD => match client.lread(kv(key)).await {
-            Ok(client_results) => {
-                if client_results.len() > 0 {
-                    let v = vk(&client_results[0].value);
-                    println!("Success: {:?}", v);
-                    return Ok(v);
-                } else {
-                    println!("entry(k={}) not exist.", key);
-                    return Err(Error::ClientError(format!("entry(k={}) not exist.", key)));
-                }
+        ClientCommands::LREAD => match client.kv().get(kv(key), true).await? {
+            Some(r) => {
+                let v = vk(&r.value);
+                debug!("Success: {:?}", v);
+                return Ok(v);
             }
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-                return Err(Error::ClientError(format!("Error: {:?}", e)));
+            None => {
+                error!("No result found for key: {}", key);
+                return Err(Error::ClientError(format!(
+                    "No entry found for key: {}",
+                    key
+                )));
             }
         },
         _ => {
-            eprintln!("Invalid subcommand");
+            error!("Invalid subcommand");
             return Err(Error::ClientError(format!("Invalid subcommand")));
         }
     }

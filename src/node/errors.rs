@@ -136,6 +136,21 @@ pub enum Error {
 
     #[error("No connected leader channel error")]
     DispatchClientNoLeaderChannelError,
+
+    #[error("Cluster is unavailable")]
+    ClusterUnavailable,
+
+    #[error("No leader found")]
+    NoLeaderFound,
+
+    #[error("No keys provided")]
+    EmptyKeys,
+
+    #[error("Invalid response")]
+    InvalidResponse,
+
+    #[error("Invalid response type")]
+    InvalidResponseType,
     //===== Cluster membership sync errors =====
     //
     #[error("Failed to update cluster membership from leader, {0}")]

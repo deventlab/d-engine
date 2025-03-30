@@ -40,7 +40,7 @@ async fn check_cluster_is_ready(peer_addr: &str, timeout_secs: u64) -> Result<()
                 println!("Node is ready!");
                 return Ok::<(), std::io::Error>(());
             } else {
-                eprintln!("Node({:?}) not ready, retrying...", peer_addr);
+                error!("Node({:?}) not ready, retrying...", peer_addr);
                 time::sleep(retry_interval).await;
             }
         }
@@ -67,6 +67,10 @@ fn get_project_root() -> PathBuf {
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
+
     let project_root = get_project_root();
     println!(
         "Resolved path: {}",
@@ -158,9 +162,9 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
-    // env_logger::Builder::new()
-    //     .filter_level(log::LevelFilter::Debug)
-    //     .init();
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
 
     reset("case2").await?;
 
@@ -306,7 +310,7 @@ async fn verify_read(urls: &Vec<String>, key: u64, expected_value: u64, iteratio
                 key
             ),
             Err(e) => {
-                eprintln!("{:?}", e);
+                error!("{:?}", e);
                 assert!(false);
             }
         }

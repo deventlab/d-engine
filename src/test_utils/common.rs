@@ -132,7 +132,7 @@ static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
     env_logger::init();
 });
 
-pub(crate) fn enable_logger() {
+pub fn enable_logger() {
     *LOGGER_INIT;
     println!("setup logger for unit test.");
 }
