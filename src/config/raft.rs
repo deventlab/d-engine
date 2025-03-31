@@ -64,7 +64,7 @@ fn default_learner_gap() -> u64 {
 }
 // in ms
 fn default_general_timeout() -> u64 {
-    100
+    50
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

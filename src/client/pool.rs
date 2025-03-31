@@ -3,7 +3,10 @@ use crate::{
     ClientConfig, Error, Result,
 };
 use log::{debug, error, info};
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+    codec::CompressionEncoding,
+    transport::{Channel, Endpoint},
+};
 
 #[derive(Clone)]
 pub struct ConnectionPool {
@@ -72,6 +75,11 @@ impl ConnectionPool {
             match Self::create_channel(addr.clone(), config).await {
                 Ok(channel) => {
                     let mut client = RpcServiceClient::new(channel);
+                    if config.enable_compression {
+                        client = client
+                            .send_compressed(CompressionEncoding::Gzip)
+                            .accept_compressed(CompressionEncoding::Gzip);
+                    }
                     match client
                         .get_cluster_metadata(tonic::Request::new(MetadataRequest {}))
                         .await

@@ -76,9 +76,8 @@ impl RaftNodeConfig {
     /// ```
     pub fn new() -> Result<Self> {
         // Create a basic configuration builder
-        let mut builder = Config::builder()
-            // 1. Default values ​​as the base layer
-            .add_source(Config::try_from(&Self::default())?);
+        // 1. Default values ​​as the base layer
+        let mut builder = Config::builder().add_source(Config::try_from(&Self::default())?);
 
         // 2. Conditionally add configuration files
         if let Ok(config_path) = env::var("CONFIG_PATH") {
@@ -115,7 +114,7 @@ impl RaftNodeConfig {
     /// let final_cfg = base.with_override_config("runtime_overrides.toml")?;
     /// ```
     pub fn with_override_config(&self, path: &str) -> Result<Self> {
-        Config::builder()
+        let config: Self = Config::builder()
             .add_source(Config::try_from(self)?) // Current config
             .add_source(File::with_name(path)) // New overrides
             .add_source(
@@ -126,8 +125,9 @@ impl RaftNodeConfig {
                     .try_parsing(true),
             )
             .build()?
-            .try_deserialize()
-            .map_err(Into::into)
+            .try_deserialize()?;
+        config.validate()?;
+        Ok(config)
     }
 
     /// Validates cross-component configuration rules

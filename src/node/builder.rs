@@ -15,7 +15,7 @@
 //! ```ignore
 //!
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
-//! let node = NodeBuilder::new(settings, shutdown_rx)
+//! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
 //!     .build()
 //!     .start_metrics_server(shutdown_tx.subscribe())
@@ -42,7 +42,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 
 pub struct NodeBuilder {
     node_id: u32,
-    pub(super) settings: RaftNodeConfig,
+    pub(super) node_config: RaftNodeConfig,
     pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
@@ -65,13 +65,14 @@ impl NodeBuilder {
     /// # Panics
     /// Will panic if configuration loading fails (consider returning Result instead)
     pub fn new(cluster_path: Option<&str>, shutdown_signal: watch::Receiver<()>) -> Self {
-        let config = RaftNodeConfig::new().expect("Load settings successfully");
+        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
         if let Some(p) = cluster_path {
-            config
+            info!("with_override_config from: {}", &p);
+            node_config = node_config
                 .with_override_config(p)
-                .expect("Overwrite config successfully.");
+                .expect("Overwrite node_config successfully.");
         }
-        Self::init(config, shutdown_signal)
+        Self::init(node_config, shutdown_signal)
     }
 
     /// Constructs NodeBuilder from in-memory cluster configuration (OpenRaft style)
@@ -88,15 +89,15 @@ impl NodeBuilder {
         cluster_config: ClusterConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let mut settings = RaftNodeConfig::new().expect("Load settings successfully!");
-        settings.cluster = cluster_config;
-        Self::init(settings, shutdown_signal)
+        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully!");
+        node_config.cluster = cluster_config;
+        Self::init(node_config, shutdown_signal)
     }
 
     /// Core initialization logic shared by all construction paths
-    pub fn init(settings: RaftNodeConfig, shutdown_signal: watch::Receiver<()>) -> Self {
-        let node_id = settings.cluster.node_id;
-        let db_root_dir = settings.cluster.db_root_dir.clone();
+    pub fn init(node_config: RaftNodeConfig, shutdown_signal: watch::Receiver<()>) -> Self {
+        let node_id = node_config.cluster.node_id;
+        let db_root_dir = node_config.cluster.db_root_dir.clone();
 
         // Initialize storage
         let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
@@ -123,13 +124,13 @@ impl NodeBuilder {
         let state_machine = Arc::new(sled_state_machine);
         let state_machine_handler = Arc::new(DefaultStateMachineHandler::new(
             last_applied_index,
-            settings.raft.commit_handler.max_entries_per_chunk,
+            node_config.raft.commit_handler.max_entries_per_chunk,
             state_machine.clone(),
         ));
 
         //Cluster member management
         let raft_membership =
-            RaftMembership::new(node_id, settings.cluster.initial_cluster.clone());
+            RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone());
 
         // Build the final instance
         Self {
@@ -139,7 +140,7 @@ impl NodeBuilder {
             state_storage: Some(sled_state_storage),
             transport: Some(grpc_transport),
             membership: Some(raft_membership),
-            settings,
+            node_config,
             shutdown_signal,
             commit_handler: None,
             state_machine_handler: Some(state_machine_handler),
@@ -176,14 +177,14 @@ impl NodeBuilder {
         self
     }
 
-    pub fn settings(mut self, settings: RaftNodeConfig) -> Self {
-        self.settings = settings;
+    pub fn node_config(mut self, node_config: RaftNodeConfig) -> Self {
+        self.node_config = node_config;
         self
     }
 
     pub fn build(mut self) -> Self {
         let node_id = self.node_id;
-        let settings = self.settings.clone();
+        let node_config = self.node_config.clone();
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<u64>();
@@ -195,7 +196,7 @@ impl NodeBuilder {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(1024);
 
-        let settings_arc = Arc::new(settings);
+        let settings_arc = Arc::new(node_config);
         let shutdown_signal = self.shutdown_signal.clone();
         let mut raft_core = Raft::<RaftTypeConfig>::new(
             node_id,
@@ -258,7 +259,7 @@ impl NodeBuilder {
 
     pub fn start_metrics_server(self, shutdown_signal: watch::Receiver<()>) -> Self {
         println!("start metric server!");
-        let port = self.settings.monitoring.prometheus_port;
+        let port = self.node_config.monitoring.prometheus_port;
         tokio::spawn(async move {
             metrics::start_server(port, shutdown_signal).await;
         });
@@ -270,11 +271,11 @@ impl NodeBuilder {
         if let Some(ref node) = self.node {
             let node_clone = node.clone();
             let shutdown = self.shutdown_signal.clone();
-            let listen_address = self.settings.cluster.listen_address.clone();
-            let settings = self.settings.clone();
+            let listen_address = self.node_config.cluster.listen_address.clone();
+            let node_config = self.node_config.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    grpc::start_rpc_server(node_clone, listen_address, settings, shutdown).await
+                    grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
                 {
                     eprintln!("RPC server stops. {:?}", e);
                     error!("RPC server stops. {:?}", e);
@@ -299,9 +300,9 @@ impl NodeBuilder {
     pub fn new_from_db_path(db_path: &str, shutdown_signal: watch::Receiver<()>) -> Self {
         use std::path::PathBuf;
 
-        let mut settings = RaftNodeConfig::new().expect("Load settings successfully!");
-        settings.cluster.db_root_dir = PathBuf::from(db_path);
+        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully!");
+        node_config.cluster.db_root_dir = PathBuf::from(db_path);
 
-        Self::init(settings, shutdown_signal)
+        Self::init(node_config, shutdown_signal)
     }
 }

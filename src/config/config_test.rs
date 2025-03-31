@@ -41,7 +41,7 @@ fn with_override_config_should_merge_file_settings() {
         &config_path,
         r#"
         [cluster]
-        node_id = 42 # Override default value
+        db_root_dir = "/tmp/xx/db" # Override default value
 
         [raft.election]
         election_timeout_min = 1000 # Override default value
@@ -53,14 +53,17 @@ fn with_override_config_should_merge_file_settings() {
     let empty_vars: Vec<(&str, Option<&str>)> = vec![];
     with_vars(empty_vars, || {
         // Execute test logic
-        let base_config = RaftNodeConfig::default();
+        let base_config = RaftNodeConfig::new().expect("success");
         let result = base_config.with_override_config(config_path.to_str().unwrap());
 
         // Verify result
         assert!(result.is_ok());
         let config = result.unwrap();
 
-        assert_eq!(config.cluster.node_id, 42);
+        assert_eq!(
+            config.cluster.db_root_dir.as_os_str().to_str(),
+            Some("/tmp/xx/db")
+        );
         assert_eq!(config.raft.election.election_timeout_min, 1000);
         assert_eq!(config.raft.election.election_timeout_max, 3000);
     });

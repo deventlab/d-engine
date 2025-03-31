@@ -3,7 +3,10 @@ use dengine::{
     ClusterConfig, Error, NodeBuilder, RaftNodeConfig, Result,
 };
 use log::{debug, error, info};
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::sync::watch;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -45,7 +48,8 @@ pub async fn start_node(
 ) -> Result<(watch::Sender<()>, tokio::task::JoinHandle<Result<()>>)> {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let config_path = config_path.to_string();
+    let root_path = get_root_path();
+    let config_path = format!("{}", root_path.join(config_path).display());
     let handle = tokio::spawn(async move { run_node(&config_path, graceful_rx).await });
 
     Ok((graceful_tx, handle))
@@ -108,7 +112,7 @@ pub async fn execute_command(
 ) -> Result<u64> {
     let client = match dengine::ClientBuilder::new(bootstrap_urls.clone())
         .connect_timeout(Duration::from_secs(3))
-        .request_timeout(Duration::from_secs(2))
+        .request_timeout(Duration::from_secs(10))
         .enable_compression(true)
         .build()
         .await
@@ -190,4 +194,8 @@ pub async fn execute_command(
             return Err(Error::ClientError(format!("Invalid subcommand")));
         }
     }
+}
+
+pub fn get_root_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }

@@ -47,15 +47,15 @@ impl Default for RetryPolicies {
     fn default() -> Self {
         Self {
             append_entries: BackoffPolicy {
-                max_retries: 3,
+                max_retries: 1,
                 timeout_ms: 100,
                 base_delay_ms: 50,
                 max_delay_ms: 1000,
             },
             election: BackoffPolicy {
-                max_retries: 10,
-                timeout_ms: 200,
-                base_delay_ms: 100,
+                max_retries: 3, // Note: `retries` > 3 might prevent a successful election.
+                timeout_ms: 100,
+                base_delay_ms: 50,
                 max_delay_ms: 5000,
             },
             membership: BackoffPolicy {
