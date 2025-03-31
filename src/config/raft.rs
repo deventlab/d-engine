@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RaftConfig {
     #[serde(default)]
     pub replication: ReplicationConfig,
@@ -23,6 +23,18 @@ pub struct RaftConfig {
     pub general_raft_timeout_duration_in_ms: u64,
 }
 
+impl Default for RaftConfig {
+    fn default() -> Self {
+        Self {
+            replication: ReplicationConfig::default(),
+            election: ElectionConfig::default(),
+            membership: MembershipConfig::default(),
+            commit_handler: CommitHandlerConfig::default(),
+            learner_raft_log_gap: default_learner_gap(),
+            general_raft_timeout_duration_in_ms: default_general_timeout(),
+        }
+    }
+}
 impl RaftConfig {
     /// Validates all Raft subsystem configurations
     pub fn validate(&self) -> Result<()> {
@@ -55,7 +67,7 @@ fn default_general_timeout() -> u64 {
     100
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReplicationConfig {
     #[serde(default = "default_append_interval")]
     pub rpc_append_entries_clock_in_ms: u64,
@@ -70,6 +82,16 @@ pub struct ReplicationConfig {
     pub append_entries_max_entries_per_replication: u64,
 }
 
+impl Default for ReplicationConfig {
+    fn default() -> Self {
+        Self {
+            rpc_append_entries_clock_in_ms: default_append_interval(),
+            rpc_append_entries_in_batch_threshold: default_batch_threshold(),
+            rpc_append_entries_batch_process_delay_in_ms: default_batch_delay(),
+            append_entries_max_entries_per_replication: default_entries_per_replication(),
+        }
+    }
+}
 impl ReplicationConfig {
     fn validate(&self) -> Result<()> {
         if self.rpc_append_entries_clock_in_ms == 0 {
@@ -114,7 +136,7 @@ fn default_batch_delay() -> u64 {
 fn default_entries_per_replication() -> u64 {
     100
 }
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ElectionConfig {
     #[serde(default = "default_election_timeout_min")]
     pub election_timeout_min: u64,
@@ -129,6 +151,16 @@ pub struct ElectionConfig {
     pub internal_rpc_client_request_id: u32,
 }
 
+impl Default for ElectionConfig {
+    fn default() -> Self {
+        Self {
+            election_timeout_min: default_election_timeout_min(),
+            election_timeout_max: default_election_timeout_max(),
+            rpc_peer_connectinon_monitor_interval_in_sec: default_peer_monitor_interval(),
+            internal_rpc_client_request_id: default_client_request_id(),
+        }
+    }
+}
 impl ElectionConfig {
     fn validate(&self) -> Result<()> {
         if self.election_timeout_min >= self.election_timeout_max {
@@ -160,10 +192,17 @@ fn default_client_request_id() -> u32 {
     0
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MembershipConfig {
     #[serde(default = "default_probe_service")]
     pub cluster_healthcheck_probe_service_name: String,
+}
+impl Default for MembershipConfig {
+    fn default() -> Self {
+        Self {
+            cluster_healthcheck_probe_service_name: default_probe_service(),
+        }
+    }
 }
 fn default_probe_service() -> String {
     "rpc_service.RpcService".to_string()
@@ -181,7 +220,7 @@ impl MembershipConfig {
 }
 
 /// Submit processor-specific configuration
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommitHandlerConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: u64,
@@ -191,6 +230,15 @@ pub struct CommitHandlerConfig {
 
     #[serde(default = "default_max_entries_per_chunk")]
     pub max_entries_per_chunk: usize,
+}
+impl Default for CommitHandlerConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: default_batch_size(),
+            process_interval_ms: default_process_interval_ms(),
+            max_entries_per_chunk: default_max_entries_per_chunk(),
+        }
+    }
 }
 impl CommitHandlerConfig {
     fn validate(&self) -> Result<()> {

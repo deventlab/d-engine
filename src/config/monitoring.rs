@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MonitoringConfig {
     #[serde(default = "default_prometheus_enabled")]
     pub prometheus_enabled: bool,
@@ -10,7 +10,14 @@ pub struct MonitoringConfig {
     #[serde(default = "default_prometheus_port")]
     pub prometheus_port: u16,
 }
-
+impl Default for MonitoringConfig {
+    fn default() -> Self {
+        Self {
+            prometheus_enabled: default_prometheus_enabled(),
+            prometheus_port: default_prometheus_port(),
+        }
+    }
+}
 impl MonitoringConfig {
     /// Validates monitoring configuration
     /// # Errors

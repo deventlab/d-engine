@@ -93,7 +93,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
             self.settings
-                .unwrap_or_else(|| RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig")),
+                .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
             self.role_tx.unwrap_or_else(|| role_tx),
             self.role_rx.unwrap_or_else(|| role_rx),
             self.event_tx.unwrap_or_else(|| event_tx),
@@ -149,7 +149,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
             self.settings
-                .unwrap_or_else(|| RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig")),
+                .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
             self.role_tx.unwrap_or_else(|| role_tx),
             self.role_rx.unwrap_or_else(|| role_rx),
             self.event_tx.unwrap_or_else(|| event_tx),
@@ -257,7 +257,7 @@ impl MockBuilder {
     }
 
     pub fn with_db_path(mut self, db_root_dir: &str) -> Self {
-        let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+        let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
         settings.cluster.db_root_dir = PathBuf::from(db_root_dir);
         self.settings = Some(settings);
         self

@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
 /// Basic retry policy template
-#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
 pub struct BackoffPolicy {
     /// Maximum number of retries (0 means unlimited retries)
     #[serde(default = "default_max_retries")]
@@ -23,7 +23,7 @@ pub struct BackoffPolicy {
 }
 
 /// Divide strategies by business domain
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RetryPolicies {
     // Log replication strategy (AppendEntries RPC)
     #[serde(default)]

@@ -25,7 +25,7 @@
 //!
 //!     // Execute key-value operations
 //!     client.kv().put("user:1001", "Alice").await?;
-//!     let value = client.kv().get("user:1001").await?;
+//!     let value = client.kv().get("user:1001", false).await?;
 //!     println!("User data: {:?}", value);
 //!
 //!     // Perform cluster management

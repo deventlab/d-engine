@@ -6,7 +6,7 @@ use crate::{
     test_utils::{
         self, setup_raft_components, MockNode, MockRpcService, MOCK_RPC_CLIENT_PORT_BASE,
     },
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RetryPolicies, RaftNodeConfig,
+    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RaftNodeConfig, RetryPolicies,
     Transport, CANDIDATE, FOLLOWER,
 };
 use std::collections::HashMap;
@@ -110,7 +110,7 @@ async fn test_send_append_requests_case2() {
     //     .times(0)
     //     .returning(|_, _| {});
 
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
@@ -186,7 +186,7 @@ async fn test_send_append_requests_case3() {
         (peer_3_id, peer_3_address, peer_req),
     ];
 
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
@@ -273,7 +273,7 @@ async fn test_send_append_requests_case4() {
         (peer_3_id, peer_3_address, peer_req),
     ];
 
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client
@@ -336,7 +336,7 @@ async fn test_send_append_requests_case5() {
     };
     let requests_with_peer_address = vec![(leader_id, leader_address, peer_req)];
 
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let client = GrpcTransport { my_id: leader_id };
     if let Err(Error::AppendEntriesNoPeerFound) = client
         .send_append_requests(1, vec![], &settings.retry)
@@ -409,7 +409,7 @@ async fn test_send_append_requests_case6() {
         (peer_2_id, peer_2_address, peer_req.clone()),
         (peer_3_id, peer_3_address, peer_req),
     ];
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let client = GrpcTransport { my_id: leader_id };
     match client
@@ -544,7 +544,7 @@ async fn test_send_append_requests_case7() {
         .collect::<Vec<_>>();
 
     // 5. Test - Send AppendEntries RPCs
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init settings");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init settings");
     let client = GrpcTransport { my_id: leader_id };
 
     match client
@@ -595,7 +595,7 @@ async fn test_send_vote_requests_case1() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let request = VoteRequest {
         term: 1,
         candidate_id: my_id,
@@ -622,7 +622,7 @@ async fn test_send_vote_requests_case2() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
@@ -669,7 +669,7 @@ async fn test_send_vote_requests_case3() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -729,7 +729,7 @@ async fn test_send_vote_requests_case4() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -784,7 +784,7 @@ async fn test_send_vote_requests_case5() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;

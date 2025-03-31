@@ -65,8 +65,13 @@ impl NodeBuilder {
     /// # Panics
     /// Will panic if configuration loading fails (consider returning Result instead)
     pub fn new(cluster_path: Option<&str>, shutdown_signal: watch::Receiver<()>) -> Self {
-        let settings = RaftNodeConfig::load(cluster_path).expect("Load settings successfully!");
-        Self::init(settings, shutdown_signal)
+        let config = RaftNodeConfig::new().expect("Load settings successfully");
+        if let Some(p) = cluster_path {
+            config
+                .with_override_config(p)
+                .expect("Overwrite config successfully.");
+        }
+        Self::init(config, shutdown_signal)
     }
 
     /// Constructs NodeBuilder from in-memory cluster configuration (OpenRaft style)
@@ -83,7 +88,7 @@ impl NodeBuilder {
         cluster_config: ClusterConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let mut settings = RaftNodeConfig::load(None).expect("Load settings successfully!");
+        let mut settings = RaftNodeConfig::new().expect("Load settings successfully!");
         settings.cluster = cluster_config;
         Self::init(settings, shutdown_signal)
     }
@@ -294,7 +299,7 @@ impl NodeBuilder {
     pub fn new_from_db_path(db_path: &str, shutdown_signal: watch::Receiver<()>) -> Self {
         use std::path::PathBuf;
 
-        let mut settings = RaftNodeConfig::load(None).expect("Load settings successfully!");
+        let mut settings = RaftNodeConfig::new().expect("Load settings successfully!");
         settings.cluster.db_root_dir = PathBuf::from(db_path);
 
         Self::init(settings, shutdown_signal)

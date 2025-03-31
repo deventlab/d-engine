@@ -59,7 +59,7 @@ pub fn mock_node(
 ) -> Node<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.cluster.db_root_dir = PathBuf::from(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
@@ -78,7 +78,7 @@ pub fn mock_raft(
 ) -> Raft<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.cluster.db_root_dir = PathBuf::from(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
@@ -96,7 +96,7 @@ pub fn mock_raft_context(
 ) -> RaftContext<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.cluster.db_root_dir = PathBuf::from(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();

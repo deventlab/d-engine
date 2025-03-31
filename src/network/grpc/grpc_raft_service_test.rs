@@ -161,7 +161,7 @@ async fn test_server_is_not_ready() {
 #[tokio::test]
 async fn test_handle_rpc_services_successfully() {
     enable_logger();
-    let mut settings = RaftNodeConfig::load(None).expect("Should succeed to init RaftNodeConfig.");
+    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.raft.general_raft_timeout_duration_in_ms = 200;
     settings.cluster.db_root_dir = PathBuf::from(
         "/tmp/

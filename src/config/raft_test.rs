@@ -23,8 +23,8 @@ fn test_valid_config() {
     };
 
     if let Err(_) = config.validate() {
-        assert!(true);
-    } else {
         assert!(false);
+    } else {
+        assert!(true);
     }
 }
