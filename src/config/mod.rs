@@ -24,10 +24,15 @@ mod config_test;
 mod raft_test;
 
 //---
-use crate::Result;
-use config::{Config, Environment, File};
-use serde::{Deserialize, Serialize};
 use std::env;
+
+use config::Config;
+use config::Environment;
+use config::File;
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::Result;
 
 /// Main configuration container for Raft consensus engine components
 ///
@@ -54,7 +59,8 @@ pub struct RaftNodeConfig {
 impl RaftNodeConfig {
     /// Creates a new configuration with hierarchical override support:
     ///
-    /// Configuration sources are merged in the following order (later sources override earlier ones):
+    /// Configuration sources are merged in the following order (later sources
+    /// override earlier ones):
     /// 1. Type defaults (lowest priority)
     /// 2. Configuration file from `CONFIG_PATH` environment variable
     /// 3. Environment variables with `RAFT__` prefix (highest priority)
@@ -113,7 +119,10 @@ impl RaftNodeConfig {
     /// // Apply runtime overrides
     /// let final_cfg = base.with_override_config("runtime_overrides.toml")?;
     /// ```
-    pub fn with_override_config(&self, path: &str) -> Result<Self> {
+    pub fn with_override_config(
+        &self,
+        path: &str,
+    ) -> Result<Self> {
         let config: Self = Config::builder()
             .add_source(Config::try_from(self)?) // Current config
             .add_source(File::with_name(path)) // New overrides

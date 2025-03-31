@@ -1,7 +1,8 @@
+use std::time::Duration;
+
 use tokio::time::Instant;
 
 use super::*;
-use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
 struct TestRequest;

@@ -32,11 +32,13 @@ mod raft_test;
 ///
 /// e.g. Append Entries RPC
 /// e.g. Sync cluster membership configure
-///
 
 /// @return: true - found new leader; false - no new leader found;
-///
-pub(crate) fn if_new_leader_found(my_current_term: u64, term: u64, is_learner: bool) -> bool {
+pub(crate) fn if_new_leader_found(
+    my_current_term: u64,
+    term: u64,
+    is_learner: bool,
+) -> bool {
     //means I am fake leader or we should ignore learner's response
     if !is_learner && my_current_term < term {
         log::error!("my_current_term: {} < term: {} ?", my_current_term, term);

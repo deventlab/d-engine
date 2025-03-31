@@ -1,18 +1,17 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::{
-    sync::{
-        mpsc::{self, UnboundedReceiver},
-        watch,
-    },
-    time::{self, Instant},
-};
+use tokio::sync::mpsc::{self};
+use tokio::sync::watch;
+use tokio::time::Instant;
+use tokio::time::{self};
 
 use super::DefaultCommitHandler;
-use crate::{
-    test_utils::{self, MockTypeConfig},
-    CommitHandler, MockRaftLog, MockStateMachineHandler,
-};
+use crate::test_utils::MockTypeConfig;
+use crate::test_utils::{self};
+use crate::CommitHandler;
+use crate::MockRaftLog;
+use crate::MockStateMachineHandler;
 
 fn setup(
     batch_size_threshold: u64,
@@ -64,15 +63,12 @@ async fn test_run_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut handler = setup(1000, 2, 2, new_commit_rx, graceful_rx);
 
-    new_commit_tx
-        .send(1)
-        .expect("Should succeed to send new commit");
-    new_commit_tx
-        .send(2)
-        .expect("Should succeed to send new commit");
+    new_commit_tx.send(1).expect("Should succeed to send new commit");
+    new_commit_tx.send(2).expect("Should succeed to send new commit");
     // Start the handler loop
     let handle = tokio::spawn(async move {
-        let _ = time::timeout(Duration::from_millis(3), handler.run()).await; // 3 ms is key for this unit test
+        let _ = time::timeout(Duration::from_millis(3), handler.run()).await;
+        // 3 ms is key for this unit test
     });
     tokio::time::advance(Duration::from_millis(3)).await;
     // tokio::time::sleep(Duration::from_millis(10)).await;
@@ -102,9 +98,7 @@ async fn test_run_case2() {
     let mut handler = setup(batch_thresold, 1000, 2, new_commit_rx, graceful_rx);
 
     for i in 1..=batch_thresold {
-        new_commit_tx
-            .send(i)
-            .expect("Should succeed to send new commit");
+        new_commit_tx.send(i).expect("Should succeed to send new commit");
     }
     // Start the handler loop
     let handle = tokio::spawn(async move {
@@ -138,9 +132,7 @@ async fn test_run_case3() {
     let mut handler = setup(batch_thresold, 1000, 1, new_commit_rx, graceful_rx);
 
     for i in 1..=(batch_thresold - 10) {
-        new_commit_tx
-            .send(i)
-            .expect("Should succeed to send new commit");
+        new_commit_tx.send(i).expect("Should succeed to send new commit");
     }
     // Start the handler loop
     let handle = tokio::spawn(async move {
@@ -175,9 +167,7 @@ async fn test_run_case4() {
     let mut handler = setup(batch_thresold, 2, 3, new_commit_rx, graceful_rx);
 
     for i in 1..=batch_thresold {
-        new_commit_tx
-            .send(i)
-            .expect("Should succeed to send new commit");
+        new_commit_tx.send(i).expect("Should succeed to send new commit");
     }
     // Start the handler loop
     let handle = tokio::spawn(async move {

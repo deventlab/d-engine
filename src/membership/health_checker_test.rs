@@ -1,9 +1,12 @@
-use crate::{
-    membership::health_checker::{HealthChecker, HealthCheckerApis},
-    test_utils::{self, MockNode, MockRpcService},
-    NetworkConfig,
-};
-use tokio::{net::TcpStream, sync::oneshot};
+use tokio::net::TcpStream;
+use tokio::sync::oneshot;
+
+use crate::membership::health_checker::HealthChecker;
+use crate::membership::health_checker::HealthCheckerApis;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
+use crate::test_utils::{self};
+use crate::NetworkConfig;
 
 /// Case 1: server is not ready
 #[tokio::test]

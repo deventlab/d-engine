@@ -1,16 +1,19 @@
-//! Integration test module for simulating RaftContext components with actual underlying operations.
+//! Integration test module for simulating RaftContext components with actual
+//! underlying operations.
 //!
-//! This module provides real-world implementations of storage, network and handler components
-//! rather than using mocking frameworks. Designed for testing Raft consensus algorithm internals
-//! with the following characteristics:
+//! This module provides real-world implementations of storage, network and
+//! handler components rather than using mocking frameworks. Designed for
+//! testing Raft consensus algorithm internals with the following
+//! characteristics:
 //!
-//! - Uses **real storage backends** (SledRaftLog, SledStateStorage) with test isolation
-//!   through temporary databases
+//! - Uses **real storage backends** (SledRaftLog, SledStateStorage) with test isolation through
+//!   temporary databases
 //! - Implements **actual network transport** (GrpcTransport) for RPC communication
 //! - Contains complete handler implementations (ElectionHandler, ReplicationHandler)
 //! - Maintains real cluster membership state
 //!
-//! The [`TestContext`] struct encapsulates a complete testing environment containing:
+//! The [`TestContext`] struct encapsulates a complete testing environment
+//! containing:
 //! - Storage components (raft log, state machine, snapshots)
 //! - Network transport layer
 //! - Cluster membership configuration
@@ -34,28 +37,45 @@
 //! - Cluster formation and interaction tests
 //! - Failure scenario testing with real component interactions
 
-use crate::convert::kv;
-use crate::grpc::rpc_service::Entry;
-use crate::{
-    alias::{MOF, ROF, SMOF, SSOF, TROF},
-    grpc::{grpc_transport::GrpcTransport, rpc_service::NodeMeta},
-    test_utils::{enable_logger, MockTypeConfig},
-    DefaultStateMachineHandler, ElectionHandler, RaftContext, RaftMembership, RaftNodeConfig,
-    RaftRole, RaftStateMachine, RaftTypeConfig, ReplicationHandler, SledRaftLog, SledStateStorage,
-    StateMachine, TypeConfig,
-};
-use crate::{init_sled_storages, RaftLog, StateStorage};
-use log::error;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
+
+use log::error;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use super::generate_insert_commands;
+use crate::alias::MOF;
+use crate::alias::ROF;
+use crate::alias::SMOF;
+use crate::alias::SSOF;
+use crate::alias::TROF;
+use crate::convert::kv;
+use crate::grpc::grpc_transport::GrpcTransport;
+use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::init_sled_storages;
+use crate::test_utils::enable_logger;
+use crate::test_utils::MockTypeConfig;
+use crate::DefaultStateMachineHandler;
+use crate::ElectionHandler;
+use crate::RaftContext;
+use crate::RaftLog;
+use crate::RaftMembership;
+use crate::RaftNodeConfig;
+use crate::RaftRole;
+use crate::RaftStateMachine;
+use crate::RaftTypeConfig;
+use crate::ReplicationHandler;
+use crate::SledRaftLog;
+use crate::SledStateStorage;
+use crate::StateMachine;
+use crate::StateStorage;
+use crate::TypeConfig;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub id: u32,
 
@@ -172,10 +192,7 @@ pub fn setup_raft_components(
         state_machine,
         state_storage: Box::new(sled_state_storage),
         transport: Arc::new(grpc_transport),
-        membership: Arc::new(RaftMembership::new(
-            id,
-            arc_settings.cluster.initial_cluster.clone(),
-        )),
+        membership: Arc::new(RaftMembership::new(id, arc_settings.cluster.initial_cluster.clone())),
         election_handler: ElectionHandler::new(id, event_tx),
         replication_handler: ReplicationHandler::new(id),
         settings: settings_clone,
@@ -190,7 +207,6 @@ pub fn setup_raft_components(
 /// cluster_metadata_tree,
 /// node_state_metadata_tree,
 /// node_snapshot_metadata_tree,
-///
 pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
     println!("[Test] reset_dbs ...");
     let _ = std::fs::remove_dir_all(db_path);
@@ -202,13 +218,16 @@ pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
 /// cluster_metadata_tree,
 /// node_state_metadata_tree,
 /// node_snapshot_metadata_tree,
-///
 pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
     println!("[Test] reuse_dbs ...");
     init_sled_storages(db_path.to_string()).expect("init storage failed.")
 }
 
-pub(crate) fn insert_raft_log(raft_log: &ROF<RaftTypeConfig>, ids: Vec<u64>, term: u64) {
+pub(crate) fn insert_raft_log(
+    raft_log: &ROF<RaftTypeConfig>,
+    ids: Vec<u64>,
+    term: u64,
+) {
     let mut entries = Vec::new();
     for id in ids {
         let log = Entry {
@@ -223,7 +242,10 @@ pub(crate) fn insert_raft_log(raft_log: &ROF<RaftTypeConfig>, ids: Vec<u64>, ter
         assert!(false);
     }
 }
-pub(crate) fn insert_state_storage(state_storage: &SSOF<RaftTypeConfig>, ids: Vec<u64>) {
+pub(crate) fn insert_state_storage(
+    state_storage: &SSOF<RaftTypeConfig>,
+    ids: Vec<u64>,
+) {
     for i in ids {
         if let Err(e) = state_storage.insert(kv(i), kv(i)) {
             error!("error: {:?}", e);
@@ -232,7 +254,11 @@ pub(crate) fn insert_state_storage(state_storage: &SSOF<RaftTypeConfig>, ids: Ve
     }
 }
 
-pub(crate) fn insert_state_machine(state_machine: &SMOF<RaftTypeConfig>, ids: Vec<u64>, term: u64) {
+pub(crate) fn insert_state_machine(
+    state_machine: &SMOF<RaftTypeConfig>,
+    ids: Vec<u64>,
+    term: u64,
+) {
     let mut entries = Vec::new();
     for id in ids {
         let log = Entry {

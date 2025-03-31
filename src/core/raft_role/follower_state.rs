@@ -1,19 +1,39 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::marker::PhantomData;
+use std::sync::Arc;
 
-use super::{
-    candidate_state::CandidateState, leader_state::LeaderState, learner_state::LearnerState,
-    role_state::RaftRoleState, HardState, RaftRole, SharedState, StateSnapshot,
-};
-use crate::{
-    alias::POF,
-    grpc::rpc_service::{ClientResponse, VoteResponse},
-    utils::cluster::error,
-    ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, RaftNodeConfig, Result,
-    RoleEvent, StateMachine, StateMachineHandler, TypeConfig,
-};
-use log::{debug, error, info, warn};
-use tokio::{sync::mpsc, time::Instant};
-use tonic::{async_trait, Status};
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
+use super::candidate_state::CandidateState;
+use super::leader_state::LeaderState;
+use super::learner_state::LearnerState;
+use super::role_state::RaftRoleState;
+use super::HardState;
+use super::RaftRole;
+use super::SharedState;
+use super::StateSnapshot;
+use crate::alias::POF;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::utils::cluster::error;
+use crate::ElectionCore;
+use crate::ElectionTimer;
+use crate::Error;
+use crate::Membership;
+use crate::RaftContext;
+use crate::RaftEvent;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::RoleEvent;
+use crate::StateMachine;
+use crate::StateMachineHandler;
+use crate::TypeConfig;
 
 pub struct FollowerState<T: TypeConfig> {
     pub shared_state: SharedState,
@@ -105,7 +125,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     /// Election Timeout
     /// As follower,
     ///  step as Candidate
-    ///
     async fn tick(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -144,19 +163,11 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 let my_term = self.current_term();
                 match ctx
                     .election_handler()
-                    .handle_vote_request(
-                        vote_request,
-                        my_term,
-                        self.voted_for().unwrap(),
-                        ctx.raft_log(),
-                    )
+                    .handle_vote_request(vote_request, my_term, self.voted_for().unwrap(), ctx.raft_log())
                     .await
                 {
                     Ok(state_update) => {
-                        debug!(
-                            "handle_vote_request success with state_update: {:?}",
-                            &state_update
-                        );
+                        debug!("handle_vote_request success with state_update: {:?}", &state_update);
 
                         // 1. Update term FIRST if needed
                         if let Some(new_term) = state_update.term_update {
@@ -175,10 +186,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             term: my_term,
                             vote_granted: new_voted_for.is_some(),
                         };
-                        debug!(
-                            "Response candidate_{:?} with response: {:?}",
-                            candidate_id, response
-                        );
+                        debug!("Response candidate_{:?} with response: {:?}", candidate_id, response);
 
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{:?}", e);
@@ -238,9 +246,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
                 sender
-                    .send(Ok(ClientResponse::write_error(
-                        Error::AppendEntriesNotLeader,
-                    )))
+                    .send(Ok(ClientResponse::write_error(Error::AppendEntriesNotLeader)))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);

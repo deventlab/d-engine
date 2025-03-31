@@ -1,20 +1,24 @@
-use crate::{
-    grpc::rpc_service::{
-        rpc_service_server::RpcServiceServer, AppendEntriesResponse, ClusterMembership,
-        VoteResponse,
-    },
-    ChannelWithAddress, Error, Node, Result,
-};
-use log::info;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::{net::TcpListener, sync::oneshot};
+
+use log::info;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic_health::server::health_reporter;
 
-use super::{MockRpcService, MockTypeConfig};
+use super::MockRpcService;
+use super::MockTypeConfig;
+use crate::grpc::rpc_service::rpc_service_server::RpcServiceServer;
+use crate::grpc::rpc_service::AppendEntriesResponse;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::ChannelWithAddress;
+use crate::Error;
+use crate::Node;
+use crate::Result;
 
 pub(crate) const MOCK_RAFT_PORT_BASE: u64 = 60100;
 pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60200;
@@ -40,20 +44,14 @@ impl MockNode {
     ) -> io::Result<SocketAddr> {
         let (mut health_reporter, health_service) = health_reporter();
         if is_ready {
-            health_reporter
-                .set_serving::<RpcServiceServer<MockNode>>()
-                .await;
+            health_reporter.set_serving::<RpcServiceServer<MockNode>>().await;
             info!("set service is serving");
         } else {
-            health_reporter
-                .set_not_serving::<RpcServiceServer<MockNode>>()
-                .await;
+            health_reporter.set_not_serving::<RpcServiceServer<MockNode>>().await;
             info!("set service is not serving");
         }
 
-        let listener = TcpListener::bind(&format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+        let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await.unwrap();
         let addr = listener.local_addr();
         let _r = tokio::spawn(async move {
             tonic::transport::Server::builder()
@@ -64,12 +62,9 @@ impl MockNode {
                         .send_compressed(CompressionEncoding::Gzip),
                 )
                 // add as a dev-dependency the crate `tokio-stream` with feature `net` enabled
-                .serve_with_incoming_shutdown(
-                    tokio_stream::wrappers::TcpListenerStream::new(listener),
-                    async {
-                        rx.await.ok();
-                    },
-                )
+                .serve_with_incoming_shutdown(tokio_stream::wrappers::TcpListenerStream::new(listener), async {
+                    rx.await.ok();
+                })
                 // .serve_with_shutdown("127.0.0.1:50051".parse().unwrap(), )
                 .await
                 .unwrap();
@@ -121,10 +116,7 @@ impl MockNode {
                 )));
             }
         };
-        Ok(
-            Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port)
-                .await,
-        )
+        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
     }
 
     pub(crate) async fn simulate_mock_service_with_append_reps(
@@ -145,10 +137,7 @@ impl MockNode {
                 )));
             }
         };
-        Ok(
-            Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port)
-                .await,
-        )
+        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
     }
 
     pub(crate) async fn simulate_send_votes_mock_server(
@@ -169,10 +158,7 @@ impl MockNode {
                 )));
             }
         };
-        Ok(
-            Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port)
-                .await,
-        )
+        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
     }
 
     pub(crate) async fn simulate_mock_service_with_cluster_conf_reps(
@@ -193,9 +179,6 @@ impl MockNode {
                 )));
             }
         };
-        Ok(
-            Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port)
-                .await,
-        )
+        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
     }
 }

@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{Error, Result};
+use crate::Error;
+use crate::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RaftConfig {
@@ -112,12 +114,10 @@ impl ReplicationConfig {
             ));
         }
 
-        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms
-        {
+        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms {
             return Err(Error::InvalidConfig(format!(
                 "batch_delay {}ms should be less than append_interval {}ms",
-                self.rpc_append_entries_batch_process_delay_in_ms,
-                self.rpc_append_entries_clock_in_ms
+                self.rpc_append_entries_batch_process_delay_in_ms, self.rpc_append_entries_clock_in_ms
             )));
         }
 
@@ -247,15 +247,11 @@ impl CommitHandlerConfig {
         }
 
         if self.process_interval_ms == 0 {
-            return Err(Error::InvalidConfig(
-                "process_interval_ms must be > 0".into(),
-            ));
+            return Err(Error::InvalidConfig("process_interval_ms must be > 0".into()));
         }
 
         if self.max_entries_per_chunk == 0 {
-            return Err(Error::InvalidConfig(
-                "max_entries_per_chunk must be > 0".into(),
-            ));
+            return Err(Error::InvalidConfig("max_entries_per_chunk must be > 0".into()));
         }
 
         Ok(())

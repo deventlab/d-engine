@@ -1,18 +1,38 @@
-use super::{follower_state::FollowerState, RaftContext, RaftEvent, RaftRole, RoleEvent};
-use crate::{
-    alias::{EOF, MOF, POF, REPOF, ROF, SMHOF, SMOF, SSOF, TROF},
-    Error, RaftLog, Result, RaftNodeConfig, StateMachine, StateStorage, TypeConfig,
-};
-use log::{debug, error, info, trace, warn};
 use std::sync::Arc;
-use tokio::{
-    sync::{mpsc, watch},
-    time::sleep_until,
-};
+
+use log::debug;
+use log::error;
+use log::info;
+use log::trace;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
+
+use super::follower_state::FollowerState;
+use super::RaftContext;
+use super::RaftEvent;
+use super::RaftRole;
+use super::RoleEvent;
+use crate::alias::EOF;
+use crate::alias::MOF;
+use crate::alias::POF;
+use crate::alias::REPOF;
+use crate::alias::ROF;
+use crate::alias::SMHOF;
+use crate::alias::SMOF;
+use crate::alias::SSOF;
+use crate::alias::TROF;
+use crate::Error;
+use crate::RaftLog;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::StateMachine;
+use crate::StateStorage;
+use crate::TypeConfig;
 
 pub struct Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub node_id: u32,
     pub role: RaftRole<T>,
@@ -46,8 +66,7 @@ where
 }
 
 impl<T> Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,
@@ -153,7 +172,10 @@ where
         }
     }
 
-    pub fn join_cluster(&mut self, peer_chanels: Arc<POF<T>>) -> Result<()> {
+    pub fn join_cluster(
+        &mut self,
+        peer_chanels: Arc<POF<T>>,
+    ) -> Result<()> {
         self.peer_channels = Some(peer_chanels);
         Ok(())
     }
@@ -220,7 +242,10 @@ where
 
     /// `handle_role_event` will be responsbile to process role trasnsition and
     /// role state events.
-    pub async fn handle_role_event(&mut self, role_event: RoleEvent) -> Result<()> {
+    pub async fn handle_role_event(
+        &mut self,
+        role_event: RoleEvent,
+    ) -> Result<()> {
         // All inbound and outbound raft event
 
         match role_event {
@@ -286,11 +311,17 @@ where
             .ok_or_else(|| Error::FailedSetPeerConnection(format!("handle_raft_event")))
     }
 
-    pub fn register_new_commit_listener(&mut self, tx: mpsc::UnboundedSender<u64>) {
+    pub fn register_new_commit_listener(
+        &mut self,
+        tx: mpsc::UnboundedSender<u64>,
+    ) {
         self.new_commit_listener.push(tx);
     }
 
-    pub fn notify_new_commit(&self, new_commit_index: u64) {
+    pub fn notify_new_commit(
+        &self,
+        new_commit_index: u64,
+    ) {
         debug!("notify_new_commit: {}", new_commit_index);
 
         for tx in &self.new_commit_listener {
@@ -301,7 +332,10 @@ where
     }
 
     #[cfg(test)]
-    pub fn register_role_transition_listener(&mut self, tx: mpsc::UnboundedSender<i32>) {
+    pub fn register_role_transition_listener(
+        &mut self,
+        tx: mpsc::UnboundedSender<i32>,
+    ) {
         self.test_role_transition_listener.push(tx);
     }
 
@@ -314,12 +348,18 @@ where
     }
 
     #[cfg(test)]
-    pub fn register_raft_event_listener(&mut self, tx: mpsc::UnboundedSender<RaftEvent>) {
+    pub fn register_raft_event_listener(
+        &mut self,
+        tx: mpsc::UnboundedSender<RaftEvent>,
+    ) {
         self.test_raft_event_listener.push(tx);
     }
 
     #[cfg(test)]
-    pub fn notify_raft_event(&self, event: RaftEvent) {
+    pub fn notify_raft_event(
+        &self,
+        event: RaftEvent,
+    ) {
         debug!("unit test:: notify new raft event: {:?}", &event);
 
         for tx in &self.test_raft_event_listener {
@@ -328,14 +368,16 @@ where
     }
 
     #[cfg(test)]
-    pub fn set_role(&mut self, role: RaftRole<T>) {
+    pub fn set_role(
+        &mut self,
+        role: RaftRole<T>,
+    ) {
         self.role = role
     }
 }
 
 impl<T> Drop for Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn drop(&mut self) {
         info!("Raft been dropped.");

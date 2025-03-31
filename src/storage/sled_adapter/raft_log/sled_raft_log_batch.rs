@@ -1,5 +1,6 @@
-use crate::grpc::rpc_service::Entry;
 use std::collections::HashMap;
+
+use crate::grpc::rpc_service::Entry;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct LocalLogBatch {
@@ -8,8 +9,11 @@ pub(crate) struct LocalLogBatch {
 
 impl LocalLogBatch {
     /// Set a key to a new value
-    pub(crate) fn insert<K, V>(&mut self, key: K, value: V)
-    where
+    pub(crate) fn insert<K, V>(
+        &mut self,
+        key: K,
+        value: V,
+    ) where
         K: Into<Vec<u8>>,
         V: Into<Entry>,
     {
@@ -17,8 +21,10 @@ impl LocalLogBatch {
     }
 
     /// Remove a key
-    pub(crate) fn remove<K>(&mut self, key: K)
-    where
+    pub(crate) fn remove<K>(
+        &mut self,
+        key: K,
+    ) where
         K: Into<Vec<u8>>,
     {
         self.writes.insert(key.into(), None);

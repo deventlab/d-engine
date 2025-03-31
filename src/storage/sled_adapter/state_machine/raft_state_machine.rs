@@ -1,31 +1,39 @@
 //! It works as KV storage for client business CRUDs.
-//!
-//!
-use crate::{
-    convert::vk,
-    grpc::rpc_service::{
-        client_command::{Command, Insert},
-        ClientCommand, Entry, SnapshotEntry,
-    },
-    Error, Result, StateMachine, API_SLO, COMMITTED_LOG_METRIC,
-};
-use crate::{storage::sled_adapter::STATE_MACHINE_NAMESPACE, StateMachineIter};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
 use autometrics::autometrics;
-use log::{debug, error, info, warn};
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
 use prost::Message;
 use sled::Batch;
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
-};
 use tonic::async_trait;
+
+use crate::convert::vk;
+use crate::grpc::rpc_service::client_command::Command;
+use crate::grpc::rpc_service::client_command::Insert;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::SnapshotEntry;
+use crate::storage::sled_adapter::STATE_MACHINE_NAMESPACE;
+use crate::Error;
+use crate::Result;
+use crate::StateMachine;
+use crate::StateMachineIter;
+use crate::API_SLO;
+use crate::COMMITTED_LOG_METRIC;
 
 #[derive(Debug)]
 pub struct RaftStateMachine {
     node_id: u32,
 
     /// Volatile state on all servers:
-    /// index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+    /// index of highest log entry applied to state machine (initialized to 0,
+    /// increases monotonically)
     last_applied: AtomicU64,
 
     db: Arc<sled::Db>,
@@ -55,7 +63,10 @@ impl StateMachine for RaftStateMachine {
         self.tree.iter()
     }
 
-    fn get(&self, key_buffer: &Vec<u8>) -> Result<Option<Vec<u8>>> {
+    fn get(
+        &self,
+        key_buffer: &Vec<u8>,
+    ) -> Result<Option<Vec<u8>>> {
         match self.tree.get(key_buffer) {
             Ok(Some(v)) => {
                 return Ok(Some(v.to_vec()));
@@ -69,7 +80,10 @@ impl StateMachine for RaftStateMachine {
     }
 
     #[autometrics(objective = API_SLO)]
-    fn apply_snapshot(&self, entry: SnapshotEntry) -> Result<()> {
+    fn apply_snapshot(
+        &self,
+        entry: SnapshotEntry,
+    ) -> Result<()> {
         if self.is_running() {
             return Err(Error::StateMachinneError(
                 "state machine is still running while applying snapshot".to_string(),
@@ -80,10 +94,7 @@ impl StateMachine for RaftStateMachine {
             error!("apply_snapshot insert error: {}", e);
             return Err(Error::SledError(e));
         } else {
-            debug!(
-                "state machine insert snapshot entry (index: {:?}) successfully!",
-                key
-            );
+            debug!("state machine insert snapshot entry (index: {:?}) successfully!", key);
         }
         Ok(())
     }
@@ -106,14 +117,8 @@ impl StateMachine for RaftStateMachine {
     fn flush(&self) -> Result<()> {
         match self.db.flush() {
             Ok(bytes) => {
-                info!(
-                    "Successfully flushed State Machine, bytes flushed: {}",
-                    bytes
-                );
-                println!(
-                    "Successfully flushed State Machine, bytes flushed: {}",
-                    bytes
-                );
+                info!("Successfully flushed State Machine, bytes flushed: {}", bytes);
+                println!("Successfully flushed State Machine, bytes flushed: {}", bytes);
             }
             Err(e) => {
                 error!("Failed to flush State Machine: {}", e);
@@ -137,12 +142,18 @@ impl StateMachine for RaftStateMachine {
         self.last_applied.load(Ordering::Acquire)
     }
 
-    fn update_last_applied(&self, new_id: u64) {
+    fn update_last_applied(
+        &self,
+        new_id: u64,
+    ) {
         debug!("update_last_applied_id: {:?}", new_id);
         self.last_applied.store(new_id, Ordering::SeqCst);
     }
 
-    fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()> {
+    fn apply_chunk(
+        &self,
+        chunk: Vec<Entry>,
+    ) -> Result<()> {
         let mut highest_index = None;
         let mut batch = Batch::default();
         for entry in chunk {
@@ -182,9 +193,7 @@ impl StateMachine for RaftStateMachine {
 
             let msg_id = entry.index.to_string();
             let id = self.node_id.to_string();
-            COMMITTED_LOG_METRIC
-                .with_label_values(&[&id, &msg_id])
-                .inc();
+            COMMITTED_LOG_METRIC.with_label_values(&[&id, &msg_id]).inc();
             info!("COMMITTED_LOG_METRIC: {} ", &msg_id);
         }
 
@@ -203,7 +212,10 @@ impl StateMachine for RaftStateMachine {
 
 impl RaftStateMachine {
     #[autometrics(objective = API_SLO)]
-    pub(crate) fn new(node_id: u32, db: Arc<sled::Db>) -> Self {
+    pub(crate) fn new(
+        node_id: u32,
+        db: Arc<sled::Db>,
+    ) -> Self {
         match db.open_tree(STATE_MACHINE_NAMESPACE) {
             Ok(state_machine_tree) => {
                 let sm = RaftStateMachine {
@@ -228,7 +240,10 @@ impl RaftStateMachine {
     }
 
     #[autometrics(objective = API_SLO)]
-    pub(super) fn apply_batch(&self, batch: Batch) -> Result<()> {
+    pub(super) fn apply_batch(
+        &self,
+        batch: Batch,
+    ) -> Result<()> {
         if let Err(e) = self.tree.apply_batch(batch) {
             error!("state_machine apply_batch failed: {}", e);
             return Err(Error::SledError(e));

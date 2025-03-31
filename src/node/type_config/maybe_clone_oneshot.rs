@@ -1,9 +1,10 @@
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
-use tokio::sync::{broadcast, oneshot};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+
+use tokio::sync::broadcast;
+use tokio::sync::oneshot;
 
 pub trait RaftOneshot<T: Send> {
     type Sender: Send + Sync;
@@ -31,12 +32,18 @@ pub struct MaybeCloneOneshotReceiver<T: Send + Clone> {
 
 impl<T: Send + Clone> MaybeCloneOneshotSender<T> {
     #[cfg(not(test))]
-    pub fn send(self, value: T) -> Result<(), T> {
+    pub fn send(
+        self,
+        value: T,
+    ) -> Result<(), T> {
         self.inner.send(value)
     }
 
     #[cfg(test)]
-    pub fn send(&self, value: T) -> Result<usize, tokio::sync::broadcast::error::SendError<T>> {
+    pub fn send(
+        &self,
+        value: T,
+    ) -> Result<usize, tokio::sync::broadcast::error::SendError<T>> {
         self.test_inner.send(value)
     }
 }
@@ -52,7 +59,10 @@ impl<T: Send + Clone> MaybeCloneOneshotReceiver<T> {
 impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     type Output = Result<T, oneshot::error::RecvError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         unsafe { self.map_unchecked_mut(|s| &mut s.inner) }.poll(cx)
     }
 }
@@ -60,7 +70,10 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
 impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     type Output = Result<T, broadcast::error::RecvError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         // Using the recv method of tokio::sync::broadcast::Receiver
@@ -71,12 +84,8 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
-            Err(broadcast::error::TryRecvError::Closed) => {
-                Poll::Ready(Err(broadcast::error::RecvError::Closed))
-            }
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                Poll::Ready(Err(broadcast::error::RecvError::Lagged(n)))
-            }
+            Err(broadcast::error::TryRecvError::Closed) => Poll::Ready(Err(broadcast::error::RecvError::Closed)),
+            Err(broadcast::error::TryRecvError::Lagged(n)) => Poll::Ready(Err(broadcast::error::RecvError::Lagged(n))),
         }
     }
 }

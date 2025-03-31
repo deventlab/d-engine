@@ -63,12 +63,12 @@ impl Clone for MockPeerChannels {
 }
 
 impl PeerChannelsFactory for MockPeerChannels {
-    fn create(_id: u32, _settings: Arc<RaftNodeConfig>) -> Self {
+    fn create(
+        _id: u32,
+        _settings: Arc<RaftNodeConfig>,
+    ) -> Self {
         let mut peer_channels = MockPeerChannels::new();
-        peer_channels
-            .expect_connect_with_peers()
-            .times(1)
-            .returning(|_| Ok(()));
+        peer_channels.expect_connect_with_peers().times(1).returning(|_| Ok(()));
         peer_channels
             .expect_check_cluster_is_ready()
             .times(1)

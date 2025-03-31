@@ -1,8 +1,14 @@
-use crate::{
-    grpc::grpc_transport::GrpcTransport, DefaultCommitHandler, DefaultStateMachineHandler,
-    ElectionHandler, RaftMembership, RaftStateMachine, ReplicationHandler, RpcPeerChannels,
-    SledRaftLog, SledStateStorage, TypeConfig,
-};
+use crate::grpc::grpc_transport::GrpcTransport;
+use crate::DefaultCommitHandler;
+use crate::DefaultStateMachineHandler;
+use crate::ElectionHandler;
+use crate::RaftMembership;
+use crate::RaftStateMachine;
+use crate::ReplicationHandler;
+use crate::RpcPeerChannels;
+use crate::SledRaftLog;
+use crate::SledStateStorage;
+use crate::TypeConfig;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RaftTypeConfig;

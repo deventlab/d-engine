@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{Error, Result};
+use crate::Error;
+use crate::Result;
 
 /// Basic retry policy template
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
@@ -80,7 +82,10 @@ impl BackoffPolicy {
     /// - Timeout exceeds maximum delay
     /// - Base delay > max delay
     /// - Infinite retries without proper safeguards
-    pub fn validate(&self, policy_name: &str) -> Result<()> {
+    pub fn validate(
+        &self,
+        policy_name: &str,
+    ) -> Result<()> {
         // Validate retry limits
         if self.max_retries == 0 {
             return Err(Error::InvalidConfig(format!(
@@ -91,10 +96,7 @@ impl BackoffPolicy {
 
         // Validate timeout constraints
         if self.timeout_ms == 0 {
-            return Err(Error::InvalidConfig(format!(
-                "{}: timeout_ms cannot be 0",
-                policy_name
-            )));
+            return Err(Error::InvalidConfig(format!("{}: timeout_ms cannot be 0", policy_name)));
         }
 
         // Validate delay progression

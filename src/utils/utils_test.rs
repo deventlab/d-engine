@@ -1,14 +1,17 @@
-use crate::{
-    async_task::task_with_timeout_and_exponential_backoff,
-    cluster::is_majority,
-    convert::{abs_ceil, kv, vk},
-    Error, Result,
-};
+use std::sync::Arc;
+use std::time::Duration;
+
 use dashmap::DashSet;
-use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 
 use super::cluster::find_nearest_lower_number;
+use crate::async_task::task_with_timeout_and_exponential_backoff;
+use crate::cluster::is_majority;
+use crate::convert::abs_ceil;
+use crate::convert::kv;
+use crate::convert::vk;
+use crate::Error;
+use crate::Result;
 
 #[test]
 fn test_kv_1() {
@@ -82,26 +85,17 @@ async fn async_err() -> Result<()> {
 #[tokio::test]
 async fn test_task_with_exponential_backoff() {
     // Case 1: when ok task return ok
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(
-        async_ok,
-        3,
-        Duration::from_millis(100),
-        Duration::from_secs(1),
-    )
-    .await
+    if let Ok(_) =
+        task_with_timeout_and_exponential_backoff(async_ok, 3, Duration::from_millis(100), Duration::from_secs(1)).await
     {
         assert!(true);
     } else {
         assert!(false);
     }
     // Case 2: when err task return error
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(
-        async_err,
-        3,
-        Duration::from_millis(100),
-        Duration::from_secs(1),
-    )
-    .await
+    if let Ok(_) =
+        task_with_timeout_and_exponential_backoff(async_err, 3, Duration::from_millis(100), Duration::from_secs(1))
+            .await
     {
         assert!(false);
     } else {
@@ -109,13 +103,9 @@ async fn test_task_with_exponential_backoff() {
     }
 
     // Case 3: when ok task always failed on timeout error
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(
-        async_ok,
-        3,
-        Duration::from_millis(100),
-        Duration::from_millis(1),
-    )
-    .await
+    if let Ok(_) =
+        task_with_timeout_and_exponential_backoff(async_ok, 3, Duration::from_millis(100), Duration::from_millis(1))
+            .await
     {
         assert!(false);
     } else {

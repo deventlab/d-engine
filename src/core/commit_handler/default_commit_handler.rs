@@ -1,17 +1,24 @@
-use super::CommitHandler;
-use crate::{
-    alias::{ROF, SMHOF},
-    cluster::error,
-    Error, Result, StateMachineHandler, TypeConfig,
-};
-use log::{debug, trace, warn};
-use std::{sync::Arc, time::Duration};
-use tokio::sync::{mpsc, watch};
+use std::sync::Arc;
+use std::time::Duration;
+
+use log::debug;
+use log::trace;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tonic::async_trait;
 
+use super::CommitHandler;
+use crate::alias::ROF;
+use crate::alias::SMHOF;
+use crate::cluster::error;
+use crate::Error;
+use crate::Result;
+use crate::StateMachineHandler;
+use crate::TypeConfig;
+
 pub struct DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     applier: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
@@ -24,8 +31,7 @@ where
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn run(&mut self) -> Result<()> {
         let mut batch_counter = 0;
@@ -68,8 +74,7 @@ where
 }
 
 impl<T> DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         applier: Arc<SMHOF<T>>,
@@ -90,7 +95,10 @@ where
     }
 
     /// Check batch size
-    async fn check_batch_size(&self, counter: &mut u64) {
+    async fn check_batch_size(
+        &self,
+        counter: &mut u64,
+    ) {
         while *counter < self.batch_size_threshold {
             tokio::time::sleep(Duration::from_micros(10)).await;
         }
@@ -104,7 +112,8 @@ where
     }
 
     /// Dynamically adjusted timer
-    /// Behavior: If multiple ticks are missed, the timer will wait for the next tick instead of firing immediately.
+    /// Behavior: If multiple ticks are missed, the timer will wait for the next
+    /// tick instead of firing immediately.
     pub(crate) fn dynamic_interval(&self) -> tokio::time::Interval {
         let mut interval = tokio::time::interval(Duration::from_millis(self.process_interval_ms));
         debug!("process_interval_ms: {}", self.process_interval_ms);

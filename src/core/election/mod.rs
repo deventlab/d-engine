@@ -4,18 +4,22 @@ pub use election_handler::*;
 #[cfg(test)]
 mod election_handler_test;
 
+use std::sync::Arc;
+
 ///--------------------------------------
 /// Trait Definition
 #[cfg(test)]
 use mockall::automock;
-use std::sync::Arc;
 use tonic::async_trait;
 
-use crate::{
-    alias::{ROF, TROF},
-    grpc::rpc_service::{VoteRequest, VotedFor},
-    ChannelWithAddressAndRole, Result, RaftNodeConfig, TypeConfig,
-};
+use crate::alias::ROF;
+use crate::alias::TROF;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VotedFor;
+use crate::ChannelWithAddressAndRole;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::TypeConfig;
 
 #[derive(Debug)]
 pub struct StateUpdate {
@@ -28,16 +32,17 @@ pub struct StateUpdate {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ElectionCore<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
-    /// Sends vote requests to all voting members. Returns Ok() if majority votes are received,
-    /// otherwise returns Err. Initiates RPC calls via transport and evaluates collected responses.
+    /// Sends vote requests to all voting members. Returns Ok() if majority
+    /// votes are received, otherwise returns Err. Initiates RPC calls via
+    /// transport and evaluates collected responses.
     ///
     /// A vote can be granted only if all the following conditions are met:
     /// •	The requests term is greater than the current_term.
     /// •	The candidates log is sufficiently up-to-date.
-    /// •	The current node has not voted in the current term or has already voted for the candidate.
+    /// •	The current node has not voted in the current term or has already
+    /// voted for the candidate.
     async fn broadcast_vote_requests(
         &self,
         term: u64,
@@ -47,11 +52,12 @@ where
         settings: &Arc<RaftNodeConfig>,
     ) -> Result<()>;
 
-    /// Processes incoming vote requests: validates request legality via check_vote_request_is_legal,
-    /// updates node state if valid, triggers role transition to Follower when granting vote.
+    /// Processes incoming vote requests: validates request legality via
+    /// check_vote_request_is_legal, updates node state if valid, triggers
+    /// role transition to Follower when granting vote.
     ///
-    /// If there is a state update, we delegate the update to the parent RoleState
-    /// instead of updating it within this function.
+    /// If there is a state update, we delegate the update to the parent
+    /// RoleState instead of updating it within this function.
     async fn handle_vote_request(
         &self,
         request: VoteRequest,

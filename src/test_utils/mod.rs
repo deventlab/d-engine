@@ -1,6 +1,5 @@
-//! the test_utils folder here will share utils or test components betwee unit tests and integrations tests
-//!
-//!
+//! the test_utils folder here will share utils or test components betwee unit
+//! tests and integrations tests
 mod common;
 mod integration;
 mod mock;

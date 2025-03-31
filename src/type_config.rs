@@ -1,11 +1,18 @@
-use crate::{
-    CommitHandler, ElectionCore, Membership, PeerChannels, PeerChannelsFactory, RaftLog,
-    ReplicationCore, StateMachine, StateMachineHandler, StateStorage, Transport,
-};
 use std::fmt::Debug;
 
+use crate::CommitHandler;
+use crate::ElectionCore;
+use crate::Membership;
+use crate::PeerChannels;
+use crate::PeerChannelsFactory;
+use crate::RaftLog;
+use crate::ReplicationCore;
+use crate::StateMachine;
+use crate::StateMachineHandler;
+use crate::StateStorage;
+use crate::Transport;
+
 /// **This coding style learned from OpenRaft project type config.**
-///
 pub trait TypeConfig:
     Sync + Send + Sized + Debug + Clone + Copy + Default + Eq + PartialEq + Ord + PartialOrd + 'static
 {

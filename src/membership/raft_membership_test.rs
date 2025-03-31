@@ -1,13 +1,22 @@
-use crate::{
-    grpc::rpc_service::{ClusteMembershipChangeRequest, ClusterMembership, NodeMeta},
-    is_follower,
-    test_utils::{mock_raft_context, MockNode, MOCK_MEMBERSHIP_PORT_BASE},
-    Membership, PeerChannelsFactory, RaftTypeConfig, RpcPeerChannels, CANDIDATE, FOLLOWER, LEADER,
-    LEARNER,
-};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 use super::RaftMembership;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::is_follower;
+use crate::test_utils::mock_raft_context;
+use crate::test_utils::MockNode;
+use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;
+use crate::Membership;
+use crate::PeerChannelsFactory;
+use crate::RaftTypeConfig;
+use crate::RpcPeerChannels;
+use crate::CANDIDATE;
+use crate::FOLLOWER;
+use crate::LEADER;
+use crate::LEARNER;
 
 /// # Case 1: Retrieve followers from cluster membership successfully;
 ///
@@ -72,10 +81,8 @@ async fn test_get_peers_address_with_role_condition_case1() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    let result = membership
-        .get_peers_address_with_role_condition(&peer_channels.channels, |peer_role| {
-            is_follower(peer_role)
-        });
+    let result =
+        membership.get_peers_address_with_role_condition(&peer_channels.channels, |peer_role| is_follower(peer_role));
 
     assert_eq!(result.len(), 2);
 }
@@ -142,10 +149,8 @@ async fn test_get_peers_address_with_role_condition_case2() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    let result = membership
-        .get_peers_address_with_role_condition(&peer_channels.channels, |peer_role| {
-            is_follower(peer_role)
-        });
+    let result =
+        membership.get_peers_address_with_role_condition(&peer_channels.channels, |peer_role| is_follower(peer_role));
 
     assert_eq!(result.len(), 1);
 }
@@ -301,7 +306,6 @@ fn test_retrieve_cluster_membership_config() {
 
 /// # Case 1: Test cluster conf update from Leader
 ///     with Error, my term is higher than request one
-///
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case1() {
     let my_term = 10;
@@ -351,7 +355,6 @@ async fn test_update_cluster_conf_from_leader_case1() {
 /// # Setup:
 /// 1. my term is equal with request one
 /// 2. my cluster conf version is higher than request one
-///
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case2() {
     let my_term = 10;
@@ -404,7 +407,6 @@ async fn test_update_cluster_conf_from_leader_case2() {
 /// # Setup:
 /// 1. my term is equal with request one
 /// 2. my cluster conf version is smaller than request one
-///
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case3() {
     let my_term = 10;
@@ -449,8 +451,5 @@ async fn test_update_cluster_conf_from_leader_case3() {
         .update_cluster_conf_from_leader(my_term, &request)
         .await
         .is_ok());
-    assert_eq!(
-        membership.get_cluster_conf_version(),
-        request_cluster_conf_version
-    );
+    assert_eq!(membership.get_cluster_conf_version(), request_cluster_conf_version);
 }

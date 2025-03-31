@@ -1,11 +1,15 @@
-//! A builder pattern implementation for constructing a [`Node`] instance in a Raft cluster.
+//! A builder pattern implementation for constructing a [`Node`] instance in a
+//! Raft cluster.
 //!
-//! The [`NodeBuilder`] provides a fluent interface to configure and assemble components required by the Raft node,
-//! including storage layers (log, state machine, membership), transport, and asynchronous handlers.
+//! The [`NodeBuilder`] provides a fluent interface to configure and assemble
+//! components required by the Raft node, including storage layers (log, state
+//! machine, membership), transport, and asynchronous handlers.
 //!
 //! ## Key Design Points
-//! - **Default Components**: Initializes with production-ready defaults (Sled-based storage, gRPC transport).
-//! - **Customization**: Allows overriding defaults via setter methods (e.g., `raft_log()`, `transport()`).
+//! - **Default Components**: Initializes with production-ready defaults (Sled-based storage, gRPC
+//!   transport).
+//! - **Customization**: Allows overriding defaults via setter methods (e.g., `raft_log()`,
+//!   `transport()`).
 //! - **Lifecycle Management**:
 //!   - `build()`: Assembles the [`Node`] and spawns background tasks (e.g., [`CommitHandler`]).
 //!   - `start_metrics_server()`/`start_rpc_server()`: Launches auxiliary services.
@@ -13,7 +17,7 @@
 //!
 //! ## Example
 //! ```ignore
-//!
+//! 
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
@@ -28,17 +32,44 @@
 //! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use log::debug;
+use log::error;
+use log::info;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+
 use super::RaftTypeConfig;
-use crate::{
-    alias::{COF, MOF, ROF, SMHOF, SMOF, SSOF, TROF},
-    grpc::{self, grpc_transport::GrpcTransport},
-    init_sled_storages, metrics, ClusterConfig, CommitHandler, DefaultCommitHandler,
-    DefaultStateMachineHandler, ElectionHandler, Error, Node, Raft, RaftMembership, RaftNodeConfig,
-    RaftStateMachine, ReplicationHandler, Result, SledRaftLog, SledStateStorage, StateMachine,
-};
-use log::{debug, error, info};
-use std::sync::{atomic::AtomicBool, Arc};
-use tokio::sync::{mpsc, watch, Mutex};
+use crate::alias::COF;
+use crate::alias::MOF;
+use crate::alias::ROF;
+use crate::alias::SMHOF;
+use crate::alias::SMOF;
+use crate::alias::SSOF;
+use crate::alias::TROF;
+use crate::grpc::grpc_transport::GrpcTransport;
+use crate::grpc::{self};
+use crate::init_sled_storages;
+use crate::metrics;
+use crate::ClusterConfig;
+use crate::CommitHandler;
+use crate::DefaultCommitHandler;
+use crate::DefaultStateMachineHandler;
+use crate::ElectionHandler;
+use crate::Error;
+use crate::Node;
+use crate::Raft;
+use crate::RaftMembership;
+use crate::RaftNodeConfig;
+use crate::RaftStateMachine;
+use crate::ReplicationHandler;
+use crate::Result;
+use crate::SledRaftLog;
+use crate::SledStateStorage;
+use crate::StateMachine;
 
 pub struct NodeBuilder {
     node_id: u32,
@@ -63,8 +94,12 @@ impl NodeBuilder {
     /// * `shutdown_signal` - Watch channel for graceful shutdown signaling
     ///
     /// # Panics
-    /// Will panic if configuration loading fails (consider returning Result instead)
-    pub fn new(cluster_path: Option<&str>, shutdown_signal: watch::Receiver<()>) -> Self {
+    /// Will panic if configuration loading fails (consider returning Result
+    /// instead)
+    pub fn new(
+        cluster_path: Option<&str>,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
         let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
         if let Some(p) = cluster_path {
             info!("with_override_config from: {}", &p);
@@ -75,7 +110,8 @@ impl NodeBuilder {
         Self::init(node_config, shutdown_signal)
     }
 
-    /// Constructs NodeBuilder from in-memory cluster configuration (OpenRaft style)
+    /// Constructs NodeBuilder from in-memory cluster configuration (OpenRaft
+    /// style)
     ///
     /// # Arguments
     /// * `cluster_config` - Pre-built cluster configuration
@@ -95,14 +131,16 @@ impl NodeBuilder {
     }
 
     /// Core initialization logic shared by all construction paths
-    pub fn init(node_config: RaftNodeConfig, shutdown_signal: watch::Receiver<()>) -> Self {
+    pub fn init(
+        node_config: RaftNodeConfig,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
         let node_id = node_config.cluster.node_id;
         let db_root_dir = node_config.cluster.db_root_dir.clone();
 
         // Initialize storage
         let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-            init_sled_storages(format!("{}/{}", db_root_dir.display(), node_id))
-                .expect("init storage failed.");
+            init_sled_storages(format!("{}/{}", db_root_dir.display(), node_id)).expect("init storage failed.");
 
         // Create a database instance with atomic references
         let raft_log_db = Arc::new(raft_log_db);
@@ -129,8 +167,7 @@ impl NodeBuilder {
         ));
 
         //Cluster member management
-        let raft_membership =
-            RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone());
+        let raft_membership = RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone());
 
         // Build the final instance
         Self {
@@ -147,37 +184,58 @@ impl NodeBuilder {
             node: None,
         }
     }
-    pub fn raft_log(mut self, raft_log: ROF<RaftTypeConfig>) -> Self {
+    pub fn raft_log(
+        mut self,
+        raft_log: ROF<RaftTypeConfig>,
+    ) -> Self {
         self.raft_log = Some(raft_log);
         self
     }
 
-    pub fn state_machine(mut self, state_machine: SMOF<RaftTypeConfig>) -> Self {
+    pub fn state_machine(
+        mut self,
+        state_machine: SMOF<RaftTypeConfig>,
+    ) -> Self {
         self.state_machine = Some(Arc::new(state_machine));
         self
     }
 
-    pub fn state_storage(mut self, state_storage: SSOF<RaftTypeConfig>) -> Self {
+    pub fn state_storage(
+        mut self,
+        state_storage: SSOF<RaftTypeConfig>,
+    ) -> Self {
         self.state_storage = Some(state_storage);
         self
     }
 
-    pub fn transport(mut self, transport: TROF<RaftTypeConfig>) -> Self {
+    pub fn transport(
+        mut self,
+        transport: TROF<RaftTypeConfig>,
+    ) -> Self {
         self.transport = Some(transport);
         self
     }
 
-    pub fn commit_handler(mut self, commit_handler: COF<RaftTypeConfig>) -> Self {
+    pub fn commit_handler(
+        mut self,
+        commit_handler: COF<RaftTypeConfig>,
+    ) -> Self {
         self.commit_handler = Some(commit_handler);
         self
     }
 
-    pub fn membership(mut self, membership: MOF<RaftTypeConfig>) -> Self {
+    pub fn membership(
+        mut self,
+        membership: MOF<RaftTypeConfig>,
+    ) -> Self {
         self.membership = Some(membership);
         self
     }
 
-    pub fn node_config(mut self, node_config: RaftNodeConfig) -> Self {
+    pub fn node_config(
+        mut self,
+        node_config: RaftNodeConfig,
+    ) -> Self {
         self.node_config = node_config;
         self
     }
@@ -257,7 +315,10 @@ impl NodeBuilder {
         self
     }
 
-    pub fn start_metrics_server(self, shutdown_signal: watch::Receiver<()>) -> Self {
+    pub fn start_metrics_server(
+        self,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
         println!("start metric server!");
         let port = self.node_config.monitoring.prometheus_port;
         tokio::spawn(async move {
@@ -274,9 +335,7 @@ impl NodeBuilder {
             let listen_address = self.node_config.cluster.listen_address.clone();
             let node_config = self.node_config.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
-                {
+                if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
                     eprintln!("RPC server stops. {:?}", e);
                     error!("RPC server stops. {:?}", e);
                 }
@@ -297,7 +356,10 @@ impl NodeBuilder {
     /// # Safety
     /// Bypasses normal configuration validation - use for testing only
     #[cfg(test)]
-    pub fn new_from_db_path(db_path: &str, shutdown_signal: watch::Receiver<()>) -> Self {
+    pub fn new_from_db_path(
+        db_path: &str,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
         use std::path::PathBuf;
 
         let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully!");

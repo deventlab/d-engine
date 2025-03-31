@@ -1,12 +1,16 @@
-use crate::{
-    grpc::rpc_service::{rpc_service_client::RpcServiceClient, MetadataRequest, NodeMeta},
-    ClientConfig, Error, Result,
-};
-use log::{debug, error, info};
-use tonic::{
-    codec::CompressionEncoding,
-    transport::{Channel, Endpoint},
-};
+use log::debug;
+use log::error;
+use log::info;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+
+use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::ClientConfig;
+use crate::Error;
+use crate::Result;
 
 #[derive(Clone)]
 pub struct ConnectionPool {
@@ -17,7 +21,10 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    pub async fn new(endpoints: Vec<String>, config: ClientConfig) -> Result<Self> {
+    pub async fn new(
+        endpoints: Vec<String>,
+        config: ClientConfig,
+    ) -> Result<Self> {
         let metadata = Self::load_cluster_metadata(&endpoints, &config).await?;
         info!("Retrieved cluster conf: {:?}", &metadata);
         let (leader_addr, followers) = Self::parse_cluster_metadata(metadata)?;
@@ -26,9 +33,7 @@ impl ConnectionPool {
         let mut follower_conns = Vec::new();
 
         // Build follower connections asynchronously
-        let follower_futures = followers
-            .into_iter()
-            .map(|addr| Self::create_channel(addr, &config));
+        let follower_futures = followers.into_iter().map(|addr| Self::create_channel(addr, &config));
         let connections = futures::future::join_all(follower_futures).await;
 
         for conn in connections {
@@ -43,7 +48,10 @@ impl ConnectionPool {
         })
     }
 
-    pub(super) async fn create_channel(addr: String, config: &ClientConfig) -> Result<Channel> {
+    pub(super) async fn create_channel(
+        addr: String,
+        config: &ClientConfig,
+    ) -> Result<Channel> {
         debug!("create_channel, addr = {:?}", &addr);
         Endpoint::try_from(addr)?
             .connect_timeout(config.connect_timeout)
@@ -89,10 +97,7 @@ impl ConnectionPool {
                     }
                 }
                 Err(e) => {
-                    error!(
-                        "load_cluster_metadata from addr: {:?}, failed: {:?}",
-                        &addr, e
-                    );
+                    error!("load_cluster_metadata from addr: {:?}, failed: {:?}", &addr, e);
                     continue;
                 } // Connection failed, try next
             }
@@ -115,8 +120,6 @@ impl ConnectionPool {
             }
         }
 
-        leader_addr
-            .map(|addr| (addr, followers))
-            .ok_or(Error::NoLeaderFound)
+        leader_addr.map(|addr| (addr, followers)).ok_or(Error::NoLeaderFound)
     }
 }

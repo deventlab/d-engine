@@ -14,10 +14,13 @@ pub use state_storage::*;
 /// raft logs storage
 /// (raft_log_db, state_machine_db, state_storage_db, snapshot_storge_db)
 pub fn init_sled_storages(
-    sled_db_root_path: String,
+    sled_db_root_path: String
 ) -> std::result::Result<(sled::Db, sled::Db, sled::Db, sled::Db), std::io::Error> {
-    use log::{debug, warn};
-    use std::{io::ErrorKind, path::Path};
+    use std::io::ErrorKind;
+    use std::path::Path;
+
+    use log::debug;
+    use log::warn;
 
     debug!("init_sled_storages from path: {:?}", &sled_db_root_path);
 
@@ -95,33 +98,29 @@ pub fn init_sled_storages(
             std::io::Error::new(ErrorKind::Other, e)
         })?;
 
-    Ok((
-        raft_log_db,
-        state_machine_db,
-        state_storage_db,
-        snapshot_storage_db,
-    ))
+    Ok((raft_log_db, state_machine_db, state_storage_db, snapshot_storage_db))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        convert::{kv, skv},
-        grpc::rpc_service::{ClusterMembership, NodeMeta},
-        test_utils, RaftRole, FOLLOWER, LEARNER,
-    };
+    use crate::convert::kv;
+    use crate::convert::skv;
+    use crate::grpc::rpc_service::ClusterMembership;
+    use crate::grpc::rpc_service::NodeMeta;
+    use crate::test_utils;
+    use crate::RaftRole;
+    use crate::FOLLOWER;
+    use crate::LEARNER;
 
     /// # Case 1: restart
     ///
     /// ## Setup:
-    /// 1. there was existing entry in local log db
-    ///     key:1 - value:2
+    /// 1. there was existing entry in local log db key:1 - value:2
     /// 2. renew the db from file path
     ///
     /// ## Criterias:
     /// 1. find the same key value from local log db
-    ///
     #[test]
     fn test_init_storages_case1() {
         test_utils::enable_logger();
@@ -177,10 +176,7 @@ mod tests {
                 init_sled_storages(path.to_string()).unwrap();
             assert_eq!(
                 Some(kv(2)),
-                raft_log_db
-                    .get(kv(1))
-                    .expect("should succeed")
-                    .map(|v| v.to_vec())
+                raft_log_db.get(kv(1)).expect("should succeed").map(|v| v.to_vec())
             );
             assert_eq!(
                 Some(kv(17)),

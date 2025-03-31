@@ -1,19 +1,28 @@
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tonic::Code;
 
-use crate::{
-    grpc::rpc_service::{
-        AppendEntriesRequest, ClientProposeRequest, ClientReadRequest, ClientRequestError,
-        ClusteMembershipChangeRequest, MetadataRequest, VoteRequest,
-    },
-    learner_state::LearnerState,
-    role_state::RaftRoleState,
-    test_utils::{mock_peer_channels, mock_raft_context, MockTypeConfig},
-    AppendResponseWithUpdates, Error, MaybeCloneOneshot, MockMembership, MockReplicationCore,
-    RaftOneshot, RoleEvent,
-};
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::learner_state::LearnerState;
+use crate::role_state::RaftRoleState;
+use crate::test_utils::mock_peer_channels;
+use crate::test_utils::mock_raft_context;
+use crate::test_utils::MockTypeConfig;
+use crate::AppendResponseWithUpdates;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MockMembership;
+use crate::MockReplicationCore;
+use crate::RaftOneshot;
+use crate::RoleEvent;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
@@ -27,10 +36,7 @@ async fn test_tick() {
     let (event_tx, _event_rx) = mpsc::channel(1);
     let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .tick(&role_tx, &event_tx, peer_channels, &context)
-        .await
-        .is_ok());
+    assert!(state.tick(&role_tx, &event_tx, peer_channels, &context).await.is_ok());
 }
 
 /// # Case 1: Receive Vote Request Event with term is higher than mine
@@ -146,8 +152,7 @@ async fn test_handle_raft_event_case3() {
 ///     and replication_handler::handle_append_entries successfully
 ///
 /// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with higher term and new commit index
+/// 1. receive Leader append request, with higher term and new commit index
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
@@ -156,7 +161,6 @@ async fn test_handle_raft_event_case3() {
 /// 4. I should send out new commit signal
 /// 5. send out AppendEntriesResponse with success=true
 /// 6. `handle_raft_event` fun returns Ok(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
@@ -222,12 +226,9 @@ async fn test_handle_raft_event_case4_1() {
     // Validation criterias
     // 2. I should not receive BecomeFollower event
     // 4. I should send out new commit signal
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::NotifyNewCommitIndex {
-            new_commit_index: _
-        }
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::NotifyNewCommitIndex {
+        new_commit_index: _
+    }));
 
     // Validation criterias
     // 3. I should update term
@@ -250,7 +251,6 @@ async fn test_handle_raft_event_case4_1() {
 /// 3. My term shoud not be updated
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Ok(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
@@ -316,8 +316,7 @@ async fn test_handle_raft_event_case4_2() {
 ///     and replication_handler::handle_append_entries failed with Error
 ///
 /// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with Error
+/// 1. receive Leader append request, with Error
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
@@ -325,7 +324,6 @@ async fn test_handle_raft_event_case4_2() {
 /// 3. My term shoud be updated
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
@@ -396,7 +394,6 @@ async fn test_handle_raft_event_case4_3() {
 }
 
 /// # Case 5: Test handle client propose request
-///
 #[tokio::test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());

@@ -4,13 +4,16 @@ use prost::Message;
 use sled::Batch;
 
 use super::*;
-use crate::{
-    convert::kv,
-    grpc::rpc_service::{ClientCommand, Entry, SnapshotEntry},
-    init_sled_storages,
-    test_utils::{self, generate_insert_commands, setup_raft_components},
-    StateMachine, COMMITTED_LOG_METRIC,
-};
+use crate::convert::kv;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::SnapshotEntry;
+use crate::init_sled_storages;
+use crate::test_utils::generate_insert_commands;
+use crate::test_utils::setup_raft_components;
+use crate::test_utils::{self};
+use crate::StateMachine;
+use crate::COMMITTED_LOG_METRIC;
 
 #[test]
 fn test_start_stop() {
@@ -42,10 +45,7 @@ fn test_apply_committed_raft_logs_in_batch() {
         };
         entries.push(log);
     }
-    context
-        .state_machine
-        .apply_chunk(entries)
-        .expect("should succeed");
+    context.state_machine.apply_chunk(entries).expect("should succeed");
     assert_eq!(context.state_machine.last_entry_index(), Some(3));
 }
 
@@ -56,7 +56,6 @@ fn init(path: &str) -> Arc<sled::Db> {
 }
 
 /// # Case 1: test if node restart, the state machine entries should load from disk
-///
 #[test]
 fn test_state_machine_flush() {
     test_utils::enable_logger();
@@ -79,10 +78,7 @@ fn test_state_machine_flush() {
         let state_machine_db = init(p);
         let state_machine = RaftStateMachine::new(1, state_machine_db);
         assert_eq!(state_machine.len(), 2);
-        assert_eq!(
-            state_machine.get(&kv(2)).unwrap_or(Some(kv(0))),
-            Some(kv(2))
-        );
+        assert_eq!(state_machine.get(&kv(2)).unwrap_or(Some(kv(0))), Some(kv(2)));
     }
 }
 

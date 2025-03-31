@@ -1,24 +1,50 @@
-use super::{leader_state::LeaderState, role_state::RaftRoleState};
-use crate::{
-    alias::POF,
-    config::RaftConfig,
-    grpc::rpc_service::{
-        AppendEntriesRequest, ClientCommand, ClientProposeRequest, ClientReadRequest,
-        ClientRequestError, ClientResponse, ClusteMembershipChangeRequest, ClusterMembership,
-        MetadataRequest, VoteRequest, VoteResponse,
-    },
-    test_utils::{
-        enable_logger, mock_peer_channels, mock_raft_context, setup_raft_components, MockBuilder,
-        MockTypeConfig,
-    },
-    convert::kv,
-    AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver, MaybeCloneOneshotSender,
-    MockMembership, MockRaftLog, MockReplicationCore, MockStateMachineHandler, MockTransport,
-    NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot, ReplicationConfig, RoleEvent, RaftNodeConfig,
-};
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, watch};
-use tonic::{Code, Status};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+
+use super::leader_state::LeaderState;
+use super::role_state::RaftRoleState;
+use crate::alias::POF;
+use crate::config::RaftConfig;
+use crate::convert::kv;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::test_utils::enable_logger;
+use crate::test_utils::mock_peer_channels;
+use crate::test_utils::mock_raft_context;
+use crate::test_utils::setup_raft_components;
+use crate::test_utils::MockBuilder;
+use crate::test_utils::MockTypeConfig;
+use crate::AppendResults;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotReceiver;
+use crate::MaybeCloneOneshotSender;
+use crate::MockMembership;
+use crate::MockRaftLog;
+use crate::MockReplicationCore;
+use crate::MockStateMachineHandler;
+use crate::MockTransport;
+use crate::NewLeaderInfo;
+use crate::PeerUpdate;
+use crate::RaftEvent;
+use crate::RaftNodeConfig;
+use crate::RaftOneshot;
+use crate::ReplicationConfig;
+use crate::RoleEvent;
 
 struct TestContext {
     state: LeaderState<MockTypeConfig>,
@@ -67,22 +93,16 @@ async fn setup_test_case(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -101,9 +121,7 @@ async fn setup_test_case(
 }
 
 /// Verify client response
-pub async fn assert_client_response(
-    mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>,
-) {
+pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>) {
     match rx.recv().await {
         Ok(Ok(response)) => assert_eq!(
             ClientRequestError::try_from(response.error_code).unwrap(),
@@ -115,7 +133,8 @@ pub async fn assert_client_response(
 }
 
 /// # Case 1.1: Test process_client_propose by simulating client proposal request
-/// Validates leader behavior when replicating new client proposals with partially synchronized cluster
+/// Validates leader behavior when replicating new client proposals with
+/// partially synchronized cluster
 ///
 /// ## Scenario Setup
 /// Log State Initialization:
@@ -338,28 +357,19 @@ async fn test_process_client_propose_case2() {
 #[tokio::test]
 async fn test_ensure_state_machine_upto_commit_index_case1() {
     // Prepare Leader State
-    let context = setup_raft_components(
-        "/tmp/test_ensure_state_machine_upto_commit_index_case1",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_ensure_state_machine_upto_commit_index_case1", None, false);
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_settings.clone());
 
     // Update commit index
     let commit_index = 10;
-    state
-        .update_commit_index(commit_index)
-        .expect("should succeed");
+    state.update_commit_index(commit_index).expect("should succeed");
 
     // Prepare last applied index
     let last_applied = commit_index - 1;
 
     // Test fun
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler
-        .expect_update_pending()
-        .times(1)
-        .returning(|_| {});
+    state_machine_handler.expect_update_pending().times(1).returning(|_| {});
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
         .expect("should succeed");
@@ -370,28 +380,19 @@ async fn test_ensure_state_machine_upto_commit_index_case1() {
 #[tokio::test]
 async fn test_ensure_state_machine_upto_commit_index_case2() {
     // Prepare Leader State
-    let context = setup_raft_components(
-        "/tmp/test_ensure_state_machine_upto_commit_index_case2",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_ensure_state_machine_upto_commit_index_case2", None, false);
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_settings.clone());
 
     // Update Commit index
     let commit_index = 10;
-    state
-        .update_commit_index(commit_index)
-        .expect("should succeed");
+    state.update_commit_index(commit_index).expect("should succeed");
 
     // Prepare last applied index
     let last_applied = commit_index;
 
     // Test fun
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler
-        .expect_update_pending()
-        .times(0)
-        .returning(|_| {});
+    state_machine_handler.expect_update_pending().times(0).returning(|_| {});
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
         .expect("should succeed");
@@ -482,20 +483,15 @@ async fn test_handle_raft_event_case1_2() {
     assert!(r.is_ok());
 
     // Step to Follower
-    assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
-    ));
-    assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::ReprocessEvent(_))
-    ));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::ReprocessEvent(_))));
 
     // Term should be updated
     assert_eq!(state.current_term(), updated_term);
 
     // Make sure this assert is at the end of the test function.
-    // Because we should wait handle_raft_event fun finish running after the role events been consumed above.
+    // Because we should wait handle_raft_event fun finish running after the role
+    // events been consumed above.
     assert!(resp_rx.recv().await.is_err());
 }
 
@@ -542,10 +538,7 @@ async fn test_handle_raft_event_case3_1() {
         .expect_update_cluster_conf_from_leader()
         .times(1)
         .returning(|_, _| Ok(()));
-    membership
-        .expect_get_cluster_conf_version()
-        .times(1)
-        .returning(|| 1);
+    membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
@@ -589,10 +582,7 @@ async fn test_handle_raft_event_case3_2() {
         .expect_update_cluster_conf_from_leader()
         .times(1)
         .returning(|_, _| Err(Error::ClusterMembershipUpdateFailed("".to_string())));
-    membership
-        .expect_get_cluster_conf_version()
-        .times(1)
-        .returning(|| 1);
+    membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
@@ -626,7 +616,6 @@ async fn test_handle_raft_event_case3_2() {
 }
 
 /// # Case 4.1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Leader State
@@ -672,7 +661,6 @@ async fn test_handle_raft_event_case4_1() {
 /// 1. I should step down as Follower(receive RoleEvent::BecomeFollower event)
 /// 2. my term should be updated to the request one
 /// 3. receive replay event
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Leader State
@@ -714,14 +702,8 @@ async fn test_handle_raft_event_case4_2() {
         .is_ok());
 
     // Validate criterias: step down as Follower
-    assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
-    ));
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
-    ));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
 
     // Validate no response received
     assert!(resp_rx.recv().await.is_err());
@@ -760,8 +742,8 @@ async fn test_handle_raft_event_case5_1() {
 async fn test_handle_raft_event_case5_2() {}
 
 /// # Case 6.1: Test ClientReadRequest event
-///     if both peers failed to confirm leader's commit, the lread request should be failed
-///
+///     if both peers failed to confirm leader's commit, the lread request
+/// should be failed
 #[tokio::test]
 async fn test_handle_raft_event_case6_1() {
     enable_logger();
@@ -836,22 +818,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 3,
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 4,
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 3,
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 4,
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -888,10 +864,12 @@ async fn test_handle_raft_event_case6_2() {
         .await
         .expect("should succeed");
 
-    // Validation criteria 1: Leader commit should be updated to: 3(new commit index)
+    // Validation criteria 1: Leader commit should be updated to: 3(new commit
+    // index)
     assert_eq!(state.commit_index(), expect_new_commit_index);
 
-    // Validation criteria 2: event "RoleEvent::NotifyNewCommitIndex" should be received
+    // Validation criteria 2: event "RoleEvent::NotifyNewCommitIndex" should be
+    // received
     match resp_rx.recv().await {
         Ok(Ok(_)) => {
             assert!(true);
@@ -906,12 +884,9 @@ async fn test_handle_raft_event_case6_2() {
 
     // Validation criteria 3: resp_rx receives Ok()
     match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(
-            event,
-            RoleEvent::NotifyNewCommitIndex {
-                new_commit_index: expect_new_commit_index
-            }
-        )),
+        Ok(event) => assert!(matches!(event, RoleEvent::NotifyNewCommitIndex {
+            new_commit_index: expect_new_commit_index
+        })),
         Err(_) => assert!(false),
     };
 }
@@ -977,15 +952,13 @@ async fn test_handle_raft_event_case6_3() {
         .await
         .expect("should succeed");
 
-    // Validation criteria 1: Leader commit should be updated to: 3(new commit index)
+    // Validation criteria 1: Leader commit should be updated to: 3(new commit
+    // index)
     assert_eq!(state.commit_index(), 1);
 
     // Validation criteria 2: event "RoleEvent::BecomeFollower" should be received
     match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(
-            event,
-            RoleEvent::BecomeFollower(Some(new_leader_id_clone))
-        )),
+        Ok(event) => assert!(matches!(event, RoleEvent::BecomeFollower(Some(new_leader_id_clone)))),
         Err(_) => assert!(false),
     };
 

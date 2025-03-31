@@ -1,15 +1,27 @@
-use super::ElectionCore;
-use crate::{
-    alias::{ROF, TROF},
-    grpc::rpc_service::{VoteRequest, VotedFor},
-    ChannelWithAddressAndRole, Error, RaftEvent, RaftLog, Result, RoleEvent, RaftNodeConfig, StateUpdate,
-    Transport, TypeConfig, API_SLO,
-};
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use autometrics::autometrics;
-use log::{debug, error};
-use std::{marker::PhantomData, sync::Arc};
+use log::debug;
+use log::error;
 use tokio::sync::mpsc;
 use tonic::async_trait;
+
+use super::ElectionCore;
+use crate::alias::ROF;
+use crate::alias::TROF;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VotedFor;
+use crate::ChannelWithAddressAndRole;
+use crate::Error;
+use crate::RaftEvent;
+use crate::RaftLog;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::StateUpdate;
+use crate::Transport;
+use crate::TypeConfig;
+use crate::API_SLO;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
@@ -20,8 +32,7 @@ pub struct ElectionHandler<T: TypeConfig> {
 
 #[async_trait]
 impl<T> ElectionCore<T> for ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
@@ -36,10 +47,7 @@ where
 
         if voting_members.len() < 1 {
             error!("my(id={}) peers is empty.", self.my_id);
-            return Err(Error::ElectionFailed(format!(
-                "my(id={}) peers is empty.",
-                self.my_id
-            )));
+            return Err(Error::ElectionFailed(format!("my(id={}) peers is empty.", self.my_id)));
         } else {
             debug!("going to send_vote_requests to: {:?}", &voting_members);
         }
@@ -68,9 +76,7 @@ where
                     return Ok(());
                 } else {
                     debug!("failed to receive majority votes.");
-                    return Err(Error::ElectionFailed(format!(
-                        "failed to receive majority votes."
-                    )));
+                    return Err(Error::ElectionFailed(format!("failed to receive majority votes.")));
                 }
             }
             Err(e) => {
@@ -102,23 +108,17 @@ where
             debug!("last_index: {:?}, last_term: {:?}", last_index, last_term);
         }
 
-        if self.check_vote_request_is_legal(
-            &request,
-            current_term,
-            last_index,
-            last_term,
-            voted_for_option,
-        ) {
+        if self.check_vote_request_is_legal(&request, current_term, last_index, last_term, voted_for_option) {
             debug!("switch to follower");
             let term = request.term;
 
             // 1. Update term
             term_update = Some(term);
 
-            //2. switch to follower
+            // 2. switch to follower
             step_to_follower = true;
 
-            //3. update vote for
+            // 3. update vote for
             debug!(
                 "updated my voted for: target node: {:?} with term:{:?}",
                 request.candidate_id, term
@@ -150,10 +150,7 @@ where
         voted_for_option: Option<VotedFor>,
     ) -> bool {
         if current_term > request.term {
-            debug!(
-                "current_term({:?}) > request.term({:?})",
-                current_term, request.term
-            );
+            debug!("current_term({:?}) > request.term({:?})", current_term, request.term);
             return false;
         }
 
@@ -167,9 +164,7 @@ where
         }
 
         //step 2: check if I have voted for this term
-        if voted_for_option.is_some()
-            && !self.if_node_could_grant_the_vote_request(request, voted_for_option)
-        {
+        if voted_for_option.is_some() && !self.if_node_could_grant_the_vote_request(request, voted_for_option) {
             debug!(
                 "node_could_not_grant_the_vote_request: {:?}, voted_for_option={:?}",
                 request, &voted_for_option
@@ -181,10 +176,12 @@ where
     }
 }
 impl<T> ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
-    pub fn new(my_id: u32, event_tx: mpsc::Sender<RaftEvent>) -> Self {
+    pub fn new(
+        my_id: u32,
+        event_tx: mpsc::Sender<RaftEvent>,
+    ) -> Self {
         Self {
             my_id,
             event_tx,
@@ -219,10 +216,7 @@ where
         voted_for_option: Option<VotedFor>,
     ) -> bool {
         if let Some(vf) = voted_for_option {
-            debug!(
-                "voted_id: {:?}, voted_term: {:?}",
-                vf.voted_for_id, vf.voted_for_term
-            );
+            debug!("voted_id: {:?}, voted_term: {:?}", vf.voted_for_id, vf.voted_for_term);
 
             if vf.voted_for_id == 0 {
                 return true;

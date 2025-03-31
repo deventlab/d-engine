@@ -1,8 +1,13 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{grpc::rpc_service::NodeMeta, Error, Result, FOLLOWER};
+use crate::grpc::rpc_service::NodeMeta;
+use crate::Error;
+use crate::Result;
+use crate::FOLLOWER;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClusterConfig {
@@ -87,12 +92,13 @@ impl ClusterConfig {
     }
 
     /// Ensures directory path is valid and writable
-    fn validate_directory(&self, path: &PathBuf, name: &str) -> Result<()> {
+    fn validate_directory(
+        &self,
+        path: &PathBuf,
+        name: &str,
+    ) -> Result<()> {
         if path.as_os_str().is_empty() {
-            return Err(Error::InvalidConfig(format!(
-                "{} path cannot be empty",
-                name
-            )));
+            return Err(Error::InvalidConfig(format!("{} path cannot be empty", name)));
         }
 
         #[cfg(not(test))]

@@ -1,15 +1,22 @@
-use crate::commons::{execute_command, get_root_path, start_node, ClientCommands};
+use std::path::Path;
+use std::time::Duration;
+
 use dengine::Error;
 use env_logger::Env;
 use log::error;
-use std::path::Path;
-use std::time::Duration;
-use tokio::fs::{self, remove_dir_all};
+use tokio::fs::remove_dir_all;
+use tokio::fs::{self};
 use tokio::net::TcpStream;
 use tokio::time;
 
+use crate::commons::execute_command;
+use crate::commons::get_root_path;
+use crate::commons::start_node;
+use crate::commons::ClientCommands;
+
 const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
-const LATENCY_IN_MS: u64 = 10; // we are testing linearizable read from Leader directly, the latency should less than 1ms ideally
+const LATENCY_IN_MS: u64 = 10; // we are testing linearizable read from Leader directly, the latency should
+                               // less than 1ms ideally
 const ITERATIONS: u64 = 10; // to make sure the result is consistent
 
 async fn reset(case_name: &str) -> Result<(), std::io::Error> {
@@ -31,7 +38,10 @@ async fn reset(case_name: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-async fn check_cluster_is_ready(peer_addr: &str, timeout_secs: u64) -> Result<(), std::io::Error> {
+async fn check_cluster_is_ready(
+    peer_addr: &str,
+    timeout_secs: u64,
+) -> Result<(), std::io::Error> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     let retry_interval = Duration::from_millis(500);
 
@@ -59,15 +69,15 @@ async fn check_cluster_is_ready(peer_addr: &str, timeout_secs: u64) -> Result<()
         }
     }
 }
-/// Case 1: start 3 node cluster and test simple get/put, and then stop the cluster
-///
+/// Case 1: start 3 node cluster and test simple get/put, and then stop the
+/// cluster
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
     // env_logger::Builder::new()
-    //     .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
-    //     .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
-    //     .init();
+    //     .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not
+    // set     .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read
+    // from RUST_LOG or default to "info"     .init();
 
     crate::enable_logger();
 
@@ -115,10 +125,12 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 
 /// # Case 2: test one of the node restart, but with linearizable read from Leader only
 ///
-/// In this case, performance is not something we want to test, so we want to test
-///     if client's linearizable read could be achieved by reading from Leader only.
+/// In this case, performance is not something we want to test, so we want to
+/// test     if client's linearizable read could be achieved by reading from
+/// Leader only.
 ///
-/// Give each put call with 10ms latency is enough for single testing on macmini16g/8c.
+/// Give each put call with 10ms latency is enough for single testing on
+/// macmini16g/8c.
 ///
 /// ## T1: L1, F2, F31
 /// - put 1 1
@@ -153,15 +165,13 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 /// 5
 /// - get 2
 /// 21
-///
-///
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     // env_logger::Builder::new()
-    //     .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
-    //     .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
-    //     .init();
+    //     .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not
+    // set     .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read
+    // from RUST_LOG or default to "info"     .init();
 
     crate::enable_logger();
 
@@ -189,20 +199,16 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     // T1: PUT and linearizable reads
     println!("------------------T1-----------------");
     println!("put 1 1");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(1))
-            .await
-            .is_ok()
-    );
+    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(1))
+        .await
+        .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     verify_read(&bootstrap_urls, 1, 1, ITERATIONS).await;
 
     println!("put 1 2");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(2))
-            .await
-            .is_ok()
-    );
+    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(2))
+        .await
+        .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     verify_read(&bootstrap_urls, 1, 2, ITERATIONS).await;
 
@@ -233,26 +239,20 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     verify_read(&bootstrap_urls, 1, 3, ITERATIONS).await;
 
     println!("put 1 4");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(4))
-            .await
-            .is_ok()
-    );
+    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(4))
+        .await
+        .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     verify_read(&bootstrap_urls, 1, 4, ITERATIONS).await;
 
     println!("put 2 20");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(20))
-            .await
-            .is_ok()
-    );
+    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(20))
+        .await
+        .is_ok());
     println!("put 2 21");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(21))
-            .await
-            .is_ok()
-    );
+    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(21))
+        .await
+        .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     verify_read(&bootstrap_urls, 2, 21, ITERATIONS).await;
 
@@ -278,11 +278,9 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     verify_read(&bootstrap_urls, 1, 4, ITERATIONS).await;
     verify_read(&bootstrap_urls, 2, 21, ITERATIONS).await;
     println!("put 1 5");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(5))
-            .await
-            .is_ok()
-    );
+    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(5))
+        .await
+        .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     verify_read(&bootstrap_urls, 2, 21, ITERATIONS).await;
     verify_read(&bootstrap_urls, 1, 5, ITERATIONS).await;
@@ -299,15 +297,16 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
 }
 
 // Helper function to verify linearizable reads
-async fn verify_read(urls: &Vec<String>, key: u64, expected_value: u64, iterations: u64) {
+async fn verify_read(
+    urls: &Vec<String>,
+    key: u64,
+    expected_value: u64,
+    iterations: u64,
+) {
     println!("read: {}", key);
     for _ in 0..iterations {
         match execute_command(ClientCommands::LREAD, urls, key, None).await {
-            Ok(v) => assert_eq!(
-                v, expected_value,
-                "Linearizable read failed for key {}!",
-                key
-            ),
+            Ok(v) => assert_eq!(v, expected_value, "Linearizable read failed for key {}!", key),
             Err(e) => {
                 error!("execute_command error: {:?}", e);
                 assert!(false);

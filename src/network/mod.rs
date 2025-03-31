@@ -1,9 +1,10 @@
-//! This module is the network abstraction layer with timeout-aware gRPC implementation
+//! This module is the network abstraction layer with timeout-aware gRPC
+//! implementation
 //!
-//! This module provides network communication facilities with configurable timeout policies
-//! for distributed system operations. All network operations are governed by timeout parameters
-//! defined in [`RaftConfig`] to ensure system responsiveness.
-//!
+//! This module provides network communication facilities with configurable
+//! timeout policies for distributed system operations. All network operations
+//! are governed by timeout parameters defined in [`RaftConfig`] to ensure
+//! system responsiveness.
 pub mod grpc;
 
 // Trait definition of the current module
@@ -15,15 +16,20 @@ pub mod grpc;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::{
-    grpc::rpc_service::{AppendEntriesRequest, ClusteMembershipChangeRequest, VoteRequest},
-    ChannelWithAddress, ChannelWithAddressAndRole, RaftConfig, Result, RetryPolicies,
-};
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::ChannelWithAddress;
+use crate::ChannelWithAddressAndRole;
+use crate::RaftConfig;
+use crate::Result;
+use crate::RetryPolicies;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
 pub struct AppendResults {
-    /// Whether a majority quorum is achieved (can be directly determined via peer_updates)
+    /// Whether a majority quorum is achieved (can be directly determined via
+    /// peer_updates)
     pub commit_quorum_achieved: bool,
     /// Updates to each peer's match_index and next_index
     pub peer_updates: HashMap<u32, PeerUpdate>,
@@ -45,7 +51,6 @@ pub trait Transport: Send + Sync + 'static {
     /// pre-validation:
     /// - the sender is Leader
     /// - if there is no peer passed, then return Ok(false)
-    ///
     async fn send_cluster_membership_requests(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
@@ -54,15 +59,16 @@ pub trait Transport: Send + Sync + 'static {
     ) -> Result<bool>;
 
     /// Only when Majority receives, true will be returned.
-    /// This function is special comapring with other rpc functions in this file.
+    /// This function is special comapring with other rpc functions in this
+    /// file.
     ///
-    /// It will also take responbility to maintain peer's next_index and match_index
+    /// It will also take responbility to maintain peer's next_index and
+    /// match_index
     ///
     /// @requests_with_peer_address:
     /// - only inlclude Follower and Candidates, no Learner will be considered.
     /// - (peer_id,  peer_address, peer_request)
     /// - the request send to each peer is unique.
-    ///
     async fn send_append_requests(
         &self,
         // role_tx: mpsc::UnboundedSender<RoleEvent>,
@@ -82,7 +88,6 @@ pub trait Transport: Send + Sync + 'static {
     /// -- If election timeout elapses: start new election
     ///
     /// `requests` - means send to peers;
-    ///
     async fn send_vote_requests(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
@@ -93,13 +98,18 @@ pub trait Transport: Send + Sync + 'static {
 
 // Module level utils
 // -----------------------------------------------------------------------------
-use crate::Error;
-use log::{debug, error, warn};
-use std::{collections::HashMap, time::Duration};
-use tokio::time::{sleep, timeout};
+use std::collections::HashMap;
+use std::time::Duration;
+
+use log::debug;
+use log::error;
+use log::warn;
+use tokio::time::sleep;
+use tokio::time::timeout;
 use tonic::Code;
+
+use crate::Error;
 /// As soon as task has return we should return from this function
-///
 pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, U>(
     mut task: F,
     max_retries: usize,
@@ -108,9 +118,7 @@ pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, U>(
 ) -> std::result::Result<tonic::Response<U>, Error>
 where
     F: FnMut() -> T,
-    T: std::future::Future<Output = std::result::Result<tonic::Response<U>, tonic::Status>>
-        + Send
-        + 'static,
+    T: std::future::Future<Output = std::result::Result<tonic::Response<U>, tonic::Status>> + Send + 'static,
 {
     // let max_retries = 5;
     let mut retries = 0;
@@ -118,10 +126,7 @@ where
 
     let mut e = Error::RetryTaskFailed("Task failed after max retries".to_string());
     while retries < max_retries {
-        debug!(
-            "task_with_timeout_and_exponential_backoff, time: {}",
-            retries + 1
-        );
+        debug!("task_with_timeout_and_exponential_backoff, time: {}", retries + 1);
         match timeout(timeout_duration, task()).await {
             Ok(Ok(r)) => {
                 return Ok(r); // Exit on success
@@ -143,11 +148,14 @@ where
         retries += 1;
         if retries < max_retries {
             sleep(delay).await;
-            delay = delay * 2; // Exponential backoff (double the delay each time)
+            delay = delay * 2; // Exponential backoff (double the delay each
+                               // time)
         } else {
             warn!("Task failed after {} retries", retries);
             //bug: no need to return if the it is not a business logic error
-            // return Err(Error::RetryTaskFailed("Task failed after max retries".to_string())); // Return the last error after max retries
+            // return Err(Error::RetryTaskFailed("Task failed after max
+            // retries".to_string())); // Return the last error after max
+            // retries
         }
     }
     warn!("Task failed after {} retries", max_retries);
@@ -160,9 +168,7 @@ mod tests {
 
     use super::*;
 
-    async fn async_ok(
-        number: u64,
-    ) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
+    async fn async_ok(number: u64) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         sleep(Duration::from_millis(number)).await;
         let c = ClusterConfUpdateResponse {
             id: 1,
@@ -174,8 +180,7 @@ mod tests {
         Ok(response)
     }
 
-    async fn async_err(
-    ) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
+    async fn async_err() -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         sleep(Duration::from_millis(100)).await;
         Err(tonic::Status::aborted("message"))
     }
@@ -196,13 +201,9 @@ mod tests {
             assert!(false);
         }
         // Case 2: when err task return error
-        if let Ok(_) = task_with_timeout_and_exponential_backoff(
-            async_err,
-            3,
-            Duration::from_millis(100),
-            Duration::from_secs(1),
-        )
-        .await
+        if let Ok(_) =
+            task_with_timeout_and_exponential_backoff(async_err, 3, Duration::from_millis(100), Duration::from_secs(1))
+                .await
         {
             assert!(false);
         } else {

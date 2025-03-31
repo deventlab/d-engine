@@ -1,8 +1,8 @@
 //! gRPC transport implementation with deadline propagation
 //!
-//! This submodule implements timeout-aware gRPC communication using tower and tonic.
-//! All RPC methods enforce server-side deadlines based on the configured timeout values.
-//!
+//! This submodule implements timeout-aware gRPC communication using tower and
+//! tonic. All RPC methods enforce server-side deadlines based on the configured
+//! timeout values.
 
 // Protobuf GRPC service introduction
 // -----------------------------------------------------------------------------
@@ -21,23 +21,36 @@ mod grpc_transport_test;
 //-------------------------------------------------------------------------------
 // Start RPC Server
 
-use crate::{grpc::rpc_service::rpc_service_server::RpcServiceServer, Error, Node, Result};
-use crate::{RaftNodeConfig, TlsConfig, TypeConfig};
-use futures::FutureExt;
-use log::{debug, error, info, warn};
-use rcgen::{generate_simple_self_signed, CertifiedKey};
 use std::net::SocketAddr;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
+use futures::FutureExt;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use rcgen::generate_simple_self_signed;
+use rcgen::CertifiedKey;
 use tokio::sync::watch;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::{Certificate, Identity, ServerTlsConfig};
+use tonic::transport::Certificate;
+use tonic::transport::Identity;
+use tonic::transport::ServerTlsConfig;
 use tonic_health::server::health_reporter;
 
+use crate::grpc::rpc_service::rpc_service_server::RpcServiceServer;
+use crate::Error;
+use crate::Node;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::TlsConfig;
+use crate::TypeConfig;
+
 /// RPC server works for RAFT protocol
-/// It mainly listens on two request: Vote RPC Request and Append Entries RPC Request
-/// The server itself knows its peers.
-///
+/// It mainly listens on two request: Vote RPC Request and Append Entries RPC
+/// Request The server itself knows its peers.
 pub(crate) async fn start_rpc_server<T>(
     node: Arc<Node<T>>,
     listen_address: SocketAddr,
@@ -51,9 +64,7 @@ where
     let (mut health_reporter, health_service) = health_reporter();
 
     // Set the initial health status to SERVING
-    health_reporter
-        .set_serving::<RpcServiceServer<Node<T>>>()
-        .await;
+    health_reporter.set_serving::<RpcServiceServer<Node<T>>>().await;
 
     let mut server_builder = tonic::transport::Server::builder()
         .concurrency_limit_per_connection(config.network.concurrency_limit_per_connection)
@@ -61,9 +72,7 @@ where
         .initial_stream_window_size(config.network.initial_stream_window_size)
         .initial_connection_window_size(config.network.initial_connection_window_size)
         .max_concurrent_streams(config.network.max_concurrent_streams)
-        .tcp_keepalive(Some(Duration::from_secs(
-            config.network.tcp_keepalive_in_secs,
-        )))
+        .tcp_keepalive(Some(Duration::from_secs(config.network.tcp_keepalive_in_secs)))
         .tcp_nodelay(config.network.tcp_nodelay)
         .http2_keepalive_interval(Some(Duration::from_secs(
             config.network.http2_keep_alive_interval_in_secs,
@@ -90,19 +99,14 @@ where
         let server_identity = Identity::from_pem(cert, key);
         let tls = ServerTlsConfig::new().identity(server_identity);
         if config.tls.enable_mtls {
-            let client_ca_cert =
-                std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
-                    .expect("error, failed to read client certificate authority root");
+            let client_ca_cert = std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
+                .expect("error, failed to read client certificate authority root");
             let client_ca_cert = Certificate::from_pem(client_ca_cert);
             let tls = tls.client_ca_root(client_ca_cert);
-            server_builder = server_builder
-                .tls_config(tls)
-                .expect("error, failed to setup mTLS");
+            server_builder = server_builder.tls_config(tls).expect("error, failed to setup mTLS");
             info!("gRPC mTLS enabled");
         } else {
-            server_builder = server_builder
-                .tls_config(tls)
-                .expect("error, failed to setup TLS");
+            server_builder = server_builder.tls_config(tls).expect("error, failed to setup TLS");
             info!("gRPC TLS enabled");
         }
     }
@@ -138,8 +142,7 @@ fn generate_self_signed_certificates(config: TlsConfig) {
         generate_simple_self_signed(subject_alt_names).expect("Certificate generation failed");
 
     // Write certificate and private key to files
-    std::fs::write(&config.server_certificate_path, cert.pem())
-        .expect("Should succeed to write server certificate");
+    std::fs::write(&config.server_certificate_path, cert.pem()).expect("Should succeed to write server certificate");
     std::fs::write(&config.server_private_key_path, key_pair.serialize_pem())
         .expect("Should succeed to write server private key");
 }

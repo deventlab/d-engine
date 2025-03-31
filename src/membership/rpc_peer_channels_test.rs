@@ -1,21 +1,29 @@
-use std::{sync::Arc, vec};
+use std::sync::Arc;
+use std::vec;
 
-use crate::{
-    grpc::rpc_service::NodeMeta,
-    test_utils::{enable_logger, settings, MockNode, MOCK_PEER_CHANNEL_PORT_BASE},
-    Error, PeerChannels, PeerChannelsFactory, RpcPeerChannels, FOLLOWER,
-};
 use futures::stream::FuturesUnordered;
-use tokio::{
-    net::TcpListener,
-    sync::{mpsc, oneshot},
-    task,
-};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::task;
 
 use super::ChannelWithAddress;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::test_utils::enable_logger;
+use crate::test_utils::settings;
+use crate::test_utils::MockNode;
+use crate::test_utils::MOCK_PEER_CHANNEL_PORT_BASE;
+use crate::Error;
+use crate::PeerChannels;
+use crate::PeerChannelsFactory;
+use crate::RpcPeerChannels;
+use crate::FOLLOWER;
 
 // Test helper for creating mock peer configurations
-async fn mock_peer(port: u64, rx: oneshot::Receiver<()>) -> ChannelWithAddress {
+async fn mock_peer(
+    port: u64,
+    rx: oneshot::Receiver<()>,
+) -> ChannelWithAddress {
     MockNode::simulate_mock_service_without_reps(port, rx, true)
         .await
         .expect("should succeed")
@@ -58,12 +66,7 @@ fn crate_peer_channes(
 async fn test_connect_with_peers_case1() {
     enable_logger();
     let my_id = 1;
-    let (p2, p2_port, p3, p3_port) = (
-        2,
-        MOCK_PEER_CHANNEL_PORT_BASE + 1,
-        3,
-        MOCK_PEER_CHANNEL_PORT_BASE + 2,
-    );
+    let (p2, p2_port, p3, p3_port) = (2, MOCK_PEER_CHANNEL_PORT_BASE + 1, 3, MOCK_PEER_CHANNEL_PORT_BASE + 2);
     let mut peer_channels = crate_peer_channes(
         my_id,
         "/tmp/test_connect_with_peers_case1",
@@ -87,11 +90,7 @@ async fn test_connect_with_peers_case1() {
 
     // Verify results
     assert!(result.is_ok(), "Should connect successfully");
-    assert_eq!(
-        peer_channels.channels.len(),
-        2,
-        "Should have 2 peer connections"
-    );
+    assert_eq!(peer_channels.channels.len(), 2, "Should have 2 peer connections");
 }
 
 /// # Case 2: Tests partial connection failure handling
@@ -99,12 +98,7 @@ async fn test_connect_with_peers_case1() {
 async fn test_connect_with_peers_case2() {
     enable_logger();
     let my_id = 1;
-    let (p2, p2_port, p3, p3_port) = (
-        2,
-        MOCK_PEER_CHANNEL_PORT_BASE + 3,
-        3,
-        MOCK_PEER_CHANNEL_PORT_BASE + 5,
-    );
+    let (p2, p2_port, p3, p3_port) = (2, MOCK_PEER_CHANNEL_PORT_BASE + 3, 3, MOCK_PEER_CHANNEL_PORT_BASE + 5);
     let mut peer_channels = crate_peer_channes(
         my_id,
         "/tmp/test_connect_with_peers_case2",
@@ -124,14 +118,10 @@ async fn test_connect_with_peers_case2() {
 
     // Verify results
     assert!(result.is_err(), "Should fail with partial connections");
-    assert!(
-        peer_channels.channels.len() < 2,
-        "Should have incomplete connections"
-    );
+    assert!(peer_channels.channels.len() < 2, "Should have incomplete connections");
 }
 
 /// Case 1: test failed to connect with peers
-///
 #[tokio::test]
 async fn test_check_cluster_is_ready_case1() {
     let mut settings = settings("/tmp/test_check_cluster_is_ready_case2");
@@ -156,7 +146,6 @@ async fn test_check_cluster_is_ready_case1() {
 }
 
 /// Case 2: test success by connecting with peers
-///
 #[tokio::test]
 async fn test_check_cluster_is_ready_case2() {
     enable_logger();
@@ -191,12 +180,7 @@ async fn test_check_cluster_is_ready_case2() {
 async fn test_connection_task_spawning() {
     enable_logger();
     let my_id = 1;
-    let (p2, p2_port, p3, p3_port) = (
-        2,
-        MOCK_PEER_CHANNEL_PORT_BASE + 8,
-        3,
-        MOCK_PEER_CHANNEL_PORT_BASE + 9,
-    );
+    let (p2, p2_port, p3, p3_port) = (2, MOCK_PEER_CHANNEL_PORT_BASE + 8, 3, MOCK_PEER_CHANNEL_PORT_BASE + 9);
     let peer_channels = crate_peer_channes(
         my_id,
         "/tmp/test_connection_task_spawning",
@@ -217,12 +201,7 @@ async fn test_connection_task_spawning() {
     // Execute connection flow
     let settings = peer_channels.settings.clone();
     let initial_cluster = settings.cluster.initial_cluster.clone();
-    let tasks = peer_channels.spawn_connection_tasks(
-        1,
-        &initial_cluster,
-        settings.retry.clone(),
-        &settings.network,
-    );
+    let tasks = peer_channels.spawn_connection_tasks(1, &initial_cluster, settings.retry.clone(), &settings.network);
 
     assert_eq!(tasks.len(), 2, "Should spawn 2 connection tasks");
 }
@@ -239,10 +218,7 @@ async fn test_connection_collection() {
     // Simulate mixed results
     let (_tx1, rx1) = oneshot::channel::<()>();
     tasks.push(task::spawn(async move {
-        Ok((
-            2 as u32,
-            mock_peer(MOCK_PEER_CHANNEL_PORT_BASE + 11, rx1).await,
-        ))
+        Ok((2 as u32, mock_peer(MOCK_PEER_CHANNEL_PORT_BASE + 11, rx1).await))
     }));
     tasks.push(task::spawn(async { Err(Error::ConnectError) }));
 
@@ -260,10 +236,9 @@ async fn test_connection_retry_mechanism() {
 
     // Setup mock server that fails first 2 attempts
     tokio::spawn(async move {
-        let listener =
-            TcpListener::bind(format!("127.0.0.1:{}", MOCK_PEER_CHANNEL_PORT_BASE + 12).as_str())
-                .await
-                .unwrap();
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", MOCK_PEER_CHANNEL_PORT_BASE + 12).as_str())
+            .await
+            .unwrap();
         tx.send(()).await.unwrap();
         let mut connection_count = 0;
 

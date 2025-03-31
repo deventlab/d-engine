@@ -19,20 +19,39 @@ pub const CANDIDATE: i32 = 1;
 pub const LEADER: i32 = 2;
 pub const LEARNER: i32 = 3;
 
-use super::{RaftContext, RaftEvent, RoleEvent};
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
-///
-use crate::{alias::POF, grpc::rpc_service::VotedFor, Result, TypeConfig};
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
 use learner_state::LearnerState;
-use log::{debug, trace};
+use log::debug;
+use log::trace;
 use role_state::RaftRoleState;
-use serde::{ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
-use std::{collections::HashMap, sync::Arc};
-use tokio::{sync::mpsc, time::Instant};
+use serde::ser::SerializeStruct;
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+
+use super::RaftContext;
+use super::RaftEvent;
+use super::RoleEvent;
+/// The role state focuses solely on its own logic
+/// and does not directly manipulate the underlying storage or network.
+use crate::alias::POF;
+/// The role state focuses solely on its own logic
+/// and does not directly manipulate the underlying storage or network.
+use crate::grpc::rpc_service::VotedFor;
+/// The role state focuses solely on its own logic
+/// and does not directly manipulate the underlying storage or network.
+use crate::Result;
+/// The role state focuses solely on its own logic
+/// and does not directly manipulate the underlying storage or network.
+use crate::TypeConfig;
 
 #[repr(i32)]
 pub enum RaftRole<T: TypeConfig> {
@@ -44,12 +63,16 @@ pub enum RaftRole<T: TypeConfig> {
 
 #[derive(Clone, Debug, Copy)]
 pub struct HardState {
-    /// Persistent state on all servers(Updated on stable storage before responding to RPCs):
-    /// latest term server has seen (initialized to 0 on first boot, increases monotonically)
-    /// Terms act as a logical clock in Raft, and they allow servers to detect obsolete information such as stale leaders. Each server stores a current term number, which increases monotonically over time.
+    /// Persistent state on all servers(Updated on stable storage before
+    /// responding to RPCs): latest term server has seen (initialized to 0
+    /// on first boot, increases monotonically) Terms act as a logical clock
+    /// in Raft, and they allow servers to detect obsolete information such as
+    /// stale leaders. Each server stores a current term number, which increases
+    /// monotonically over time.
     pub current_term: u64,
-    /// Persistent state on all servers(Updated on stable storage before responding to RPCs):
-    /// candidateId that received vote in current term (or null if none)
+    /// Persistent state on all servers(Updated on stable storage before
+    /// responding to RPCs): candidateId that received vote in current term
+    /// (or null if none)
     pub voted_for: Option<VotedFor>,
 }
 
@@ -59,7 +82,8 @@ pub struct SharedState {
 
     pub hard_state: HardState,
     /// Volatile state on all servers:
-    /// index of highest log entry known to be committed (initialized to 0, increases monotonically)
+    /// index of highest log entry known to be committed (initialized to 0,
+    /// increases monotonically)
     pub commit_index: u64,
 }
 
@@ -106,7 +130,10 @@ impl SharedState {
         self.hard_state.current_term
     }
 
-    fn update_current_term(&mut self, term: u64) {
+    fn update_current_term(
+        &mut self,
+        term: u64,
+    ) {
         self.hard_state.current_term = term;
     }
 
@@ -121,7 +148,10 @@ impl SharedState {
         self.hard_state.voted_for = None;
         Ok(())
     }
-    pub fn update_voted_for(&mut self, voted_for: VotedFor) -> Result<()> {
+    pub fn update_voted_for(
+        &mut self,
+        voted_for: VotedFor,
+    ) -> Result<()> {
         self.hard_state.voted_for = Some(voted_for);
         Ok(())
     }
@@ -207,27 +237,47 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().commit_index()
     }
     #[cfg(test)]
-    pub fn match_index(&self, node_id: u32) -> Option<u64> {
+    pub fn match_index(
+        &self,
+        node_id: u32,
+    ) -> Option<u64> {
         self.state().match_index(node_id)
     }
     #[cfg(test)]
-    pub fn next_index(&self, node_id: u32) -> Option<u64> {
+    pub fn next_index(
+        &self,
+        node_id: u32,
+    ) -> Option<u64> {
         self.state().next_index(node_id)
     }
 
-    pub(crate) fn update_term(&mut self, new_term: u64) {
+    pub(crate) fn update_term(
+        &mut self,
+        new_term: u64,
+    ) {
         self.state_mut().update_current_term(new_term);
     }
 
-    pub(crate) fn update_voted_for(&mut self, voted_for: VotedFor) -> Result<()> {
+    pub(crate) fn update_voted_for(
+        &mut self,
+        voted_for: VotedFor,
+    ) -> Result<()> {
         self.state_mut().update_voted_for(voted_for)
     }
 
-    pub fn update_match_index(&mut self, node_id: u32, new_match_id: u64) -> Result<()> {
+    pub fn update_match_index(
+        &mut self,
+        node_id: u32,
+        new_match_id: u64,
+    ) -> Result<()> {
         self.state_mut().update_match_index(node_id, new_match_id)
     }
 
-    pub fn update_next_index(&mut self, node_id: u32, new_next_id: u64) -> Result<()> {
+    pub fn update_next_index(
+        &mut self,
+        node_id: u32,
+        new_next_id: u64,
+    ) -> Result<()> {
         self.state_mut().update_next_index(node_id, new_next_id)
     }
 
@@ -242,9 +292,7 @@ impl<T: TypeConfig> RaftRole<T> {
         T: TypeConfig,
     {
         trace!("raft_role:tick");
-        self.state_mut()
-            .tick(role_tx, event_tx, peer_channels, ctx)
-            .await
+        self.state_mut().tick(role_tx, event_tx, peer_channels, ctx).await
     }
 
     pub async fn handle_raft_event(
@@ -289,7 +337,10 @@ pub fn is_learner(role_i32: i32) -> bool {
 }
 
 impl Serialize for HardState {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -302,9 +353,7 @@ impl Serialize for HardState {
 
 impl<'de> Deserialize<'de> for HardState {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         #[derive(Deserialize)]
         struct HardStateDe {
             current_term: u64,

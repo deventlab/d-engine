@@ -1,16 +1,21 @@
-use log::{debug, error, info};
-use rand::{rngs::StdRng, Rng, SeedableRng};
-use tonic::{codec::CompressionEncoding, transport::Channel};
-
-use crate::{
-    grpc::rpc_service::{
-        rpc_service_client::RpcServiceClient, ClientCommand, ClientProposeRequest,
-        ClientReadRequest, ClientRequestError, ClientResponse, ClientResult,
-    },
-    Error, Result,
-};
+use log::debug;
+use log::error;
+use rand::rngs::StdRng;
+use rand::Rng;
+use rand::SeedableRng;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 
 use super::ConnectionPool;
+use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::ClientResult;
+use crate::Error;
+use crate::Result;
 
 pub struct KvClient {
     client_id: u32,
@@ -18,11 +23,18 @@ pub struct KvClient {
 }
 
 impl KvClient {
-    pub(crate) fn new(client_id: u32, pool: ConnectionPool) -> Self {
+    pub(crate) fn new(
+        client_id: u32,
+        pool: ConnectionPool,
+    ) -> Self {
         Self { client_id, pool }
     }
 
-    pub async fn put(&self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Result<()> {
+    pub async fn put(
+        &self,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<()> {
         // Build request
         let mut commands = Vec::new();
         let client_command_insert = ClientCommand::insert(key, value);
@@ -30,7 +42,7 @@ impl KvClient {
 
         let request = ClientProposeRequest {
             client_id: self.client_id,
-            commands: commands,
+            commands,
         };
 
         let mut client = self.make_leader_client().await?;
@@ -39,13 +51,9 @@ impl KvClient {
             Ok(response) => {
                 debug!("[:KvClient:write] response: {:?}", response);
                 match response.get_ref() {
-                    ClientResponse {
-                        error_code,
-                        result: _,
-                    } => {
+                    ClientResponse { error_code, result: _ } => {
                         if matches!(
-                            ClientRequestError::try_from(*error_code)
-                                .unwrap_or(ClientRequestError::NoError),
+                            ClientRequestError::try_from(*error_code).unwrap_or(ClientRequestError::NoError),
                             ClientRequestError::NoError
                         ) {
                             return Ok(());
@@ -62,7 +70,10 @@ impl KvClient {
         return Err(Error::FailedToSendWriteRequestError);
     }
 
-    pub async fn delete(&self, key: impl AsRef<[u8]>) -> Result<()> {
+    pub async fn delete(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<()> {
         // Build request
         let mut commands = Vec::new();
         let client_command_insert = ClientCommand::delete(key);
@@ -70,7 +81,7 @@ impl KvClient {
 
         let request = ClientProposeRequest {
             client_id: self.client_id,
-            commands: commands,
+            commands,
         };
 
         let mut client = self.make_leader_client().await?;
@@ -99,7 +110,11 @@ impl KvClient {
     /// - `Ok(Some(ClientResult))` if key exists
     /// - `Ok(None)` if key not found
     /// - `Err` on network failures or invalid responses
-    pub async fn get(&self, key: impl AsRef<[u8]>, linear: bool) -> Result<Option<ClientResult>> {
+    pub async fn get(
+        &self,
+        key: impl AsRef<[u8]>,
+        linear: bool,
+    ) -> Result<Option<ClientResult>> {
         // Delegate to multi-get implementation
         let mut results = self.get_multi(std::iter::once(key), linear).await?;
 
@@ -127,10 +142,7 @@ impl KvClient {
         linear: bool,
     ) -> Result<Vec<Option<ClientResult>>> {
         // Convert keys to commands
-        let commands: Vec<ClientCommand> = keys
-            .into_iter()
-            .map(|k| ClientCommand::get(k.as_ref()))
-            .collect();
+        let commands: Vec<ClientCommand> = keys.into_iter().map(|k| ClientCommand::get(k.as_ref())).collect();
 
         // Validate at least one key
         if commands.is_empty() {

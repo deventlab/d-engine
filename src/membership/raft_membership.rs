@@ -1,4 +1,5 @@
-//! Manages the Raft cluster membership as the single source of truth for node roles and configuration.
+//! Manages the Raft cluster membership as the single source of truth for node
+//! roles and configuration.
 //!
 //! This module:
 //! - Tracks all cluster members' metadata (ID, role, term, etc.)
@@ -7,34 +8,41 @@
 //! - Provides authoritative cluster view for consensus algorithm
 //! - Decouples network channel management from membership state
 //!
-//! The membership data is completely separate from network connections (managed by
-//! `rpc_peer_channels`) but depends on its correct initialization. All Raft protocol decisions are made based on the state maintained here.
-//!
-use std::{
-    marker::PhantomData,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-};
+//! The membership data is completely separate from network connections (managed
+//! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
+//! protocol decisions are made based on the state maintained here.
+use std::marker::PhantomData;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::{debug, error, trace, warn};
+use log::debug;
+use log::error;
+use log::trace;
+use log::warn;
 use tonic::async_trait;
 
-use crate::{
-    alias::POF,
-    grpc::rpc_service::{ClusteMembershipChangeRequest, ClusterMembership, NodeMeta},
-    is_candidate, is_follower, ChannelWithAddressAndRole, Error, Result, TypeConfig, API_SLO,
-    FOLLOWER, LEADER,
-};
-
-use super::{ChannelWithAddress, Membership, PeerChannels};
+use super::ChannelWithAddress;
+use super::Membership;
+use super::PeerChannels;
+use crate::alias::POF;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::is_candidate;
+use crate::is_follower;
+use crate::ChannelWithAddressAndRole;
+use crate::Error;
+use crate::Result;
+use crate::TypeConfig;
+use crate::API_SLO;
+use crate::FOLLOWER;
+use crate::LEADER;
 
 pub struct RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
@@ -44,8 +52,7 @@ where
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn get_followers_candidates_channel_and_role(
         &self,
@@ -57,7 +64,10 @@ where
     }
 
     #[autometrics(objective = API_SLO)]
-    fn mark_leader_id(&self, leader_id: u32) -> Result<()> {
+    fn mark_leader_id(
+        &self,
+        leader_id: u32,
+    ) -> Result<()> {
         trace!("mark {} as Leader", leader_id);
 
         // Step 1: Reset the role of any old leader (if any)
@@ -91,13 +101,18 @@ where
     }
 
     /// If node role not found return Error
-    ///
     #[autometrics(objective = API_SLO)]
-    fn update_node_role(&self, node_id: u32, new_role: i32) -> Result<()> {
+    fn update_node_role(
+        &self,
+        node_id: u32,
+        new_role: i32,
+    ) -> Result<()> {
         if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
             trace!(
                 "update_node_role(in cluster membership meta={:?}): id({})'s role been changed to: {}",
-                &node_meta, node_id, new_role
+                &node_meta,
+                node_id,
+                new_role
             );
             node_meta.role = new_role;
             Ok(())
@@ -111,7 +126,10 @@ where
     }
 
     // Joined PeerChannel with Membership
-    fn voting_members(&self, peer_channels: Arc<POF<T>>) -> Vec<ChannelWithAddressAndRole> {
+    fn voting_members(
+        &self,
+        peer_channels: Arc<POF<T>>,
+    ) -> Vec<ChannelWithAddressAndRole> {
         let peers = peer_channels.voting_members();
         self.get_followers_candidates_channel_and_role(&peers)
     }
@@ -144,15 +162,27 @@ where
 
         // Step 1: compare term
         if my_current_term > cluster_conf_change_req.term {
-            warn!("[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}", my_current_term, cluster_conf_change_req.term);
-            return Err(Error::ClusterMembershipUpdateFailed(format!("[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}", my_current_term, cluster_conf_change_req.term)));
+            warn!(
+                "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
+                my_current_term, cluster_conf_change_req.term
+            );
+            return Err(Error::ClusterMembershipUpdateFailed(format!(
+                "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
+                my_current_term, cluster_conf_change_req.term
+            )));
         }
 
         // Step 2: compare configure version
         if self.get_cluster_conf_version() > cluster_conf_change_req.version {
-            warn!("[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}", cluster_conf_change_req.version);
+            warn!(
+                "[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}",
+                cluster_conf_change_req.version
+            );
 
-            return Err(Error::ClusterMembershipUpdateFailed(format!("[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}", cluster_conf_change_req.version)));
+            return Err(Error::ClusterMembershipUpdateFailed(format!(
+                "[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}",
+                cluster_conf_change_req.version
+            )));
         }
 
         // Step 3: install latest configure and update configure version
@@ -181,18 +211,22 @@ where
     }
 
     #[autometrics(objective = API_SLO)]
-    fn update_cluster_conf_version(&self, new_version: u64) {
-        self.cluster_conf_version
-            .store(new_version, Ordering::Release);
+    fn update_cluster_conf_version(
+        &self,
+        new_version: u64,
+    ) {
+        self.cluster_conf_version.store(new_version, Ordering::Release);
     }
 }
 
 impl<T> RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Creates a new `RaftMembership` instance.
-    pub fn new(node_id: u32, initial_cluster: Vec<NodeMeta>) -> Self {
+    pub fn new(
+        node_id: u32,
+        initial_cluster: Vec<NodeMeta>,
+    ) -> Self {
         Self {
             node_id,
             membership: into_map(initial_cluster),
@@ -224,14 +258,13 @@ where
                     return None;
                 }
 
-                // Get channel information (assuming RpcPeerChannels is associated with membership)
-                channels
-                    .get(&node_id)
-                    .map(|channel_entry| ChannelWithAddressAndRole {
-                        id: node_id,
-                        channel_with_address: channel_entry.value().clone(),
-                        role: meta.role,
-                    })
+                // Get channel information (assuming RpcPeerChannels is associated with
+                // membership)
+                channels.get(&node_id).map(|channel_entry| ChannelWithAddressAndRole {
+                    id: node_id,
+                    channel_with_address: channel_entry.value().clone(),
+                    role: meta.role,
+                })
             })
             .collect()
     }

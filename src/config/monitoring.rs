@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{Error, Result};
+use crate::Error;
+use crate::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MonitoringConfig {
@@ -28,9 +30,7 @@ impl MonitoringConfig {
         if self.prometheus_enabled {
             // Validate port range
             if self.prometheus_port == 0 {
-                return Err(Error::InvalidConfig(
-                    "prometheus_port cannot be 0 when enabled".into(),
-                ));
+                return Err(Error::InvalidConfig("prometheus_port cannot be 0 when enabled".into()));
             }
 
             // Check privileged ports (requires root)

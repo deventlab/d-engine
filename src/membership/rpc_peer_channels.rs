@@ -6,27 +6,39 @@
 //! - Provides access to active peer channels for Raft RPC communication
 //! - Implements connection health checks and reconnection logic
 //!
-//! The channel connections are established at cluster startup based on the initial
-//! configuration and must be properly initialized before `raft_membership` can operate.
-//! This layer abstracts network implementation details from the consensus algorithm.
-//!
-use super::{ChannelWithAddress, PeerChannels, PeerChannelsFactory};
-use crate::{
-    async_task::task_with_timeout_and_exponential_backoff,
-    grpc::rpc_service::NodeMeta,
-    membership::health_checker::{HealthChecker, HealthCheckerApis},
-    utils::network::address_str,
-    Error, NetworkConfig, RaftNodeConfig, Result, RetryPolicies,
-};
+//! The channel connections are established at cluster startup based on the
+//! initial configuration and must be properly initialized before
+//! `raft_membership` can operate. This layer abstracts network implementation
+//! details from the consensus algorithm.
+use std::sync::Arc;
+use std::time::Duration;
+
 use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use log::{debug, error, info, warn};
-use std::{sync::Arc, time::Duration};
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
 use tokio::task;
-use tonic::{
-    async_trait,
-    transport::{Channel, Endpoint},
-};
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+
+use super::ChannelWithAddress;
+use super::PeerChannels;
+use super::PeerChannelsFactory;
+use crate::async_task::task_with_timeout_and_exponential_backoff;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::membership::health_checker::HealthChecker;
+use crate::membership::health_checker::HealthCheckerApis;
+use crate::utils::network::address_str;
+use crate::Error;
+use crate::NetworkConfig;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::RetryPolicies;
 
 #[derive(Clone)]
 pub struct RpcPeerChannels {
@@ -37,7 +49,10 @@ pub struct RpcPeerChannels {
 }
 
 impl PeerChannelsFactory for RpcPeerChannels {
-    fn create(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
+    fn create(
+        node_id: u32,
+        settings: Arc<RaftNodeConfig>,
+    ) -> Self {
         Self {
             node_id,
             channels: DashMap::new(),
@@ -50,7 +65,10 @@ impl PeerChannelsFactory for RpcPeerChannels {
 impl PeerChannels for RpcPeerChannels {
     /// When peer channel setup during server bootstrap stage,
     ///  cluster membership listener is not ready yet.
-    async fn connect_with_peers(&mut self, my_id: u32) -> Result<()> {
+    async fn connect_with_peers(
+        &mut self,
+        my_id: u32,
+    ) -> Result<()> {
         let initial_cluster = &self.settings.cluster.initial_cluster;
         info!("Connecting with peers: {:?}", initial_cluster);
 
@@ -84,10 +102,7 @@ impl PeerChannels for RpcPeerChannels {
             let addr: String = peer_channel_with_addr.address.clone();
 
             let settings = settings.clone();
-            let cluster_healthcheck_probe_service_name = raft
-                .membership
-                .cluster_healthcheck_probe_service_name
-                .clone();
+            let cluster_healthcheck_probe_service_name = raft.membership.cluster_healthcheck_probe_service_name.clone();
 
             let task_handle = task::spawn(async move {
                 match task_with_timeout_and_exponential_backoff(
@@ -200,10 +215,7 @@ impl RpcPeerChannels {
             let channel = Self::connect_with_retry(&node_meta, &retry, &rpc_settings).await?;
             let address = address_str(&node_meta.ip, node_meta.port as u16);
 
-            debug!(
-                "Successfully connected with ({}:{})",
-                node_meta.ip, node_meta.port
-            );
+            debug!("Successfully connected with ({}:{})", node_meta.ip, node_meta.port);
             Ok((node_meta.id, ChannelWithAddress { address, channel }))
         })
     }
@@ -254,18 +266,17 @@ impl RpcPeerChannels {
         .await
     }
 
-    async fn connect(node_meta: NodeMeta, settings: NetworkConfig) -> Result<Channel> {
+    async fn connect(
+        node_meta: NodeMeta,
+        settings: NetworkConfig,
+    ) -> Result<Channel> {
         let addr = address_str(&node_meta.ip, node_meta.port as u16);
         Endpoint::try_from(addr.clone())?
             .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))
             .timeout(Duration::from_millis(settings.request_timeout_in_ms))
             .tcp_keepalive(Some(Duration::from_secs(settings.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(
-                settings.http2_keep_alive_interval_in_secs,
-            ))
-            .keep_alive_timeout(Duration::from_secs(
-                settings.http2_keep_alive_timeout_in_secs,
-            ))
+            .http2_keep_alive_interval(Duration::from_secs(settings.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(settings.http2_keep_alive_timeout_in_secs))
             .initial_connection_window_size(settings.initial_connection_window_size) // 5MB initial connection window
             .initial_stream_window_size(settings.initial_stream_window_size) // 2MB initial stream window
             .connect()
@@ -277,7 +288,11 @@ impl RpcPeerChannels {
             })
     }
     #[cfg(test)]
-    pub(crate) fn set_peer_channel(&self, node_id: u32, address: ChannelWithAddress) {
+    pub(crate) fn set_peer_channel(
+        &self,
+        node_id: u32,
+        address: ChannelWithAddress,
+    ) {
         self.channels.insert(node_id, address);
     }
 }

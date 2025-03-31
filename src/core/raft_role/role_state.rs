@@ -1,17 +1,35 @@
-use super::{RaftRole, SharedState, StateSnapshot};
-use crate::{
-    alias::POF,
-    cluster::error,
-    grpc::rpc_service::{
-        AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse, VotedFor,
-    },
-    AppendResponseWithUpdates, ElectionCore, Error, MaybeCloneOneshotSender, Membership,
-    RaftContext, RaftEvent, RaftLog, ReplicationCore, Result, RoleEvent, TypeConfig,
-};
-use log::{debug, error, warn};
 use std::sync::Arc;
-use tokio::{sync::mpsc, time::Instant};
-use tonic::{async_trait, Status};
+
+use log::debug;
+use log::error;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
+use super::RaftRole;
+use super::SharedState;
+use super::StateSnapshot;
+use crate::alias::POF;
+use crate::cluster::error;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::grpc::rpc_service::VotedFor;
+use crate::AppendResponseWithUpdates;
+use crate::ElectionCore;
+use crate::Error;
+use crate::MaybeCloneOneshotSender;
+use crate::Membership;
+use crate::RaftContext;
+use crate::RaftEvent;
+use crate::RaftLog;
+use crate::ReplicationCore;
+use crate::Result;
+use crate::RoleEvent;
+use crate::TypeConfig;
 
 #[async_trait]
 pub trait RaftRoleState: Send + Sync + 'static {
@@ -26,25 +44,42 @@ pub trait RaftRoleState: Send + Sync + 'static {
     // fn role(&self) -> i32;
 
     // Leader states
-    fn next_index(&self, node_id: u32) -> Option<u64> {
+    fn next_index(
+        &self,
+        node_id: u32,
+    ) -> Option<u64> {
         warn!("next_index NotLeader error");
         None
     }
-    fn update_next_index(&mut self, node_id: u32, new_next_id: u64) -> Result<()> {
+    fn update_next_index(
+        &mut self,
+        node_id: u32,
+        new_next_id: u64,
+    ) -> Result<()> {
         warn!("update_next_index NotLeader error");
         Err(Error::NotLeader)
     }
 
-    fn prev_log_index(&self, follower_id: u32) -> Option<u64> {
+    fn prev_log_index(
+        &self,
+        follower_id: u32,
+    ) -> Option<u64> {
         warn!("update_next_index NotLeader error");
         None
     }
 
-    fn match_index(&self, node_id: u32) -> Option<u64> {
+    fn match_index(
+        &self,
+        node_id: u32,
+    ) -> Option<u64> {
         warn!("match_index NotLeader error");
         None
     }
-    fn update_match_index(&mut self, node_id: u32, new_match_id: u64) -> Result<()> {
+    fn update_match_index(
+        &mut self,
+        node_id: u32,
+        new_match_id: u64,
+    ) -> Result<()> {
         warn!("update_match_index NotLeader error");
         Err(Error::NotLeader)
     }
@@ -97,7 +132,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
     }
 
     #[cfg(test)]
-    fn decr_next_index(&mut self, node_id: u32) -> Result<()> {
+    fn decr_next_index(
+        &mut self,
+        node_id: u32,
+    ) -> Result<()> {
         warn!("decr_next_index NotLeader error");
         Err(Error::NotLeader)
     }
@@ -106,7 +144,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
     fn current_term(&self) -> u64 {
         self.shared_state().current_term()
     }
-    fn update_current_term(&mut self, term: u64) {
+    fn update_current_term(
+        &mut self,
+        term: u64,
+    ) {
         self.shared_state_mut().update_current_term(term)
     }
     fn increase_current_term(&mut self) {
@@ -116,7 +157,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
         self.shared_state().commit_index
     }
 
-    fn update_commit_index(&mut self, new_commit_index: u64) -> Result<()> {
+    fn update_commit_index(
+        &mut self,
+        new_commit_index: u64,
+    ) -> Result<()> {
         if self.commit_index() != new_commit_index {
             debug!("update_commit_index to: {:?}", new_commit_index);
             self.shared_state_mut().commit_index = new_commit_index;
@@ -151,7 +195,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
     fn reset_voted_for(&mut self) -> Result<()> {
         self.shared_state_mut().reset_voted_for()
     }
-    fn update_voted_for(&mut self, voted_for: VotedFor) -> Result<()> {
+    fn update_voted_for(
+        &mut self,
+        voted_for: VotedFor,
+    ) -> Result<()> {
         self.shared_state_mut().update_voted_for(voted_for)
     }
 
@@ -215,8 +262,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
         // Important to confirm heartbeat from Leader immediatelly
         // Keep syncing leader_id
-        ctx.membership()
-            .mark_leader_id(append_entries_request.leader_id)?;
+        ctx.membership().mark_leader_id(append_entries_request.leader_id)?;
 
         if my_term < append_entries_request.term {
             self.update_current_term(append_entries_request.term);
@@ -225,12 +271,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Handle replication request
         match ctx
             .replication_handler()
-            .handle_append_entries(
-                append_entries_request,
-                &state_snapshot,
-                last_applied,
-                ctx.raft_log(),
-            )
+            .handle_append_entries(append_entries_request, &state_snapshot, last_applied, ctx.raft_log())
             .await
         {
             Ok(AppendResponseWithUpdates {
@@ -241,10 +282,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             }) => {
                 if let Some(commit) = commit_index_update {
                     if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
-                        error!(
-                            "update_commit_index_with_signal,commit={}, error: {:?}",
-                            commit, e
-                        );
+                        error!("update_commit_index_with_signal,commit={}, error: {:?}", commit, e);
                         return Err(e);
                     }
                 }

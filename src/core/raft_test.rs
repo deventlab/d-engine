@@ -1,18 +1,32 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+use tokio::time::timeout;
+use tokio::time::{self};
+
 use super::*;
-use crate::{
-    candidate_state::CandidateState,
-    grpc::rpc_service::{MetadataRequest, VoteResponse, VotedFor},
-    is_candidate, is_leader,
-    leader_state::LeaderState,
-    test_utils::{mock_raft, MockNode, MOCK_RAFT_PORT_BASE},
-    ChannelWithAddressAndRole, Error, MaybeCloneOneshot, MockElectionCore, MockMembership,
-    MockRaftLog, MockStateMachine, MockStateStorage, MockTransport, RaftOneshot,
-};
-use std::{sync::Arc, time::Duration};
-use tokio::{
-    sync::{mpsc, oneshot, watch},
-    time::{self, timeout},
-};
+use crate::candidate_state::CandidateState;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::is_candidate;
+use crate::is_leader;
+use crate::leader_state::LeaderState;
+use crate::test_utils::mock_raft;
+use crate::test_utils::MockNode;
+use crate::test_utils::MOCK_RAFT_PORT_BASE;
+use crate::ChannelWithAddressAndRole;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MockElectionCore;
+use crate::MockMembership;
+use crate::MockRaftLog;
+use crate::MockStateMachine;
+use crate::MockStateStorage;
+use crate::MockTransport;
+use crate::RaftOneshot;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
@@ -61,11 +75,7 @@ async fn test_role_event_priority_over_event_rx() {
 
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft(
-        "/tmp/test_role_event_priority_over_event_rx",
-        graceful_rx,
-        None,
-    );
+    let mut raft = mock_raft("/tmp/test_role_event_priority_over_event_rx", graceful_rx, None);
 
     // 2. Add state listeners
     let raft_tx = raft.event_tx.clone();
@@ -116,7 +126,6 @@ async fn test_role_event_priority_over_event_rx() {
 /// ## Criterias:
 /// - should receive role change event with Candidate as new role
 /// - term should no change
-///
 #[tokio::test]
 async fn test_election_timeout_case1() {
     let _ = tokio::time::pause();
@@ -172,7 +181,6 @@ async fn test_election_timeout_case1() {
 ///
 /// ## Criterias:
 /// - broadcast_vote_requests should be invoked once
-///
 #[tokio::test]
 async fn test_election_timeout_case2_1() {
     let _ = tokio::time::pause();
@@ -190,10 +198,7 @@ async fn test_election_timeout_case2_1() {
     raft.ctx.election_handler = election_handler_mock;
 
     // 3. Prepare the node as Candidate
-    raft.set_role(RaftRole::Candidate(CandidateState::new(
-        1,
-        raft.settings.clone(),
-    )));
+    raft.set_role(RaftRole::Candidate(CandidateState::new(1, raft.settings.clone())));
 
     // 4. Add state listeners
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -210,10 +215,7 @@ async fn test_election_timeout_case2_1() {
 
     // 7. Wait for Tick to trigger and process
     let first_state = monitor_rx.recv().await.unwrap();
-    assert!(
-        is_leader(first_state),
-        "Candidate should be voted as Leader"
-    );
+    assert!(is_leader(first_state), "Candidate should be voted as Leader");
 
     // 8. Wait for thread finishes
     raft_handle.await.expect("should succeed");
@@ -227,7 +229,6 @@ async fn test_election_timeout_case2_1() {
 ///
 /// ## Criterias:
 /// - broadcast_vote_requests should be invoked only one time
-///
 #[tokio::test]
 async fn test_election_timeout_case2_2() {
     let _ = tokio::time::pause();
@@ -237,11 +238,7 @@ async fn test_election_timeout_case2_2() {
     election_handler_mock
         .expect_broadcast_vote_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
-            Err(Error::ElectionFailed(format!(
-                "failed to receive majority votes."
-            )))
-        });
+        .returning(|_, _, _, _, _| Err(Error::ElectionFailed(format!("failed to receive majority votes."))));
 
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -249,10 +246,7 @@ async fn test_election_timeout_case2_2() {
     raft.ctx.election_handler = election_handler_mock;
 
     // 3. Prepare the node as Candidate
-    raft.set_role(RaftRole::Candidate(CandidateState::new(
-        1,
-        raft.settings.clone(),
-    )));
+    raft.set_role(RaftRole::Candidate(CandidateState::new(1, raft.settings.clone())));
 
     // 4. Add state listeners
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -286,7 +280,6 @@ async fn test_election_timeout_case2_2() {
 /// ## Criterias:
 /// - broadcast_vote_requests should be called zero times
 /// - no role change event should be received
-///
 #[tokio::test]
 async fn test_election_timeout_case3() {
     let _ = tokio::time::pause();
@@ -338,7 +331,6 @@ async fn test_election_timeout_case3() {
 /// ## Criterias:
 /// - broadcast_vote_requests should be called zero times
 /// - no role change event should be received
-///
 #[tokio::test]
 async fn test_election_timeout_case4() {
     let _ = tokio::time::pause();
@@ -364,10 +356,9 @@ async fn test_election_timeout_case4() {
         term: 1,
         vote_granted: false,
     };
-    let addr1 =
-        MockNode::simulate_send_votes_mock_server(MOCK_RAFT_PORT_BASE + 1, vote_response, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RAFT_PORT_BASE + 1, vote_response, rx1)
+        .await
+        .expect("should succeed");
 
     let requests_with_peer_address = vec![
         ChannelWithAddressAndRole {
@@ -387,15 +378,11 @@ async fn test_election_timeout_case4() {
     mock_membership
         .expect_voting_members()
         .returning(move |_| requests_with_peer_address.clone());
-    mock_membership
-        .expect_mark_leader_id()
-        .returning(|_| Ok(()));
+    mock_membership.expect_mark_leader_id().returning(|_| Ok(()));
     raft.ctx.set_membership(Arc::new(mock_membership));
 
     let mut mock_transport = MockTransport::new();
-    mock_transport
-        .expect_send_vote_requests()
-        .returning(|_, _, _| Ok(true));
+    mock_transport.expect_send_vote_requests().returning(|_, _, _| Ok(true));
     raft.ctx.set_transport(Arc::new(mock_transport));
 
     // 5. Add state listeners
@@ -422,7 +409,6 @@ async fn test_election_timeout_case4() {
 }
 
 /// # Case 1.1: Leader can not switch to Learner
-///
 #[tokio::test]
 async fn test_handle_role_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -449,7 +435,6 @@ async fn test_handle_role_event_case1_1() {
 }
 
 /// # Case 1.2: Leader can not switch to candidate
-///
 #[tokio::test]
 async fn test_handle_role_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -472,7 +457,6 @@ async fn test_handle_role_event_case1_2() {
 }
 
 /// # Case 1.3: Leader can not switch to Leader
-///
 #[tokio::test]
 async fn test_handle_role_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -495,7 +479,6 @@ async fn test_handle_role_event_case1_3() {
 }
 
 /// # Case 1.4: Leader can not switch to Follower
-///
 #[tokio::test]
 async fn test_handle_role_event_case1_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -518,7 +501,6 @@ async fn test_handle_role_event_case1_4() {
 }
 
 /// # Case 2.1: Candidate can switch to Leader
-///
 #[tokio::test]
 async fn test_handle_role_event_case2_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -536,7 +518,6 @@ async fn test_handle_role_event_case2_1() {
 }
 
 /// # Case 2.2: Candidate can switch to Follower
-///
 #[tokio::test]
 async fn test_handle_role_event_case2_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -554,7 +535,6 @@ async fn test_handle_role_event_case2_2() {
 }
 
 /// # Case 2.3: Candidate can switch to Learner
-///
 #[tokio::test]
 async fn test_handle_role_event_case2_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -572,7 +552,6 @@ async fn test_handle_role_event_case2_3() {
 }
 
 /// # Case 2.4: Candidate can not switch to Candidate
-///
 #[tokio::test]
 async fn test_handle_role_event_case2_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -590,7 +569,6 @@ async fn test_handle_role_event_case2_4() {
 }
 
 /// # Case 3.1: Follower can not switch to Leader
-///
 #[tokio::test]
 async fn test_handle_role_event_case3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -606,7 +584,6 @@ async fn test_handle_role_event_case3_1() {
     assert!(is_follower(raft.role.as_i32()));
 }
 /// # Case 3.2: Follower can switch to Candidate
-///
 #[tokio::test]
 async fn test_handle_role_event_case3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -624,7 +601,6 @@ async fn test_handle_role_event_case3_2() {
 }
 
 /// # Case 3.3: Follower can switch to Learner
-///
 #[tokio::test]
 async fn test_handle_role_event_case3_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -641,7 +617,6 @@ async fn test_handle_role_event_case3_3() {
 }
 
 /// # Case 3.4: Follower can not switch to Follower
-///
 #[tokio::test]
 async fn test_handle_role_event_case3_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -658,7 +633,6 @@ async fn test_handle_role_event_case3_4() {
 }
 
 /// # Case 4.1: Learner can not switch to Leader
-///
 #[tokio::test]
 async fn test_handle_role_event_case4_1() {
     // 1. Create a Raft instance
@@ -676,7 +650,6 @@ async fn test_handle_role_event_case4_1() {
 }
 
 /// # Case 4.2: Learner can not switch to Candidate
-///
 #[tokio::test]
 async fn test_handle_role_event_event_case4_2() {
     // 1. Create a Raft instance
@@ -694,7 +667,6 @@ async fn test_handle_role_event_event_case4_2() {
 }
 
 /// # Case 4.3: Learner can switch to Follower
-///
 #[tokio::test]
 async fn test_handle_role_event_event_case4_3() {
     // 1. Create a Raft instance
@@ -712,7 +684,6 @@ async fn test_handle_role_event_event_case4_3() {
 }
 
 /// # Case 4.4: Learner can not switch to Learner
-///
 #[tokio::test]
 async fn test_handle_role_event_event_case4_4() {
     // 1. Create a Raft instance
@@ -733,11 +704,7 @@ async fn test_handle_role_event_event_case4_4() {
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft(
-        "/tmp/test_handle_role_event_state_update1_1",
-        graceful_rx,
-        None,
-    );
+    let mut raft = mock_raft("/tmp/test_handle_role_event_state_update1_1", graceful_rx, None);
 
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -752,11 +719,7 @@ async fn test_handle_role_event_state_update_case1_1() {
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft(
-        "/tmp/test_handle_role_event_state_update1_2",
-        graceful_rx,
-        None,
-    );
+    let mut raft = mock_raft("/tmp/test_handle_role_event_state_update1_2", graceful_rx, None);
 
     // Prepare node as Candidate
     raft.handle_role_event(RoleEvent::BecomeCandidate)
@@ -777,11 +740,7 @@ async fn test_handle_role_event_state_update_case1_2() {
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft(
-        "/tmp/test_handle_role_event_state_update1_3",
-        graceful_rx,
-        None,
-    );
+    let mut raft = mock_raft("/tmp/test_handle_role_event_state_update1_3", graceful_rx, None);
 
     // Prepare node as Leader
     raft.handle_role_event(RoleEvent::BecomeCandidate)
@@ -807,11 +766,7 @@ async fn test_handle_role_event_state_update_case1_3() {
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft(
-        "/tmp/test_handle_role_event_state_update1_4",
-        graceful_rx,
-        None,
-    );
+    let mut raft = mock_raft("/tmp/test_handle_role_event_state_update1_4", graceful_rx, None);
 
     // Prepare node as Candidate
     raft.handle_role_event(RoleEvent::BecomeLearner)
@@ -835,7 +790,6 @@ async fn test_handle_role_event_state_update_case1_4() {
 /// 2. HardState should be persisted
 /// 3. Raft Log should be flushed
 /// 4. State Machine should be flushed
-///
 #[tokio::test]
 async fn test_raft_shutdown() {
     let _ = tokio::time::pause();
@@ -847,10 +801,7 @@ async fn test_raft_shutdown() {
     let mut raft_log = MockRaftLog::new();
     let mut state_machine = MockStateMachine::new();
 
-    state_storage
-        .expect_save_hard_state()
-        .times(1)
-        .returning(|_| Ok(()));
+    state_storage.expect_save_hard_state().times(1).returning(|_| Ok(()));
     raft_log.expect_flush().times(1).returning(|| Ok(()));
     state_machine.expect_flush().times(1).returning(|| Ok(()));
     raft.ctx.raft_log = Arc::new(raft_log);

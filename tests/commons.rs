@@ -1,16 +1,24 @@
-use dengine::{
-    convert::{kv, vk},
-    file_io::open_file_for_append,
-    ClusterConfig, Error, NodeBuilder, RaftNodeConfig, Result,
-};
-use log::{debug, error, info};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use dengine::convert::kv;
+use dengine::convert::vk;
+use dengine::file_io::open_file_for_append;
+use dengine::ClusterConfig;
+use dengine::Error;
+use dengine::NodeBuilder;
+use dengine::RaftNodeConfig;
+use dengine::Result;
+use log::debug;
+use log::error;
+use log::info;
 use tokio::sync::watch;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
 
 #[derive(Debug)]
 pub enum ClientCommands {
@@ -44,9 +52,7 @@ pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> Result<()> {
     Ok(())
 }
 
-pub async fn start_node(
-    config_path: &str,
-) -> Result<(watch::Sender<()>, tokio::task::JoinHandle<Result<()>>)> {
+pub async fn start_node(config_path: &str) -> Result<(watch::Sender<()>, tokio::task::JoinHandle<Result<()>>)> {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     let root_path = get_root_path();
@@ -56,7 +62,10 @@ pub async fn start_node(
     Ok((graceful_tx, handle))
 }
 
-async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result<()> {
+async fn run_node(
+    config_path: &str,
+    graceful_rx: watch::Receiver<()>,
+) -> Result<()> {
     // Load configuration from the specified path
     let config = RaftNodeConfig::default();
     config
@@ -87,17 +96,13 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
     Ok(())
 }
 pub fn init_observability(config: &ClusterConfig) -> Result<WorkerGuard> {
-    let log_file =
-        open_file_for_append(Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)))?;
+    let log_file = open_file_for_append(Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)))?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
     let base_subscriber = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)
         .with_filter(EnvFilter::from_default_env());
-    if let Err(e) = tracing_subscriber::registry()
-        .with(base_subscriber)
-        .try_init()
-    {
+    if let Err(e) = tracing_subscriber::registry().with(base_subscriber).try_init() {
         error!("{:?}", e);
     }
 
@@ -169,10 +174,7 @@ pub async fn execute_command(
             }
             None => {
                 error!("No entry found for key: {}", key);
-                return Err(Error::ClientError(format!(
-                    "No entry found for key: {}",
-                    key
-                )));
+                return Err(Error::ClientError(format!("No entry found for key: {}", key)));
             }
         },
         ClientCommands::LREAD => match client.kv().get(kv(key), true).await? {
@@ -183,10 +185,7 @@ pub async fn execute_command(
             }
             None => {
                 error!("No result found for key: {}", key);
-                return Err(Error::ClientError(format!(
-                    "No entry found for key: {}",
-                    key
-                )));
+                return Err(Error::ClientError(format!("No entry found for key: {}", key)));
             }
         },
         _ => {

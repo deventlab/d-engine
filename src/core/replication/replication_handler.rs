@@ -1,22 +1,40 @@
-use super::{AppendResponseWithUpdates, ReplicationCore};
-use crate::{
-    alias::{ROF, TROF},
-    grpc::rpc_service::{AppendEntriesRequest, ClientCommand, Entry},
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, Error, LeaderStateSnapshot,
-    RaftConfig, RaftLog, Result, RetryPolicies, StateSnapshot, Transport, TypeConfig, API_SLO,
-};
+use std::cmp;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::{debug, error, warn};
+use log::debug;
+use log::error;
+use log::warn;
 use prost::Message;
-use std::{cmp, collections::HashMap, marker::PhantomData, sync::Arc};
-
 use tonic::async_trait;
+
+use super::AppendResponseWithUpdates;
+use super::ReplicationCore;
+use crate::alias::ROF;
+use crate::alias::TROF;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::Entry;
+use crate::AppendResults;
+use crate::ChannelWithAddress;
+use crate::ChannelWithAddressAndRole;
+use crate::Error;
+use crate::LeaderStateSnapshot;
+use crate::RaftConfig;
+use crate::RaftLog;
+use crate::Result;
+use crate::RetryPolicies;
+use crate::StateSnapshot;
+use crate::Transport;
+use crate::TypeConfig;
+use crate::API_SLO;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub my_id: u32,
     _phantom: PhantomData<T>,
@@ -24,22 +42,20 @@ where
 
 #[async_trait]
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// As Leader, send replications to peers.
     /// (combined regular heartbeat and client proposals)
     ///
-    /// Each time handle_client_proposal_in_batch is called, perform peer synchronization check
+    /// Each time handle_client_proposal_in_batch is called, perform peer
+    /// synchronization check
     /// 1. Verify if any peer's next_id <= leader's commit_index
-    /// 2. For non-synced peers meeting this condition:
-    ///    a. Retrieve all unsynced log entries
-    ///    b. Buffer these entries before processing real entries
-    /// 3. Ensure unsynced entries are prepended to the entries queue
-    ///    before actual entries get pushed
+    /// 2. For non-synced peers meeting this condition: a. Retrieve all unsynced log entries b.
+    ///    Buffer these entries before processing real entries
+    /// 3. Ensure unsynced entries are prepended to the entries queue before actual entries get
+    ///    pushed
     ///
     /// Leader state will be updated by LeaderState only(follows SRP).
-    ///
     async fn handle_client_proposal_in_batch(
         &self,
         commands: Vec<ClientCommand>,
@@ -65,8 +81,7 @@ where
         // ----------------------
         // Phase 2: Process Client Commands
         // ----------------------
-        let new_entries =
-            self.generate_new_entries(commands, state_snapshot.current_term, raft_log)?;
+        let new_entries = self.generate_new_entries(commands, state_snapshot.current_term, raft_log)?;
 
         // ----------------------
         // Phase 3: Prepare Replication Data
@@ -90,9 +105,7 @@ where
         // ----------------------
         let requests = replication_members
             .iter()
-            .map(|peer| {
-                self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data)
-            })
+            .map(|peer| self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data))
             .collect();
 
         // ----------------------
@@ -123,13 +136,12 @@ where
             debug!("peer: {} next: {}", id, peer_next_id);
             let mut entries = Vec::new();
             if leader_last_index_before_inserting_new_entries >= peer_next_id {
-                let until_index = if (leader_last_index_before_inserting_new_entries - peer_next_id)
-                    >= max_legacy_entries_per_peer
-                {
-                    peer_next_id + max_legacy_entries_per_peer - 1
-                } else {
-                    leader_last_index_before_inserting_new_entries
-                };
+                let until_index =
+                    if (leader_last_index_before_inserting_new_entries - peer_next_id) >= max_legacy_entries_per_peer {
+                        peer_next_id + max_legacy_entries_per_peer - 1
+                    } else {
+                        leader_last_index_before_inserting_new_entries
+                    };
 
                 let legacy_entries = raft_log.get_entries_between(peer_next_id..=until_index);
 
@@ -158,22 +170,17 @@ where
         last_applied: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates> {
-        debug!(
-            "[F-{:?}] >> receive leader append request {:?}",
-            self.my_id, request
-        );
+        debug!("[F-{:?}] >> receive leader append request {:?}", self.my_id, request);
         let current_term = state_snapshot.current_term;
         let raft_log_last_index = raft_log.last_entry_id();
         let success;
-        //if there is no new entries need to insert, we just return the last local log index
+        //if there is no new entries need to insert, we just return the last local log
+        // index
         let mut last_matched_id = raft_log_last_index;
         let mut commit_index_update = None;
 
         if current_term > request.term {
-            debug!(
-                " current_term({}) >= req.term({}) ",
-                current_term, request.term
-            );
+            debug!(" current_term({}) >= req.term({}) ", current_term, request.term);
             return Ok(AppendResponseWithUpdates {
                 success: false,
                 current_term,
@@ -189,10 +196,8 @@ where
             success = true;
 
             if !request.entries.is_empty() {
-                last_matched_id = raft_log.filter_out_conflicts_and_append(
-                    request.prev_log_index,
-                    request.entries.clone(),
-                );
+                last_matched_id =
+                    raft_log.filter_out_conflicts_and_append(request.prev_log_index, request.entries.clone());
             }
 
             if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
@@ -227,14 +232,20 @@ where
         })
     }
 
-    ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+    ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index
+    /// of last new entry)
     #[autometrics(objective = API_SLO)]
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
         last_raft_log_id: u64,
         leader_commit_index: u64,
     ) -> Option<u64> {
-        debug!("Should I update my commit index? leader_commit_index:{:?} > state.commit_index:{:?} = {:?}", leader_commit_index, my_commit_index, leader_commit_index > my_commit_index);
+        debug!(
+            "Should I update my commit index? leader_commit_index:{:?} > state.commit_index:{:?} = {:?}",
+            leader_commit_index,
+            my_commit_index,
+            leader_commit_index > my_commit_index
+        );
 
         if leader_commit_index > my_commit_index {
             return Some(cmp::min(leader_commit_index, last_raft_log_id));
@@ -251,8 +262,7 @@ pub(super) struct ReplicationData {
 }
 
 impl<T> ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(my_id: u32) -> Self {
         Self {
@@ -320,20 +330,14 @@ where
         let peer_id = peer.id;
 
         // Calculate prev_log metadata
-        let (prev_log_index, prev_log_term) =
-            data.peer_next_indices
-                .get(&peer_id)
-                .map_or((0, 0), |next_id| {
-                    let prev_index = next_id.saturating_sub(1);
-                    let term = raft_log.prev_log_term(peer_id, prev_index);
-                    (prev_index, term)
-                });
+        let (prev_log_index, prev_log_term) = data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
+            let prev_index = next_id.saturating_sub(1);
+            let term = raft_log.prev_log_term(peer_id, prev_index);
+            (prev_index, term)
+        });
 
         // Get the items to be sent
-        let entries = entries_per_peer
-            .get(&peer_id)
-            .map(|e| e.clone())
-            .unwrap_or_default();
+        let entries = entries_per_peer.get(&peer_id).map(|e| e.clone()).unwrap_or_default();
 
         debug!(
             "[Leader {} -> Follower {}] Replicating {} entries",
@@ -342,17 +346,13 @@ where
             entries.len()
         );
 
-        (
-            peer_id,
-            peer.channel_with_address.clone(),
-            AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
-            },
-        )
+        (peer_id, peer.channel_with_address.clone(), AppendEntriesRequest {
+            term: data.current_term,
+            leader_id: self.my_id,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit_index: data.commit_index,
+        })
     }
 }

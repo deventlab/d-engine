@@ -1,34 +1,67 @@
-use super::{
-    candidate_state::CandidateState, role_state::RaftRoleState, LeaderStateSnapshot, RaftRole,
-    SharedState, StateSnapshot,
-};
-use crate::{
-    alias::{POF, REPOF, ROF, SMHOF, TROF},
-    grpc::rpc_service::{
-        AppendEntriesResponse, ClientCommand, ClientProposeRequest, ClientRequestError,
-        ClientResponse, ClusterConfUpdateResponse, VoteResponse, VotedFor,
-    },
-    utils::cluster::error,
-    AppendResults, BatchBuffer, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
-    MaybeCloneOneshot, MaybeCloneOneshotSender, Membership, NewLeaderInfo, RaftConfig, RaftContext,
-    RaftEvent, RaftLog, RaftNodeConfig, RaftOneshot, ReplicationConfig, ReplicationCore,
-    ReplicationTimer, Result, RetryPolicies, RoleEvent, StateMachine, StateMachineHandler,
-    TypeConfig, API_SLO,
-};
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+
 use autometrics::autometrics;
-use log::{debug, error, info, trace, warn};
+use log::debug;
+use log::error;
+use log::info;
+use log::trace;
+use log::warn;
 use nanoid::nanoid;
-use std::{
-    collections::{HashMap, VecDeque},
-    marker::PhantomData,
-    sync::Arc,
-    time::Duration,
-};
-use tokio::{
-    sync::mpsc,
-    time::{timeout, Instant},
-};
-use tonic::{async_trait, Status};
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
+use super::candidate_state::CandidateState;
+use super::role_state::RaftRoleState;
+use super::LeaderStateSnapshot;
+use super::RaftRole;
+use super::SharedState;
+use super::StateSnapshot;
+use crate::alias::POF;
+use crate::alias::REPOF;
+use crate::alias::ROF;
+use crate::alias::SMHOF;
+use crate::alias::TROF;
+use crate::grpc::rpc_service::AppendEntriesResponse;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::ClusterConfUpdateResponse;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::grpc::rpc_service::VotedFor;
+use crate::utils::cluster::error;
+use crate::AppendResults;
+use crate::BatchBuffer;
+use crate::ChannelWithAddressAndRole;
+use crate::ClientRequestWithSignal;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotSender;
+use crate::Membership;
+use crate::NewLeaderInfo;
+use crate::RaftConfig;
+use crate::RaftContext;
+use crate::RaftEvent;
+use crate::RaftLog;
+use crate::RaftNodeConfig;
+use crate::RaftOneshot;
+use crate::ReplicationConfig;
+use crate::ReplicationCore;
+use crate::ReplicationTimer;
+use crate::Result;
+use crate::RetryPolicies;
+use crate::RoleEvent;
+use crate::StateMachine;
+use crate::StateMachineHandler;
+use crate::TypeConfig;
+use crate::API_SLO;
 
 pub struct LeaderState<T: TypeConfig> {
     // Leader State
@@ -64,9 +97,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///Overwrite default behavior.
     /// As leader, I should not receive commit index,
     ///     which is lower than my current one
-    ///
     #[autometrics(objective = API_SLO)]
-    fn update_commit_index(&mut self, new_commit_index: u64) -> Result<()> {
+    fn update_commit_index(
+        &mut self,
+        new_commit_index: u64,
+    ) -> Result<()> {
         if self.commit_index() < new_commit_index {
             debug!("update_commit_index to: {:?}", new_commit_index);
             self.shared_state.commit_index = new_commit_index;
@@ -81,27 +116,34 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     }
 
     /// As Leader should not vote any more
-    ///
     fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.shared_state().voted_for()
     }
 
     /// As Leader might also be able to vote ,
     ///     if new legal Leader found
-    ///
-    fn update_voted_for(&mut self, voted_for: VotedFor) -> Result<()> {
+    fn update_voted_for(
+        &mut self,
+        voted_for: VotedFor,
+    ) -> Result<()> {
         self.shared_state_mut().update_voted_for(voted_for)
     }
 
     #[autometrics(objective = API_SLO)]
-    fn next_index(&self, node_id: u32) -> Option<u64> {
+    fn next_index(
+        &self,
+        node_id: u32,
+    ) -> Option<u64> {
         Some(if let Some(n) = self.next_index.get(&node_id) {
             *n
         } else {
             1
         })
     }
-    fn prev_log_index(&self, follower_id: u32) -> Option<u64> {
+    fn prev_log_index(
+        &self,
+        follower_id: u32,
+    ) -> Option<u64> {
         if let Some(next_id) = self.next_index(follower_id) {
             debug!("follower({})s next_id is: {}", follower_id, next_id);
             Some(if next_id > 0 { next_id - 1 } else { 0 })
@@ -110,19 +152,30 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         }
     }
 
-    fn update_next_index(&mut self, node_id: u32, new_next_id: u64) -> Result<()> {
+    fn update_next_index(
+        &mut self,
+        node_id: u32,
+        new_next_id: u64,
+    ) -> Result<()> {
         debug!("update_next_index({}) to {}", node_id, new_next_id);
         self.next_index.insert(node_id, new_next_id);
         Ok(())
     }
 
-    fn update_match_index(&mut self, node_id: u32, new_match_id: u64) -> Result<()> {
+    fn update_match_index(
+        &mut self,
+        node_id: u32,
+        new_match_id: u64,
+    ) -> Result<()> {
         self.match_index.insert(node_id, new_match_id);
         Ok(())
     }
 
     #[autometrics(objective = API_SLO)]
-    fn match_index(&self, node_id: u32) -> Option<u64> {
+    fn match_index(
+        &self,
+        node_id: u32,
+    ) -> Option<u64> {
         if let Some(n) = self.match_index.get(&node_id) {
             Some(*n)
         } else {
@@ -151,7 +204,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     /// Decrease next id for node(node_id) by 1
     #[cfg(test)]
-    fn decr_next_index(&mut self, node_id: u32) -> Result<()> {
+    fn decr_next_index(
+        &mut self,
+        node_id: u32,
+    ) -> Result<()> {
         self.next_index.entry(node_id).and_modify(|v| {
             if *v > 1 {
                 *v -= 1;
@@ -301,10 +357,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // 2. Else:
             // - Reply with VoteGranted=false, currentTerm=currentTerm
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                debug!(
-                    "handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}",
-                    &vote_request
-                );
+                debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
 
                 let my_term = self.current_term();
                 if my_term < vote_request.term {
@@ -313,10 +366,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.send_become_follower_event(&role_tx)?;
 
                     info!("Leader will not process Vote request, it should let Follower do it.");
-                    self.send_replay_raft_event(
-                        &role_tx,
-                        RaftEvent::ReceiveVoteRequest(vote_request, sender),
-                    )?;
+                    self.send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
                 } else {
                     let response = VoteResponse {
                         term: my_term,
@@ -351,10 +401,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 let my_current_term = self.current_term();
                 let success = ctx
                     .membership()
-                    .update_cluster_conf_from_leader(
-                        my_current_term,
-                        &cluste_membership_change_request,
-                    )
+                    .update_cluster_conf_from_leader(my_current_term, &cluste_membership_change_request)
                     .await
                     .is_ok();
 
@@ -365,10 +412,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     success,
                 };
 
-                debug!(
-                    "[peer-{}] update_cluster_conf response: {:?}",
-                    my_id, &response
-                );
+                debug!("[peer-{}] update_cluster_conf response: {:?}", my_id, &response);
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
@@ -398,15 +442,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     })?;
                 } else {
                     // Step down as Follower as new Leader found
-                    info!(
-                        "my({}) term < request one, now I will step down to Follower",
-                        my_id
-                    );
+                    info!("my({}) term < request one, now I will step down to Follower", my_id);
 
                     role_tx
-                        .send(RoleEvent::BecomeFollower(Some(
-                            append_entries_request.leader_id,
-                        )))
+                        .send(RoleEvent::BecomeFollower(Some(append_entries_request.leader_id)))
                         .map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
@@ -414,10 +453,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         })?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
-                    self.send_replay_raft_event(
-                        &role_tx,
-                        RaftEvent::AppendEntries(append_entries_request, sender),
-                    )?;
+                    self.send_replay_raft_event(&role_tx, RaftEvent::AppendEntries(append_entries_request, sender))?;
                 }
             }
 
@@ -450,15 +486,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 );
 
                 let response: std::result::Result<ClientResponse, tonic::Status> = {
-                    let read_operation =
-                        || -> std::result::Result<ClientResponse, tonic::Status> {
-                            let results = ctx
-                                .state_machine_handler
-                                .read_from_state_machine(client_read_request.commands)
-                                .unwrap_or_default();
-                            debug!("handle_client_read results: {:?}", results);
-                            Ok(ClientResponse::read_results(results))
-                        };
+                    let read_operation = || -> std::result::Result<ClientResponse, tonic::Status> {
+                        let results = ctx
+                            .state_machine_handler
+                            .read_from_state_machine(client_read_request.commands)
+                            .unwrap_or_default();
+                        debug!("handle_client_read results: {:?}", results);
+                        Ok(ClientResponse::read_results(results))
+                    };
 
                     if client_read_request.linear {
                         let voting_members = ctx.voting_members(peer_channels);
@@ -479,10 +514,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             Err(tonic::Status::failed_precondition(format!(
                                 "enforce_quorum_consensus failed",
                             )))
-                        } else if let Err(e) = self.ensure_state_machine_upto_commit_index(
-                            &ctx.state_machine_handler,
-                            last_applied,
-                        ) {
+                        } else if let Err(e) =
+                            self.ensure_state_machine_upto_commit_index(&ctx.state_machine_handler, last_applied)
+                        {
                             warn!("ensure_state_machine_upto_commit_index failed for linear read request");
                             Err(tonic::Status::failed_precondition(format!(
                                 "ensure_state_machine_upto_commit_index failed: {:?}",
@@ -496,10 +530,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     }
                 };
 
-                debug!(
-                    "Leader::ClientReadRequest is going to response: {:?}",
-                    &response
-                );
+                debug!("Leader::ClientReadRequest is going to response: {:?}", &response);
                 sender.send(response).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
@@ -530,7 +561,10 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    fn send_become_follower_event(&self, role_tx: &mpsc::UnboundedSender<RoleEvent>) -> Result<()> {
+    fn send_become_follower_event(
+        &self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
@@ -543,18 +577,16 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         raft_event: RaftEvent,
     ) -> Result<()> {
-        role_tx
-            .send(RoleEvent::ReprocessEvent(raft_event))
-            .map_err(|e| {
-                let error_str = format!("{:?}", e);
-                error!("Failed to send: {}", error_str);
-                Error::TokioSendStatusError(error_str)
-            })
+        role_tx.send(RoleEvent::ReprocessEvent(raft_event)).map_err(|e| {
+            let error_str = format!("{:?}", e);
+            error!("Failed to send: {}", error_str);
+            Error::TokioSendStatusError(error_str)
+        })
     }
 
     /// # Params
-    /// - `exexute_now`: should this propose been executed immediatelly. e.g. enforce_quorum_consensus expected to be executed immediatelly
-    ///
+    /// - `exexute_now`: should this propose been executed immediatelly. e.g.
+    ///   enforce_quorum_consensus expected to be executed immediatelly
     pub async fn process_client_propose(
         &mut self,
         client_propose_request: ClientProposeRequest,
@@ -615,11 +647,7 @@ impl<T: TypeConfig> LeaderState<T> {
         raft_config: &RaftConfig,
         retry_policies: &RetryPolicies,
     ) -> Result<()> {
-        let commands: Vec<ClientCommand> = batch
-            .iter()
-            .flat_map(|req| &req.commands)
-            .cloned()
-            .collect();
+        let commands: Vec<ClientCommand> = batch.iter().flat_map(|req| &req.commands).cloned().collect();
 
         debug!("process_batch.., commands:{:?}", &commands);
 
@@ -643,20 +671,25 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    /// Processes the result of batched client proposals and updates leader state accordingly.
+    /// Processes the result of batched client proposals and updates leader
+    /// state accordingly.
     ///
-    /// This function is placed in `LeaderState` rather than `ReplicationHandler` because:
-    /// 1. **Single Responsibility Principle**: The handling of proposal results directly impacts core leader state
-    ///    (e.g., peer indexes, commit index, leader status). State mutations should be centralized in the component
-    ///    that owns the state - `LeaderState` is the authoritative source for leader-specific state management.
-    /// 2. **State Encapsulation**: The logic requires deep access to leader state fields (`next_index`, `match_index`, etc.).
-    ///    Keeping this in `LeaderState` maintains encapsulation and prevents exposing internal state details to the
-    ///    replication handler layer.
-    /// 3. **Decision Centralization**: Leadership-specific reactions to proposal outcomes (e.g., stepping down on term
-    ///    conflicts) are inherently tied to leader state management and should be colocated with state ownership.
+    /// This function is placed in `LeaderState` rather than
+    /// `ReplicationHandler` because:
+    /// 1. **Single Responsibility Principle**: The handling of proposal results directly impacts
+    ///    core leader state (e.g., peer indexes, commit index, leader status). State mutations
+    ///    should be centralized in the component that owns the state - `LeaderState` is the
+    ///    authoritative source for leader-specific state management.
+    /// 2. **State Encapsulation**: The logic requires deep access to leader state fields
+    ///    (`next_index`, `match_index`, etc.). Keeping this in `LeaderState` maintains
+    ///    encapsulation and prevents exposing internal state details to the replication handler
+    ///    layer.
+    /// 3. **Decision Centralization**: Leadership-specific reactions to proposal outcomes (e.g.,
+    ///    stepping down on term conflicts) are inherently tied to leader state management and
+    ///    should be colocated with state ownership.
     ///
-    /// The `ReplicationHandler` remains focused on protocol mechanics, while state-aware result processing
-    /// naturally belongs to the state owner.
+    /// The `ReplicationHandler` remains focused on protocol mechanics, while
+    /// state-aware result processing naturally belongs to the state owner.
     pub fn process_client_proposal_in_batch_result(
         &mut self,
         batch: VecDeque<ClientRequestWithSignal>,
@@ -693,25 +726,15 @@ impl<T: TypeConfig> LeaderState<T> {
                 if commit_quorum_achieved {
                     let old_commit_index = self.commit_index();
                     let current_term = self.current_term();
-                    let matched_ids: Vec<u64> = peer_ids
-                        .iter()
-                        .map(|&id| self.match_index(id).unwrap_or(0))
-                        .collect();
+                    let matched_ids: Vec<u64> = peer_ids.iter().map(|&id| self.match_index(id).unwrap_or(0)).collect();
 
                     debug!("collected matched_ids:{:?}", &matched_ids);
-                    let calculated_matched_index = raft_log.calculate_majority_matched_index(
-                        current_term,
-                        old_commit_index,
-                        matched_ids,
-                    );
+                    let calculated_matched_index =
+                        raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
                     debug!("calculated_matched_index: {:?}", &calculated_matched_index);
-                    let (updated, commit_index) =
-                        self.if_update_commit_index(calculated_matched_index);
+                    let (updated, commit_index) = self.if_update_commit_index(calculated_matched_index);
 
-                    debug!(
-                        "old commit: {:?} , new commit: {:?}",
-                        old_commit_index, commit_index
-                    );
+                    debug!("old commit: {:?} , new commit: {:?}", old_commit_index, commit_index);
                     //notify commit_success_receiver, new commit is ready to conver to KV store.
                     if updated {
                         // if let Err(e) = self.update_commit_index(commit_index) {
@@ -724,8 +747,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         // }) {
                         //     error("role_tx.send(RoleEvent::NotifyNewCommitIndex)", &e);
                         // }
-                        if let Err(e) = self.update_commit_index_with_signal(commit_index, &role_tx)
-                        {
+                        if let Err(e) = self.update_commit_index_with_signal(commit_index, &role_tx) {
                             error!(
                                 "update_commit_index_with_signal,commit={}, error: {:?}",
                                 commit_index, e
@@ -746,9 +768,10 @@ impl<T: TypeConfig> LeaderState<T> {
                         }
                     } else {
                         debug!("notify client that replication failed.");
-                        if let Err(e) = r.sender.send(Ok(ClientResponse::write_error(
-                            Error::AppendEntriesCommitNotConfirmed,
-                        ))) {
+                        if let Err(e) = r
+                            .sender
+                            .send(Ok(ClientResponse::write_error(Error::AppendEntriesCommitNotConfirmed)))
+                        {
                             error!("r.sender.send response failed: {:?}", e);
                         }
                     }
@@ -770,9 +793,10 @@ impl<T: TypeConfig> LeaderState<T> {
                     }
                 }
                 for r in batch {
-                    if let Err(e) = r.sender.send(Ok(ClientResponse::write_error(
-                        Error::AppendEntriesCommitNotConfirmed,
-                    ))) {
+                    if let Err(e) = r
+                        .sender
+                        .send(Ok(ClientResponse::write_error(Error::AppendEntriesCommitNotConfirmed)))
+                    {
                         error!("r.sender.send response failed: {:?}", e);
                     }
                 }
@@ -782,7 +806,10 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    fn if_update_commit_index(&self, new_commit_index_option: Option<u64>) -> (bool, u64) {
+    fn if_update_commit_index(
+        &self,
+        new_commit_index_option: Option<u64>,
+    ) -> (bool, u64) {
         let current_commit_index = self.commit_index();
         if let Some(new_commit_index) = new_commit_index_option {
             debug!("Leader::update_commit_index: {:?}", new_commit_index);
@@ -908,7 +935,10 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
 impl<T: TypeConfig> LeaderState<T> {
     #[cfg(test)]
-    pub fn new(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
+    pub fn new(
+        node_id: u32,
+        settings: Arc<RaftNodeConfig>,
+    ) -> Self {
         let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
             rpc_append_entries_batch_process_delay_in_ms,
