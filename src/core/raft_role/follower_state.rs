@@ -7,9 +7,9 @@ use super::{
 use crate::{
     alias::POF,
     grpc::rpc_service::{ClientResponse, VoteResponse},
-    utils::util::error,
-    ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, Result, RoleEvent,
-    RaftNodeConfig, StateMachine, StateMachineHandler, TypeConfig,
+    utils::cluster::error,
+    ElectionCore, ElectionTimer, Error, Membership, RaftContext, RaftEvent, RaftNodeConfig, Result,
+    RoleEvent, StateMachine, StateMachineHandler, TypeConfig,
 };
 use log::{debug, error, info, warn};
 use tokio::{sync::mpsc, time::Instant};

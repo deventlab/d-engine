@@ -5,7 +5,7 @@ use crate::{
         setup_raft_components, simulate_insert_proposal, MockNode, MockTypeConfig,
         MOCK_REPLICATION_HANDLER_PORT_BASE,
     },
-    utils::util::kv,
+    convert::kv,
     AppendResults, ChannelWithAddressAndRole, Error, LeaderStateSnapshot, MockRaftLog,
     MockTransport, NewLeaderInfo, PeerUpdate, RaftLog, RaftTypeConfig, StateSnapshot, FOLLOWER,
 };

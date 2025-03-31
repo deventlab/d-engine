@@ -2,11 +2,11 @@
 //!
 //!
 use crate::{
+    convert::vk,
     grpc::rpc_service::{
         client_command::{Command, Insert},
         ClientCommand, Entry, SnapshotEntry,
     },
-    util::vk,
     Error, Result, StateMachine, API_SLO, COMMITTED_LOG_METRIC,
 };
 use crate::{storage::sled_adapter::STATE_MACHINE_NAMESPACE, StateMachineIter};

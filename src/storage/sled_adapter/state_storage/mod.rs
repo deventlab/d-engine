@@ -2,7 +2,7 @@ use autometrics::autometrics;
 use log::{error, info};
 use std::sync::Arc;
 
-use crate::{utils::util::skv, Error, HardState, Result, StateStorage, API_SLO, HARD_STATE_KEY};
+use crate::{convert::skv, Error, HardState, Result, StateStorage, API_SLO, HARD_STATE_KEY};
 
 use super::STATE_STORAGE_NAMESPACE;
 

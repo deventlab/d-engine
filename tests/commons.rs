@@ -1,5 +1,6 @@
 use dengine::{
-    utils::util::{self, kv, vk},
+    convert::{kv, vk},
+    file_io::open_file_for_append,
     ClusterConfig, Error, NodeBuilder, RaftNodeConfig, Result,
 };
 use log::{debug, error, info};
@@ -86,9 +87,8 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
     Ok(())
 }
 pub fn init_observability(config: &ClusterConfig) -> Result<WorkerGuard> {
-    let log_file = util::open_file_for_append(
-        Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)),
-    )?;
+    let log_file =
+        open_file_for_append(Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)))?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
     let base_subscriber = tracing_subscriber::fmt::layer()

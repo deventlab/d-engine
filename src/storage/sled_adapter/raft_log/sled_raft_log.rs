@@ -5,11 +5,11 @@
 //!     no entry could be deleted or modified in RAFT.
 //!
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
-use crate::{grpc::rpc_service::Entry, API_SLO, MESSAGE_SIZE_IN_BYTES_METRIC};
 use crate::{
-    util::{kv, vki},
+    convert::{kv, vki},
     Error, LocalLogBatch, RaftLog, Result,
 };
+use crate::{grpc::rpc_service::Entry, API_SLO, MESSAGE_SIZE_IN_BYTES_METRIC};
 use autometrics::autometrics;
 use dashmap::DashMap;
 use log::{debug, error, info, trace};

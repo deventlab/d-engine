@@ -11,7 +11,7 @@ use crate::{
         enable_logger, mock_peer_channels, mock_raft_context, setup_raft_components, MockBuilder,
         MockTypeConfig,
     },
-    utils::util::kv,
+    convert::kv,
     AppendResults, Error, MaybeCloneOneshot, MaybeCloneOneshotReceiver, MaybeCloneOneshotSender,
     MockMembership, MockRaftLog, MockReplicationCore, MockStateMachineHandler, MockTransport,
     NewLeaderInfo, PeerUpdate, RaftEvent, RaftOneshot, ReplicationConfig, RoleEvent, RaftNodeConfig,

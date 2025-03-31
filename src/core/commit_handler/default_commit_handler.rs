@@ -1,7 +1,7 @@
 use super::CommitHandler;
 use crate::{
     alias::{ROF, SMHOF},
-    utils::util::error,
+    cluster::error,
     Error, Result, StateMachineHandler, TypeConfig,
 };
 use log::{debug, trace, warn};

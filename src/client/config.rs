@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::utils::util;
+use crate::time::get_now_as_u32;
 
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
@@ -41,7 +41,7 @@ pub struct ClientConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            id: util::get_now_as_u32(),
+            id: get_now_as_u32(),
             connect_timeout: Duration::from_millis(1000),
             request_timeout: Duration::from_millis(3000),
             tcp_keepalive: Duration::from_secs(300),

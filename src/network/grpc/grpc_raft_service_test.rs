@@ -1,11 +1,11 @@
 use super::rpc_service::{rpc_service_server::RpcService, ClientProposeRequest};
 use crate::{
+    convert::kv,
     grpc::rpc_service::{
         AppendEntriesRequest, ClientCommand, ClientReadRequest, ClusteMembershipChangeRequest,
         ClusterMembership, MetadataRequest, VoteRequest,
     },
     test_utils::{enable_logger, mock_node, MockBuilder, MockTypeConfig},
-    utils::util::kv,
     AppendResults, MockMembership, MockReplicationCore, RaftNodeConfig,
 };
 use std::{collections::HashMap, path::PathBuf, time::Duration};

@@ -8,11 +8,12 @@ use crate::{
         AppendEntriesResponse, ClientCommand, ClientProposeRequest, ClientRequestError,
         ClientResponse, ClusterConfUpdateResponse, VoteResponse, VotedFor,
     },
-    utils::util::{self, error},
+    utils::cluster::error,
     AppendResults, BatchBuffer, ChannelWithAddressAndRole, ClientRequestWithSignal, Error,
     MaybeCloneOneshot, MaybeCloneOneshotSender, Membership, NewLeaderInfo, RaftConfig, RaftContext,
-    RaftEvent, RaftLog, RaftOneshot, ReplicationConfig, ReplicationCore, ReplicationTimer, Result,
-    RetryPolicies, RoleEvent, RaftNodeConfig, StateMachine, StateMachineHandler, TypeConfig, API_SLO,
+    RaftEvent, RaftLog, RaftNodeConfig, RaftOneshot, ReplicationConfig, ReplicationCore,
+    ReplicationTimer, Result, RetryPolicies, RoleEvent, StateMachine, StateMachineHandler,
+    TypeConfig, API_SLO,
 };
 use autometrics::autometrics;
 use log::{debug, error, info, trace, warn};
@@ -765,7 +766,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         }
                     }
                     _ => {
-                        util::error("handle_client_proposal_in_batch", &e);
+                        error("handle_client_proposal_in_batch", &e);
                     }
                 }
                 for r in batch {

@@ -1,7 +1,7 @@
 use crate::{
     alias::{ROF, SMOF},
+    convert::kv,
     grpc::rpc_service::Entry,
-    util::kv,
     RaftLog, RaftTypeConfig, StateMachine,
 };
 use sled::Batch;

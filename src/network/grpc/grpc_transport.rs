@@ -2,13 +2,14 @@
 //! We also want to refactor all the APIs based its similar parttern.
 //!
 use crate::{
+    cluster::is_majority,
     grpc::rpc_service::{
         rpc_service_client::RpcServiceClient, AppendEntriesRequest, ClusteMembershipChangeRequest,
         VoteRequest,
     },
-    if_new_leader_found, is_learner, task_with_timeout_and_exponential_backoff, util,
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, Error, NewLeaderInfo, PeerUpdate,
-    Result, RetryPolicies, Transport, API_SLO,
+    if_new_leader_found, is_learner, task_with_timeout_and_exponential_backoff, AppendResults,
+    ChannelWithAddress, ChannelWithAddressAndRole, Error, NewLeaderInfo, PeerUpdate, Result,
+    RetryPolicies, Transport, API_SLO,
 };
 use autometrics::autometrics;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -268,7 +269,7 @@ impl Transport for GrpcTransport {
             &peer_ids, successes
         );
 
-        let commit_quorum_achieved = util::is_majority(successes, peer_ids.len() + 1);
+        let commit_quorum_achieved = is_majority(successes, peer_ids.len() + 1);
 
         Ok(AppendResults {
             commit_quorum_achieved,
@@ -381,7 +382,7 @@ impl Transport for GrpcTransport {
             &peer_ids, succeed
         );
 
-        if peer_ids.len() > 0 && util::is_majority(succeed, peer_ids.len() + 1) {
+        if peer_ids.len() > 0 && is_majority(succeed, peer_ids.len() + 1) {
             debug!("send_vote_requests receives majority.");
             Ok(true)
         } else {
