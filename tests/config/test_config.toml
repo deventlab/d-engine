@@ -1,0 +1,6 @@
+[cluster]
+node_id = 42
+
+[raft.election]
+election_timeout_min = 1000
+election_timeout_max = 3000

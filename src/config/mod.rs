@@ -1,15 +1,10 @@
-//! Configuration management module for distributed Raft cluster.
+//! Configuration management module for distributed Raft consensus engine.
 //!
-//! Provides hierarchical configuration loading from multiple sources with priority:
-//! 1. Default values (hardcoded)
-//! 2. Main config file
-//! 3. Included config files
-//! 4. Environment-specific config
-//! 5. Node-specific cluster config
-//! 6. Local overrides
-//! 7. Environment variables (highest priority)
-//!
-
+//! Provides hierarchical configuration loading and validation with:
+//! - Default values as code base
+//! - Environment variable overrides
+//! - Configuration file support
+//! - Component-wise validation
 mod cluster;
 mod monitoring;
 mod network;
@@ -24,24 +19,23 @@ pub use retry::*;
 pub use tls::*;
 
 #[cfg(test)]
+mod config_test;
+#[cfg(test)]
 mod raft_test;
 
 //---
-use crate::{Error, Result};
+use crate::Result;
 use config::{Config, Environment, File};
-use serde::Deserialize;
-use std::{collections::HashMap, env};
+use serde::{Deserialize, Serialize};
+use std::env;
 
-#[derive(Debug, Deserialize)]
-struct MainConfig {
-    /// List of configuration files to include
-    includes: Vec<String>,
-    /// Environment-to-config mapping (e.g., "production" -> "prod-config.toml")
-    #[serde(rename = "env_config")]
-    environments: HashMap<String, String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
+/// Main configuration container for Raft consensus engine components
+///
+/// Combines all subsystem configurations with hierarchical override support:
+/// 1. Default values from code implementation
+/// 2. Configuration file specified by `CONFIG_PATH`
+/// 3. Environment variables (highest priority)
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RaftNodeConfig {
     /// Cluster topology and node configuration
     pub cluster: ClusterConfig,
@@ -58,69 +52,96 @@ pub struct RaftNodeConfig {
 }
 
 impl RaftNodeConfig {
-    /// Load configuration from multiple sources with priority:
-    /// 1. Base config files
-    /// 2. Environment-specific config
-    /// 3. Node-specific cluster config
-    /// 4. Local overrides
-    /// 5. Environment variables
+    /// Creates a new configuration with hierarchical override support:
     ///
-    /// # Arguments
-    /// * `cluster_path` - Optional path to node-specific cluster configuration
+    /// Configuration sources are merged in the following order (later sources override earlier ones):
+    /// 1. Type defaults (lowest priority)
+    /// 2. Configuration file from `CONFIG_PATH` environment variable
+    /// 3. Environment variables with `RAFT__` prefix (highest priority)
     ///
     /// # Returns
-    /// Merged configuration with proper priority ordering
-    pub fn load(cluster_path: Option<&str>) -> Result<Self> {
-        let mut config = Config::builder();
+    /// Merged configuration instance or error if:
+    /// - Config file parsing fails
+    /// - Validation rules are violated
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Load with default values only
+    /// let cfg = RaftNodeConfig::new()?;
+    ///
+    /// // Load with config file and environment variables
+    /// std::env::set_var("CONFIG_PATH", "config/cluster.toml");
+    /// std::env::set_var("RAFT__CLUSTER__NODE_ID", "100");
+    /// let cfg = RaftNodeConfig::new()?;
+    /// ```
+    pub fn new() -> Result<Self> {
+        // Create a basic configuration builder
+        let mut builder = Config::builder()
+            // 1. Default values ​​as the base layer
+            .add_source(Config::try_from(&Self::default())?);
 
-        // 1. Load main config
-        let main_config: MainConfig = Config::builder()
-            .add_source(File::with_name("config/main"))
-            .build()?
-            .try_deserialize()?;
-
-        // 2. Load base configs
-        for path in &main_config.includes {
-            config = config.add_source(File::with_name(&format!("config/{}", path)));
+        // 2. Conditionally add configuration files
+        if let Ok(config_path) = env::var("CONFIG_PATH") {
+            builder = builder.add_source(File::with_name(&config_path));
         }
 
-        // 3. Overwrite with node cluster config
-        if let Some(custom_cluster) = cluster_path {
-            config = config.add_source(File::with_name(custom_cluster).required(true));
-        }
-
-        // 4. Environment overlay
-        if let Ok(env) = env::var("RAFT_ENV") {
-            if let Some(env_path) = main_config.environments.get(&env) {
-                config = config.add_source(File::with_name(&format!("config/{}", env_path)));
-            }
-        }
-        if let Ok(path) = env::var("CONFIG_PATH") {
-            config = config.add_source(File::with_name(&format!("{}", path)));
-        }
-
-        // 5. Local overrides
-        config = config.add_source(File::with_name("config/local").required(false));
-
-        // 6. Environment variables (highest priority)
-        config = config.add_source(
+        // 3. Add environment variable source
+        builder = builder.add_source(
             Environment::with_prefix("RAFT")
                 .separator("__")
                 .ignore_empty(true)
                 .try_parsing(true),
         );
 
-        let settings: Self = config
-            .build()?
-            .try_deserialize()
-            .map_err(|e| Error::ConfigError(e.into()))?;
-
-        settings.validate()?;
-
-        Ok(settings)
+        // Build and deserialize
+        let config: Self = builder.build()?.try_deserialize()?;
+        config.validate()?;
+        Ok(config)
     }
 
-    /// Validate all configuration components
+    /// Creates a new configuration with additional overrides:
+    ///
+    /// Merging order (later sources override earlier ones):
+    /// 1. Current configuration values
+    /// 2. New configuration file
+    /// 3. Latest environment variables (highest priority)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Initial configuration
+    /// let base = RaftNodeConfig::new()?;
+    ///
+    /// // Apply runtime overrides
+    /// let final_cfg = base.with_override_config("runtime_overrides.toml")?;
+    /// ```
+    pub fn with_override_config(&self, path: &str) -> Result<Self> {
+        Config::builder()
+            .add_source(Config::try_from(self)?) // Current config
+            .add_source(File::with_name(path)) // New overrides
+            .add_source(
+                // Fresh environment
+                Environment::with_prefix("RAFT")
+                    .separator("__")
+                    .ignore_empty(true)
+                    .try_parsing(true),
+            )
+            .build()?
+            .try_deserialize()
+            .map_err(Into::into)
+    }
+
+    /// Validates cross-component configuration rules
+    ///
+    /// # Returns
+    /// `Ok(())` if all configurations are valid, or
+    /// `Err(Error)` containing validation failure details
+    ///
+    /// # Errors
+    /// Returns validation errors from any subsystem:
+    /// - Invalid port bindings
+    /// - Conflicting node IDs
+    /// - Expired certificates
+    /// - Retry policy conflicts
     pub fn validate(&self) -> Result<()> {
         self.cluster.validate()?;
         self.monitoring.validate()?;

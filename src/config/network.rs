@@ -1,11 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
 /// Network communication configuration for gRPC/HTTP2 transport
 ///
 /// Provides fine-grained control over low-level network parameters
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(unused)]
 pub struct NetworkConfig {
     /// Timeout for establishing TCP connections in milliseconds
@@ -32,12 +32,6 @@ pub struct NetworkConfig {
     /// Default: true (recommended for low-latency scenarios)
     #[serde(default = "default_tcp_nodelay")]
     pub tcp_nodelay: bool,
-
-    /// Enable adaptive flow control window sizing
-    /// When enabled, overrides initial window size settings
-    /// Default: false (use fixed window sizes)
-    #[serde(default = "default_adaptive_window")]
-    pub http2_adaptive_window: bool,
 
     /// TCP keepalive duration in seconds
     /// Default: 3600s (1 hour, OS may enforce minimum values)
@@ -73,8 +67,33 @@ pub struct NetworkConfig {
     /// Default: 64KB (65536 bytes)
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
+
+    /// Enable adaptive flow control window sizing
+    /// When enabled, overrides initial window size settings
+    /// Default: false (use fixed window sizes)
+    #[serde(default = "default_adaptive_window")]
+    pub http2_adaptive_window: bool,
 }
 
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_in_ms: default_connect_timeout(),
+            request_timeout_in_ms: default_request_timeout(),
+            concurrency_limit_per_connection: default_concurrency_limit(),
+            max_concurrent_streams: default_max_streams(),
+            tcp_nodelay: default_tcp_nodelay(),
+            http2_adaptive_window: default_adaptive_window(),
+            tcp_keepalive_in_secs: default_tcp_keepalive(),
+            http2_keep_alive_interval_in_secs: default_h2_keepalive_interval(),
+            http2_keep_alive_timeout_in_secs: default_h2_keepalive_timeout(),
+            max_frame_size: default_max_frame_size(),
+            initial_connection_window_size: default_conn_window_size(),
+            initial_stream_window_size: default_stream_window_size(),
+            buffer_size: default_buffer_size(),
+        }
+    }
+}
 impl NetworkConfig {
     /// Validates network configuration consistency and safety
     /// Returns Error::InvalidConfig with detailed message if any rule fails
@@ -164,13 +183,10 @@ fn default_concurrency_limit() -> usize {
     8192
 }
 fn default_max_streams() -> u32 {
-    100
+    500
 }
 fn default_tcp_nodelay() -> bool {
     true
-}
-fn default_adaptive_window() -> bool {
-    false
 }
 fn default_tcp_keepalive() -> u64 {
     3600
@@ -182,7 +198,7 @@ fn default_h2_keepalive_timeout() -> u64 {
     20
 }
 fn default_max_frame_size() -> u32 {
-    12_582_912
+    16777215
 }
 fn default_conn_window_size() -> u32 {
     12_582_912
@@ -192,4 +208,7 @@ fn default_stream_window_size() -> u32 {
 }
 fn default_buffer_size() -> usize {
     65_536
+}
+fn default_adaptive_window() -> bool {
+    false
 }

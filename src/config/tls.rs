@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
 use crate::{Error, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[allow(unused)]
 pub struct TlsConfig {
     /// Enables TLS encryption for network communication

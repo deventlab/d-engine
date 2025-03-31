@@ -53,10 +53,13 @@ pub async fn start_node(
 
 async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result<()> {
     // Load configuration from the specified path
-    let settings = RaftNodeConfig::load(Some(config_path)).expect("init settings successfully.");
+    let config = RaftNodeConfig::default();
+    config
+        .with_override_config(config_path)
+        .expect("Overwrite config successfully.");
 
     // Initialize logs
-    let _guard = init_observability(&settings.cluster)?;
+    let _guard = init_observability(&config.cluster)?;
 
     // Build and start the node
     let node = NodeBuilder::new(Some(config_path), graceful_rx)
@@ -78,9 +81,9 @@ async fn run_node(config_path: &str, graceful_rx: watch::Receiver<()>) -> Result
     drop(node);
     Ok(())
 }
-pub fn init_observability(settings: &ClusterConfig) -> Result<WorkerGuard> {
+pub fn init_observability(config: &ClusterConfig) -> Result<WorkerGuard> {
     let log_file = util::open_file_for_append(
-        Path::new(&settings.log_dir).join(format!("{}/d.log", settings.node_id)),
+        Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)),
     )?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);

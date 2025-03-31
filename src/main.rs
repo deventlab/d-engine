@@ -13,7 +13,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    let settings = RaftNodeConfig::load(None)?;
+    let settings = RaftNodeConfig::new()?;
 
     // Initializing Logs
     let _guard = init_observability(settings.cluster.node_id, &settings.cluster.log_dir)?;
