@@ -2,10 +2,11 @@ use crate::{
     test_utils::{
         insert_raft_log, insert_state_machine, insert_state_storage, reset_dbs, settings,
     },
-    Error, NodeBuilder, RaftLog, RaftStateMachine, SledRaftLog, SledStateStorage, StateMachine,
-    StateStorage,
+    Error, NodeBuilder, RaftLog, RaftNodeConfig, RaftStateMachine, SledRaftLog, SledStateStorage,
+    StateMachine, StateStorage,
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
+use tempfile::tempdir;
 use tokio::sync::watch;
 
 #[test]
@@ -112,4 +113,125 @@ async fn test_metrics_server_starts_on_correct_port() {
     NodeBuilder::init(settings, shutdown_rx)
         .build()
         .start_metrics_server(shutdown_tx.subscribe());
+}
+
+// Test helper function: create a temporary configuration file
+fn create_temp_config(content: &str) -> (PathBuf, String) {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("test_config.toml");
+    std::fs::write(&file_path, content).unwrap();
+    (dir.into_path(), file_path.to_str().unwrap().to_string())
+}
+
+#[test]
+fn test_config_override_success() {
+    // Prepare test configuration
+    let (_dir, config_path) = create_temp_config(
+        r#"
+    [cluster]
+    db_root_dir = "./custom_db"
+    "#,
+    );
+
+    // Use temporary environment variables
+    temp_env::with_var("CONFIG_PATH", Some(config_path.clone()), || {
+        let base_config = RaftNodeConfig::new().unwrap();
+        let updated_config = base_config.with_override_config(&config_path).unwrap();
+
+        // Verify path coverage
+        assert_eq!(
+            updated_config.cluster.db_root_dir,
+            PathBuf::from("./custom_db"),
+            "DB root dir not overridden"
+        );
+
+        // Verify that other fields remain default
+        assert_eq!(
+            updated_config.cluster.node_id, 1,
+            "Node ID should remain default"
+        );
+    });
+}
+
+#[test]
+fn test_config_override_invalid_path() {
+    let base_config = RaftNodeConfig::new().unwrap();
+    let result = base_config.with_override_config("non_existent.toml");
+
+    assert!(
+        matches!(result, Err(Error::ConfigError(_))),
+        "Should return ConfigError for invalid path"
+    );
+}
+
+#[test]
+fn test_config_override_invalid_format() {
+    let (_dir, config_path) = create_temp_config(
+        r#" 
+    invalid_toml_format 
+    cluster: { 
+    db_root_dir: "./custom_db" 
+    } 
+    "#,
+    );
+
+    let base_config = RaftNodeConfig::new().unwrap();
+    let result = base_config.with_override_config(&config_path);
+
+    assert!(
+        matches!(result, Err(Error::ConfigError(_))),
+        "Should return ConfigError for invalid format"
+    );
+}
+
+#[test]
+fn test_config_override_priority() {
+    let (_dir, config_path) = create_temp_config(
+        r#" 
+    [cluster] 
+    db_root_dir = "./file_db" 
+    "#,
+    );
+
+    temp_env::with_vars(
+        vec![
+            ("CONFIG_PATH", Some(config_path.as_str())),
+            ("RAFT__CLUSTER__DB_ROOT_DIR", Some("/env/db")),
+        ],
+        || {
+            let config = RaftNodeConfig::new().unwrap();
+
+            // Verify that environment variables have higher priority than configuration files
+            assert_eq!(
+                config.cluster.db_root_dir,
+                PathBuf::from("/env/db"),
+                "Environment variable should override file config"
+            );
+        },
+    );
+}
+
+#[test]
+fn test_partial_override() {
+    let (_dir, config_path) = create_temp_config(
+        r#" 
+    [raft.election] 
+    election_timeout_min = 500 
+    "#,
+    );
+
+    let base_config = RaftNodeConfig::new().unwrap();
+    let updated_config = base_config.with_override_config(&config_path).unwrap();
+
+    // Validate covered fields
+    assert_eq!(
+        updated_config.raft.election.election_timeout_min, 500,
+        "Raft config should be overridden"
+    );
+
+    // Verify unmodified fields
+    assert_eq!(
+        updated_config.cluster.db_root_dir, base_config.cluster.db_root_dir,
+        "Cluster config should remain unchanged"
+    );
 }
