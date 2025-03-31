@@ -64,10 +64,12 @@ async fn check_cluster_is_ready(peer_addr: &str, timeout_secs: u64) -> Result<()
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
-    env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
-        .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
-        .init();
+    // env_logger::Builder::new()
+    //     .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
+    //     .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
+    //     .init();
+
+    crate::enable_logger();
 
     reset("case1").await?;
     let bootstrap_urls: Vec<String> = vec![
@@ -156,10 +158,12 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 #[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
-    env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
-        .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
-        .init();
+    // env_logger::Builder::new()
+    //     .filter_level(log::LevelFilter::Info) // Default level if RUST_LOG is not set
+    //     .parse_env(Env::default().filter_or("RUST_LOG", "info")) // Read from RUST_LOG or default to "info"
+    //     .init();
+
+    crate::enable_logger();
 
     reset("case2").await?;
 
