@@ -11,20 +11,30 @@ mod replication_handler_test;
 
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------
-use crate::{
-    alias::{ROF, TROF},
-    grpc::rpc_service::{AppendEntriesRequest, ClientCommand, ClientResponse, Entry},
-    AppendResults, ChannelWithAddressAndRole, MaybeCloneOneshotSender, RaftConfig, Result,
-    RetryPolicies, TypeConfig,
-};
-use dashmap::DashMap;
-use std::{collections::HashMap, sync::Arc};
-use tonic::{async_trait, Status};
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use dashmap::DashMap;
 #[cfg(test)]
 use mockall::automock;
+use tonic::async_trait;
+use tonic::Status;
 
-use super::{LeaderStateSnapshot, StateSnapshot};
+use super::LeaderStateSnapshot;
+use super::StateSnapshot;
+use crate::alias::ROF;
+use crate::alias::TROF;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::Entry;
+use crate::AppendResults;
+use crate::ChannelWithAddressAndRole;
+use crate::MaybeCloneOneshotSender;
+use crate::RaftConfig;
+use crate::Result;
+use crate::RetryPolicies;
+use crate::TypeConfig;
 #[derive(Debug)]
 pub struct ClientRequestWithSignal {
     pub id: String,
@@ -54,8 +64,7 @@ pub struct AppendResponseWithUpdates {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn handle_client_proposal_in_batch(
         &self,
@@ -104,7 +113,6 @@ where
     ///    - Check `response.term_update` for term conflicts
     ///    - If higher term exists, transition to Follower
     ///    - Apply other state updates via role_tx
-    ///
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,

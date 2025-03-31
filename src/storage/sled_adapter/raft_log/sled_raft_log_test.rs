@@ -1,17 +1,21 @@
-use crate::{
-    alias::ROF,
-    convert::kv,
-    grpc::rpc_service::Entry,
-    init_sled_storages,
-    test_utils::{self, reset_dbs},
-    RaftLog, RaftTypeConfig, SledStateStorage,
-};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::vec;
+
 use futures::future::join_all;
 use log::debug;
-use std::{collections::HashMap, sync::Arc, vec};
 use tokio::time::Instant;
 
 use super::*;
+use crate::alias::ROF;
+use crate::convert::kv;
+use crate::grpc::rpc_service::Entry;
+use crate::init_sled_storages;
+use crate::test_utils::reset_dbs;
+use crate::test_utils::{self};
+use crate::RaftLog;
+use crate::RaftTypeConfig;
+use crate::SledStateStorage;
 
 struct TestContext {
     // s: Arc<RaftState>,
@@ -45,7 +49,10 @@ fn setup(path: &str) -> TestContext {
     }
 }
 
-fn init(path: &str, commit_index: u64) -> Arc<ROF<RaftTypeConfig>> {
+fn init(
+    path: &str,
+    commit_index: u64,
+) -> Arc<ROF<RaftTypeConfig>> {
     let (raft_log_db, _state_machine_db, _state_storage_db, _snapshot_storage_db) =
         init_sled_storages(path.to_string()).unwrap();
     Arc::new(SledRaftLog::new(Arc::new(raft_log_db), Some(commit_index)))
@@ -61,9 +68,7 @@ fn test_get_as_vec() {
         command: vec![1; 8],
     };
 
-    c.raft_log
-        .insert_batch(vec![value.clone()])
-        .expect("should succeed");
+    c.raft_log.insert_batch(vec![value.clone()]).expect("should succeed");
 
     if let Some(entry) = c.raft_log.get_entry_by_index(1) {
         assert_eq!(value, entry);
@@ -72,7 +77,10 @@ fn test_get_as_vec() {
     }
 }
 
-fn insert(raft_log: &Arc<ROF<RaftTypeConfig>>, key: u64) {
+fn insert(
+    raft_log: &Arc<ROF<RaftTypeConfig>>,
+    key: u64,
+) {
     let log = Entry {
         index: key,
         term: 7,
@@ -126,8 +134,9 @@ fn test_get_range2() {
 ///
 // ## Setup:
 // 1.
-//     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6), log10(6)
-//     follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3), log9(3), log10(3), log11(3)
+//     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
+// log10(6)     follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3),
+// log9(3), log10(3), log11(3)
 ///
 // ## Criterias:
 // 1. next_id been updated to:
@@ -317,7 +326,8 @@ fn test_sled_last_max() {
     }
 }
 
-///3 nodes, leader append 1000 logs, the other two logs can not get 1000 entries
+///3 nodes, leader append 1000 logs, the other two logs can not get 1000
+/// entries
 // to test insert_one_client_command and get_entries_between two functions
 #[test]
 fn test_insert_one_client_command() {
@@ -375,9 +385,9 @@ fn test_get_raft_log_entry_between() {
     assert_eq!(result.len(), 1);
 }
 // Test duplicated insert
-// Leader might received duplicated commands from clients in several RPC request.
-// But, leader should not treat them as duplicated entries. They are just sequence
-// events.
+// Leader might received duplicated commands from clients in several RPC
+// request. But, leader should not treat them as duplicated entries. They are
+// just sequence events.
 ///
 #[test]
 fn test_insert_one_client_command_dup_case() {
@@ -444,10 +454,7 @@ fn test_load_uncommitted_from_db_to_cache() {
             command: vec![],
         });
     }
-    context
-        .raft_log
-        .insert_batch(entries)
-        .expect("should succeed");
+    context.raft_log.insert_batch(entries).expect("should succeed");
 
     let len = context.raft_log.last_entry_id();
     context.raft_log.load_uncommitted_from_db_to_cache(8, len);
@@ -458,7 +465,8 @@ fn test_load_uncommitted_from_db_to_cache() {
     }
 }
 
-///Bug: setup logger with error: SetGlobalDefaultError("a global default trace dispatcher has already been set")
+///Bug: setup logger with error: SetGlobalDefaultError("a global default trace
+/// dispatcher has already been set")
 // #[traced_test]
 #[test]
 fn test_delete_entries_before() {
@@ -474,10 +482,7 @@ fn test_delete_entries_before() {
             command: vec![],
         });
     }
-    context
-        .raft_log
-        .insert_batch(entries)
-        .expect("should succeed");
+    context.raft_log.insert_batch(entries).expect("should succeed");
 
     //..
     // assume we have generated snapshot until $last_applied,
@@ -507,10 +512,7 @@ fn test_get_first_raft_log_entry_id_after_delete_entries() {
             command: vec![],
         });
     }
-    context
-        .raft_log
-        .insert_batch(entries)
-        .expect("should succeed");
+    context.raft_log.insert_batch(entries).expect("should succeed");
 
     let last_applied = 4;
     context
@@ -538,10 +540,7 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
             command: vec![],
         });
     }
-    context
-        .raft_log
-        .insert_batch(entries)
-        .expect("should succeed");
+    context.raft_log.insert_batch(entries).expect("should succeed");
 
     let last_applied = 4;
     context
@@ -560,8 +559,9 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
 }
 
 // Case 1: we have multi thread working concurrently
-//     each thread should get unique pre allocated index for pending apply entries
-//     At last when we retrieve last entry of the locallog, we should see the last pre allocated index
+//     each thread should get unique pre allocated index for pending apply
+// entries     At last when we retrieve last entry of the locallog, we should
+// see the last pre allocated index
 ///
 #[tokio::test]
 async fn test_pre_allocate_raft_logs_next_index_case1() {
@@ -586,9 +586,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
                     command: kv(i),
                 });
             }
-            cloned_raft_log
-                .insert_batch(entries.clone())
-                .expect("should succeed");
+            cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
         });
         handles.push(handle);
     }
@@ -601,9 +599,9 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
 
 // Case 2: we have mutil thread working concurrently
 //     there might be one thread failed to apply the local log entries
-//     which cases some log entry index might not really exists inside local logs
-//     we still want to validate the last log entry id is the same one as we expected
-// #[ignore = "architecture changes, this case will not exist"]
+//     which cases some log entry index might not really exists inside local
+// logs     we still want to validate the last log entry id is the same one as
+// we expected #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
 async fn test_pre_allocate_raft_logs_next_index_case2() {
     let context = setup("/tmp/test_pre_allocate_raft_logs_next_index_case2");
@@ -645,9 +643,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                     command: kv(i),
                 });
             }
-            cloned_raft_log
-                .insert_batch(entries.clone())
-                .expect("should succeed");
+            cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
         });
         handles.push(handle);
     }
@@ -689,9 +685,7 @@ async fn test_insert_batch_logs_case1() {
                     command: kv(i),
                 });
             }
-            cloned_raft_log
-                .insert_batch(entries.clone())
-                .expect("should succeed");
+            cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
         });
         handles.push(handle);
     }
@@ -704,11 +698,11 @@ async fn test_insert_batch_logs_case1() {
 
 // Case 2: combine 'filter_out_conflicts_and_append', 'delete_entries_before'
 //     and 'insert_batch' actions
-// step1: current node is Leader at T1, so insert_batch is invoked, contains log_1-log_10(with term: 1).
-// step2: current node starts generating snapshots, so delete_entries_before is invoked
-// step3: fake the current Leader restarts
-// step4: new Leader elected(contains log_1-log_8(with term: 1)), current node is Follower
-// step5: new Leader insert log_9, log_10 with term:2.
+// step1: current node is Leader at T1, so insert_batch is invoked, contains
+// log_1-log_10(with term: 1). step2: current node starts generating snapshots,
+// so delete_entries_before is invoked step3: fake the current Leader restarts
+// step4: new Leader elected(contains log_1-log_8(with term: 1)), current node
+// is Follower step5: new Leader insert log_9, log_10 with term:2.
 // step6: current node receives new Leader's append request
 //     so it starts filter_out_conflicts_and_append, but new entries' term is 2
 ///
@@ -719,14 +713,12 @@ async fn test_insert_batch_logs_case2() {
     //preparation
     let ex_leader_id = 1;
     let new_leader_id = 2;
-    let (raft_log_db, _, state_storage_db, _) =
-        reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
+    let (raft_log_db, _, state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
 
     let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
     let ex_leader_sled_raft_log = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
 
-    let (raft_log_db, _, state_storage_db, _) =
-        reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
+    let (raft_log_db, _, state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
     let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
     let new_leader_sled_raft_log = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
 
@@ -829,12 +821,7 @@ fn test_prev_log_ok_case_1_2() {
     // prev_log index > 0
     let prev_log_index = 2;
     let prev_log_term = 1;
-    assert_eq!(
-        true,
-        context
-            .raft_log
-            .prev_log_ok(prev_log_index, prev_log_term, 0)
-    );
+    assert_eq!(true, context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
 // # Case 1.3: conflict case
@@ -854,12 +841,7 @@ fn test_prev_log_ok_case_1_3() {
     // prev_log index > 0
     let prev_log_index = 3;
     let prev_log_term = 1;
-    assert_eq!(
-        false,
-        context
-            .raft_log
-            .prev_log_ok(prev_log_index, prev_log_term, 0)
-    );
+    assert_eq!(false, context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
 // # Case 1.4: conflict case
@@ -879,12 +861,7 @@ fn test_prev_log_ok_case_1_4() {
     // prev_log index > 0
     let prev_log_index = 3;
     let prev_log_term = 3;
-    assert_eq!(
-        false,
-        context
-            .raft_log
-            .prev_log_ok(prev_log_index, prev_log_term, 0)
-    );
+    assert_eq!(false, context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
 // # Case 1.5: conflict case
@@ -1002,14 +979,16 @@ fn test_calculate_majority_matched_index_case0() {
 }
 
 // If there exists an N such that N > commitIndex, a majority
-// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
+// (§5.3, §5.4).
 #[test]
 fn test_calculate_majority_matched_index_case1() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case1");
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
     let peer_ids = vec![2, 3];
-    //case 1: majority matched index is 2, commit_index: 4, current_term is 3, while log(2) term is 2, return None
+    //case 1: majority matched index is 2, commit_index: 4, current_term is 3,
+    // while log(2) term is 2, return None
     let ct = 3;
     let ci = 4;
     // state.update_current_term(ct);
@@ -1024,10 +1003,7 @@ fn test_calculate_majority_matched_index_case1() {
     //     .iter()
     //     .map(|&id| state.match_index(id).unwrap_or(0))
     //     .collect();
-    assert_eq!(
-        None,
-        raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2])
-    );
+    assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2]));
 }
 
 #[test]
@@ -1038,7 +1014,8 @@ fn test_calculate_majority_matched_index_case2() {
     let _ = c.raft_log.reset();
     let peer_ids = vec![2, 3];
 
-    //case 2: majority matched index is 3, commit_index: 2, current_term is 3, while log(3) term is 3, return Some(3)
+    //case 2: majority matched index is 3, commit_index: 2, current_term is 3,
+    // while log(3) term is 3, return Some(3)
     let ct = 3;
     let ci = 2;
     // state.update_current_term(ct);
@@ -1055,10 +1032,7 @@ fn test_calculate_majority_matched_index_case2() {
     //     .iter()
     //     .map(|&id| state.match_index(id).unwrap_or(0))
     //     .collect();
-    assert_eq!(
-        Some(3),
-        raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2])
-    );
+    assert_eq!(Some(3), raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2]));
 }
 
 #[test]
@@ -1068,7 +1042,8 @@ fn test_calculate_majority_matched_index_case3() {
     let raft_log = c.raft_log.clone();
 
     let peer_ids = vec![2, 3];
-    //case 3: majority matched index is 3, commit_index: 2, current_term is 3, while log(3) term is 2, return None
+    //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
+    // while log(3) term is 2, return None
     let ct = 3;
     let ci = 2;
     // state.update_current_term(ct);
@@ -1083,10 +1058,7 @@ fn test_calculate_majority_matched_index_case3() {
     //     .iter()
     //     .map(|&id| state.match_index(id).unwrap_or(0))
     //     .collect();
-    assert_eq!(
-        None,
-        raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2])
-    );
+    assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2]));
 }
 
 #[test]
@@ -1095,7 +1067,8 @@ fn test_calculate_majority_matched_index_case4() {
     // let state = c.s.clone();
     let raft_log = c.raft_log.clone();
     let peer_ids = vec![2, 3];
-    //case 3: majority matched index is 3, commit_index: 2, current_term is 3, while log(3) term is 2, return None
+    //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
+    // while log(3) term is 2, return None
     let ct = 3;
     let ci = 2;
     // state.update_current_term(ct);
@@ -1109,10 +1082,7 @@ fn test_calculate_majority_matched_index_case4() {
     //     .iter()
     //     .map(|&id| state.match_index(id).unwrap_or(0))
     //     .collect();
-    assert_eq!(
-        None,
-        raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2])
-    );
+    assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2]));
 }
 
 // # Case 5: stress testing

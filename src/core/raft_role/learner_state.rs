@@ -1,20 +1,34 @@
-use super::{
-    candidate_state::CandidateState, follower_state::FollowerState, role_state::RaftRoleState,
-    RaftRole, SharedState, StateSnapshot,
-};
-use crate::{
-    alias::POF,
-    grpc::rpc_service::{ClientResponse, VoteResponse, VotedFor},
-    ElectionTimer, Error, RaftContext, RaftEvent, Result, RoleEvent, RaftNodeConfig, StateMachine,
-    TypeConfig,
-};
-use log::{debug, error, info, warn};
-use std::{marker::PhantomData, sync::Arc};
-use tokio::{
-    sync::mpsc::{self},
-    time::Instant,
-};
-use tonic::{async_trait, Status};
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
+use super::candidate_state::CandidateState;
+use super::follower_state::FollowerState;
+use super::role_state::RaftRoleState;
+use super::RaftRole;
+use super::SharedState;
+use super::StateSnapshot;
+use crate::alias::POF;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::grpc::rpc_service::VotedFor;
+use crate::ElectionTimer;
+use crate::Error;
+use crate::RaftContext;
+use crate::RaftEvent;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::RoleEvent;
+use crate::StateMachine;
+use crate::TypeConfig;
 
 pub struct LearnerState<T: TypeConfig> {
     pub shared_state: SharedState,
@@ -80,7 +94,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     }
 
     /// As Leader should not vote any more
-    ///
     fn voted_for(&self) -> Result<Option<VotedFor>> {
         warn!("voted_for - As Learner should not vote any more.");
         Err(Error::Illegal)
@@ -189,9 +202,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
                 sender
-                    .send(Ok(ClientResponse::write_error(
-                        Error::AppendEntriesNotLeader,
-                    )))
+                    .send(Ok(ClientResponse::write_error(Error::AppendEntriesNotLeader)))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
@@ -226,7 +237,10 @@ impl<T: TypeConfig> LearnerState<T> {
 }
 
 impl<T: TypeConfig> LearnerState<T> {
-    pub fn new(node_id: u32, settings: Arc<RaftNodeConfig>) -> Self {
+    pub fn new(
+        node_id: u32,
+        settings: Arc<RaftNodeConfig>,
+    ) -> Self {
         LearnerState {
             shared_state: SharedState::new(node_id, None, None),
             timer: ElectionTimer::new((

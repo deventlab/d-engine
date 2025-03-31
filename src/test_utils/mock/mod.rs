@@ -1,15 +1,17 @@
-//! Unit test module for isolating RaftContext components via mocked dependencies.
+//! Unit test module for isolating RaftContext components via mocked
+//! dependencies.
 //!
-//! This module provides mock implementations of storage, network and handler components
-//! using the [mockall] framework. Designed for granular testing of Raft consensus algorithm
-//! components with the following characteristics:
+//! This module provides mock implementations of storage, network and handler
+//! components using the [mockall] framework. Designed for granular testing of
+//! Raft consensus algorithm components with the following characteristics:
 //!
 //! - Uses **mocked storage interfaces** with in-memory state control
 //! - Simulates network transport with deterministic responses
 //! - Allows precise behavior injection for handlers
 //! - Enables isolated testing of component interactions
 //!
-//! The [`TestContext`] struct encapsulates a controlled testing environment containing:
+//! The [`TestContext`] struct encapsulates a controlled testing environment
+//! containing:
 //! - Mock storage implementations (raft log, state machine)
 //! - Simulated network layer
 //! - Configurable cluster membership
@@ -48,9 +50,12 @@ pub use mock_rpc_service::*;
 use tokio::sync::watch;
 
 //------------------------------------------------------
-
 use super::{enable_logger, MockTypeConfig};
-use crate::{grpc::rpc_service::NodeMeta, Node, Raft, RaftContext, RaftNodeConfig};
+use crate::grpc::rpc_service::NodeMeta;
+use crate::Node;
+use crate::Raft;
+use crate::RaftContext;
+use crate::RaftNodeConfig;
 
 pub fn mock_node(
     db_path: &str,
@@ -66,9 +71,7 @@ pub fn mock_node(
     }
     // Initializing Shutdown Signal
     // let (graceful_tx, graceful_rx) = watch::channel(());
-    MockBuilder::new(shutdown_signal)
-        .with_settings(settings)
-        .build_node()
+    MockBuilder::new(shutdown_signal).with_settings(settings).build_node()
 }
 
 pub fn mock_raft(
@@ -84,9 +87,7 @@ pub fn mock_raft(
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
 
-    MockBuilder::new(shutdown_signal)
-        .with_settings(settings)
-        .build_raft()
+    MockBuilder::new(shutdown_signal).with_settings(settings).build_raft()
 }
 
 pub fn mock_raft_context(

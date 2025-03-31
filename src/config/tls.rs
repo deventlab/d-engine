@@ -1,7 +1,11 @@
-use std::{fs, path::Path};
+use std::fs;
+use std::path::Path;
 
-use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::Error;
+use crate::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[allow(unused)]
@@ -57,18 +61,14 @@ impl TlsConfig {
 
         // Validate mTLS dependencies
         if self.enable_mtls && !self.enable_tls {
-            return Err(Error::InvalidConfig(
-                "mTLS requires enable_tls to be true".into(),
-            ));
+            return Err(Error::InvalidConfig("mTLS requires enable_tls to be true".into()));
         }
 
         // Handle self-signed certificate generation case
         if self.generate_self_signed_certificates {
-            if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty()
-            {
+            if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty() {
                 return Err(Error::InvalidConfig(
-                    "Cannot specify certificate paths with generate_self_signed_certificates=true"
-                        .into(),
+                    "Cannot specify certificate paths with generate_self_signed_certificates=true".into(),
                 ));
             }
             return Ok(());
@@ -81,17 +81,18 @@ impl TlsConfig {
 
         // Validate client certificates for mTLS
         if self.enable_mtls {
-            self.validate_cert_file(
-                &self.client_certificate_authority_root_path,
-                "client CA certificate",
-            )?;
+            self.validate_cert_file(&self.client_certificate_authority_root_path, "client CA certificate")?;
         }
 
         Ok(())
     }
 
     /// Validates a certificate file existence and readability
-    fn validate_cert_file(&self, path: &str, name: &str) -> Result<()> {
+    fn validate_cert_file(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<()> {
         let path = Path::new(path);
 
         if path.exists() {
@@ -99,12 +100,7 @@ impl TlsConfig {
             {
                 // Check file readability
                 fs::File::open(path).map_err(|e| {
-                    Error::InvalidConfig(format!(
-                        "{} file {} is unreadable: {}",
-                        name,
-                        path.display(),
-                        e
-                    ))
+                    Error::InvalidConfig(format!("{} file {} is unreadable: {}", name, path.display(), e))
                 })?;
             }
             Ok(())
@@ -118,7 +114,11 @@ impl TlsConfig {
     }
 
     /// Validates a private key file existence and permissions
-    fn validate_key_file(&self, path: &str, name: &str) -> Result<()> {
+    fn validate_key_file(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<()> {
         let path = Path::new(path);
 
         if path.exists() {
@@ -126,11 +126,7 @@ impl TlsConfig {
             {
                 // Check key file permissions (should be 600)
                 let metadata = fs::metadata(path).map_err(|e| {
-                    Error::InvalidConfig(format!(
-                        "Cannot access {} permissions: {}",
-                        path.display(),
-                        e
-                    ))
+                    Error::InvalidConfig(format!("Cannot access {} permissions: {}", path.display(), e))
                 })?;
 
                 #[cfg(unix)]

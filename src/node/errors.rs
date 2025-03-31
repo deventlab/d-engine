@@ -1,9 +1,15 @@
-use crate::{grpc::rpc_service::ClientRequestError, NewLeaderInfo, RoleEvent};
-use config::ConfigError;
-use prost::{DecodeError, EncodeError};
 use std::net::AddrParseError;
+
+use config::ConfigError;
+use prost::DecodeError;
+use prost::EncodeError;
 use thiserror::Error;
-use tokio::{sync::mpsc::error::SendError, task::JoinError};
+use tokio::sync::mpsc::error::SendError;
+use tokio::task::JoinError;
+
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::NewLeaderInfo;
+use crate::RoleEvent;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

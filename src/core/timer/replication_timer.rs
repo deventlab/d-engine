@@ -11,7 +11,10 @@ pub struct ReplicationTimer {
 }
 
 impl ReplicationTimer {
-    pub fn new(replication_timeout_ms: u64, batch_interval_ms: u64) -> Self {
+    pub fn new(
+        replication_timeout_ms: u64,
+        batch_interval_ms: u64,
+    ) -> Self {
         let now = Instant::now();
         Self {
             replication_timeout: Duration::from_millis(replication_timeout_ms),
@@ -30,8 +33,7 @@ impl ReplicationTimer {
     }
 
     pub fn remaining(&self) -> Duration {
-        self.next_deadline()
-            .saturating_duration_since(Instant::now())
+        self.next_deadline().saturating_duration_since(Instant::now())
     }
 
     pub fn next_deadline(&self) -> Instant {

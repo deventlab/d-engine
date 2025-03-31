@@ -1,14 +1,20 @@
-use crate::{Error, NetworkConfig, Result};
-use log::error;
 use std::time::Duration;
-use tonic::{async_trait, transport::Channel};
-use tonic_health::pb::{
-    health_check_response::ServingStatus, health_client::HealthClient, HealthCheckRequest,
-    HealthCheckResponse,
-};
 
+use log::error;
 #[cfg(test)]
-use mockall::{automock, predicate::*};
+use mockall::automock;
+#[cfg(test)]
+use mockall::predicate::*;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic_health::pb::health_check_response::ServingStatus;
+use tonic_health::pb::health_client::HealthClient;
+use tonic_health::pb::HealthCheckRequest;
+use tonic_health::pb::HealthCheckResponse;
+
+use crate::Error;
+use crate::NetworkConfig;
+use crate::Result;
 
 #[cfg_attr(test, automock)]
 #[async_trait]
@@ -24,18 +30,17 @@ pub(crate) struct HealthChecker {
 }
 
 impl HealthChecker {
-    async fn connect(addr: &str, settings: NetworkConfig) -> Result<Self> {
+    async fn connect(
+        addr: &str,
+        settings: NetworkConfig,
+    ) -> Result<Self> {
         let channel = Channel::from_shared(addr.to_string())
             .map_err(|_| Error::InvalidURI(addr.into()))?
             .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))
             .timeout(Duration::from_millis(settings.request_timeout_in_ms))
             .tcp_keepalive(Some(Duration::from_secs(settings.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(
-                settings.http2_keep_alive_interval_in_secs,
-            ))
-            .keep_alive_timeout(Duration::from_secs(
-                settings.http2_keep_alive_timeout_in_secs,
-            ))
+            .http2_keep_alive_interval(Duration::from_secs(settings.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(settings.http2_keep_alive_timeout_in_secs))
             .connect()
             .await
             .map_err(|err| {
@@ -54,7 +59,6 @@ impl HealthChecker {
 #[async_trait]
 impl HealthCheckerApis for HealthChecker {
     /// peer_addr: "http://[::1]:50051"
-    ///
     async fn check_peer_is_ready(
         peer_addr: String,
         settings: NetworkConfig,

@@ -16,7 +16,10 @@ impl ClusterClient {
         Ok(Vec::new())
     }
 
-    pub async fn add_member(&self, node: NodeMeta) -> Result<()> {
+    pub async fn add_member(
+        &self,
+        node: NodeMeta,
+    ) -> Result<()> {
         //TOOD: in next release
         Ok(())
     }

@@ -18,13 +18,15 @@ mod pool_test;
 
 //---
 
-use crate::{
-    grpc::rpc_service::{
-        client_command, client_response, ClientCommand, ClientRequestError, ClientResponse,
-        ClientResult, ReadResults,
-    },
-    Error, Result,
-};
+use crate::grpc::rpc_service::client_command;
+use crate::grpc::rpc_service::client_response;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::ClientResult;
+use crate::grpc::rpc_service::ReadResults;
+use crate::Error;
+use crate::Result;
 
 impl ClientCommand {
     pub fn get(key: impl AsRef<[u8]>) -> Self {
@@ -33,7 +35,10 @@ impl ClientCommand {
         }
     }
 
-    pub fn insert(key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Self {
+    pub fn insert(
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Self {
         let insert_cmd = client_command::Insert {
             key: key.as_ref().to_vec(),
             value: value.as_ref().to_vec(),
@@ -73,9 +78,7 @@ impl ClientResponse {
     pub fn read_results(results: Vec<ClientResult>) -> Self {
         Self {
             error_code: ClientRequestError::NoError as i32,
-            result: Some(client_response::Result::ReadResults(ReadResults {
-                results,
-            })),
+            result: Some(client_response::Result::ReadResults(ReadResults { results })),
         }
     }
 

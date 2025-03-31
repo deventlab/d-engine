@@ -9,9 +9,10 @@ mod storage;
 mod type_config;
 pub mod utils;
 
+pub use core::*;
+
 pub use client::*;
 pub use config::*;
-pub use core::*;
 pub use membership::*;
 pub use metrics::*;
 pub use network::*;
@@ -28,7 +29,9 @@ pub mod test_utils;
 //-----------------------------------------------------------
 // Autometrics
 /// autometrics: https://docs.autometrics.dev/rust/adding-alerts-and-slos
-use autometrics::objectives::{Objective, ObjectiveLatency, ObjectivePercentile};
+use autometrics::objectives::Objective;
+use autometrics::objectives::ObjectiveLatency;
+use autometrics::objectives::ObjectivePercentile;
 const API_SLO: Objective = Objective::new("api")
     .success_rate(ObjectivePercentile::P99_9)
     .latency(ObjectiveLatency::Ms10, ObjectivePercentile::P99);

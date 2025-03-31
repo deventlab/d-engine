@@ -1,8 +1,11 @@
-use log::info;
-
-use super::{Client, ClientConfig, ClusterClient, ConnectionPool, KvClient};
-use crate::Result;
 use std::time::Duration;
+
+use super::Client;
+use super::ClientConfig;
+use super::ClusterClient;
+use super::ConnectionPool;
+use super::KvClient;
+use crate::Result;
 
 pub struct ClientBuilder {
     config: ClientConfig,
@@ -19,19 +22,28 @@ impl ClientBuilder {
     }
 
     /// Set connection timeout (default: 1s)
-    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+    pub fn connect_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> Self {
         self.config.connect_timeout = timeout;
         self
     }
 
     /// Set request timeout (default: 3s)
-    pub fn request_timeout(mut self, timeout: Duration) -> Self {
+    pub fn request_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> Self {
         self.config.request_timeout = timeout;
         self
     }
 
     /// Enable/disable compression (default: enabled)
-    pub fn enable_compression(mut self, enable: bool) -> Self {
+    pub fn enable_compression(
+        mut self,
+        enable: bool,
+    ) -> Self {
         self.config.enable_compression = enable;
         self
     }
@@ -39,8 +51,8 @@ impl ClientBuilder {
     /// Completely replaces the default configuration
     ///
     /// # Warning: Configuration Override
-    /// This will discard all previous settings configured through individual methods
-    /// like [`connect_timeout`](ClientBuilder::connect_timeout) or
+    /// This will discard all previous settings configured through individual
+    /// methods like [`connect_timeout`](ClientBuilder::connect_timeout) or
     /// [`enable_compression`](ClientBuilder::enable_compression).
     ///
     /// # Usage Guidance
@@ -62,7 +74,10 @@ impl ClientBuilder {
     /// let builder = ClientBuilder::new(vec!["http://node1:9081".into()])
     ///     .set_config(custom_config);
     /// ```
-    pub fn set_config(mut self, config: ClientConfig) -> Self {
+    pub fn set_config(
+        mut self,
+        config: ClientConfig,
+    ) -> Self {
         self.config = config;
         self
     }

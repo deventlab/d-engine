@@ -14,18 +14,24 @@
 //! });
 //! ```
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
+
+use crate::alias::POF;
 use crate::membership::PeerChannelsFactory;
+use crate::PeerChannels;
+use crate::Raft;
+use crate::RaftEvent;
 use crate::RaftNodeConfig;
-use crate::{alias::POF, PeerChannels, Raft, RaftEvent, Result, TypeConfig};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tokio::sync::{mpsc, Mutex};
+use crate::Result;
+use crate::TypeConfig;
 
 pub struct Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) node_id: u32,
     pub(crate) raft_core: Arc<Mutex<Raft<T>>>,
@@ -39,10 +45,12 @@ where
 }
 
 impl<T> Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
-    async fn connect_with_peers(node_id: u32, settings: Arc<RaftNodeConfig>) -> Result<POF<T>> {
+    async fn connect_with_peers(
+        node_id: u32,
+        settings: Arc<RaftNodeConfig>,
+    ) -> Result<POF<T>> {
         let mut peer_channels = T::P::create(node_id, settings.clone());
         peer_channels.connect_with_peers(node_id).await?;
 
@@ -70,7 +78,10 @@ where
         Ok(())
     }
 
-    pub fn set_ready(&self, is_ready: bool) {
+    pub fn set_ready(
+        &self,
+        is_ready: bool,
+    ) {
         self.ready.store(is_ready, Ordering::SeqCst);
     }
 

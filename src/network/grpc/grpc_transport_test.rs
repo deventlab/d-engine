@@ -1,21 +1,26 @@
-use crate::{
-    grpc::{
-        grpc_transport::GrpcTransport,
-        rpc_service::{AppendEntriesResponse, VoteResponse},
-    },
-    test_utils::{
-        self, setup_raft_components, MockNode, MockRpcService, MOCK_RPC_CLIENT_PORT_BASE,
-    },
-    AppendResults, ChannelWithAddress, ChannelWithAddressAndRole, RaftNodeConfig, RetryPolicies,
-    Transport, CANDIDATE, FOLLOWER,
-};
 use std::collections::HashMap;
+
 use tokio::sync::oneshot;
 
-use super::{
-    rpc_service::{AppendEntriesRequest, VoteRequest},
-    *,
-};
+use super::rpc_service::AppendEntriesRequest;
+use super::rpc_service::VoteRequest;
+use super::*;
+use crate::grpc::grpc_transport::GrpcTransport;
+use crate::grpc::rpc_service::AppendEntriesResponse;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::test_utils::setup_raft_components;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
+use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
+use crate::test_utils::{self};
+use crate::AppendResults;
+use crate::ChannelWithAddress;
+use crate::ChannelWithAddressAndRole;
+use crate::RaftNodeConfig;
+use crate::RetryPolicies;
+use crate::Transport;
+use crate::CANDIDATE;
+use crate::FOLLOWER;
 
 // Case 1: no followers or candidates found in cluster,
 // Criterias: function should return false
@@ -24,9 +29,8 @@ use super::{
 async fn test_send_append_requests_case1() {
     let my_id = 1;
     let client = GrpcTransport { my_id };
-    if let Err(Error::AppendEntriesNoPeerFound) = client
-        .send_append_requests(1, vec![], &RetryPolicies::default())
-        .await
+    if let Err(Error::AppendEntriesNoPeerFound) =
+        client.send_append_requests(1, vec![], &RetryPolicies::default()).await
     {
         assert!(true);
     } else {
@@ -161,15 +165,13 @@ async fn test_send_append_requests_case3() {
         match_index: peer_3_match_index,
     };
     let (_tx2, rx2) = oneshot::channel::<()>();
-    let addr2 =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 3, peer_2_response, rx2)
-            .await
-            .expect("should succeed");
+    let addr2 = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 3, peer_2_response, rx2)
+        .await
+        .expect("should succeed");
     let (_tx3, rx3) = oneshot::channel::<()>();
-    let addr3 =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 4, peer_3_response, rx3)
-            .await
-            .expect("should succeed");
+    let addr3 = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 4, peer_3_response, rx3)
+        .await
+        .expect("should succeed");
 
     let peer_2_address = addr2;
     let peer_3_address = addr3;
@@ -248,15 +250,13 @@ async fn test_send_append_requests_case4() {
         match_index: peer_3_match_index,
     };
     let (tx2, rx2) = oneshot::channel::<()>();
-    let addr2 =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 5, peer_2_response, rx2)
-            .await
-            .expect("should succeed");
+    let addr2 = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 5, peer_2_response, rx2)
+        .await
+        .expect("should succeed");
     let (tx3, rx3) = oneshot::channel::<()>();
-    let addr3 =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 6, peer_3_response, rx3)
-            .await
-            .expect("should succeed");
+    let addr3 = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 6, peer_3_response, rx3)
+        .await
+        .expect("should succeed");
 
     let peer_2_address = addr2;
     let peer_3_address = addr3;
@@ -321,10 +321,9 @@ async fn test_send_append_requests_case5() {
         match_index: leader_commit_index,
     };
     let (_tx2, rx2) = oneshot::channel::<()>();
-    let leader_address =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 7, leader_response, rx2)
-            .await
-            .expect("should succeed");
+    let leader_address = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 7, leader_response, rx2)
+        .await
+        .expect("should succeed");
 
     let peer_req = AppendEntriesRequest {
         term: leader_current_term,
@@ -338,10 +337,7 @@ async fn test_send_append_requests_case5() {
 
     let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let client = GrpcTransport { my_id: leader_id };
-    if let Err(Error::AppendEntriesNoPeerFound) = client
-        .send_append_requests(1, vec![], &settings.retry)
-        .await
-    {
+    if let Err(Error::AppendEntriesNoPeerFound) = client.send_append_requests(1, vec![], &settings.retry).await {
         assert!(true);
     } else {
         assert!(false);
@@ -384,15 +380,13 @@ async fn test_send_append_requests_case6() {
         match_index: peer_3_match_index,
     };
     let (_tx2, rx2) = oneshot::channel::<()>();
-    let addr2 =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 8, peer_2_response, rx2)
-            .await
-            .expect("should succeed");
+    let addr2 = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 8, peer_2_response, rx2)
+        .await
+        .expect("should succeed");
     let (_tx3, rx3) = oneshot::channel::<()>();
-    let addr3 =
-        simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 9, peer_3_response, rx3)
-            .await
-            .expect("should succeed");
+    let addr3 = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 9, peer_3_response, rx3)
+        .await
+        .expect("should succeed");
 
     let peer_2_address = addr2;
     let peer_3_address = addr3;
@@ -436,13 +430,16 @@ async fn test_send_append_requests_case6() {
 //
 // ## Setup:
 // 1.
-//     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6), log10(6)
-//     follower_a: log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
+//     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5),
+// log7(5), log8(6), log9(6), log10(6)     follower_a: log1(1), log2(1),
+// log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
 //     follower_b: log1(1), log2(1), log3(1), log4(4),
-//     follower_c: log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6), log10(6)
-//     follower_d: log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6), log10(6), log11(7), log12(7)
-//     follower_e: log1(1), log2(1), log3(1), log4(4), log5(4), log6(4), log7(4)
-//     follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3), log9(3), log10(3), log11(3)
+//     follower_c: log1(1), log2(1), log3(1), log4(4), log5(4), log6(5),
+// log7(5), log8(6), log9(6), log10(6)     follower_d: log1(1), log2(1),
+// log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6), log10(6),
+// log11(7), log12(7)     follower_e: log1(1), log2(1), log3(1), log4(4),
+// log5(4), log6(4), log7(4)     follower_f: log1(1), log2(1), log3(1), log4(2),
+// log5(2), log6(2), log7(3), log8(3), log9(3), log10(3), log11(3)
 //
 // ## Criterias:
 // 1. next_id been updated to:
@@ -480,14 +477,14 @@ async fn test_send_append_requests_case7() {
     }
 
     // 2. write down expected test result
-    let mut expected_next_indexes: HashMap<u32, u64> =
-        [(2, 10), (3, 5), (4, 11), (5, 11), (6, 5), (7, 3)]
-            .into_iter()
-            .collect();
+    let mut expected_next_indexes: HashMap<u32, u64> = [(2, 10), (3, 5), (4, 11), (5, 11), (6, 5), (7, 3)]
+        .into_iter()
+        .collect();
 
     // 3. Simulate RPC service response
 
-    //server shutdown signal's lifetime should be the same as this unit test, otherwise server will die
+    //server shutdown signal's lifetime should be the same as this unit test,
+    // otherwise server will die
     let (_tx, rx2) = oneshot::channel::<()>();
     let (_tx, rx3) = oneshot::channel::<()>();
     let (_tx, rx4) = oneshot::channel::<()>();
@@ -516,13 +513,9 @@ async fn test_send_append_requests_case7() {
             match_index,
         };
 
-        let addr = simulate_append_entries_mock_server(
-            MOCK_RPC_CLIENT_PORT_BASE + 10 + id as u64,
-            peer_response,
-            rx,
-        )
-        .await
-        .expect("should succeed");
+        let addr = simulate_append_entries_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 10 + id as u64, peer_response, rx)
+            .await
+            .expect("should succeed");
 
         peer_addresses.push((id, addr));
     }
@@ -548,11 +541,7 @@ async fn test_send_append_requests_case7() {
     let client = GrpcTransport { my_id: leader_id };
 
     match client
-        .send_append_requests(
-            leader_current_term,
-            requests_with_peer_address,
-            &settings.retry,
-        )
+        .send_append_requests(leader_current_term, requests_with_peer_address, &settings.retry)
         .await
     {
         Ok(AppendResults {
@@ -603,10 +592,7 @@ async fn test_send_vote_requests_case1() {
         last_log_term: 1,
     };
     let client = GrpcTransport { my_id };
-    match client
-        .send_vote_requests(vec![], request, &settings.retry)
-        .await
-    {
+    match client.send_vote_requests(vec![], request, &settings.retry).await {
         Ok(res) => assert!(!res),
         Err(_) => assert!(false),
     }
@@ -636,10 +622,9 @@ async fn test_send_vote_requests_case2() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 =
-        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 10, my_response, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 10, my_response, rx1)
+        .await
+        .expect("should succeed");
     let requests_with_peer_address = vec![ChannelWithAddressAndRole {
         id: my_id,
         channel_with_address: addr1,
@@ -685,10 +670,9 @@ async fn test_send_vote_requests_case3() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 =
-        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 21, my_response, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 21, my_response, rx1)
+        .await
+        .expect("should succeed");
     let requests_with_peer_address = vec![
         ChannelWithAddressAndRole {
             id: peer1_id,
@@ -745,10 +729,9 @@ async fn test_send_vote_requests_case4() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 =
-        MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 22, my_response, rx1)
-            .await
-            .expect("should succeed");
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 22, my_response, rx1)
+        .await
+        .expect("should succeed");
     let requests_with_peer_address = vec![
         ChannelWithAddressAndRole {
             id: peer1_id,
@@ -805,20 +788,12 @@ async fn test_send_vote_requests_case5() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 = MockNode::simulate_send_votes_mock_server(
-        MOCK_RPC_CLIENT_PORT_BASE + 23,
-        peer1_response,
-        rx1,
-    )
-    .await
-    .expect("should succeed");
-    let addr2 = MockNode::simulate_send_votes_mock_server(
-        MOCK_RPC_CLIENT_PORT_BASE + 24,
-        peer2_response,
-        rx2,
-    )
-    .await
-    .expect("should succeed");
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 23, peer1_response, rx1)
+        .await
+        .expect("should succeed");
+    let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 24, peer2_response, rx2)
+        .await
+        .expect("should succeed");
     let requests_with_peer_address = vec![
         ChannelWithAddressAndRole {
             id: peer1_id,

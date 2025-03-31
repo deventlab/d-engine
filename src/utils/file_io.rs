@@ -1,10 +1,15 @@
-use crate::{Error, Result};
-use log::{debug, error};
-use std::{
-    fs::{create_dir_all, File, OpenOptions},
-    path::PathBuf,
-};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use std::fs::create_dir_all;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::path::PathBuf;
+
+use log::debug;
+use log::error;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufWriter;
+
+use crate::Error;
+use crate::Result;
 
 pub fn crate_parent_dir_if_not_exist(path: &PathBuf) -> Result<()> {
     if let Some(parent_dir) = path.parent() {
@@ -29,7 +34,10 @@ pub fn open_file_for_append(path: PathBuf) -> Result<File> {
     Ok(log_file)
 }
 
-pub(crate) async fn write_into_file(path: PathBuf, buf: Vec<u8>) {
+pub(crate) async fn write_into_file(
+    path: PathBuf,
+    buf: Vec<u8>,
+) {
     if let Some(parent) = path.parent() {
         if let Err(e) = tokio::fs::create_dir_all(parent).await {
             error!("failed to crate dir with error({})", e);

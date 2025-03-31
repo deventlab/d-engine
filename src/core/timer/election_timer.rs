@@ -1,5 +1,6 @@
 use rand::Rng;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
+use tokio::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct ElectionTimer {
@@ -10,7 +11,6 @@ pub struct ElectionTimer {
 
 impl ElectionTimer {
     /// @param: timeout_range: (ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
-    ///
     pub fn new(timeout_range: (u64, u64)) -> Self {
         let (min, max) = timeout_range;
         let tick_interval = Self::random_duration(min, max);
@@ -26,7 +26,10 @@ impl ElectionTimer {
         self.next_deadline = Instant::now() + Self::random_duration(min, max);
     }
 
-    pub fn random_duration(min: u64, max: u64) -> Duration {
+    pub fn random_duration(
+        min: u64,
+        max: u64,
+    ) -> Duration {
         let mut rng = rand::thread_rng();
         let timeout = rng.gen_range(min..max);
         Duration::from_millis(timeout)

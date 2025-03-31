@@ -1,12 +1,16 @@
-use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
-    str::FromStr,
-};
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
+use std::net::SocketAddrV4;
+use std::net::ToSocketAddrs;
+use std::str::FromStr;
 
 use tokio::net::TcpStream;
 
 /// accept ip either like 127.0.0.1 or docker host name: node1
-pub(crate) fn address_str(ip: &str, port: u16) -> String {
+pub(crate) fn address_str(
+    ip: &str,
+    port: u16,
+) -> String {
     let addr: SocketAddr = match Ipv4Addr::from_str(ip) {
         Ok(ipv4) => SocketAddr::V4(SocketAddrV4::new(ipv4, port)),
         Err(_) => {

@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{Error, Result};
+use crate::Error;
+use crate::Result;
 
 /// Network communication configuration for gRPC/HTTP2 transport
 ///
@@ -100,9 +102,7 @@ impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
         // 1. Validate timeouts
         if self.connect_timeout_in_ms == 0 {
-            return Err(Error::InvalidConfig(
-                "Connection timeout must be greater than 0".into(),
-            ));
+            return Err(Error::InvalidConfig("Connection timeout must be greater than 0".into()));
         }
 
         if self.request_timeout_in_ms <= self.connect_timeout_in_ms {
@@ -128,9 +128,7 @@ impl NetworkConfig {
         }
 
         if self.max_concurrent_streams == 0 {
-            return Err(Error::InvalidConfig(
-                "Max concurrent streams must be > 0".into(),
-            ));
+            return Err(Error::InvalidConfig("Max concurrent streams must be > 0".into()));
         }
 
         // 4. Validate HTTP2 frame size limits

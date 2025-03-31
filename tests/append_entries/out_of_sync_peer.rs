@@ -13,7 +13,7 @@
 //     client.send(Command::Insert).await.unwrap();
 
 //     // 4. Verify global state
-//     tokio::time::sleep(Duration::from_secs(1)).await; // Wait for synchronization
-//     assert_log_consistent(&nodes); // Custom consistency check
-//     assert_eq!(nodes[2].commit_index(), 5);
+//     tokio::time::sleep(Duration::from_secs(1)).await; // Wait for
+// synchronization     assert_log_consistent(&nodes); // Custom consistency
+// check     assert_eq!(nodes[2].commit_index(), 5);
 // }

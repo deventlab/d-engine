@@ -1,20 +1,41 @@
-use super::{follower_state::FollowerState, HardState};
-use crate::{
-    alias::POF,
-    grpc::rpc_service::{
-        AppendEntriesRequest, ClientProposeRequest, ClientReadRequest, ClientRequestError,
-        ClusteMembershipChangeRequest, ClusterMembership, MetadataRequest, VoteRequest,
-        VoteResponse, VotedFor,
-    },
-    role_state::RaftRoleState,
-    test_utils::{mock_peer_channels, mock_raft_context, setup_raft_components, MockTypeConfig},
-    AppendResponseWithUpdates, Error, MaybeCloneOneshot, MaybeCloneOneshotSender, MockElectionCore,
-    MockMembership, MockReplicationCore, MockStateMachineHandler, RaftEvent, RaftOneshot,
-    RaftTypeConfig, RoleEvent, StateUpdate,
-};
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tonic::{Code, Status};
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+
+use super::follower_state::FollowerState;
+use super::HardState;
+use crate::alias::POF;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::grpc::rpc_service::VotedFor;
+use crate::role_state::RaftRoleState;
+use crate::test_utils::mock_peer_channels;
+use crate::test_utils::mock_raft_context;
+use crate::test_utils::setup_raft_components;
+use crate::test_utils::MockTypeConfig;
+use crate::AppendResponseWithUpdates;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotSender;
+use crate::MockElectionCore;
+use crate::MockMembership;
+use crate::MockReplicationCore;
+use crate::MockStateMachineHandler;
+use crate::RaftEvent;
+use crate::RaftOneshot;
+use crate::RaftTypeConfig;
+use crate::RoleEvent;
+use crate::StateUpdate;
 
 /// # Case 1: assume it is fresh cluster start
 ///
@@ -28,7 +49,6 @@ use tonic::{Code, Status};
 /// 7. match_index = None
 /// 8. noop_log_id = None
 /// 9. raft_log len is 0
-///
 #[test]
 fn test_new_with_fresh_start() {
     let components = setup_raft_components("/tmp/test_new_with_fresh_start", None, false);
@@ -36,12 +56,7 @@ fn test_new_with_fresh_start() {
     let settings = components.arc_settings.clone();
     let hard_state_from_db = None;
     let last_applied_index_option = None;
-    let state = FollowerState::<RaftTypeConfig>::new(
-        node_id,
-        settings,
-        hard_state_from_db,
-        last_applied_index_option,
-    );
+    let state = FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
 
     assert_eq!(state.commit_index(), 0);
     assert_eq!(state.current_term(), 1);
@@ -66,7 +81,6 @@ fn test_new_with_fresh_start() {
 /// 5. role is Follower
 /// 8. noop_log_id = None
 /// 9. raft_log len is 10
-///
 #[test]
 fn test_new_with_restart() {
     let voted_for = VotedFor {
@@ -80,12 +94,8 @@ fn test_new_with_restart() {
         let settings = components.arc_settings.clone();
         let hard_state_from_db = None;
         let last_applied_index_option = None;
-        let mut state = FollowerState::<RaftTypeConfig>::new(
-            node_id,
-            settings,
-            hard_state_from_db,
-            last_applied_index_option,
-        );
+        let mut state =
+            FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
 
         state.update_current_term(1);
         state.update_commit_index(5).expect("should succeed");
@@ -105,12 +115,8 @@ fn test_new_with_restart() {
             }),
         });
         let last_applied_index_option = Some(2);
-        let state = FollowerState::<RaftTypeConfig>::new(
-            node_id,
-            settings,
-            hard_state_from_db,
-            last_applied_index_option,
-        );
+        let state =
+            FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
         assert_eq!(state.commit_index(), 2);
         assert_eq!(state.current_term(), 2);
         assert_eq!(state.voted_for().unwrap(), Some(voted_for));
@@ -130,10 +136,7 @@ async fn test_tick() {
     let (event_tx, _event_rx) = mpsc::channel(1);
     let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .tick(&role_tx, &event_tx, peer_channels, &context)
-        .await
-        .is_ok());
+    assert!(state.tick(&role_tx, &event_tx, peer_channels, &context).await.is_ok());
     match role_rx.recv().await {
         Some(RoleEvent::BecomeCandidate) => assert!(true),
         _ => assert!(false),
@@ -141,7 +144,7 @@ async fn test_tick() {
 }
 
 fn setup_handle_raft_event_case1_params(
-    resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
+    resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>
 ) -> (RaftEvent, Arc<POF<MockTypeConfig>>) {
     let raft_event = crate::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
@@ -378,8 +381,7 @@ async fn test_handle_raft_event_case3() {
 ///     and replication_handler::handle_append_entries successfully
 ///
 /// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with higher term and new commit index
+/// 1. receive Leader append request, with higher term and new commit index
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
@@ -388,7 +390,6 @@ async fn test_handle_raft_event_case3() {
 /// 4. I should send out new commit signal
 /// 5. send out AppendEntriesResponse with success=true
 /// 6. `handle_raft_event` fun returns Ok(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
@@ -454,12 +455,9 @@ async fn test_handle_raft_event_case4_1() {
     // Validation criterias
     // 2. I should not receive BecomeFollower event
     // 4. I should send out new commit signal
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::NotifyNewCommitIndex {
-            new_commit_index: _
-        }
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::NotifyNewCommitIndex {
+        new_commit_index: _
+    }));
 
     // Validation criterias
     // 3. I should update term
@@ -482,7 +480,6 @@ async fn test_handle_raft_event_case4_1() {
 /// 3. My term shoud not be updated
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Ok(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
@@ -549,8 +546,7 @@ async fn test_handle_raft_event_case4_2() {
 ///     and replication_handler::handle_append_entries failed with Error
 ///
 /// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with Error
+/// 1. receive Leader append request, with Error
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
@@ -558,7 +554,6 @@ async fn test_handle_raft_event_case4_2() {
 /// 3. My term shoud not be updated
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
@@ -629,7 +624,6 @@ async fn test_handle_raft_event_case4_3() {
 }
 
 /// # Case 5: Test handle client propose request
-///
 #[tokio::test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());

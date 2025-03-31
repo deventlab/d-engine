@@ -1,5 +1,8 @@
-use crate::{test_utils::mock_node, Error, MockPeerChannels};
 use tokio::sync::watch;
+
+use crate::test_utils::mock_node;
+use crate::Error;
+use crate::MockPeerChannels;
 
 #[tokio::test]
 async fn test_readiness_state_transition() {
@@ -16,9 +19,7 @@ async fn test_run_sequence_with_mock_peers() {
     let (shutdown_tx, shutdown_rx) = watch::channel(());
     let node = mock_node("/tmp/test_run_sequence_with_mock_peers", shutdown_rx, None);
 
-    shutdown_tx
-        .send(())
-        .expect("Expect send shutdown successfully");
+    shutdown_tx.send(()).expect("Expect send shutdown successfully");
     let result = node.run().await;
     assert!(result.is_ok());
 }

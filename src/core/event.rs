@@ -1,12 +1,17 @@
-use crate::{
-    grpc::rpc_service::{
-        AppendEntriesRequest, AppendEntriesResponse, ClientProposeRequest, ClientReadRequest,
-        ClientResponse, ClusteMembershipChangeRequest, ClusterConfUpdateResponse,
-        ClusterMembership, MetadataRequest, VoteRequest, VoteResponse, VotedFor,
-    },
-    MaybeCloneOneshotSender,
-};
 use tonic::Status;
+
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterConfUpdateResponse;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::MaybeCloneOneshotSender;
 
 #[derive(Debug)]
 pub enum RoleEvent {

@@ -1,7 +1,12 @@
-use crate::{Error, Result};
-use log::{error, warn};
 use std::time::Duration;
-use tokio::time::{sleep, timeout};
+
+use log::error;
+use log::warn;
+use tokio::time::sleep;
+use tokio::time::timeout;
+
+use crate::Error;
+use crate::Result;
 
 /// General one
 pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, P>(
@@ -28,10 +33,7 @@ where
                 e = error;
             }
             Err(error) => {
-                warn!(
-                    "task_with_timeout_and_exponential_backoff timeout: {:?}",
-                    &error
-                );
+                warn!("task_with_timeout_and_exponential_backoff timeout: {:?}", &error);
                 e = Error::RetryTimeoutError;
             }
         };
@@ -39,7 +41,8 @@ where
         retries += 1;
         if retries < max_retries {
             sleep(delay).await;
-            delay = delay * 2; // Exponential backoff (double the delay each time)
+            delay = delay * 2; // Exponential backoff (double the delay each
+                               // time)
         } else {
             warn!("Task failed after {} retries", retries);
             e = Error::RetryTaskFailed("Task failed after max retries".to_string());
@@ -62,10 +65,7 @@ pub(crate) async fn spawn_task<F, Fut>(
     let name = name.to_string();
     let handle = tokio::spawn(async move {
         if let Err(e) = task_fn().await {
-            error!(
-                "spawned task: {name} stopped or encountered an error: {:?}",
-                e
-            );
+            error!("spawned task: {name} stopped or encountered an error: {:?}", e);
         }
     });
 

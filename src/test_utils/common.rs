@@ -1,11 +1,15 @@
-use crate::{
-    alias::{ROF, SMOF},
-    convert::kv,
-    grpc::rpc_service::Entry,
-    RaftLog, RaftTypeConfig, StateMachine,
-};
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
 use sled::Batch;
-use std::{ops::RangeInclusive, sync::Arc};
+
+use crate::alias::ROF;
+use crate::alias::SMOF;
+use crate::convert::kv;
+use crate::grpc::rpc_service::Entry;
+use crate::RaftLog;
+use crate::RaftTypeConfig;
+use crate::StateMachine;
 
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     use prost::Message;
@@ -46,7 +50,6 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 }
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
-///
 pub(crate) fn simulate_insert_proposal(
     raft_log: &Arc<ROF<RaftTypeConfig>>,
     ids: Vec<u64>,
@@ -89,7 +92,6 @@ pub(crate) fn simulate_delete_proposal(
 
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
-///
 pub(crate) fn simulate_state_machine_insert_commands(
     state_machine: Arc<SMOF<RaftTypeConfig>>,
     id_range: RangeInclusive<u64>,
@@ -112,7 +114,8 @@ pub(crate) fn prepare_locallog_entry_with_specify_ids_and_term(
     ids: Vec<u64>,
     term: u64,
 ) {
-    use crate::{grpc::rpc_service::Entry, RaftLog};
+    use crate::grpc::rpc_service::Entry;
+    use crate::RaftLog;
     let mut entries = Vec::new();
     for index in ids {
         let log = Entry {

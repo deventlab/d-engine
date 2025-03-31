@@ -1,19 +1,28 @@
-use crate::{
-    test_utils::{
-        insert_raft_log, insert_state_machine, insert_state_storage, reset_dbs, settings,
-    },
-    Error, NodeBuilder, RaftLog, RaftNodeConfig, RaftStateMachine, SledRaftLog, SledStateStorage,
-    StateMachine, StateStorage,
-};
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use tempfile::tempdir;
 use tokio::sync::watch;
+
+use crate::test_utils::insert_raft_log;
+use crate::test_utils::insert_state_machine;
+use crate::test_utils::insert_state_storage;
+use crate::test_utils::reset_dbs;
+use crate::test_utils::settings;
+use crate::Error;
+use crate::NodeBuilder;
+use crate::RaftLog;
+use crate::RaftNodeConfig;
+use crate::RaftStateMachine;
+use crate::SledRaftLog;
+use crate::SledStateStorage;
+use crate::StateMachine;
+use crate::StateStorage;
 
 #[test]
 fn test_new_initializes_default_components() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder =
-        NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
+    let builder = NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
 
     assert!(builder.raft_log.is_some());
     assert!(builder.state_machine.is_some());
@@ -30,8 +39,7 @@ fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let db_path = "/tmp/test_set_raft_log_replaces_default";
 
-    let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-        reset_dbs(db_path);
+    let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) = reset_dbs(db_path);
 
     let id = 1;
     let raft_log_db = Arc::new(raft_log_db);
@@ -58,10 +66,7 @@ fn test_set_raft_log_replaces_default() {
         .state_machine(sled_state_machine);
 
     // Verify that raft_log is replaced with customization one
-    assert_eq!(
-        builder.raft_log.as_ref().unwrap().len(),
-        expected_raft_log_ids.len()
-    );
+    assert_eq!(builder.raft_log.as_ref().unwrap().len(), expected_raft_log_ids.len());
     assert_eq!(
         builder.state_machine.as_ref().unwrap().len(),
         expected_state_machine_ids.len()
@@ -75,8 +80,7 @@ fn test_set_raft_log_replaces_default() {
 #[tokio::test]
 async fn test_build_creates_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder =
-        NodeBuilder::new_from_db_path("/tmp/test_build_creates_node", shutdown_rx).build();
+    let builder = NodeBuilder::new_from_db_path("/tmp/test_build_creates_node", shutdown_rx).build();
 
     // Verify that the node instance is generated
     assert!(builder.node.is_some());
@@ -95,10 +99,10 @@ fn test_ready_fails_without_build() {
 #[should_panic(expected = "failed to start RPC server")]
 async fn test_start_rpc_panics_without_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder =
-        NodeBuilder::new_from_db_path("/tmp/test_start_rpc_panics_without_node", shutdown_rx);
+    let builder = NodeBuilder::new_from_db_path("/tmp/test_start_rpc_panics_without_node", shutdown_rx);
 
-    // If start the RPC service directly without calling build(), the service should panic.
+    // If start the RPC service directly without calling build(), the service should
+    // panic.
     let _ = builder.start_rpc_server().await;
 }
 
@@ -146,10 +150,7 @@ fn test_config_override_success() {
         );
 
         // Verify that other fields remain default
-        assert_eq!(
-            updated_config.cluster.node_id, 1,
-            "Node ID should remain default"
-        );
+        assert_eq!(updated_config.cluster.node_id, 1, "Node ID should remain default");
     });
 }
 
@@ -201,7 +202,8 @@ fn test_config_override_priority() {
         || {
             let config = RaftNodeConfig::new().unwrap();
 
-            // Verify that environment variables have higher priority than configuration files
+            // Verify that environment variables have higher priority than configuration
+            // files
             assert_eq!(
                 config.cluster.db_root_dir,
                 PathBuf::from("/env/db"),

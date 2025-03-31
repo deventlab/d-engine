@@ -36,7 +36,9 @@
 //! }
 //! ```
 
-use super::{ClientBuilder, ClusterClient, KvClient};
+use super::ClientBuilder;
+use super::ClusterClient;
+use super::KvClient;
 
 /// Main entry point for interacting with the dengine cluster
 ///
@@ -77,7 +79,8 @@ impl Client {
     /// Create a configured client builder
     ///
     /// Starts client construction process with specified bootstrap endpoints.
-    /// Chain configuration methods before calling [`build()`](ClientBuilder::build).
+    /// Chain configuration methods before calling
+    /// [`build()`](ClientBuilder::build).
     ///
     /// # Arguments
     /// * `endpoints` - Initial cluster nodes for discovery

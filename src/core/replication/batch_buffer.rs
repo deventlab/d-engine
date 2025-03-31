@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
+use std::time::Duration;
+
 use log::trace;
-use std::{collections::VecDeque, time::Duration};
 use tokio::time::Instant;
 
 pub struct BatchBuffer<E> {
@@ -10,7 +12,10 @@ pub struct BatchBuffer<E> {
 }
 
 impl<E> BatchBuffer<E> {
-    pub fn new(max_batch_size: usize, batch_timeout: Duration) -> Self {
+    pub fn new(
+        max_batch_size: usize,
+        batch_timeout: Duration,
+    ) -> Self {
         Self {
             max_batch_size,
             batch_timeout,
@@ -19,7 +24,10 @@ impl<E> BatchBuffer<E> {
         }
     }
 
-    pub fn push(&mut self, request: E) -> Option<usize> {
+    pub fn push(
+        &mut self,
+        request: E,
+    ) -> Option<usize> {
         self.buffer.push_back(request);
         trace!(
             "BatchBuffer::push, self.max_batch_size={}, self.buffer.len()={}",

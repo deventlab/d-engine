@@ -1,6 +1,7 @@
 use log::error;
 
-use crate::{ElectionConfig, RaftConfig};
+use crate::ElectionConfig;
+use crate::RaftConfig;
 
 #[test]
 fn test_invalid_election_timeout() {

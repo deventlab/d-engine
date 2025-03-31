@@ -1,10 +1,17 @@
-use autometrics::autometrics;
-use log::{error, info};
 use std::sync::Arc;
 
-use crate::{convert::skv, Error, HardState, Result, StateStorage, API_SLO, HARD_STATE_KEY};
+use autometrics::autometrics;
+use log::error;
+use log::info;
 
 use super::STATE_STORAGE_NAMESPACE;
+use crate::convert::skv;
+use crate::Error;
+use crate::HardState;
+use crate::Result;
+use crate::StateStorage;
+use crate::API_SLO;
+use crate::HARD_STATE_KEY;
 
 #[derive(Clone, Debug)]
 pub struct SledStateStorage {
@@ -13,14 +20,21 @@ pub struct SledStateStorage {
 }
 
 impl StateStorage for SledStateStorage {
-    fn get(&self, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
+    fn get(
+        &self,
+        key: Vec<u8>,
+    ) -> crate::Result<Option<Vec<u8>>> {
         match self.tree.get(key)? {
             Some(ivec) => Ok(Some(ivec.to_vec())),
             None => Ok(None),
         }
     }
 
-    fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
+    fn insert(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> crate::Result<Option<Vec<u8>>> {
         match self.tree.insert(key, value)? {
             Some(ivec) => Ok(Some(ivec.to_vec())),
             None => Ok(None),
@@ -32,10 +46,7 @@ impl StateStorage for SledStateStorage {
     }
 
     fn load_hard_state(&self) -> Option<crate::HardState> {
-        info!(
-            "pending load_role_hard_state_from_db with key: {}",
-            HARD_STATE_KEY
-        );
+        info!("pending load_role_hard_state_from_db with key: {}", HARD_STATE_KEY);
         if let Ok(Some(v)) = self.get(skv(HARD_STATE_KEY.to_string())) {
             info!("found node state from DB with key: {}", HARD_STATE_KEY);
 
@@ -49,10 +60,7 @@ impl StateStorage for SledStateStorage {
                     return Some(hard_state);
                 }
                 Err(e) => {
-                    error!(
-                        "state:load_role_hard_state_from_db deserialize error. {}",
-                        e
-                    );
+                    error!("state:load_role_hard_state_from_db deserialize error. {}", e);
                 }
             }
         } else {
@@ -61,7 +69,10 @@ impl StateStorage for SledStateStorage {
         return None;
     }
 
-    fn save_hard_state(&self, hard_state: HardState) -> Result<()> {
+    fn save_hard_state(
+        &self,
+        hard_state: HardState,
+    ) -> Result<()> {
         match bincode::serialize(&hard_state) {
             Ok(v) => {
                 if let Err(e) = self.insert(skv(HARD_STATE_KEY.to_string()), v) {
@@ -77,10 +88,7 @@ impl StateStorage for SledStateStorage {
             Err(e) => {
                 error!("persistent_state_into_db: {}", e);
                 eprintln!("persistent_state_into_db: {}", e);
-                return Err(Error::NodeStateError(format!(
-                    "persistent_state_into_db: {}",
-                    e
-                )));
+                return Err(Error::NodeStateError(format!("persistent_state_into_db: {}", e)));
             }
         }
         match self.flush() {

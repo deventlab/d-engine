@@ -1,4 +1,6 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 
 use log::error;
 use prost::Message;
@@ -43,7 +45,8 @@ pub fn vk(v: &Vec<u8>) -> u64 {
 
     let mut result: u64 = 0;
     for &byte in expanded.iter() {
-        result = (result << 8) | byte as u64; // Shift left by 8 bits and add the byte
+        result = (result << 8) | byte as u64; // Shift left by 8 bits and add
+                                              // the byte
     }
     result
 }
@@ -63,7 +66,8 @@ pub fn vki(v: &IVec) -> u64 {
     // Compute the u64 value from the byte slice
     let mut result: u64 = 0;
     for &byte in bytes.iter() {
-        result = (result << 8) | byte as u64; // Shift left by 8 bits and add the byte
+        result = (result << 8) | byte as u64; // Shift left by 8 bits and add
+                                              // the byte
     }
     result
 }
@@ -77,7 +81,10 @@ pub(crate) fn convert_u128_to_u64_with_high_and_low(n: u128) -> (u64, u64) {
     ((n >> 64) as u64, n as u64)
 }
 /// return (high, low)
-pub(crate) fn convert_high_and_low_fromu64_to_u128(high: u64, low: u64) -> u128 {
+pub(crate) fn convert_high_and_low_fromu64_to_u128(
+    high: u64,
+    low: u64,
+) -> u128 {
     ((high as u128) << 64) | (low as u128)
 }
 

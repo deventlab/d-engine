@@ -1,14 +1,25 @@
-use crate::{
-    alias::{ROF, TROF},
-    grpc::rpc_service::{Entry, VoteRequest, VotedFor},
-    test_utils::{
-        setup_raft_components, MockNode, MockTypeConfig, MOCK_ELECTION_HANDLER_PORT_BASE,
-    },
-    ChannelWithAddressAndRole, ElectionCore, ElectionHandler, Error, MockRaftLog, MockTransport,
-    FOLLOWER,
-};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, watch};
+
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+
+use crate::alias::ROF;
+use crate::alias::TROF;
+use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VotedFor;
+use crate::test_utils::setup_raft_components;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockTypeConfig;
+use crate::test_utils::MOCK_ELECTION_HANDLER_PORT_BASE;
+use crate::ChannelWithAddressAndRole;
+use crate::ElectionCore;
+use crate::ElectionHandler;
+use crate::Error;
+use crate::MockRaftLog;
+use crate::MockTransport;
+use crate::FOLLOWER;
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,
@@ -52,7 +63,6 @@ async fn setup(port: u64) -> TestConext {
 ///
 /// ## Validation Criterias:
 /// 1. Receive Error::ElectionFailed error
-///
 #[tokio::test]
 async fn test_broadcast_vote_requests_case1() {
     // 1. Create a ElectionHandler instance
@@ -155,7 +165,6 @@ async fn test_broadcast_vote_requests_case3() {
 ///     - step_to_follower = true
 ///     - voted_for_option = Some(x)
 ///     - term_update = Some(y)
-///
 #[tokio::test]
 async fn test_handle_vote_request_case1() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
@@ -243,11 +252,7 @@ async fn test_handle_vote_request_case2() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_1_1() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_1_1",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_1", None, false);
     let election_controller = context.election_handler;
 
     let vote_request = VoteRequest {
@@ -294,11 +299,7 @@ async fn test_check_vote_request_is_legal_case_1_1() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_1_2() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_1_2",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_2", None, false);
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -347,11 +348,7 @@ async fn test_check_vote_request_is_legal_case_1_2() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_1_3() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_1_3",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_3", None, false);
     let election_controller = context.election_handler;
     let current_term = 1;
     let last_log_index = 1;
@@ -382,11 +379,7 @@ async fn test_check_vote_request_is_legal_case_1_3() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_1_4() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_1_4",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_4", None, false);
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -424,11 +417,7 @@ async fn test_check_vote_request_is_legal_case_1_4() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_2_1() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_2_1",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_2_1", None, false);
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -467,11 +456,7 @@ async fn test_check_vote_request_is_legal_case_2_1() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_2_2() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_2_2",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_2_2", None, false);
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -509,11 +494,7 @@ async fn test_check_vote_request_is_legal_case_2_2() {
 #[tokio::test]
 async fn test_check_vote_request_is_legal_case_2_3() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components(
-        "/tmp/test_check_vote_request_is_legal_case_2_3",
-        None,
-        false,
-    );
+    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_2_3", None, false);
     let election_controller = context.election_handler;
     let current_term = 10;
 

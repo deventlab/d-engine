@@ -1,19 +1,32 @@
-use super::rpc_service::{rpc_service_server::RpcService, ClientProposeRequest};
-use crate::{
-    convert::kv,
-    grpc::rpc_service::{
-        AppendEntriesRequest, ClientCommand, ClientReadRequest, ClusteMembershipChangeRequest,
-        ClusterMembership, MetadataRequest, VoteRequest,
-    },
-    test_utils::{enable_logger, mock_node, MockBuilder, MockTypeConfig},
-    AppendResults, MockMembership, MockReplicationCore, RaftNodeConfig,
-};
-use std::{collections::HashMap, path::PathBuf, time::Duration};
-use tokio::{sync::watch, time};
-use tonic::{Code, Request};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tokio::sync::watch;
+use tokio::time;
+use tonic::Code;
+use tonic::Request;
+
+use super::rpc_service::rpc_service_server::RpcService;
+use super::rpc_service::ClientProposeRequest;
+use crate::convert::kv;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::test_utils::enable_logger;
+use crate::test_utils::mock_node;
+use crate::test_utils::MockBuilder;
+use crate::test_utils::MockTypeConfig;
+use crate::AppendResults;
+use crate::MockMembership;
+use crate::MockReplicationCore;
+use crate::RaftNodeConfig;
 
 /// # Case: Test RPC services timeout
-///
 #[tokio::test]
 async fn test_handle_service_timeout() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -81,7 +94,6 @@ async fn test_handle_service_timeout() {
 }
 
 /// # Case: Test server is not ready
-///
 #[tokio::test]
 async fn test_server_is_not_ready() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -138,9 +150,7 @@ async fn test_server_is_not_ready() {
     assert_eq!(result.err().unwrap().code(), Code::Unavailable);
 
     // Metadata request
-    let result = node
-        .get_cluster_metadata(Request::new(MetadataRequest {}))
-        .await;
+    let result = node.get_cluster_metadata(Request::new(MetadataRequest {})).await;
     assert!(result.is_err());
     assert_eq!(result.err().unwrap().code(), Code::Unavailable);
 
@@ -157,7 +167,6 @@ async fn test_server_is_not_ready() {
 }
 
 /// # Case: Test handle rpc services successful
-///
 #[tokio::test]
 async fn test_handle_rpc_services_successfully() {
     enable_logger();

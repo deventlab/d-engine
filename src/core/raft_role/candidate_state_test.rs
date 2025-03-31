@@ -1,20 +1,35 @@
-use tokio::sync::{mpsc, watch};
-use tonic::{Code, Status};
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
 
 use super::candidate_state::CandidateState;
-use crate::{
-    alias::POF,
-    grpc::rpc_service::{
-        AppendEntriesRequest, ClientProposeRequest, ClientReadRequest, ClientRequestError,
-        ClusteMembershipChangeRequest, ClusterMembership, MetadataRequest, VoteRequest,
-        VoteResponse, VotedFor,
-    },
-    role_state::RaftRoleState,
-    test_utils::{mock_peer_channels, mock_raft_context, setup_raft_components, MockTypeConfig},
-    MaybeCloneOneshot, MaybeCloneOneshotSender, MockElectionCore, MockMembership,
-    MockStateMachineHandler, RaftEvent, RaftOneshot, RoleEvent,
-};
-use std::sync::Arc;
+use crate::alias::POF;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClientProposeRequest;
+use crate::grpc::rpc_service::ClientReadRequest;
+use crate::grpc::rpc_service::ClientRequestError;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::MetadataRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::grpc::rpc_service::VoteResponse;
+use crate::grpc::rpc_service::VotedFor;
+use crate::role_state::RaftRoleState;
+use crate::test_utils::mock_peer_channels;
+use crate::test_utils::mock_raft_context;
+use crate::test_utils::setup_raft_components;
+use crate::test_utils::MockTypeConfig;
+use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotSender;
+use crate::MockElectionCore;
+use crate::MockMembership;
+use crate::MockStateMachineHandler;
+use crate::RaftEvent;
+use crate::RaftOneshot;
+use crate::RoleEvent;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
@@ -43,7 +58,6 @@ async fn test_can_vote_myself_case2() {
 /// 1. term will be incrased
 /// 2. old vote will be reset
 /// 3. vote myself as Candidate
-///
 #[tokio::test]
 async fn test_tick_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -62,10 +76,7 @@ async fn test_tick_case1() {
     let (event_tx, event_rx) = mpsc::channel(1);
     let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .tick(&role_tx, &event_tx, peer_channels, &context)
-        .await
-        .is_ok());
+    assert!(state.tick(&role_tx, &event_tx, peer_channels, &context).await.is_ok());
 
     assert_eq!(state.current_term(), 2);
     assert_eq!(
@@ -160,14 +171,8 @@ async fn test_handle_raft_event_case1_2() {
         .is_ok());
 
     // Step to Follower
-    assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(None))
-    ));
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
-    ));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
 
     // Term should be updated
     assert_eq!(state.current_term(), updated_term);
@@ -248,8 +253,7 @@ async fn test_handle_raft_event_case3() {
 ///     and request term is equal as mine
 ///
 /// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with higher term and new commit index
+/// 1. receive Leader append request, with higher term and new commit index
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
@@ -260,7 +264,6 @@ async fn test_handle_raft_event_case3() {
 /// 6. Should not receive response, (let Follower handle it)
 /// 7. `handle_raft_event` fun returns Ok(())
 /// 8. commit should not be updated. We should let Follower continue.
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
@@ -311,15 +314,9 @@ async fn test_handle_raft_event_case4_1() {
 
     // Validation criterias
     // 3. I should  receive BecomeFollower event
-    assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(None))
-    ));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))));
     // 4. I should replay the raft_event to let Follower continue handle it
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
 
     // Validation criterias
     // 2. I should update term
@@ -335,8 +332,7 @@ async fn test_handle_raft_event_case4_1() {
 ///     and request term is higher than mine
 ///
 /// ## Prepration Setup
-/// 1. receive Leader append request,
-///     with higher term and new commit index
+/// 1. receive Leader append request, with higher term and new commit index
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
@@ -347,7 +343,6 @@ async fn test_handle_raft_event_case4_1() {
 /// 6. Should not receive response, (let Follower handle it)
 /// 7. `handle_raft_event` fun returns Ok(())
 /// 8. commit should not be updated. We should let Follower continue.
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
@@ -398,15 +393,9 @@ async fn test_handle_raft_event_case4_2() {
 
     // Validation criterias
     // 3. I should  receive BecomeFollower event
-    assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(None))
-    ));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))));
     // 4. I should replay the raft_event to let Follower continue handle it
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
 
     // Validation criterias
     // 2. I should update term
@@ -427,7 +416,6 @@ async fn test_handle_raft_event_case4_2() {
 /// 3. My term shoud not be updated
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
-///
 #[tokio::test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
@@ -439,10 +427,7 @@ async fn test_handle_raft_event_case4_3() {
     let mut membership = MockMembership::new();
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|_| Ok(()))
-        .times(0);
+    membership.expect_mark_leader_id().returning(|_| Ok(())).times(0);
     context.membership = Arc::new(membership);
 
     // New state
@@ -486,7 +471,6 @@ async fn test_handle_raft_event_case4_3() {
 }
 
 /// # Case 5: Test handle client propose request
-///
 #[tokio::test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -610,12 +594,6 @@ fn test_send_replay_raft_event() {
         )
         .is_ok());
 
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::BecomeFollower(None)
-    ));
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::BecomeFollower(None)));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
 }

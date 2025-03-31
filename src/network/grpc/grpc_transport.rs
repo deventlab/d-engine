@@ -1,25 +1,39 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
-//!
-use crate::{
-    cluster::is_majority,
-    grpc::rpc_service::{
-        rpc_service_client::RpcServiceClient, AppendEntriesRequest, ClusteMembershipChangeRequest,
-        VoteRequest,
-    },
-    if_new_leader_found, is_learner, task_with_timeout_and_exponential_backoff, AppendResults,
-    ChannelWithAddress, ChannelWithAddressAndRole, Error, NewLeaderInfo, PeerUpdate, Result,
-    RetryPolicies, Transport, API_SLO,
-};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
+
 use autometrics::autometrics;
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use log::{debug, error, info, warn};
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
 use tokio::task;
-use tonic::{async_trait, codec::CompressionEncoding};
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
+
+use crate::cluster::is_majority;
+use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
+use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::VoteRequest;
+use crate::if_new_leader_found;
+use crate::is_learner;
+use crate::task_with_timeout_and_exponential_backoff;
+use crate::AppendResults;
+use crate::ChannelWithAddress;
+use crate::ChannelWithAddressAndRole;
+use crate::Error;
+use crate::NewLeaderInfo;
+use crate::PeerUpdate;
+use crate::Result;
+use crate::RetryPolicies;
+use crate::Transport;
+use crate::API_SLO;
 
 pub struct GrpcTransport {
     pub(crate) my_id: u32,
@@ -110,10 +124,7 @@ impl Transport for GrpcTransport {
                     return Err(e);
                 }
                 Err(e) => {
-                    error!(
-                        "[send_cluster_membership_requests] Task failed with error: {:?}",
-                        e
-                    );
+                    error!("[send_cluster_membership_requests] Task failed with error: {:?}", e);
                 }
             }
         }
@@ -160,10 +171,7 @@ impl Transport for GrpcTransport {
 
             let channel = channel_with_address.channel;
             // let req = req.clone();
-            debug!(
-                "[{} -> {}: send_append_requests, req: {:?}",
-                self.my_id, peer_id, &req
-            );
+            debug!("[{} -> {}: send_append_requests, req: {:?}", self.my_id, peer_id, &req);
 
             let closure = move || {
                 let channel = channel.clone();
@@ -207,10 +215,7 @@ impl Transport for GrpcTransport {
             match result {
                 Ok(Ok(response)) => {
                     let peer_id = response.id;
-                    debug!(
-                        "recv append res from peer(id: {}): {:?}",
-                        &peer_id, response
-                    );
+                    debug!("recv append res from peer(id: {}): {:?}", &peer_id, response);
                     let peer_match_index;
                     let peer_next_index;
                     if !response.success {
@@ -243,15 +248,16 @@ impl Transport for GrpcTransport {
                     };
                     peer_updates.insert(peer_id, update);
 
-                    // if let Err(e) = role_tx.send(RoleEvent::UpdateMatchIndexAndNextIndex {
+                    // if let Err(e) =
+                    // role_tx.send(RoleEvent::UpdateMatchIndexAndNextIndex {
                     //     node_id: peer_id,
                     //     new_match_index: peer_match_index,
                     //     new_next_index: peer_next_index,
                     // }) {
                     //     error!(
                     //         "event_tx
-                    //     .send(RaftEvent::UpdateMatchIndexAndNextIndex) timeout: {:?}",
-                    //         e
+                    //     .send(RaftEvent::UpdateMatchIndexAndNextIndex)
+                    // timeout: {:?}",         e
                     //     );
                     // }
                 }

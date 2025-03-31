@@ -1,16 +1,26 @@
 use std::time::Duration;
 
-use crate::{
-    grpc::rpc_service::{ClusterMembership, NodeMeta},
-    test_utils::{enable_logger, MockNode, MockRpcService, MOCK_CLIENT_PORT_BASE},
-    time::get_now_as_u32,
-    ClientConfig, ConnectionPool, Error, FOLLOWER, LEADER,
-};
 use log::error;
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
 
-async fn mock_listener(port: u64, rx: oneshot::Receiver<()>) {
+use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::NodeMeta;
+use crate::test_utils::enable_logger;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
+use crate::test_utils::MOCK_CLIENT_PORT_BASE;
+use crate::time::get_now_as_u32;
+use crate::ClientConfig;
+use crate::ConnectionPool;
+use crate::Error;
+use crate::FOLLOWER;
+use crate::LEADER;
+
+async fn mock_listener(
+    port: u64,
+    rx: oneshot::Receiver<()>,
+) {
     let mut mock_service = MockRpcService::default();
     mock_service.expected_metadata_response = Some(Ok(ClusterMembership {
         nodes: vec![NodeMeta {
@@ -87,8 +97,7 @@ async fn test_create_channel_success() {
     };
 
     // Test with an invalid address to verify timeout behavior
-    let result =
-        ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
+    let result = ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
     assert!(result.is_err());
 }
 
@@ -129,16 +138,8 @@ async fn test_get_all_channels() {
     let addr1 = format!("http://localhost:{}", port1);
     let addr2 = format!("http://localhost:{}", port2);
     let pool = ConnectionPool {
-        leader_conn: Channel::from_shared(addr1)
-            .unwrap()
-            .connect()
-            .await
-            .unwrap(),
-        follower_conns: vec![Channel::from_shared(addr2)
-            .unwrap()
-            .connect()
-            .await
-            .unwrap()],
+        leader_conn: Channel::from_shared(addr1).unwrap().connect().await.unwrap(),
+        follower_conns: vec![Channel::from_shared(addr2).unwrap().connect().await.unwrap()],
         config: ClientConfig::default(),
     };
 
