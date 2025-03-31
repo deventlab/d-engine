@@ -12,9 +12,10 @@
 //!
 use super::{ChannelWithAddress, PeerChannels, PeerChannelsFactory};
 use crate::{
+    async_task::task_with_timeout_and_exponential_backoff,
     grpc::rpc_service::NodeMeta,
     membership::health_checker::{HealthChecker, HealthCheckerApis},
-    utils::util::{self, address_str},
+    utils::network::address_str,
     Error, NetworkConfig, RaftNodeConfig, Result, RetryPolicies,
 };
 use dashmap::DashMap;
@@ -89,7 +90,7 @@ impl PeerChannels for RpcPeerChannels {
                 .clone();
 
             let task_handle = task::spawn(async move {
-                match util::task_with_timeout_and_exponential_backoff(
+                match task_with_timeout_and_exponential_backoff(
                     move || {
                         HealthChecker::check_peer_is_ready(
                             addr.clone(),
@@ -244,7 +245,7 @@ impl RpcPeerChannels {
         retry: &RetryPolicies,
         rpc_settings: &NetworkConfig,
     ) -> Result<Channel> {
-        util::task_with_timeout_and_exponential_backoff(
+        task_with_timeout_and_exponential_backoff(
             || Self::connect(node_meta.clone(), rpc_settings.clone()),
             retry.membership.max_retries,
             Duration::from_millis(retry.membership.base_delay_ms),

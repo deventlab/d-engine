@@ -1,9 +1,9 @@
 use crate::{
     alias::ROF,
+    convert::kv,
     grpc::rpc_service::Entry,
     init_sled_storages,
     test_utils::{self, reset_dbs},
-    util::kv,
     RaftLog, RaftTypeConfig, SledStateStorage,
 };
 use futures::future::join_all;
@@ -444,7 +444,10 @@ fn test_load_uncommitted_from_db_to_cache() {
             command: vec![],
         });
     }
-    context.raft_log.insert_batch(entries).expect("should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .expect("should succeed");
 
     let len = context.raft_log.last_entry_id();
     context.raft_log.load_uncommitted_from_db_to_cache(8, len);
@@ -471,7 +474,10 @@ fn test_delete_entries_before() {
             command: vec![],
         });
     }
-    context.raft_log.insert_batch(entries).expect("should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .expect("should succeed");
 
     //..
     // assume we have generated snapshot until $last_applied,
@@ -501,7 +507,10 @@ fn test_get_first_raft_log_entry_id_after_delete_entries() {
             command: vec![],
         });
     }
-    context.raft_log.insert_batch(entries).expect("should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .expect("should succeed");
 
     let last_applied = 4;
     context
@@ -529,7 +538,10 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
             command: vec![],
         });
     }
-    context.raft_log.insert_batch(entries).expect("should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .expect("should succeed");
 
     let last_applied = 4;
     context

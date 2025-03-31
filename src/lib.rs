@@ -29,7 +29,6 @@ pub mod test_utils;
 // Autometrics
 /// autometrics: https://docs.autometrics.dev/rust/adding-alerts-and-slos
 use autometrics::objectives::{Objective, ObjectiveLatency, ObjectivePercentile};
-use utils::util;
 const API_SLO: Objective = Objective::new("api")
     .success_rate(ObjectivePercentile::P99_9)
     .latency(ObjectiveLatency::Ms10, ObjectivePercentile::P99);

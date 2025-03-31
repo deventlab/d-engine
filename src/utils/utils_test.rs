@@ -1,0 +1,124 @@
+use crate::{
+    async_task::task_with_timeout_and_exponential_backoff,
+    cluster::is_majority,
+    convert::{abs_ceil, kv, vk},
+    Error, Result,
+};
+use dashmap::DashSet;
+use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
+
+use super::cluster::find_nearest_lower_number;
+
+#[test]
+fn test_kv_1() {
+    let v = kv(1);
+    assert_eq!(1, vk(&v));
+    let v = kv(25);
+    assert_eq!(25, vk(&v));
+}
+
+#[test]
+fn test_kv_2() {
+    let i = std::u64::MAX; //max of u64
+    let v = kv(i);
+    assert_eq!(i, vk(&v));
+}
+#[test]
+fn test_kv_3() {
+    let v = kv(1);
+    assert_eq!(1, vk(&v));
+}
+
+#[test]
+fn test_abs_ceil() {
+    assert_eq!(1, abs_ceil(0.3));
+    assert_eq!(1, abs_ceil(0.5));
+    assert_eq!(2, abs_ceil(1.1));
+    assert_eq!(2, abs_ceil(1.9));
+
+    let n = 4 as f64 / 10.0;
+    assert_eq!(1, abs_ceil(n));
+}
+#[test]
+fn test_is_majority() {
+    assert_eq!(is_majority(0, 3), false);
+    assert_eq!(is_majority(1, 3), false);
+    assert_eq!(is_majority(2, 3), true);
+    assert_eq!(is_majority(3, 3), true);
+}
+
+#[test]
+fn test_find_nearest_lower_number() {
+    let pool: Arc<DashSet<u64>> = Arc::new(DashSet::new());
+    // Populate the DashSet with initial values
+    pool.insert(1);
+    pool.insert(1000);
+    pool.insert(3210);
+    pool.insert(1382);
+    pool.insert(1483);
+    pool.insert(2678);
+    pool.insert(1637);
+    pool.insert(1902);
+
+    // Target number
+    let a: u64 = 1701;
+
+    match find_nearest_lower_number(a, pool.clone()) {
+        Some(nearest) => assert_eq!(nearest, 1637),
+        None => assert!(false),
+    }
+}
+
+async fn async_ok() -> Result<()> {
+    sleep(Duration::from_millis(100)).await;
+    Ok(())
+}
+async fn async_err() -> Result<()> {
+    sleep(Duration::from_millis(100)).await;
+    Err(Error::RPCServerDies)
+}
+
+#[tokio::test]
+async fn test_task_with_exponential_backoff() {
+    // Case 1: when ok task return ok
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(
+        async_ok,
+        3,
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+    )
+    .await
+    {
+        assert!(true);
+    } else {
+        assert!(false);
+    }
+    // Case 2: when err task return error
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(
+        async_err,
+        3,
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+    )
+    .await
+    {
+        assert!(false);
+    } else {
+        assert!(true);
+    }
+
+    // Case 3: when ok task always failed on timeout error
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(
+        async_ok,
+        3,
+        Duration::from_millis(100),
+        Duration::from_millis(1),
+    )
+    .await
+    {
+        assert!(false);
+    } else {
+        assert!(true);
+    }
+}

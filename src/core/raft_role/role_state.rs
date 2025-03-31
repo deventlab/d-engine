@@ -1,10 +1,10 @@
 use super::{RaftRole, SharedState, StateSnapshot};
 use crate::{
     alias::POF,
+    cluster::error,
     grpc::rpc_service::{
         AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse, VotedFor,
     },
-    util::error,
     AppendResponseWithUpdates, ElectionCore, Error, MaybeCloneOneshotSender, Membership,
     RaftContext, RaftEvent, RaftLog, ReplicationCore, Result, RoleEvent, TypeConfig,
 };

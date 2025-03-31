@@ -27,7 +27,7 @@ use super::StateMachineHandler;
 use crate::{
     alias::{ROF, SMOF},
     grpc::rpc_service::{client_command::Command, ClientCommand, ClientResult},
-    utils::util::error,
+    utils::cluster::error,
     RaftLog, Result, StateMachine, TypeConfig, API_SLO,
 };
 use log::error;

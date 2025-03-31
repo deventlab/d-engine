@@ -5,10 +5,10 @@ use sled::Batch;
 
 use super::*;
 use crate::{
+    convert::kv,
     grpc::rpc_service::{ClientCommand, Entry, SnapshotEntry},
     init_sled_storages,
     test_utils::{self, generate_insert_commands, setup_raft_components},
-    util::kv,
     StateMachine, COMMITTED_LOG_METRIC,
 };
 

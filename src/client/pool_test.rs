@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::{
     grpc::rpc_service::{ClusterMembership, NodeMeta},
     test_utils::{enable_logger, MockNode, MockRpcService, MOCK_CLIENT_PORT_BASE},
-    utils::util,
+    time::get_now_as_u32,
     ClientConfig, ConnectionPool, Error, FOLLOWER, LEADER,
 };
 use log::error;
@@ -76,7 +76,7 @@ async fn test_load_cluster_metadata_success() {
 #[tokio::test]
 async fn test_create_channel_success() {
     let config = ClientConfig {
-        id: util::get_now_as_u32(),
+        id: get_now_as_u32(),
         connect_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_millis(3000),
         tcp_keepalive: Duration::from_secs(300),

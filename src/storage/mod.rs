@@ -107,10 +107,9 @@ pub fn init_sled_storages(
 mod tests {
     use super::*;
     use crate::{
+        convert::{kv, skv},
         grpc::rpc_service::{ClusterMembership, NodeMeta},
-        test_utils,
-        util::{kv, skv},
-        RaftRole, FOLLOWER, LEARNER,
+        test_utils, RaftRole, FOLLOWER, LEARNER,
     };
 
     /// # Case 1: restart
