@@ -1,0 +1,14 @@
+[cluster]
+node_id = 3
+listen_address = "127.0.0.1:9083"
+initial_cluster = [
+    { id = 1, name = "n1", ip = "127.0.0.1", port = 9081, role = 1 },
+    { id = 2, name = "n2", ip = "127.0.0.1", port = 9082, role = 1 },
+    { id = 3, name = "n3", ip = "127.0.0.1", port = 9083, role = 1 },
+]
+db_root_dir = "./db"
+log_dir = "./logs"
+
+[monitoring]
+prometheus_enabled = true
+prometheus_port = 8083
