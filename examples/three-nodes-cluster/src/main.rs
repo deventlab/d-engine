@@ -28,17 +28,23 @@ async fn main() -> Result<()> {
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
-    tokio::spawn(async {
-        // Listen on Shutdown Signal
-        if let Err(e) = graceful_shutdown(graceful_tx).await {
-            error!("Failed to shutdown: {:?}", e);
-        }
-    });
 
-    // Start server
-    if let Err(e) = start_dengine_server(graceful_rx).await {
-        error!("start server failed: {:?}", e);
-    };
+    // Start the server (wait for its initialization to complete)
+    let server_handler = tokio::spawn(start_dengine_server(graceful_rx.clone()));
+
+    // Wait for the server to initialize (adjust the waiting time according to the actual logic)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Start the client
+    let client_handler = tokio::spawn(simulate_client());
+
+    // Monitor shutdown signals
+    let shutdown_handler = tokio::spawn(graceful_shutdown(graceful_tx));
+
+    // Wait for all tasks to complete (or error)
+    let (_server_result, _client_result, _shutdown_result) =
+        tokio::join!(server_handler, client_handler, shutdown_handler);
+
     Ok(())
 }
 
@@ -58,11 +64,11 @@ async fn simulate_client() -> Result<()> {
     // Key-value operations
     client.kv().put("user:1001", "Alice").await?;
     let value = client.kv().get("user:1001", true).await?;
-    println!("User data: {:?}", value);
+    info!("User data: {:?}", value);
 
     // Cluster management
     let members = client.cluster().list_members().await?;
-    println!("Cluster members: {:?}", members);
+    info!("Cluster members: {:?}", members);
 
     Ok(())
 }
