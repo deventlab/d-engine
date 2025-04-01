@@ -17,14 +17,10 @@ target/
 db
 logs
 db_test
-snapshots
-docker/jepsen/store/
 cobertura.xml
 certs
-examples
 .idea
 .DS_Store
 tests/db
 tests/logs
-benchmark/Cargo.lock
 config/local.toml
