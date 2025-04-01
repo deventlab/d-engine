@@ -201,7 +201,21 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
                 let my_term = self.current_term();
-                if my_term < vote_request.term {
+                let mut last_log_index = 0;
+                let mut last_log_term = 0;
+                if let Some(last) = ctx.raft_log().last() {
+                    last_log_index = last.index;
+                    last_log_term = last.term;
+                    debug!("last_index: {:?}, last_term: {:?}", last_log_index, last_log_term);
+                }
+
+                if ctx.election_handler().check_vote_request_is_legal(
+                    &vote_request,
+                    my_term,
+                    last_log_index,
+                    last_log_term,
+                    self.voted_for().unwrap(),
+                ) {
                     self.update_current_term(vote_request.term);
                     // Step down as Follower
                     self.send_become_follower_event(&role_tx)?;
@@ -260,6 +274,12 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         success: false,
                         match_index: raft_log_last_index,
                     };
+
+                    debug!(
+                        "Reject append entries response: {:?}. Because my_term({}) > request.term({})",
+                        &response, my_term, append_entries_request.term
+                    );
+
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
