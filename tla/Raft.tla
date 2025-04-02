@@ -632,7 +632,8 @@ ValueAllOrNothing(v) ==
     ELSE \/ \A i \in NODES : ValueInServerLog(i, v)
          \/ ~\E i \in NODES : ValueInServerLog(i, v)
 
-\* "[]<>" 表示在未来的某个时间点，性质会成立至少一次。换句话说，它表示全局性质的存在性。
+\* "[]<>" It indicates that at some point in the future, the property will hold at least once. 
+\* In other words, it expresses the existential nature of a global property.
 ValuesNotStuck ==
     \A v \in VALUES : []<>ValueAllOrNothing(v)
     

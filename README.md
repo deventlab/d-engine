@@ -155,4 +155,5 @@ The current release (v0.0.1) focuses on correctness and reliability. Performance
 - macOS: x86_64, aarch64
 
 ## License
-dengine is licensed under the Apache License.
+deninge is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
+or the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your choosing.

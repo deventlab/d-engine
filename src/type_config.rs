@@ -12,7 +12,6 @@ use crate::StateMachineHandler;
 use crate::StateStorage;
 use crate::Transport;
 
-/// **This coding style learned from OpenRaft project type config.**
 pub trait TypeConfig:
     Sync + Send + Sized + Debug + Clone + Copy + Default + Eq + PartialEq + Ord + PartialOrd + 'static
 {

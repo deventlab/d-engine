@@ -1,8 +1,30 @@
 [package]
 name = "dengine"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-resolver = "2" 
+resolver = "2" # Workspace-level unified configuration
+authors = [
+    "Joshua Chi <joshokn@gmail.com>",
+]
+categories = [
+    "distributed-systems",
+    "asynchronous",
+    "algorithms",
+    "data-storage"
+]
+keywords = [
+    "raft",
+    "consensus",
+    "distributed-systems",
+    "storage",
+    "fault-tolerance"
+]
+description = "A lightweight strongly-consistent Raft consensus engine for building reliable and scalable distributed systems."
+homepage = "https://github.com/deventlab/dengine"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/deventlab/dengine"
+
+
 
 [features]
 default = []
