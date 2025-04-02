@@ -1,13 +1,11 @@
 use core::panic;
+use std::env;
+use std::error::Error;
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use dengine::file_io::open_file_for_append;
-use dengine::Error;
 use dengine::NodeBuilder;
-use dengine::RaftNodeConfig;
-use dengine::Result;
 use log::error;
 use log::info;
 use tokio::signal::unix::signal;
@@ -20,11 +18,14 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() -> Result<()> {
-    let settings = RaftNodeConfig::new()?;
+async fn main() {
+    // Get the log directory path from the environment variable
+    let log_dir = env::var("LOG_DIR")
+        .map_err(|_| "LOG_DIR environment variable not set")
+        .expect("Set log dir successfully.");
 
-    // Initializing Logs
-    let _guard = init_observability(settings.cluster.node_id, &settings.cluster.log_dir)?;
+    // Initialize the log system
+    let _guard = init_observability(log_dir);
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
@@ -44,11 +45,9 @@ async fn main() -> Result<()> {
     // Wait for all tasks to complete (or error)
     let (_server_result, _client_result, _shutdown_result) =
         tokio::join!(server_handler, client_handler, shutdown_handler);
-
-    Ok(())
 }
 
-async fn simulate_client() -> Result<()> {
+async fn simulate_client() {
     // Initialization (automatically discover clusters)
     let client = dengine::ClientBuilder::new(vec![
         "http://node1:9081".into(),
@@ -59,20 +58,23 @@ async fn simulate_client() -> Result<()> {
     .request_timeout(Duration::from_secs(1))
     .enable_compression(true)
     .build()
-    .await?;
+    .await
+    .unwrap();
 
     // Key-value operations
-    client.kv().put("user:1001", "Alice").await?;
-    let value = client.kv().get("user:1001", true).await?;
+    client.kv().put("user:1001", "Alice").await.unwrap();
+    let value = client.kv().get("user:1001", true).await.unwrap();
     info!("User data: {:?}", value);
 
     // Cluster management
-    let members = client.cluster().list_members().await?;
+    let members = client
+        .cluster()
+        .list_members()
+        .await
+        .expect("List cluster members successfully.");
     info!("Cluster members: {:?}", members);
-
-    Ok(())
 }
-async fn start_dengine_server(graceful_rx: watch::Receiver<()>) -> Result<()> {
+async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .build()
@@ -85,13 +87,14 @@ async fn start_dengine_server(graceful_rx: watch::Receiver<()>) -> Result<()> {
     // Start Node
     if let Err(e) = node.run().await {
         error!("node stops: {:?}", e);
+    } else {
+        info!("node stops.");
     }
 
     println!("Exiting program.");
-    Ok(())
 }
 
-async fn graceful_shutdown(graceful_tx: watch::Sender<()>) -> Result<()> {
+async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {
     info!("Monitoring shutdown signal ...");
     let mut sigint = signal(SignalKind::interrupt()).unwrap();
     let mut sigterm = signal(SignalKind::terminate()).unwrap();
@@ -107,26 +110,18 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) -> Result<()> {
         },
     }
 
-    graceful_tx.send(()).map_err(|e| {
-        error!("Failed to send shutdown signal: {}", e);
-        Error::SignalSenderClosed(format!("Failed to send shutdown signal: {}", e))
-    })?;
+    graceful_tx.send(()).unwrap();
 
     info!("Shutdown completed");
-    Ok(())
 }
 
-pub fn init_observability(
-    node_id: u32,
-    log_dir: &PathBuf,
-) -> Result<WorkerGuard> {
-    let log_file = open_file_for_append(Path::new(log_dir).join(format!("{}/d.log", node_id)))?;
+pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error + Send>> {
+    let log_file = open_file_for_append(Path::new(&log_dir).join(format!("d.log"))).unwrap();
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
     let base_subscriber = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)
         .with_filter(EnvFilter::from_default_env());
     tracing_subscriber::registry().with(base_subscriber).init();
-
     Ok(guard)
 }
