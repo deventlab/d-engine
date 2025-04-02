@@ -15,7 +15,7 @@ use crate::MockStateMachineHandler;
 
 fn setup(
     batch_size_threshold: u64,
-    commit_handle_interval_in_ms: u64,
+    process_interval_ms: u64,
     apply_batch_expected_execution_times: usize,
     new_commit_rx: mpsc::UnboundedReceiver<u64>,
     shutdown_signal: watch::Receiver<()>,
@@ -39,7 +39,7 @@ fn setup(
         Arc::new(mock_raft_log),
         new_commit_rx,
         batch_size_threshold,
-        commit_handle_interval_in_ms,
+        process_interval_ms,
         shutdown_signal,
     )
 }
@@ -48,7 +48,7 @@ fn setup(
 // interval ticks
 //
 // ## Setup:
-// - commit_handle_interval_in_ms  = 1ms
+// - process_interval_ms  = 1ms
 
 // ## Criterias:
 // - apply_batch been triggered twice
