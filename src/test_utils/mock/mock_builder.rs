@@ -313,7 +313,6 @@ pub fn mock_state_storage() -> MockStateStorage {
 }
 
 pub fn mock_transport() -> MockTransport {
-    
     MockTransport::new()
 }
 
@@ -326,7 +325,6 @@ pub fn mock_election_core() -> MockElectionCore<MockTypeConfig> {
 }
 
 pub fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> {
-    
     MockReplicationCore::new()
 }
 

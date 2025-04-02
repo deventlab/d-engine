@@ -42,7 +42,7 @@ where
         if retries < max_retries {
             sleep(delay).await;
             delay *= 2; // Exponential backoff (double the delay each
-                               // time)
+                        // time)
         } else {
             warn!("Task failed after {} retries", retries);
             e = Error::RetryTaskFailed("Task failed after max retries".to_string());

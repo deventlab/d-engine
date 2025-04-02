@@ -41,22 +41,16 @@ impl TypeConfig for MockTypeConfig {
 
 impl Clone for MockRaftLog {
     fn clone(&self) -> Self {
-        
-
         MockRaftLog::new()
     }
 }
 impl Clone for MockElectionCore<MockTypeConfig> {
     fn clone(&self) -> Self {
-        
-
         MockElectionCore::new()
     }
 }
 impl Clone for MockPeerChannels {
     fn clone(&self) -> Self {
-        
-
         MockPeerChannels::new()
     }
 }

@@ -148,7 +148,7 @@ where
         if retries < max_retries {
             sleep(delay).await;
             delay *= 2; // Exponential backoff (double the delay each
-                               // time)
+                        // time)
         } else {
             warn!("Task failed after {} retries", retries);
             //bug: no need to return if the it is not a business logic error

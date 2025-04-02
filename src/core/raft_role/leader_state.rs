@@ -507,7 +507,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         {
                             warn!("enforce_quorum_consensus failed for linear read request");
 
-                            Err(tonic::Status::failed_precondition("enforce_quorum_consensus failed".to_string()))
+                            Err(tonic::Status::failed_precondition(
+                                "enforce_quorum_consensus failed".to_string(),
+                            ))
                         } else if let Err(e) =
                             self.ensure_state_machine_upto_commit_index(&ctx.state_machine_handler, last_applied)
                         {

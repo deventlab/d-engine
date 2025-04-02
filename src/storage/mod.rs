@@ -16,7 +16,6 @@ pub use state_storage::*;
 pub fn init_sled_storages(
     sled_db_root_path: String
 ) -> std::result::Result<(sled::Db, sled::Db, sled::Db, sled::Db), std::io::Error> {
-    
     use std::path::Path;
 
     use log::debug;
@@ -109,7 +108,6 @@ mod tests {
     use crate::grpc::rpc_service::ClusterMembership;
     use crate::grpc::rpc_service::NodeMeta;
     use crate::test_utils;
-    
     use crate::FOLLOWER;
     use crate::LEARNER;
 

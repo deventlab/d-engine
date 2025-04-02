@@ -78,13 +78,7 @@ async fn test_broadcast_vote_requests_case1() {
     let transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
 
     if let Err(Error::ElectionFailed(_)) = election_handler
-        .broadcast_vote_requests(
-            term,
-            voting_members,
-            &raft_log_mock,
-            &transport_mock,
-            &ctx.arc_settings,
-        )
+        .broadcast_vote_requests(term, voting_members, &raft_log_mock, &transport_mock, &ctx.arc_settings)
         .await
     {
         assert!(true);

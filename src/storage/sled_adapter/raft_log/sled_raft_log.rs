@@ -37,7 +37,7 @@ use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
 ///To check DB size is costy operation.
 /// We need to cache it
 #[derive(Debug)]
- struct CachedDbSize {
+struct CachedDbSize {
     size: AtomicU64,
     last_activity: DashMap<u64, Instant>, //<node_id, ms>
 }
