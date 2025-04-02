@@ -110,8 +110,7 @@ impl NodeBuilder {
         Self::init(node_config, shutdown_signal)
     }
 
-    /// Constructs NodeBuilder from in-memory cluster configuration (OpenRaft
-    /// style)
+    /// Constructs NodeBuilder from in-memory cluster configuration
     ///
     /// # Arguments
     /// * `cluster_config` - Pre-built cluster configuration
