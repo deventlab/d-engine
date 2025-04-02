@@ -1,7 +1,7 @@
 # dengine 🚀
 [![codecov](https://codecov.io/gh/deventlab/dengine/branch/develop/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/dengine)
 ![Static Badge](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
-![CI](https://github.com/deventlab/dengine/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/deventlab/dengine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/dengine/actions/workflows/ci.yml)
 
 **dengine** is a lightweight, strongly-consistent Raft engine designed to help developers build scalable and reliable distributed systems. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
 
