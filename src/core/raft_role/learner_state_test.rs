@@ -56,7 +56,7 @@ async fn test_handle_raft_event_case1() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let requet_term = state.current_term() + 10;
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (role_tx, role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term: requet_term,

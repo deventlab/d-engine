@@ -37,7 +37,7 @@ use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
 ///To check DB size is costy operation.
 /// We need to cache it
 #[derive(Debug)]
-pub(self) struct CachedDbSize {
+ struct CachedDbSize {
     size: AtomicU64,
     last_activity: DashMap<u64, Instant>, //<node_id, ms>
 }
@@ -233,11 +233,7 @@ impl RaftLog for SledRaftLog {
         prev_log_index: u64,
     ) -> u64 {
         // let id = self.prev_log_index(follower_id).await;
-        if let Some(t) = self.get_entry_term_by_index(prev_log_index) {
-            t
-        } else {
-            0
-        }
+        self.get_entry_term_by_index(prev_log_index).unwrap_or_default()
     }
 
     /// used as binary rpc communication
@@ -463,11 +459,7 @@ impl RaftLog for SledRaftLog {
         &self,
         key: &Vec<u8>,
     ) -> Option<Entry> {
-        if let Some(v) = self.cache.mapped_entries.get(key) {
-            Some(v.clone())
-        } else {
-            None
-        }
+        self.cache.mapped_entries.get(key).map(|v| v.clone())
     }
     /// If there exists an N such that N >= commitIndex, a majority
     /// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex =
@@ -502,7 +494,7 @@ impl RaftLog for SledRaftLog {
         peer_matched_ids.sort_unstable_by(|a, b| b.cmp(a));
 
         // Calculate the majority index (floor of (n + 1) / 2)
-        let majority_index = (peer_matched_ids.len() / 2) as usize;
+        let majority_index = peer_matched_ids.len() / 2;
 
         // Get the potential majority-matched index
         let majority_matched_index = peer_matched_ids.get(majority_index)?;
@@ -828,6 +820,6 @@ impl SledRaftLog {
         &self,
         batch: &LocalLogBatch,
     ) {
-        self.cache.refresh(&batch, self.last_entry_id());
+        self.cache.refresh(batch, self.last_entry_id());
     }
 }

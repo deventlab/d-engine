@@ -720,7 +720,7 @@ async fn test_handle_raft_event_case5_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Handle raft event
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientPropose(
         ClientProposeRequest {
             client_id: 1,

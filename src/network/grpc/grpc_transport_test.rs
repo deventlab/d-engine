@@ -333,7 +333,6 @@ async fn test_send_append_requests_case5() {
         entries: vec![],
         leader_commit_index,
     };
-    let requests_with_peer_address = vec![(leader_id, leader_address, peer_req)];
 
     let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let client = GrpcTransport { my_id: leader_id };
@@ -453,7 +452,7 @@ async fn test_send_append_requests_case6() {
 //
 #[tokio::test]
 async fn test_send_append_requests_case7() {
-    let mut c = setup_raft_components("/tmp/test_send_append_requests_case7", None, false);
+    let c = setup_raft_components("/tmp/test_send_append_requests_case7", None, false);
 
     // 1: Setup - Initialize leader and followers
     let leader_id = 1;
@@ -477,7 +476,7 @@ async fn test_send_append_requests_case7() {
     }
 
     // 2. write down expected test result
-    let mut expected_next_indexes: HashMap<u32, u64> = [(2, 10), (3, 5), (4, 11), (5, 11), (6, 5), (7, 3)]
+    let expected_next_indexes: HashMap<u32, u64> = [(2, 10), (3, 5), (4, 11), (5, 11), (6, 5), (7, 3)]
         .into_iter()
         .collect();
 
@@ -533,7 +532,7 @@ async fn test_send_append_requests_case7() {
     // Construct the requests with addresses for each peer
     let requests_with_peer_address = peer_addresses
         .iter()
-        .map(|(id, addr)| (id.clone(), addr.clone(), peer_req.clone()))
+        .map(|(id, addr)| (*id, addr.clone(), peer_req.clone()))
         .collect::<Vec<_>>();
 
     // 5. Test - Send AppendEntries RPCs

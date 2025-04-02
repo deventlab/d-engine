@@ -29,7 +29,7 @@ impl RpcService for MockRpcService {
         _request: tonic::Request<VoteRequest>,
     ) -> std::result::Result<tonic::Response<VoteResponse>, tonic::Status> {
         match &self.expected_vote_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock vote response set")),
         }
@@ -40,7 +40,7 @@ impl RpcService for MockRpcService {
         _request: tonic::Request<AppendEntriesRequest>,
     ) -> std::result::Result<tonic::Response<AppendEntriesResponse>, tonic::Status> {
         match &self.expected_append_entries_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock append entries response set")),
         }
@@ -51,7 +51,7 @@ impl RpcService for MockRpcService {
         _request: tonic::Request<ClusteMembershipChangeRequest>,
     ) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         match &self.expected_update_cluster_conf_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock append entries response set")),
         }

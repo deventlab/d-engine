@@ -40,15 +40,15 @@ fn test_abs_ceil() {
     assert_eq!(2, abs_ceil(1.1));
     assert_eq!(2, abs_ceil(1.9));
 
-    let n = 4 as f64 / 10.0;
+    let n = 4_f64 / 10.0;
     assert_eq!(1, abs_ceil(n));
 }
 #[test]
 fn test_is_majority() {
-    assert_eq!(is_majority(0, 3), false);
-    assert_eq!(is_majority(1, 3), false);
-    assert_eq!(is_majority(2, 3), true);
-    assert_eq!(is_majority(3, 3), true);
+    assert!(!is_majority(0, 3));
+    assert!(!is_majority(1, 3));
+    assert!(is_majority(2, 3));
+    assert!(is_majority(3, 3));
 }
 
 #[test]

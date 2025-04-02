@@ -331,7 +331,7 @@ impl NodeBuilder {
         if let Some(ref node) = self.node {
             let node_clone = node.clone();
             let shutdown = self.shutdown_signal.clone();
-            let listen_address = self.node_config.cluster.listen_address.clone();
+            let listen_address = self.node_config.cluster.listen_address;
             let node_config = self.node_config.clone();
             tokio::spawn(async move {
                 if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {

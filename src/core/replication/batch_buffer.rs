@@ -47,6 +47,6 @@ impl<E> BatchBuffer<E> {
 
     pub fn take(&mut self) -> VecDeque<E> {
         self.last_flush = Instant::now();
-        std::mem::replace(&mut self.buffer, VecDeque::new())
+        std::mem::take(&mut self.buffer)
     }
 }

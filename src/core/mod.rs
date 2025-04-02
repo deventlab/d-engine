@@ -45,5 +45,5 @@ pub(crate) fn if_new_leader_found(
         return true;
     }
 
-    return false;
+    false
 }

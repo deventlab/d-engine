@@ -132,7 +132,7 @@ where T: TypeConfig
             }
         }
 
-        if result.len() > 0 {
+        if !result.is_empty() {
             Some(result)
         } else {
             None

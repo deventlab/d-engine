@@ -45,7 +45,7 @@ where T: TypeConfig
     ) -> Result<()> {
         debug!("broadcast_vote_requests...");
 
-        if voting_members.len() < 1 {
+        if voting_members.is_empty() {
             error!("my(id={}) peers is empty.", self.my_id);
             return Err(Error::ElectionFailed(format!("my(id={}) peers is empty.", self.my_id)));
         } else {
@@ -76,7 +76,7 @@ where T: TypeConfig
                     return Ok(());
                 } else {
                     debug!("failed to receive majority votes.");
-                    return Err(Error::ElectionFailed(format!("failed to receive majority votes.")));
+                    return Err(Error::ElectionFailed("failed to receive majority votes.".to_string()));
                 }
             }
             Err(e) => {

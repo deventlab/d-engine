@@ -2,7 +2,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use dengine::Error;
-use env_logger::Env;
 use log::error;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};

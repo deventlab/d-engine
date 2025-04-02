@@ -21,7 +21,6 @@ use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
 use crate::grpc::rpc_service::VoteRequest;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
-use crate::RaftConfig;
 use crate::Result;
 use crate::RetryPolicies;
 
@@ -148,7 +147,7 @@ where
         retries += 1;
         if retries < max_retries {
             sleep(delay).await;
-            delay = delay * 2; // Exponential backoff (double the delay each
+            delay *= 2; // Exponential backoff (double the delay each
                                // time)
         } else {
             warn!("Task failed after {} retries", retries);

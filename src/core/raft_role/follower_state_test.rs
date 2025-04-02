@@ -292,7 +292,7 @@ async fn test_handle_raft_event_case1_3() {
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (role_tx, role_rx) = mpsc::unbounded_channel();
     let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
 
     assert!(state

@@ -35,7 +35,7 @@ pub fn vk(v: &Vec<u8>) -> u64 {
     }
 
     // Expand the vector to length 8
-    let mut expanded = vec![0; 8]; // Create a vector of 8 zeros
+    let mut expanded = [0; 8]; // Create a vector of 8 zeros
     let len = v.len();
 
     // Copy the original vector into the expanded vector

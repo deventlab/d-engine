@@ -140,57 +140,57 @@ pub async fn execute_command(
             match client.kv().put(kv(key), kv(value)).await {
                 Ok(res) => {
                     debug!("Put Success: {:?}", res);
-                    return Ok(key);
+                    Ok(key)
                 }
                 Err(Error::NodeIsNotLeaderError) => {
                     error!("node is not leader");
-                    return Err(Error::NodeIsNotLeaderError);
+                    Err(Error::NodeIsNotLeaderError)
                 }
                 Err(e) => {
                     error!("Error: {:?}", e);
-                    return Err(Error::ClientError(format!("Error: {:?}", e)));
+                    Err(Error::ClientError(format!("Error: {:?}", e)))
                 }
             }
         }
         ClientCommands::DELETE => match client.kv().delete(kv(key)).await {
             Ok(res) => {
                 debug!("Delete Success: {:?}", res);
-                return Ok(key);
+                Ok(key)
             }
             Err(Error::NodeIsNotLeaderError) => {
                 error!("node is not leader");
-                return Err(Error::NodeIsNotLeaderError);
+                Err(Error::NodeIsNotLeaderError)
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                return Err(Error::ClientError(format!("Error: {:?}", e)));
+                Err(Error::ClientError(format!("Error: {:?}", e)))
             }
         },
         ClientCommands::READ => match client.kv().get(kv(key), false).await? {
             Some(r) => {
                 let v = vk(&r.value);
                 debug!("Success: {:?}", v);
-                return Ok(v);
+                Ok(v)
             }
             None => {
                 error!("No entry found for key: {}", key);
-                return Err(Error::ClientError(format!("No entry found for key: {}", key)));
+                Err(Error::ClientError(format!("No entry found for key: {}", key)))
             }
         },
         ClientCommands::LREAD => match client.kv().get(kv(key), true).await? {
             Some(r) => {
                 let v = vk(&r.value);
                 debug!("Success: {:?}", v);
-                return Ok(v);
+                Ok(v)
             }
             None => {
                 error!("No result found for key: {}", key);
-                return Err(Error::ClientError(format!("No entry found for key: {}", key)));
+                Err(Error::ClientError(format!("No entry found for key: {}", key)))
             }
         },
         _ => {
             error!("Invalid subcommand");
-            return Err(Error::ClientError(format!("Invalid subcommand")));
+            Err(Error::ClientError("Invalid subcommand".to_string()))
         }
     }
 }

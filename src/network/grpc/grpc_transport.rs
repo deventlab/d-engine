@@ -49,7 +49,7 @@ impl Transport for GrpcTransport {
         retry: &RetryPolicies,
     ) -> Result<bool> {
         debug!("-------- send cluster_membership requests --------");
-        if peers.len() < 1 {
+        if peers.is_empty() {
             warn!("peers is empty.");
             return Ok(false);
         }
@@ -99,13 +99,13 @@ impl Transport for GrpcTransport {
                             }));
                         }
 
-                        return Ok(res);
+                        Ok(res)
                     }
                     Err(e) => {
                         warn!("Received RPC error: {}", e);
-                        return Err(e);
+                        Err(e)
                     }
-                };
+                }
             });
             tasks.push(task_handle.boxed());
         }
@@ -144,7 +144,7 @@ impl Transport for GrpcTransport {
         retry: &RetryPolicies,
     ) -> Result<AppendResults> {
         debug!("-------- send append entries requests --------");
-        if requests_with_peer_address.len() < 1 {
+        if requests_with_peer_address.is_empty() {
             warn!("requests_with_peer_address is empty.");
             return Err(Error::AppendEntriesNoPeerFound);
         }
@@ -198,13 +198,13 @@ impl Transport for GrpcTransport {
                         debug!("append entries response: {:?}", response);
                         let res = response.into_inner();
 
-                        return Ok(res);
+                        Ok(res)
                     }
                     Err(e) => {
                         warn!("append entries response received RPC error: {}", e);
-                        return Err(e);
+                        Err(e)
                     }
-                };
+                }
             });
             tasks.push(task_handle.boxed());
         }
@@ -291,7 +291,7 @@ impl Transport for GrpcTransport {
         retry: &RetryPolicies,
     ) -> Result<bool> {
         debug!("-------- send vote request --------");
-        if peers.len() < 1 {
+        if peers.is_empty() {
             warn!("peers is empty.");
             return Ok(false);
         }
@@ -347,11 +347,11 @@ impl Transport for GrpcTransport {
                     Ok(response) => {
                         debug!("resquest [peer({:?})] vote response: {:?}", &addr, response);
                         let res = response.into_inner();
-                        return Ok(res.vote_granted);
+                        Ok(res.vote_granted)
                     }
                     Err(e) => {
                         warn!("Received RPC error: {}", e);
-                        return Err(e);
+                        Err(e)
                     }
                 }
             });
@@ -388,7 +388,7 @@ impl Transport for GrpcTransport {
             &peer_ids, succeed
         );
 
-        if peer_ids.len() > 0 && is_majority(succeed, peer_ids.len() + 1) {
+        if !peer_ids.is_empty() && is_majority(succeed, peer_ids.len() + 1) {
             debug!("send_vote_requests receives majority.");
             Ok(true)
         } else {

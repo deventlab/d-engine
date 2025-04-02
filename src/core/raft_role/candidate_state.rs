@@ -359,7 +359,7 @@ impl<T: TypeConfig> CandidateState<T> {
         } else {
             // either I have not voted for anyone yet
             debug!("[candiate::can_vote_myself] true");
-            return true;
+            true
         }
     }
     pub fn vote_myself(&mut self) -> Result<()> {
