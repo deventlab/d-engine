@@ -81,8 +81,7 @@ async fn test_get_peers_address_with_role_condition_case1() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    let result =
-        membership.get_peers_address_with_role_condition(&peer_channels.channels, is_follower);
+    let result = membership.get_peers_address_with_role_condition(&peer_channels.channels, is_follower);
 
     assert_eq!(result.len(), 2);
 }
@@ -149,8 +148,7 @@ async fn test_get_peers_address_with_role_condition_case2() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    let result =
-        membership.get_peers_address_with_role_condition(&peer_channels.channels, is_follower);
+    let result = membership.get_peers_address_with_role_condition(&peer_channels.channels, is_follower);
 
     assert_eq!(result.len(), 1);
 }

@@ -891,11 +891,9 @@ fn test_prev_log_ok_case_2_4() {
     test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
     let prev_log_index = 11;
     let prev_log_term = 1;
-    assert!(
-        !context
-            .raft_log
-            .prev_log_ok(prev_log_index, prev_log_term, last_applied)
-    );
+    assert!(!context
+        .raft_log
+        .prev_log_ok(prev_log_index, prev_log_term, last_applied));
 }
 #[test]
 fn test_apply_and_then_get_last() {

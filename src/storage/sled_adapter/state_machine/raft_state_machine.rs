@@ -68,9 +68,7 @@ impl StateMachine for RaftStateMachine {
         key_buffer: &Vec<u8>,
     ) -> Result<Option<Vec<u8>>> {
         match self.tree.get(key_buffer) {
-            Ok(Some(v)) => {
-                Ok(Some(v.to_vec()))
-            }
+            Ok(Some(v)) => Ok(Some(v.to_vec())),
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);

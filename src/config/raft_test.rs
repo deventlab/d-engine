@@ -1,4 +1,3 @@
-
 use crate::ElectionConfig;
 use crate::RaftConfig;
 
