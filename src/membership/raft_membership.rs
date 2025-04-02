@@ -140,7 +140,7 @@ where T: TypeConfig
                 return Some(node_meta.id);
             }
         }
-        return None;
+        None
     }
 
     fn retrieve_cluster_membership_config(&self) -> ClusterMembership {

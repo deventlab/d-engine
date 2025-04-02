@@ -41,7 +41,7 @@ where
         retries += 1;
         if retries < max_retries {
             sleep(delay).await;
-            delay = delay * 2; // Exponential backoff (double the delay each
+            delay *= 2; // Exponential backoff (double the delay each
                                // time)
         } else {
             warn!("Task failed after {} retries", retries);

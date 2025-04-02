@@ -31,7 +31,7 @@ use crate::RaftOneshot;
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
 async fn test_tick_priority_over_role_event() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -71,7 +71,7 @@ async fn test_tick_priority_over_role_event() {
 /// # Case 2: RoleEvent has higher priority than event_rx
 #[tokio::test]
 async fn test_role_event_priority_over_event_rx() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -128,7 +128,7 @@ async fn test_role_event_priority_over_event_rx() {
 /// - term should no change
 #[tokio::test]
 async fn test_election_timeout_case1() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Mock Election Handler, assume broadcast_vote_requests successfully.
     let mut election_handler_mock = MockElectionCore::new();
@@ -183,7 +183,7 @@ async fn test_election_timeout_case1() {
 /// - broadcast_vote_requests should be invoked once
 #[tokio::test]
 async fn test_election_timeout_case2_1() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Mock Election Handler, assume broadcast_vote_requests successfully.
     let mut election_handler_mock = MockElectionCore::new();
@@ -231,14 +231,14 @@ async fn test_election_timeout_case2_1() {
 /// - broadcast_vote_requests should be invoked only one time
 #[tokio::test]
 async fn test_election_timeout_case2_2() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Mock Election Handler, assume broadcast_vote_requests successfully.
     let mut election_handler_mock = MockElectionCore::new();
     election_handler_mock
         .expect_broadcast_vote_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::ElectionFailed(format!("failed to receive majority votes."))));
+        .returning(|_, _, _, _, _| Err(Error::ElectionFailed("failed to receive majority votes.".to_string())));
 
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -282,7 +282,7 @@ async fn test_election_timeout_case2_2() {
 /// - no role change event should be received
 #[tokio::test]
 async fn test_election_timeout_case3() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Mock Election Handler, assume broadcast_vote_requests successfully.
     let mut election_handler_mock = MockElectionCore::new();
@@ -333,7 +333,7 @@ async fn test_election_timeout_case3() {
 /// - no role change event should be received
 #[tokio::test]
 async fn test_election_timeout_case4() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Mock Election Handler, assume broadcast_vote_requests successfully.
     let mut election_handler_mock = MockElectionCore::new();
@@ -792,7 +792,7 @@ async fn test_handle_role_event_state_update_case1_4() {
 /// 4. State Machine should be flushed
 #[tokio::test]
 async fn test_raft_shutdown() {
-    let _ = tokio::time::pause();
+    tokio::time::pause();
 
     // 1. Create a Raft instance
     let (graceful_tx, graceful_rx) = watch::channel(());

@@ -42,7 +42,7 @@ impl StateStorage for SledStateStorage {
     }
 
     fn flush(&self) -> crate::Result<usize> {
-        self.tree.flush().map_err(|e| Error::SledError(e))
+        self.tree.flush().map_err(Error::SledError)
     }
 
     fn load_hard_state(&self) -> Option<crate::HardState> {
@@ -66,7 +66,7 @@ impl StateStorage for SledStateStorage {
         } else {
             info!("no hard state found from db with key: {}.", HARD_STATE_KEY);
         }
-        return None;
+        None
     }
 
     fn save_hard_state(

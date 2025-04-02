@@ -1,7 +1,6 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use sled::Batch;
 
 use crate::alias::ROF;
 use crate::alias::SMOF;

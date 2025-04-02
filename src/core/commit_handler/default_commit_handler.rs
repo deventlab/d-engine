@@ -42,6 +42,9 @@ where T: TypeConfig
             .take()
             .expect("Expected a commit recv but found None");
         let mut shutdown_signal = self.shutdown_signal.clone();
+
+        let (notify_tx, mut notify_rx) = watch::channel(0);
+
         loop {
             tokio::select! {
                     // P0: shutdown received;
@@ -51,7 +54,7 @@ where T: TypeConfig
                         return Err(Error::Exit);
                     }
                     // Triggered based on quantity
-                    _ = self.check_batch_size(&mut batch_counter) => {
+                    _ = self.check_batch_size(&mut batch_counter, &mut notify_rx) => {
                         debug!("_ = self.check_batch_size");
                         self.process_batch().await;
                         batch_counter = 0;
@@ -67,6 +70,9 @@ where T: TypeConfig
                     Some(new_commit) = new_commit_rx.recv() => {
                         self.applier.update_pending(new_commit);
                         batch_counter += 1;
+
+                        // Notify counter changes
+                        notify_tx.send(batch_counter).unwrap();
                     }
             }
         }
@@ -98,9 +104,16 @@ where T: TypeConfig
     async fn check_batch_size(
         &self,
         counter: &mut u64,
+        notify_rx: &mut watch::Receiver<u64>,
     ) {
-        while *counter < self.batch_size_threshold {
-            tokio::time::sleep(Duration::from_micros(10)).await;
+        if *counter < self.batch_size_threshold {
+            loop {
+                // Wait for counter change notification
+                notify_rx.changed().await.unwrap();
+                if *counter >= self.batch_size_threshold {
+                    break;
+                }
+            }
         }
     }
 

@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+#[cfg(test)]
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 

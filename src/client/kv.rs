@@ -67,7 +67,7 @@ impl KvClient {
                 error!("[:KvClient:write] status: {:?}", status);
             }
         }
-        return Err(Error::FailedToSendWriteRequestError);
+        Err(Error::FailedToSendWriteRequestError)
     }
 
     pub async fn delete(
@@ -97,7 +97,7 @@ impl KvClient {
                 error!("[:KvClient:delete] status: {:?}", status);
             }
         }
-        return Err(Error::FailedToSendWriteRequestError);
+        Err(Error::FailedToSendWriteRequestError)
     }
 
     /// Retrieves a single key's value from the cluster

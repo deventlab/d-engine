@@ -18,8 +18,10 @@ use crate::grpc::rpc_service::VoteRequest;
 use crate::grpc::rpc_service::VoteResponse;
 use crate::grpc::rpc_service::VotedFor;
 use crate::role_state::RaftRoleState;
+use crate::test_utils::mock_election_core;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
+use crate::test_utils::mock_raft_log;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockTypeConfig;
 use crate::MaybeCloneOneshot;
@@ -105,7 +107,7 @@ fn setup_handle_raft_event_case1_params(
     (raft_event, peer_channels)
 }
 /// # Case 1.1: Receive Vote Request Event
-///     and request term is lower or equal than mine
+///     and check_vote_request_is_legal returns false
 ///
 /// ## Validate criterias
 /// 1. receive response with vote_granted = false
@@ -114,7 +116,15 @@ fn setup_handle_raft_event_case1_params(
 #[tokio::test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
+    let mut raft_log = mock_raft_log();
+    raft_log.expect_last().returning(|| None).times(1);
+    context.raft_log = Arc::new(raft_log);
+    let mut election_core = mock_election_core();
+    election_core
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| false);
+    context.election_handler = election_core;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
     let term_before = state.current_term();
@@ -144,7 +154,7 @@ async fn test_handle_raft_event_case1_1() {
 }
 
 /// # Case 1.2: Receive Vote Request Event
-///     and request term is higher than mine
+///     and check_vote_request_is_legal returns true
 ///
 /// ## Validate criterias
 /// 1. Should not receive response.
@@ -154,7 +164,15 @@ async fn test_handle_raft_event_case1_1() {
 #[tokio::test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
+    let mut raft_log = mock_raft_log();
+    raft_log.expect_last().returning(|| None).times(1);
+    context.raft_log = Arc::new(raft_log);
+    let mut election_core = mock_election_core();
+    election_core
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| true);
+    context.election_handler = election_core;
 
     let updated_term = 100;
 

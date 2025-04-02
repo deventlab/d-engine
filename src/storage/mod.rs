@@ -16,7 +16,7 @@ pub use state_storage::*;
 pub fn init_sled_storages(
     sled_db_root_path: String
 ) -> std::result::Result<(sled::Db, sled::Db, sled::Db, sled::Db), std::io::Error> {
-    use std::io::ErrorKind;
+    
     use std::path::Path;
 
     use log::debug;
@@ -44,7 +44,7 @@ pub fn init_sled_storages(
                 "Try to open DB at this location: {:?} and failed: {:?}",
                 raft_log_db_path, e
             );
-            std::io::Error::new(ErrorKind::Other, e)
+            std::io::Error::other(e)
         })?;
 
     let state_machine_db = sled::Config::default()
@@ -61,7 +61,7 @@ pub fn init_sled_storages(
                 "Try to open DB at this location: {:?} and failed: {:?}",
                 state_machine_db_path, e
             );
-            std::io::Error::new(ErrorKind::Other, e)
+            std::io::Error::other(e)
         })?;
 
     let state_storage_db = sled::Config::default()
@@ -78,7 +78,7 @@ pub fn init_sled_storages(
                 "Try to open DB at this location: {:?} and failed: {:?}",
                 state_storage_db_path, e
             );
-            std::io::Error::new(ErrorKind::Other, e)
+            std::io::Error::other(e)
         })?;
 
     let snapshot_storage_db = sled::Config::default()
@@ -95,7 +95,7 @@ pub fn init_sled_storages(
                 "Try to open DB at this location: {:?} and failed: {:?}",
                 snapshot_storage_db_path, e
             );
-            std::io::Error::new(ErrorKind::Other, e)
+            std::io::Error::other(e)
         })?;
 
     Ok((raft_log_db, state_machine_db, state_storage_db, snapshot_storage_db))
@@ -109,7 +109,7 @@ mod tests {
     use crate::grpc::rpc_service::ClusterMembership;
     use crate::grpc::rpc_service::NodeMeta;
     use crate::test_utils;
-    use crate::RaftRole;
+    
     use crate::FOLLOWER;
     use crate::LEARNER;
 

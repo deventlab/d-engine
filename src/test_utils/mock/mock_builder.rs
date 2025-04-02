@@ -92,23 +92,23 @@ impl MockBuilder {
             event_tx,
             event_rx,
         ) = (
-            self.id.unwrap_or_else(|| 1),
-            Arc::new(self.raft_log.unwrap_or_else(|| mock_raft_log())),
+            self.id.unwrap_or(1),
+            Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            Box::new(self.state_storage.unwrap_or_else(|| mock_state_storage())),
-            Arc::new(self.transport.unwrap_or_else(|| mock_transport())),
+            Box::new(self.state_storage.unwrap_or_else(mock_state_storage)),
+            Arc::new(self.transport.unwrap_or_else(mock_transport)),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
-            self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
+            self.peer_channels.unwrap_or_else(mock_peer_channels),
             self.settings
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
-            self.role_tx.unwrap_or_else(|| role_tx),
-            self.role_rx.unwrap_or_else(|| role_rx),
-            self.event_tx.unwrap_or_else(|| event_tx),
-            self.event_rx.unwrap_or_else(|| event_rx),
+            self.role_tx.unwrap_or(role_tx),
+            self.role_rx.unwrap_or(role_rx),
+            self.event_tx.unwrap_or(event_tx),
+            self.event_rx.unwrap_or(event_rx),
         );
 
         mock_raft_context_internal(
@@ -145,23 +145,23 @@ impl MockBuilder {
             event_tx,
             event_rx,
         ) = (
-            self.id.unwrap_or_else(|| 1),
-            self.raft_log.unwrap_or_else(|| mock_raft_log()),
+            self.id.unwrap_or(1),
+            self.raft_log.unwrap_or_else(mock_raft_log),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            self.state_storage.unwrap_or_else(|| mock_state_storage()),
-            self.transport.unwrap_or_else(|| mock_transport()),
+            self.state_storage.unwrap_or_else(mock_state_storage),
+            self.transport.unwrap_or_else(mock_transport),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
-            self.peer_channels.unwrap_or_else(|| mock_peer_channels()),
+            self.peer_channels.unwrap_or_else(mock_peer_channels),
             self.settings
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
-            self.role_tx.unwrap_or_else(|| role_tx),
-            self.role_rx.unwrap_or_else(|| role_rx),
-            self.event_tx.unwrap_or_else(|| event_tx),
-            self.event_rx.unwrap_or_else(|| event_rx),
+            self.role_tx.unwrap_or(role_tx),
+            self.role_rx.unwrap_or(role_rx),
+            self.event_tx.unwrap_or(event_tx),
+            self.event_rx.unwrap_or(event_rx),
         );
 
         let mut raft = Raft::new(
@@ -313,8 +313,8 @@ pub fn mock_state_storage() -> MockStateStorage {
 }
 
 pub fn mock_transport() -> MockTransport {
-    let mut transport = MockTransport::new();
-    transport
+    
+    MockTransport::new()
 }
 
 pub fn mock_election_core() -> MockElectionCore<MockTypeConfig> {
@@ -326,8 +326,8 @@ pub fn mock_election_core() -> MockElectionCore<MockTypeConfig> {
 }
 
 pub fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> {
-    let mut replication_handler = MockReplicationCore::new();
-    replication_handler
+    
+    MockReplicationCore::new()
 }
 
 pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
@@ -356,7 +356,7 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
 
 pub fn mock_peer_channels() -> MockPeerChannels {
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_voting_members().returning(|| DashMap::new());
+    peer_channels.expect_voting_members().returning(DashMap::new);
     peer_channels
 }
 

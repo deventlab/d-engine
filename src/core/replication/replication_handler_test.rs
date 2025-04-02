@@ -490,7 +490,7 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
         )
         .await
     {
-        assert_eq!(append_result.commit_quorum_achieved, true);
+        assert!(append_result.commit_quorum_achieved);
     } else {
         assert!(false);
     }

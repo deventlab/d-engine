@@ -1,4 +1,3 @@
-use log::error;
 
 use crate::ElectionConfig;
 use crate::RaftConfig;

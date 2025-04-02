@@ -176,11 +176,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         &self,
         node_id: u32,
     ) -> Option<u64> {
-        if let Some(n) = self.match_index.get(&node_id) {
-            Some(*n)
-        } else {
-            None
-        }
+        self.match_index.get(&node_id).copied()
     }
 
     #[autometrics(objective = API_SLO)]
@@ -511,9 +507,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         {
                             warn!("enforce_quorum_consensus failed for linear read request");
 
-                            Err(tonic::Status::failed_precondition(format!(
-                                "enforce_quorum_consensus failed",
-                            )))
+                            Err(tonic::Status::failed_precondition("enforce_quorum_consensus failed".to_string()))
                         } else if let Err(e) =
                             self.ensure_state_machine_upto_commit_index(&ctx.state_machine_handler, last_applied)
                         {
@@ -557,7 +551,7 @@ impl<T: TypeConfig> LeaderState<T> {
         LeaderStateSnapshot {
             next_index: self.next_index.clone(),
             match_index: self.match_index.clone(),
-            noop_log_id: self.noop_log_id.clone(),
+            noop_log_id: self.noop_log_id,
         }
     }
 
@@ -656,7 +650,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 commands,
                 self.state_snapshot(),
                 self.leader_state_snapshot(),
-                &voting_members,
+                voting_members,
                 raft_log,
                 transport,
                 raft_config,
@@ -747,7 +741,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         // }) {
                         //     error("role_tx.send(RoleEvent::NotifyNewCommitIndex)", &e);
                         // }
-                        if let Err(e) = self.update_commit_index_with_signal(commit_index, &role_tx) {
+                        if let Err(e) = self.update_commit_index_with_signal(commit_index, role_tx) {
                             error!(
                                 "update_commit_index_with_signal,commit={}, error: {:?}",
                                 commit_index, e
@@ -818,7 +812,7 @@ impl<T: TypeConfig> LeaderState<T> {
             }
         }
         debug!("Leader::update_commit_index: false");
-        return (false, current_commit_index);
+        (false, current_commit_index)
     }
 
     /// The enforce_quorum_consensus should be executed immediatelly
@@ -856,7 +850,7 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
         {
             error("Leader::process_client_propose", &e);
-            return false;
+            false
         } else {
             match timeout(
                 Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
@@ -869,11 +863,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         "process_client_propose error_code:{:?}, result: {:?}",
                         error_code, &result
                     );
-                    if error_code == ClientRequestError::NoError as i32 {
-                        true
-                    } else {
-                        false
-                    }
+                    error_code == ClientRequestError::NoError as i32
                 }
                 _ => {
                     warn!("process_client_propose failed");

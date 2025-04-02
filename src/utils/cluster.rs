@@ -9,14 +9,14 @@ use crate::grpc::rpc_service::Entry;
 use crate::CLUSTER_FATAL_ERROR;
 
 pub(crate) fn collect_ids(entries: &Vec<Entry>) -> Vec<u64> {
-    entries.into_iter().map(|e| e.index).collect()
+    entries.iter().map(|e| e.index).collect()
 }
 
 pub(crate) fn is_majority(
     num: usize,
     count: usize,
 ) -> bool {
-    num >= count / 2 + 1
+    num > count / 2
 }
 
 pub(crate) fn find_nearest_lower_number(

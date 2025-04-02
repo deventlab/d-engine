@@ -1,8 +1,6 @@
 use tokio::sync::watch;
 
 use crate::test_utils::mock_node;
-use crate::Error;
-use crate::MockPeerChannels;
 
 #[tokio::test]
 async fn test_readiness_state_transition() {

@@ -73,7 +73,7 @@ where T: TypeConfig
         // ----------------------
         // Phase 1: Pre-Checks
         // ----------------------
-        if replication_members.len() < 1 {
+        if replication_members.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
             return Err(Error::AppendEntriesNoPeerFound);
         }
@@ -151,10 +151,10 @@ where T: TypeConfig
                 }
             }
 
-            if new_entries.len() > 0 {
+            if !new_entries.is_empty() {
                 entries.extend(new_entries.clone()); // Add new entries
             }
-            if entries.len() > 0 {
+            if !entries.is_empty() {
                 peer_entries.insert(id, entries);
             }
         });

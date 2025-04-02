@@ -48,11 +48,11 @@ where T: TypeConfig
     }
 
     pub fn state_machine(&self) -> &SMOF<T> {
-        &*self.state_machine
+        &self.state_machine
     }
 
     pub fn state_storage(&self) -> &SSOF<T> {
-        &*self.state_storage
+        &self.state_storage
     }
 
     pub fn transport(&self) -> &Arc<TROF<T>> {

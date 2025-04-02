@@ -69,12 +69,12 @@ impl StateMachine for RaftStateMachine {
     ) -> Result<Option<Vec<u8>>> {
         match self.tree.get(key_buffer) {
             Ok(Some(v)) => {
-                return Ok(Some(v.to_vec()));
+                Ok(Some(v.to_vec()))
             }
-            Ok(None) => return Ok(None),
+            Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
-                return Err(Error::SledError(e));
+                Err(Error::SledError(e))
             }
         }
     }
@@ -157,7 +157,7 @@ impl StateMachine for RaftStateMachine {
         let mut highest_index = None;
         let mut batch = Batch::default();
         for entry in chunk {
-            if entry.command.len() < 1 {
+            if entry.command.is_empty() {
                 warn!("why entry command is empty?");
                 continue;
             }
@@ -199,7 +199,7 @@ impl StateMachine for RaftStateMachine {
 
         if let Err(e) = self.apply_batch(batch) {
             error!("local insert commit entry into kv store failed: {:?}", e);
-            return Err(Error::MessageIOError);
+            Err(Error::MessageIOError)
         } else {
             debug!("[ConverterEngine] convert bath successfully! ");
             if highest_index.is_some() {

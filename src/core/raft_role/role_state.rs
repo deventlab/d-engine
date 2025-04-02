@@ -15,11 +15,8 @@ use crate::alias::POF;
 use crate::cluster::error;
 use crate::grpc::rpc_service::AppendEntriesRequest;
 use crate::grpc::rpc_service::AppendEntriesResponse;
-use crate::grpc::rpc_service::VoteRequest;
-use crate::grpc::rpc_service::VoteResponse;
 use crate::grpc::rpc_service::VotedFor;
 use crate::AppendResponseWithUpdates;
-use crate::ElectionCore;
 use crate::Error;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
@@ -271,7 +268,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Handle replication request
         match ctx
             .replication_handler()
-            .handle_append_entries(append_entries_request, &state_snapshot, last_applied, ctx.raft_log())
+            .handle_append_entries(append_entries_request, state_snapshot, last_applied, ctx.raft_log())
             .await
         {
             Ok(AppendResponseWithUpdates {

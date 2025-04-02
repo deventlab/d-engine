@@ -1,7 +1,6 @@
 //! Core model in Raft: StateMachine Definition
 #[cfg(test)]
 use mockall::automock;
-use sled::Batch;
 use tonic::async_trait;
 
 use crate::grpc::rpc_service::Entry;

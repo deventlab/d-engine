@@ -83,7 +83,7 @@ async fn test_broadcast_vote_requests_case1() {
             voting_members,
             &raft_log_mock,
             &transport_mock,
-            &&ctx.arc_settings,
+            &ctx.arc_settings,
         )
         .await
     {
@@ -117,7 +117,7 @@ async fn test_broadcast_vote_requests_case2() {
             test_context.voting_members,
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &&ctx.arc_settings,
+            &ctx.arc_settings,
         )
         .await
     {
@@ -151,7 +151,7 @@ async fn test_broadcast_vote_requests_case3() {
             test_context.voting_members,
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &&ctx.arc_settings,
+            &ctx.arc_settings,
         )
         .await
         .is_ok())

@@ -218,7 +218,7 @@ async fn test_connection_collection() {
     // Simulate mixed results
     let (_tx1, rx1) = oneshot::channel::<()>();
     tasks.push(task::spawn(async move {
-        Ok((2 as u32, mock_peer(MOCK_PEER_CHANNEL_PORT_BASE + 11, rx1).await))
+        Ok((2_u32, mock_peer(MOCK_PEER_CHANNEL_PORT_BASE + 11, rx1).await))
     }));
     tasks.push(task::spawn(async { Err(Error::ConnectError) }));
 

@@ -308,7 +308,7 @@ where T: TypeConfig
     pub fn peer_channels(&self) -> Result<Arc<POF<T>>> {
         self.peer_channels
             .clone()
-            .ok_or_else(|| Error::FailedSetPeerConnection(format!("handle_raft_event")))
+            .ok_or_else(|| Error::FailedSetPeerConnection("handle_raft_event".to_string()))
     }
 
     pub fn register_new_commit_listener(

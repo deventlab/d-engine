@@ -459,7 +459,7 @@ fn test_load_uncommitted_from_db_to_cache() {
     let len = context.raft_log.last_entry_id();
     context.raft_log.load_uncommitted_from_db_to_cache(8, len);
     for j in 8..len + 1 {
-        if let None = context.raft_log.get_from_cache(&kv(j)) {
+        if context.raft_log.get_from_cache(&kv(j)).is_none() {
             assert!(false);
         }
     }
@@ -801,7 +801,7 @@ fn test_prev_log_ok_case_1_1() {
     let context = setup("/tmp/test_prev_log_ok_case_1_1");
 
     context.raft_log.reset().expect("reset successfully!");
-    assert_eq!(true, context.raft_log.prev_log_ok(0, 0, 0));
+    assert!(context.raft_log.prev_log_ok(0, 0, 0));
 }
 
 // # Case 1.2: normal case
@@ -821,7 +821,7 @@ fn test_prev_log_ok_case_1_2() {
     // prev_log index > 0
     let prev_log_index = 2;
     let prev_log_term = 1;
-    assert_eq!(true, context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
+    assert!(context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
 // # Case 1.3: conflict case
@@ -841,7 +841,7 @@ fn test_prev_log_ok_case_1_3() {
     // prev_log index > 0
     let prev_log_index = 3;
     let prev_log_term = 1;
-    assert_eq!(false, context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
+    assert!(!context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
 // # Case 1.4: conflict case
@@ -861,7 +861,7 @@ fn test_prev_log_ok_case_1_4() {
     // prev_log index > 0
     let prev_log_index = 3;
     let prev_log_term = 3;
-    assert_eq!(false, context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
+    assert!(!context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
 // # Case 1.5: conflict case
@@ -891,9 +891,8 @@ fn test_prev_log_ok_case_2_4() {
     test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
     let prev_log_index = 11;
     let prev_log_term = 1;
-    assert_eq!(
-        false,
-        context
+    assert!(
+        !context
             .raft_log
             .prev_log_ok(prev_log_index, prev_log_term, last_applied)
     );
@@ -957,7 +956,7 @@ fn test_calculate_majority_matched_index_case0() {
 
     let current_term = 2;
     let commit_index = 2;
-    let peer_ids = vec![2, 3];
+    let peer_ids = [2, 3];
     let map = HashMap::from([(3, 2), (1, 3), (2, 12)]);
     // for (id, mid) in map.iter() {
     //     state.update_match_index(*id, *mid);
@@ -986,7 +985,7 @@ fn test_calculate_majority_matched_index_case1() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case1");
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
-    let peer_ids = vec![2, 3];
+    let peer_ids = [2, 3];
     //case 1: majority matched index is 2, commit_index: 4, current_term is 3,
     // while log(2) term is 2, return None
     let ct = 3;
@@ -1012,7 +1011,7 @@ fn test_calculate_majority_matched_index_case2() {
     // let state = c.s.clone();
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
-    let peer_ids = vec![2, 3];
+    let peer_ids = [2, 3];
 
     //case 2: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 3, return Some(3)
@@ -1041,7 +1040,7 @@ fn test_calculate_majority_matched_index_case3() {
     // let state = c.s.clone();
     let raft_log = c.raft_log.clone();
 
-    let peer_ids = vec![2, 3];
+    let peer_ids = [2, 3];
     //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 2, return None
     let ct = 3;
@@ -1066,7 +1065,7 @@ fn test_calculate_majority_matched_index_case4() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case4");
     // let state = c.s.clone();
     let raft_log = c.raft_log.clone();
-    let peer_ids = vec![2, 3];
+    let peer_ids = [2, 3];
     //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 2, return None
     let ct = 3;

@@ -11,7 +11,6 @@ use crate::MockStateMachineHandler;
 use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::PeerChannelsFactory;
-use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
@@ -42,23 +41,23 @@ impl TypeConfig for MockTypeConfig {
 
 impl Clone for MockRaftLog {
     fn clone(&self) -> Self {
-        let mut new_mock = MockRaftLog::new();
+        
 
-        new_mock
+        MockRaftLog::new()
     }
 }
 impl Clone for MockElectionCore<MockTypeConfig> {
     fn clone(&self) -> Self {
-        let mut new_mock = MockElectionCore::new();
+        
 
-        new_mock
+        MockElectionCore::new()
     }
 }
 impl Clone for MockPeerChannels {
     fn clone(&self) -> Self {
-        let mut new_mock = MockPeerChannels::new();
+        
 
-        new_mock
+        MockPeerChannels::new()
     }
 }
 
