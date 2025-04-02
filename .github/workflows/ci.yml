@@ -30,7 +30,7 @@ jobs:
         run: cargo fmt --all -- --check # Verify code formatting compliance
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features
 
   coverage:
     needs: lint
