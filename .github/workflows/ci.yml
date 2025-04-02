@@ -1,4 +1,4 @@
-name: Rust
+name: CI
 
 on:
   push:
@@ -21,24 +21,30 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
-          components: rustfmt # Ensure rustfmt is installed
+          components: rustfmt, clippy
 
       - name: Check Formatting
         run: cargo fmt --all -- --check # Verify code formatting compliance
 
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
   coverage:
+    needs: lint
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v3
         with:
-          toolchain: stable
-          override: true
-          components: clippy
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Protobuf compiler
         run: sudo apt-get install protobuf-compiler
