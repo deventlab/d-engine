@@ -12,8 +12,7 @@ impl ClusterClient {
     }
 
     pub async fn list_members(&self) -> Result<Vec<NodeMeta>> {
-        //TOOD: in next release
-        Ok(Vec::new())
+        Ok(self.pool.get_all_members())
     }
 
     pub async fn add_member(

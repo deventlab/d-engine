@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -187,7 +188,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ) -> Result<()> {
         for peer_id in peer_ids {
             debug!("init leader state for peer_id: {:?}", peer_id);
-            // let new_next_id = self.raft_log().last_entry_id() + 1;
             let new_next_id = last_entry_id + 1;
             self.update_next_index(peer_id, new_next_id)?;
             self.update_match_index(peer_id, 0)?;
@@ -364,9 +364,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     info!("Leader will not process Vote request, it should let Follower do it.");
                     self.send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
                 } else {
+                    let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
                     let response = VoteResponse {
                         term: my_term,
                         vote_granted: false,
+                        last_log_index,
+                        last_log_term,
                     };
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
@@ -549,6 +552,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// The fun will retrieve current Leader state snapshot
+    #[tracing::instrument]
     pub fn leader_state_snapshot(&self) -> LeaderStateSnapshot {
         LeaderStateSnapshot {
             next_index: self.next_index.clone(),
@@ -686,6 +690,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// The `ReplicationHandler` remains focused on protocol mechanics, while
     /// state-aware result processing naturally belongs to the state owner.
+    #[tracing::instrument]
     pub fn process_client_proposal_in_batch_result(
         &mut self,
         batch: VecDeque<ClientRequestWithSignal>,
@@ -698,8 +703,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 commit_quorum_achieved,
                 peer_updates,
             }) => {
-                debug!("success: {:?}", &commit_quorum_achieved);
-
                 let peer_ids: Vec<u32> = peer_updates.keys().cloned().collect();
 
                 // Converate peer_updates to peer_index_updates
@@ -733,16 +736,6 @@ impl<T: TypeConfig> LeaderState<T> {
                     debug!("old commit: {:?} , new commit: {:?}", old_commit_index, commit_index);
                     //notify commit_success_receiver, new commit is ready to conver to KV store.
                     if updated {
-                        // if let Err(e) = self.update_commit_index(commit_index) {
-                        //     error!("update_commit_index({:?}), {:?}", commit_index, e);
-                        // }
-
-                        // debug!("send(RoleEvent::NotifyNewCommitIndex");
-                        // if let Err(e) = role_tx.send(RoleEvent::NotifyNewCommitIndex {
-                        //     new_commit_index: commit_index,
-                        // }) {
-                        //     error("role_tx.send(RoleEvent::NotifyNewCommitIndex)", &e);
-                        // }
                         if let Err(e) = self.update_commit_index_with_signal(commit_index, role_tx) {
                             error!(
                                 "update_commit_index_with_signal,commit={}, error: {:?}",
@@ -802,6 +795,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[tracing::instrument]
     fn if_update_commit_index(
         &self,
         new_commit_index_option: Option<u64>,
@@ -956,5 +950,19 @@ impl<T: TypeConfig> LeaderState<T> {
             settings,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<T: TypeConfig> Debug for LeaderState<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("LeaderState")
+            .field("shared_state", &self.shared_state)
+            .field("next_index", &self.next_index)
+            .field("match_index", &self.match_index)
+            .field("noop_log_id", &self.noop_log_id)
+            .finish()
     }
 }

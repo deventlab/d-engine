@@ -18,6 +18,7 @@ pub struct ConnectionPool {
     pub leader_conn: Channel,
     pub follower_conns: Vec<Channel>,
     pub config: ClientConfig,
+    pub members: Vec<NodeMeta>,
 }
 
 impl ConnectionPool {
@@ -25,9 +26,9 @@ impl ConnectionPool {
         endpoints: Vec<String>,
         config: ClientConfig,
     ) -> Result<Self> {
-        let metadata = Self::load_cluster_metadata(&endpoints, &config).await?;
-        info!("Retrieved cluster conf: {:?}", &metadata);
-        let (leader_addr, followers) = Self::parse_cluster_metadata(metadata)?;
+        let members = Self::load_cluster_metadata(&endpoints, &config).await?;
+        info!("Retrieved members: {:?}", &members);
+        let (leader_addr, followers) = Self::parse_cluster_metadata(&members)?;
 
         let leader_conn = Self::create_channel(leader_addr, &config).await?;
         let mut follower_conns = Vec::new();
@@ -45,6 +46,7 @@ impl ConnectionPool {
             leader_conn,
             follower_conns,
             config,
+            members,
         })
     }
 
@@ -72,6 +74,10 @@ impl ConnectionPool {
         let mut cloned = self.follower_conns.clone();
         cloned.push(self.leader_conn.clone());
         cloned
+    }
+
+    pub fn get_all_members(&self) -> Vec<NodeMeta> {
+        self.members.clone()
     }
 
     /// Discover cluster metadata by probing nodes
@@ -106,7 +112,7 @@ impl ConnectionPool {
     }
 
     /// Extract leader address from metadata
-    pub(super) fn parse_cluster_metadata(nodes: Vec<NodeMeta>) -> Result<(String, Vec<String>)> {
+    pub(super) fn parse_cluster_metadata(nodes: &Vec<NodeMeta>) -> Result<(String, Vec<String>)> {
         let mut leader_addr = None;
         let mut followers = Vec::new();
 

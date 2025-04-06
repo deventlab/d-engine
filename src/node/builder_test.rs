@@ -51,7 +51,7 @@ fn test_set_raft_log_replaces_default() {
     let expected_raft_log_ids = vec![1, 2];
     insert_raft_log(&sled_raft_log, expected_raft_log_ids.clone(), 1);
 
-    let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone());
+    let sled_state_machine = Arc::new(RaftStateMachine::new(id, state_machine_db.clone()));
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
 

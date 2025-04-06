@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::alias::EOF;
@@ -97,5 +98,16 @@ where T: TypeConfig
         transport: Arc<TROF<T>>,
     ) {
         self.transport = transport
+    }
+}
+
+impl<T> Debug for RaftContext<T>
+where T: TypeConfig
+{
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RaftContext").field("node_id", &self.node_id).finish()
     }
 }

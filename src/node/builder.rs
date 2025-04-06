@@ -193,9 +193,9 @@ impl NodeBuilder {
 
     pub fn state_machine(
         mut self,
-        state_machine: SMOF<RaftTypeConfig>,
+        state_machine: Arc<SMOF<RaftTypeConfig>>,
     ) -> Self {
-        self.state_machine = Some(Arc::new(state_machine));
+        self.state_machine = Some(state_machine);
         self
     }
 

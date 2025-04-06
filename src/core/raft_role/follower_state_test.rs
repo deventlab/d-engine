@@ -29,6 +29,7 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
 use crate::MockElectionCore;
 use crate::MockMembership;
+use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::RaftEvent;
@@ -403,7 +404,7 @@ async fn test_handle_raft_event_case4_1() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(move |_, _, _, _| {
+        .returning(move |_, _, _| {
             Ok(AppendResponseWithUpdates {
                 success: true,
                 current_term: new_leader_term,
@@ -566,7 +567,7 @@ async fn test_handle_raft_event_case4_3() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(|_, _, _, _| Err(Error::GeneralServerError("test".to_string())));
+        .returning(|_, _, _| Err(Error::GeneralServerError("test".to_string())));
 
     let mut membership = MockMembership::new();
 

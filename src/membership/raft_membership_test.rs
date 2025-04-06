@@ -451,3 +451,69 @@ async fn test_update_cluster_conf_from_leader_case3() {
         .is_ok());
     assert_eq!(membership.get_cluster_conf_version(), request_cluster_conf_version);
 }
+
+/// This test covers:
+/// Filtering for specific roles (Followers + Candidates)
+/// Filtering for a single role (Leaders)
+/// Empty result case
+/// All-items-match case
+#[test]
+fn test_get_peers_id_with_condition() {
+    // Setup test data
+    // Prepare cluster membership
+    let initial_cluster = vec![
+        NodeMeta {
+            id: 1,
+            ip: "127.0.0.1".to_string(),
+            port: 10000,
+            role: FOLLOWER,
+        },
+        NodeMeta {
+            id: 3,
+            ip: "127.0.0.1".to_string(),
+            port: 10000,
+            role: FOLLOWER,
+        },
+        NodeMeta {
+            id: 4,
+            ip: "127.0.0.1".to_string(),
+            port: 10000,
+            role: LEARNER,
+        },
+        NodeMeta {
+            id: 5,
+            ip: "127.0.0.1".to_string(),
+            port: 10000,
+            role: CANDIDATE,
+        },
+        NodeMeta {
+            id: 6,
+            ip: "127.0.0.1".to_string(),
+            port: 10000,
+            role: LEADER,
+        },
+    ];
+    let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
+
+    // Test 1: Filter followers and candidates
+    let mut result = membership.get_peers_id_with_condition(|role| role == FOLLOWER || role == CANDIDATE);
+    result.sort_unstable();
+    let mut expect = vec![1, 3, 5];
+    expect.sort_unstable();
+    assert_eq!(result, expect, "Should return follower and candidate IDs");
+
+    // Test 2: Filter leaders only
+    let result = membership.get_peers_id_with_condition(|role| role == LEADER);
+    assert_eq!(result, vec![6], "Should return leader ID only");
+
+    // Test 3: Empty result case
+    let result = membership.get_peers_id_with_condition(|_| false);
+    assert!(result.is_empty(), "Should return empty vector when no matches");
+    let mut expect = vec![1, 3, 4, 5, 6];
+    expect.sort_unstable();
+
+    // Test 4: All items match
+    let mut result = membership.get_peers_id_with_condition(|_| true);
+    result.sort_unstable();
+    assert_eq!(result, expect, "Should return all IDs when condition is always true");
+}

@@ -611,9 +611,13 @@ async fn test_send_vote_requests_case2() {
 
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let my_response = VoteResponse {
+
+    // This fake reponse doesn't affect the test result
+    let vote_response = VoteResponse {
         term: 1,
-        vote_granted: false,
+        vote_granted: true,
+        last_log_index: 0,
+        last_log_term: 0,
     };
     let request = VoteRequest {
         term: 1,
@@ -621,7 +625,7 @@ async fn test_send_vote_requests_case2() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 10, my_response, rx1)
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 10, vote_response, rx1)
         .await
         .expect("should succeed");
     let requests_with_peer_address = vec![ChannelWithAddressAndRole {
@@ -659,9 +663,11 @@ async fn test_send_vote_requests_case3() {
     let peer2_id = 3;
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let my_response = VoteResponse {
+    let vote_response = VoteResponse {
         term: 1,
         vote_granted: true,
+        last_log_index: 0,
+        last_log_term: 0,
     };
     let request = VoteRequest {
         term: 1,
@@ -669,7 +675,7 @@ async fn test_send_vote_requests_case3() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 21, my_response, rx1)
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 21, vote_response, rx1)
         .await
         .expect("should succeed");
     let requests_with_peer_address = vec![
@@ -699,16 +705,17 @@ async fn test_send_vote_requests_case3() {
     }
 }
 
-// # Case 4: two peers passed
+// # Case 4.1: two peers failed because they have elected the others
 //
 // ## Setup:
-// 1. prepare two peers, both peer failed
+// 1. Prepare two peers, both peer failed
+// 2. But both peers don't have any local log entry
 //
 // ## Criterias:
 // 1. return Ok(false)
 //
 #[tokio::test]
-async fn test_send_vote_requests_case4() {
+async fn test_send_vote_requests_case4_1() {
     test_utils::enable_logger();
 
     let my_id = 1;
@@ -718,9 +725,11 @@ async fn test_send_vote_requests_case4() {
     let peer2_id = 3;
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let my_response = VoteResponse {
+    let vote_response = VoteResponse {
         term: 1,
         vote_granted: false,
+        last_log_index: 0,
+        last_log_term: 0,
     };
     let request = VoteRequest {
         term: 1,
@@ -728,7 +737,7 @@ async fn test_send_vote_requests_case4() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 22, my_response, rx1)
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 22, vote_response, rx1)
         .await
         .expect("should succeed");
     let requests_with_peer_address = vec![
@@ -753,6 +762,123 @@ async fn test_send_vote_requests_case4() {
     }
 }
 
+// # Case 4.2: vote response returns higher last_log_term
+//
+// ## Setup:
+// 1. prepare two peers, both peer failed
+// 2. Peer1 returns higher term of last log index,
+//
+// ## Criterias:
+// 1. return Err(HigherTermFoundError)
+//
+#[tokio::test]
+async fn test_send_vote_requests_case4_2() {
+    test_utils::enable_logger();
+
+    let my_id = 1;
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+
+    let peer1_id = 2;
+    let peer2_id = 3;
+    //prepare rpc service for getting peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let my_last_log_term = 3;
+    let vote_response = VoteResponse {
+        term: 1,
+        vote_granted: false,
+        last_log_index: 1,
+        last_log_term: my_last_log_term + 1,
+    };
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 1,
+        last_log_term: my_last_log_term,
+    };
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 23, vote_response, rx1)
+        .await
+        .expect("should succeed");
+    let requests_with_peer_address = vec![
+        ChannelWithAddressAndRole {
+            id: peer1_id,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr1.clone(),
+            role: CANDIDATE,
+        },
+    ];
+    let client = GrpcTransport { my_id };
+    match client
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .await
+    {
+        Ok(_) => assert!(false),
+        Err(e) => assert!(matches!(e, Error::HigherTermFoundError(_higher_term))),
+    }
+}
+
+// # Case 4.3: vote response returns higher last_log_index
+//
+// ## Setup:
+// 1. prepare two peers, both peer failed
+// 2. Peer1 returns last log term is the same as candidate one, but last log index is higher than
+//    candidate last log index,
+//
+// ## Criterias:
+// 1. return Err(HigherTermFoundError)
+//
+#[tokio::test]
+async fn test_send_vote_requests_case4_3() {
+    test_utils::enable_logger();
+
+    let my_id = 1;
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+
+    let peer1_id = 2;
+    let peer2_id = 3;
+    //prepare rpc service for getting peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let my_last_log_index = 1;
+    let my_last_log_term = 3;
+    let vote_response = VoteResponse {
+        term: 1,
+        vote_granted: false,
+        last_log_index: my_last_log_index + 1,
+        last_log_term: my_last_log_term,
+    };
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: my_last_log_index,
+        last_log_term: my_last_log_term,
+    };
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 24, vote_response, rx1)
+        .await
+        .expect("should succeed");
+    let requests_with_peer_address = vec![
+        ChannelWithAddressAndRole {
+            id: peer1_id,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr1.clone(),
+            role: CANDIDATE,
+        },
+    ];
+    let client = GrpcTransport { my_id };
+    match client
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .await
+    {
+        Ok(_) => assert!(false),
+        Err(e) => assert!(matches!(e, Error::HigherTermFoundError(_higher_term))),
+    }
+}
 // # Case 5: two peers passed
 //
 // ## Setup:
@@ -776,10 +902,14 @@ async fn test_send_vote_requests_case5() {
     let peer1_response = VoteResponse {
         term: 1,
         vote_granted: false,
+        last_log_index: 0,
+        last_log_term: 0,
     };
     let peer2_response = VoteResponse {
         term: 1,
         vote_granted: true,
+        last_log_index: 0,
+        last_log_term: 0,
     };
     let request = VoteRequest {
         term: 1,
@@ -787,10 +917,10 @@ async fn test_send_vote_requests_case5() {
         last_log_index: 1,
         last_log_term: 1,
     };
-    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 23, peer1_response, rx1)
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 25, peer1_response, rx1)
         .await
         .expect("should succeed");
-    let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 24, peer2_response, rx2)
+    let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 26, peer2_response, rx2)
         .await
         .expect("should succeed");
     let requests_with_peer_address = vec![
@@ -812,5 +942,71 @@ async fn test_send_vote_requests_case5() {
     {
         Ok(res) => assert!(res),
         Err(_) => assert!(false),
+    }
+}
+
+// # Case 6: High term found in vote response
+//
+// ## Setup:
+// 1. prepare two peers, one success while another failed with higher term
+//
+// ## Criterias:
+// 1. return Error
+//
+#[tokio::test]
+async fn test_send_vote_requests_case6() {
+    test_utils::enable_logger();
+
+    let my_id = 1;
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+
+    let peer1_id = 2;
+    let peer2_id = 3;
+    //prepare rpc service for getting peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let (_tx2, rx2) = oneshot::channel::<()>();
+    let peer1_response = VoteResponse {
+        term: 1,
+        vote_granted: true,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let peer2_response = VoteResponse {
+        term: 100,
+        vote_granted: false,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 1,
+        last_log_term: 1,
+    };
+    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 27, peer1_response, rx1)
+        .await
+        .expect("should succeed");
+    let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 28, peer2_response, rx2)
+        .await
+        .expect("should succeed");
+    let requests_with_peer_address = vec![
+        ChannelWithAddressAndRole {
+            id: peer1_id,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr2.clone(),
+            role: CANDIDATE,
+        },
+    ];
+    let client = GrpcTransport { my_id };
+    match client
+        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .await
+    {
+        Ok(_) => assert!(false),
+        Err(e) => assert!(matches!(e, Error::HigherTermFoundError(_higher_term))),
     }
 }

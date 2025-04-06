@@ -31,10 +31,11 @@ mod raft_test;
 ///     and update its term to higher one.
 ///
 /// e.g. Append Entries RPC
+/// e.g. Election: receive VoteResponse
 /// e.g. Sync cluster membership configure
 
-/// @return: true - found new leader; false - no new leader found;
-pub(crate) fn if_new_leader_found(
+/// @return: true - found higher term;
+pub(crate) fn if_higher_term_found(
     my_current_term: u64,
     term: u64,
     is_learner: bool,
@@ -46,4 +47,25 @@ pub(crate) fn if_new_leader_found(
     }
 
     false
+}
+
+/// Raft paper: 5.4.1 Election restriction
+///
+/// Raft determines which of two logs is more up-to-date by comparing the index and term of the last
+/// entries in the  logs. If the logs have last entries with different terms, then the log with the
+/// later term is more up-to-date. If the logs end with the same term, then whichever log is longer
+/// is more up-to-date.
+pub fn is_target_log_more_recent(
+    my_last_log_index: u64,
+    my_last_log_term: u64,
+    target_last_log_index: u64,
+    target_last_log_term: u64,
+) -> bool {
+    if (target_last_log_term > my_last_log_term)
+        || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
+    {
+        true
+    } else {
+        false
+    }
 }

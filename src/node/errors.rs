@@ -198,6 +198,9 @@ pub enum Error {
 
     #[error(transparent)]
     StateTransitionError(#[from] StateTransitionError),
+
+    #[error("Higher term found error: higher term = {0}")]
+    HigherTermFoundError(u64),
     //===== Receive Exist Signals =====
     //
     #[error("Exit")]

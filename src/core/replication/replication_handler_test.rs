@@ -8,6 +8,7 @@ use super::ReplicationCore;
 use super::ReplicationData;
 use super::ReplicationHandler;
 use crate::convert::kv;
+use crate::grpc::rpc_service::AppendEntriesRequest;
 use crate::grpc::rpc_service::ClientCommand;
 use crate::grpc::rpc_service::Entry;
 use crate::test_utils::setup_raft_components;
@@ -577,4 +578,81 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
     } else {
         assert!(false);
     }
+}
+
+#[test]
+fn test_valid_request() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 2;
+    raft_log.expect_has_log_at().returning(|_, _| true);
+    raft_log.expect_get_last_entry_metadata().returning(|| (0, 0));
+
+    let request = AppendEntriesRequest {
+        term: my_term,
+        prev_log_index: 5,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    assert!(handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+}
+
+#[test]
+fn test_stale_term() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 2;
+    raft_log.expect_has_log_at().returning(|_, _| true);
+    raft_log.expect_last().returning(|| None);
+
+    let request = AppendEntriesRequest {
+        term: my_term - 1,
+        prev_log_index: 5,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    assert!(!handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+}
+
+#[test]
+fn test_mismatched_prev_log() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 2;
+    raft_log.expect_has_log_at().returning(|_, _| false);
+    raft_log.expect_get_last_entry_metadata().returning(|| (0, 0));
+
+    let request = AppendEntriesRequest {
+        term: my_term,
+        prev_log_index: 5,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    assert!(!handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+}
+
+#[test]
+fn test_virtual_log_handling() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let raft_log = MockRaftLog::new();
+    let my_term = 2;
+    let request = AppendEntriesRequest {
+        term: my_term,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    assert!(handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
 }

@@ -130,24 +130,23 @@ fn test_get_range2() {
     assert_eq!(list[0].index, 255);
 }
 
-// # Case 1: test follower f delete conflicts (Figure 7 in raft paper)
+/// # Case 1: test follower f delete conflicts (Figure 7 in raft paper)
 ///
-// ## Setup:
-// 1.
-//     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
-// log10(6)     follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3),
-// log9(3), log10(3), log11(3)
+/// ## Setup:
+/// 1.
+///     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
+/// log10(6)     follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3),
+/// log9(3), log10(3), log11(3)
 ///
-// ## Criterias:
-// 1. next_id been updated to:
-// Follower	lastIndex	nextIndex
-// follower_a	    9	    10
-// follower_b	    4	    5
-// follower_c	    10	    11
-// follower_d	    12	    11
-// follower_e	    7	    6
-// follower_f	    11  	4
-///
+/// ## Criterias:
+/// 1. next_id been updated to:
+/// Follower	lastIndex	nextIndex
+/// follower_a	    9	    10
+/// follower_b	    4	    5
+/// follower_c	    10	    11
+/// follower_d	    12	    11
+/// follower_e	    7	    6
+/// follower_f	    11  	4
 #[test]
 fn test_filter_out_conflicts_and_append_case1() {
     let context = setup("/tmp/test_filter_out_conflicts_and_append_case1");
@@ -169,9 +168,11 @@ fn test_filter_out_conflicts_and_append_case1() {
     };
     let new_ones = vec![l1, l2];
     let prev_log_index = 1;
+    let prev_log_term = 1;
     let last_applied = context
         .raft_log
-        .filter_out_conflicts_and_append(prev_log_index, new_ones);
+        .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
+        .expect("success");
     assert_eq!(last_applied, 3);
 
     if let Some(e) = context.raft_log.get_entry_by_index(3) {
@@ -202,9 +203,11 @@ fn test_filter_out_conflicts_and_append() {
     };
     let new_ones = vec![l1, l2];
     let prev_log_index = 1;
+    let prev_log_term = 1;
     let last_applied = context
         .raft_log
-        .filter_out_conflicts_and_append(prev_log_index, new_ones);
+        .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
+        .expect("success");
     assert_eq!(last_applied, 3);
 
     if let Some(e) = context.raft_log.get_entry_by_index(3) {
@@ -221,9 +224,11 @@ fn test_filter_out_conflicts_and_append() {
     };
     let new_ones = vec![l3];
     let prev_log_index = 1;
+    let prev_log_term = 1;
     let last_applied = context
         .raft_log
-        .filter_out_conflicts_and_append(prev_log_index, new_ones);
+        .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
+        .expect("success");
     assert_eq!(last_applied, 4);
     if let Some(e) = context.raft_log.get_entry_by_index(4) {
         assert_eq!(e.term, 2);
@@ -328,7 +333,7 @@ fn test_sled_last_max() {
 
 ///3 nodes, leader append 1000 logs, the other two logs can not get 1000
 /// entries
-// to test insert_one_client_command and get_entries_between two functions
+/// to test insert_one_client_command and get_entries_between two functions
 #[test]
 fn test_insert_one_client_command() {
     let context = setup("/tmp/test_insert_one_client_command");
@@ -384,11 +389,10 @@ fn test_get_raft_log_entry_between() {
     let result = context.raft_log.get_entries_between(0..=1);
     assert_eq!(result.len(), 1);
 }
-// Test duplicated insert
-// Leader might received duplicated commands from clients in several RPC
-// request. But, leader should not treat them as duplicated entries. They are
-// just sequence events.
-///
+/// Test duplicated insert
+/// Leader might received duplicated commands from clients in several RPC
+/// request. But, leader should not treat them as duplicated entries. They are
+/// just sequence events.
 #[test]
 fn test_insert_one_client_command_dup_case() {
     let context = setup("/tmp/test_insert_one_client_command_dup_case");
@@ -416,11 +420,10 @@ fn test_insert_one_client_command_dup_case() {
     }
 }
 
-// # Test client propose commands which contains insert and delete
+/// # Test client propose commands which contains insert and delete
 ///
-// ## Criterias:
-// 1. all client proposal should be recorded in RaftLog without lose
-///
+/// ## Criterias:
+/// 1. all client proposal should be recorded in RaftLog without lose
 #[test]
 fn test_client_proposal_insert_delete() {
     let context = setup("/tmp/test_apply");
@@ -467,7 +470,7 @@ fn test_load_uncommitted_from_db_to_cache() {
 
 ///Bug: setup logger with error: SetGlobalDefaultError("a global default trace
 /// dispatcher has already been set")
-// #[traced_test]
+/// #[traced_test]
 #[test]
 fn test_delete_entries_before() {
     let context = setup("/tmp/test_delete_entries_before");
@@ -558,11 +561,10 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
     );
 }
 
-// Case 1: we have multi thread working concurrently
-//     each thread should get unique pre allocated index for pending apply
-// entries     At last when we retrieve last entry of the locallog, we should
-// see the last pre allocated index
-///
+/// Case 1: we have multi thread working concurrently
+///     each thread should get unique pre allocated index for pending apply
+/// entries     At last when we retrieve last entry of the locallog, we should
+/// see the last pre allocated index
 #[tokio::test]
 async fn test_pre_allocate_raft_logs_next_index_case1() {
     let context = setup("/tmp/test_pre_allocate_raft_logs_next_index_case1");
@@ -597,11 +599,11 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
     assert_eq!(start + i * j, end);
 }
 
-// Case 2: we have mutil thread working concurrently
-//     there might be one thread failed to apply the local log entries
-//     which cases some log entry index might not really exists inside local
-// logs     we still want to validate the last log entry id is the same one as
-// we expected #[ignore = "architecture changes, this case will not exist"]
+/// Case 2: we have mutil thread working concurrently
+///     there might be one thread failed to apply the local log entries
+///     which cases some log entry index might not really exists inside local
+/// logs     we still want to validate the last log entry id is the same one as
+/// we expected #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
 async fn test_pre_allocate_raft_logs_next_index_case2() {
     let context = setup("/tmp/test_pre_allocate_raft_logs_next_index_case2");
@@ -658,8 +660,8 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
     );
 }
 
-// Case 1: stress testing with 100K entries,
-//     the entries was insert successfully and last log entry id is as expected
+/// Case 1: stress testing with 100K entries,
+///     the entries was insert successfully and last log entry id is as expected
 #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
 async fn test_insert_batch_logs_case1() {
@@ -696,106 +698,140 @@ async fn test_insert_batch_logs_case1() {
     assert_eq!(start + i * j, end);
 }
 
-// Case 2: combine 'filter_out_conflicts_and_append', 'delete_entries_before'
-//     and 'insert_batch' actions
-// step1: current node is Leader at T1, so insert_batch is invoked, contains
-// log_1-log_10(with term: 1). step2: current node starts generating snapshots,
-// so delete_entries_before is invoked step3: fake the current Leader restarts
-// step4: new Leader elected(contains log_1-log_8(with term: 1)), current node
-// is Follower step5: new Leader insert log_9, log_10 with term:2.
-// step6: current node receives new Leader's append request
-//     so it starts filter_out_conflicts_and_append, but new entries' term is 2
+/// # Case 2: Test scenario for log replication conflict handling when combining:
+/// 1. `filter_out_conflicts_and_append` (follower's perspective)
+/// 2. `delete_entries_before` (snapshot compaction)
+/// 3. `insert_batch` (leader's log appending)
 ///
-// Check the result:
-//     1/ current node's last entry id is expected: 10 with term 2
+/// # Test Scenario Flow
+///
+/// 1. **Setup Phase**:
+///    - Old leader (T1) appends logs 1-10 (term 1)
+///    - Generates snapshot up to index 3 (compaction)
+///
+/// 2. **Leadership Change**:
+///    - Old leader restarts and becomes follower
+///    - New leader (T2) elected with logs 1-8 (term 1)
+///
+/// 3. **Conflict Handling**:
+///    - New leader appends logs 9-10 (term 2)
+///    - Old follower processes AppendEntries RPC
+///
+/// # Validation Points
+/// - Final log state must have last entry index=10, term=2
+/// - Log continuity: index 7 (term 1) and 8 (term 2) must coexist
 #[tokio::test]
 async fn test_insert_batch_logs_case2() {
-    //preparation
-    let ex_leader_id = 1;
-    let new_leader_id = 2;
     let (raft_log_db, _, state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
 
+    // 1. Initialize two nodes (old_leader and new_leader)
+    let ex_leader_id = 1;
+    let new_leader_id = 2;
     let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
-    let ex_leader_sled_raft_log = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
+    let old_leader = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
 
     let (raft_log_db, _, state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
     let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
-    let new_leader_sled_raft_log = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
+    let new_leader = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
 
     let mut entries: Vec<Entry> = Vec::new();
     for i in 1..=7 {
         entries.push(Entry {
-            index: ex_leader_sled_raft_log.pre_allocate_raft_logs_next_index(),
+            index: old_leader.pre_allocate_raft_logs_next_index(),
             term: 1,
             command: kv(i),
         });
     }
-    ex_leader_sled_raft_log
-        .insert_batch(entries.clone())
-        .expect("should succeed");
-    new_leader_sled_raft_log
-        .insert_batch(entries.clone())
-        .expect("should succeed");
 
-    //ex_leader has one more entry inside local log but not commited yet.
-    ex_leader_sled_raft_log
+    // 2. Old leader initial logs (term 1)
+    old_leader.insert_batch(entries.clone()).expect("should succeed");
+    new_leader.insert_batch(entries.clone()).expect("should succeed");
+
+    // 3. Add uncommitted entry on old leader
+    old_leader
         .insert_batch(vec![Entry {
-            index: ex_leader_sled_raft_log.pre_allocate_raft_logs_next_index(),
+            index: old_leader.pre_allocate_raft_logs_next_index(),
             term: 1,
             command: kv(8),
         }])
         .expect("should succeed");
-    //simulating step2: ex_leader generate snapshots:
-    let last_applied = 3;
-    ex_leader_sled_raft_log
-        .delete_entries_before(last_applied)
-        .expect("should succeed");
 
-    //simulating step4,step5
+    // 4. Simulate snapshot compaction
+    let last_applied = 3;
+    old_leader.delete_entries_before(last_applied).expect("should succeed");
+
+    // 5. New leader appends higher term logs
     let mut handles = Vec::new();
     let mut new_leader_entries: Vec<Entry> = Vec::new();
     for i in 8..=10 {
         new_leader_entries.push(Entry {
-            index: new_leader_sled_raft_log.pre_allocate_raft_logs_next_index(),
+            index: new_leader.pre_allocate_raft_logs_next_index(),
             term: 2,
             command: kv(i),
         });
     }
     let cloned_new_leader_entries = new_leader_entries.clone();
     let handle = tokio::spawn(async move {
-        new_leader_sled_raft_log
+        new_leader
             .insert_batch(cloned_new_leader_entries.clone())
             .expect("should succeed");
     });
     handles.push(handle);
     let _results = join_all(handles).await;
 
-    println!("new_leader_entries: {:?}", new_leader_entries.clone());
-    // simulating step6:
-    let ex_leader_last_appled_id =
-        ex_leader_sled_raft_log.filter_out_conflicts_and_append(0, new_leader_entries.clone());
+    debug!("new_leader_entries: {:?}", new_leader_entries.clone());
+
+    // 6. Follower processes conflicting entries
+    let ex_leader_last_appled_id = old_leader
+        .filter_out_conflicts_and_append(8, 1, new_leader_entries.clone())
+        .expect("success");
     assert_eq!(ex_leader_last_appled_id, 10);
 
-    //validations:
-    if let Some(ex_leader_last_entry) = ex_leader_sled_raft_log.last() {
-        assert_eq!(ex_leader_last_entry.index, 10);
-        assert_eq!(ex_leader_last_entry.term, 2);
-    }
+    // // 7. Validate final log state
+    // if let Some(ex_leader_last_entry) = old_leader.last() {
+    //     assert_eq!(ex_leader_last_entry.index, 10);
+    //     assert_eq!(ex_leader_last_entry.term, 2);
+    // }
 
-    if let Some(entry) = ex_leader_sled_raft_log.get_entry_by_index(7) {
-        assert_eq!(entry.term, 1);
-    }
-    if let Some(entry) = ex_leader_sled_raft_log.get_entry_by_index(8) {
-        assert_eq!(entry.term, 2);
+    // if let Some(entry) = old_leader.get_entry_by_index(7) {
+    //     assert_eq!(entry.term, 1);
+    // }
+    // if let Some(entry) = old_leader.get_entry_by_index(8) {
+    //     assert_eq!(entry.term, 2);
+    // }
+
+    // 7. Validate final log state
+    validate_log_continuity(&old_leader, &[
+        (7, 1),  // Original term 1 entry
+        (8, 2),  // Overwritten entry
+        (10, 2), // New highest entry
+    ])
+    .await;
+}
+
+/// Helper function: Validate log entries' term continuity
+async fn validate_log_continuity(
+    node: &Arc<SledRaftLog>,
+    expected: &[(u64, u64)],
+) {
+    for (index, term) in expected {
+        let entry = node
+            .get_entry_by_index(*index)
+            .unwrap_or_else(|| panic!("Missing entry at index {}", index));
+        assert_eq!(
+            entry.term, *term,
+            "Term mismatch at index {}: expected {}, got {}",
+            index, term, entry.term
+        );
     }
 }
 
-// # Case 1.1: cluster just start
-// 1. node's locallog is empty
-// 2. prev_log_index is 0
+/// # Case 1.1: cluster just start
+/// 1. node's locallog is empty
+/// 2. prev_log_index is 0
 ///
-// ## Criterias:
-// 1. prev_log_ok return true
+/// ## Criterias:
+/// 1. prev_log_ok return true
 #[test]
 fn test_prev_log_ok_case_1_1() {
     let context = setup("/tmp/test_prev_log_ok_case_1_1");
@@ -804,12 +840,12 @@ fn test_prev_log_ok_case_1_1() {
     assert!(context.raft_log.prev_log_ok(0, 0, 0));
 }
 
-// # Case 1.2: normal case
-// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
-// 2. prev_log_index: 2, prev_log_term: 1
+/// # Case 1.2: normal case
+/// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
+/// 2. prev_log_index: 2, prev_log_term: 1
 ///
-// ## Criterias:
-// 1. prev_log_ok return true
+/// ## Criterias:
+/// 1. prev_log_ok return true
 #[test]
 fn test_prev_log_ok_case_1_2() {
     let context = setup("/tmp/test_prev_log_ok_case_1_2");
@@ -824,12 +860,12 @@ fn test_prev_log_ok_case_1_2() {
     assert!(context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
-// # Case 1.3: conflict case
-// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
-// 2. prev_log_index: 3, prev_log_term: 1
+/// # Case 1.3: conflict case
+/// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
+/// 2. prev_log_index: 3, prev_log_term: 1
 ///
-// ## Criterias:
-// 1. prev_log_ok return false
+/// ## Criterias:
+/// 1. prev_log_ok return false
 #[test]
 fn test_prev_log_ok_case_1_3() {
     let context = setup("/tmp/test_prev_log_ok_case_1_3");
@@ -844,12 +880,12 @@ fn test_prev_log_ok_case_1_3() {
     assert!(!context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
-// # Case 1.4: conflict case
-// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
-// 2. prev_log_index: 3, prev_log_term: 3
+/// # Case 1.4: conflict case
+/// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
+/// 2. prev_log_index: 3, prev_log_term: 3
 ///
-// ## Criterias:
-// 1. prev_log_ok return false
+/// ## Criterias:
+/// 1. prev_log_ok return false
 #[test]
 fn test_prev_log_ok_case_1_4() {
     let context = setup("/tmp/test_prev_log_ok_case_1_4");
@@ -864,24 +900,23 @@ fn test_prev_log_ok_case_1_4() {
     assert!(!context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
 }
 
-// # Case 1.5: conflict case
-// 1. node's locallog is not empty, which contains log1(1), log2(2), log3(3), log4(3)
-// 2. prev_log_index: 4, prev_log_term: 6
+/// # Case 1.5: conflict case
+/// 1. node's locallog is not empty, which contains log1(1), log2(2), log3(3), log4(3)
+/// 2. prev_log_index: 4, prev_log_term: 6
 ///
-// ## Criterias:
-// 1. prev_log_ok return false
+/// ## Criterias:
+/// 1. prev_log_ok return false
 #[test]
 fn test_prev_log_ok_case_1_5() {}
 
-// # Case 2.4: snapshot related test case
-// 1. the current node is learner, it just installed Leader's snapshot
-// 2. so its locallog is not empty, it contains some log (log-1, 1), (log-2,1)
-// 3. while its last_applied is 10 which means log-10 has been committed
-// 4. prev_log_index: 11, prev_log_term: 1
+/// # Case 2.4: snapshot related test case
+/// 1. the current node is learner, it just installed Leader's snapshot
+/// 2. so its locallog is not empty, it contains some log (log-1, 1), (log-2,1)
+/// 3. while its last_applied is 10 which means log-10 has been committed
+/// 4. prev_log_index: 11, prev_log_term: 1
 ///
-// ## Criterias:
-// 1. prev_log_ok return false
-///
+/// ## Criterias:
+/// 1. prev_log_ok return false
 #[test]
 fn test_prev_log_ok_case_2_4() {
     let context = setup("/tmp/test_prev_log_ok_case_2_4");
@@ -904,8 +939,7 @@ fn test_apply_and_then_get_last() {
     assert_eq!(2, context.raft_log.last_entry_id());
 }
 
-// # Case 1: test if node restart, the local log cache should load from disk
-///
+/// # Case 1: test if node restart, the local log cache should load from disk
 #[test]
 fn test_new_case1() {
     test_utils::enable_logger();
@@ -975,9 +1009,9 @@ fn test_calculate_majority_matched_index_case0() {
     );
 }
 
-// If there exists an N such that N > commitIndex, a majority
-// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
-// (§5.3, §5.4).
+/// If there exists an N such that N > commitIndex, a majority
+/// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
+/// (§5.3, §5.4).
 #[test]
 fn test_calculate_majority_matched_index_case1() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case1");
@@ -1082,15 +1116,14 @@ fn test_calculate_majority_matched_index_case4() {
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2]));
 }
 
-// # Case 5: stress testing
+/// # Case 5: stress testing
 ///
-// ## Setup
-// 1. Simulate 100,000 local log entries
-// 2. peer1's match: 90,000, peer2's match 98,000
+/// ## Setup
+/// 1. Simulate 100,000 local log entries
+/// 2. peer1's match: 90,000, peer2's match 98,000
 ///
-// ## Ceriteria:
-// 1. compare calculate_majority_matched_index as calculate_majority_matched_index2's performance
-///
+/// ## Ceriteria:
+/// 1. compare calculate_majority_matched_index as calculate_majority_matched_index2's performance
 #[test]
 fn test_calculate_majority_matched_index_case5() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case5");
@@ -1131,4 +1164,60 @@ fn test_raft_log_insert() {
 
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
     assert_eq!(1, raft_log.last_entry_id());
+}
+
+/// #Case 1: local raft log is empty
+#[test]
+fn test_has_log_at_case1() {
+    let c = setup("/tmp/test_has_log_at_case1");
+    let raft_log = c.raft_log.clone();
+
+    assert!(raft_log.has_log_at(0, 0));
+}
+
+/// #Case 2: local raft log is not empty
+#[test]
+fn test_has_log_at_case2() {
+    let c = setup("/tmp/test_has_log_at_case2");
+    let raft_log = c.raft_log.clone();
+    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+
+    assert!(!raft_log.has_log_at(0, 0));
+}
+
+/// #Case 1: local raft log is empty
+#[test]
+fn test_is_empty_case1() {
+    let c = setup("/tmp/test_is_empty_case1");
+    let raft_log = c.raft_log.clone();
+
+    assert!(raft_log.is_empty());
+}
+
+/// #Case 2: local raft log is not empty
+#[test]
+fn test_is_empty_case2() {
+    let c = setup("/tmp/test_is_empty_case2");
+    let raft_log = c.raft_log.clone();
+    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+
+    assert!(!raft_log.is_empty());
+}
+
+/// # Case1: No last log in raft_log, should returns (0,0)
+#[test]
+fn test_get_last_entry_metadata_case1() {
+    let c = setup("/tmp/test_get_last_entry_metadata_case1");
+    let raft_log = c.raft_log.clone();
+
+    assert_eq!((0, 0), raft_log.get_last_entry_metadata());
+}
+/// # Case2: There is last log in raft_log, should returns last log metadata
+#[test]
+fn test_get_last_entry_metadata_case2() {
+    let c = setup("/tmp/test_get_last_entry_metadata_case2");
+    let raft_log = c.raft_log.clone();
+    test_utils::simulate_insert_proposal(&raft_log, vec![1], 11);
+
+    assert_eq!((1, 11), raft_log.get_last_entry_metadata());
 }

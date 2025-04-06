@@ -6,9 +6,9 @@ mod state_storage;
 
 // Re-export
 // -----------------------------------------------------------------------------
-pub(crate) use raft_log::*;
+pub use raft_log::*;
 pub use state_machine::*;
-pub(crate) use state_storage::*;
+pub use state_storage::*;
 
 // -----------------------------------------------------------------------------
 // Database namespaces

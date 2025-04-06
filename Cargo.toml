@@ -49,7 +49,7 @@ flate2 = { version = "1.0", default-features = false, features = ["zlib"] }
 
 # Async
 tokio = { version = "1.4", features = [
-    "rt-multi-thread",
+    # "rt-multi-thread",
     "macros",
     "time",
     "signal",
@@ -74,6 +74,7 @@ prometheus = { version = "0.13", default-features = false }
 
 # log
 log = "0.4.20"
+tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
@@ -81,7 +82,7 @@ parking_lot = "0.12.3"
 rand = "0.8.5"
 thiserror = "1.0"
 # crossbeam = "0.8.4"
-config = "0.14.0"
+config = { version ="0.14.0", default-features = false, features = ["toml"] }
 autometrics = { version = "2.0.0", features = ["prometheus-exporter"] }
 lazy_static = "1.4"
 # chrono = "0.4.38"
