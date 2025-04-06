@@ -117,15 +117,22 @@ where T: TypeConfig
         &self,
         request: AppendEntriesRequest,
         state_snapshot: &StateSnapshot,
-        last_applied: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates>;
 
-    // async fn upon_receive_append_request(
-    //     &self,
-    //     req: &AppendEntriesRequest,
-    //     state_snapshot: &StateSnapshot,
-    //     last_applied: u64,
-    //     raft_log: &Arc<ROF<T>>,
-    // ) -> AppendResponseWithUpdates;
+    /// Checks if the incoming AppendEntries RPC is valid based on Raft protocol rules.
+    ///
+    /// Validation steps:
+    /// 1. Reject if leader's term is outdated (request.term < current_term)
+    /// 2. Validate previous log entry:
+    ///    - If prev_log_index exists in local log, check term matches
+    ///    - If prev_log_index exceeds local log length, log inconsistency exists
+    /// 3. Ensure leader's commit index doesn't jump too far:
+    ///    - leader_commit should not exceed last local log index + new entries count
+    fn check_append_entries_request_is_legal(
+        &self,
+        my_term: u64,
+        request: &AppendEntriesRequest,
+        raft_log: &Arc<ROF<T>>,
+    ) -> bool;
 }

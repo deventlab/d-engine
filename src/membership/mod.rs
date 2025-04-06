@@ -83,6 +83,13 @@ where T: TypeConfig
         channels: &DashMap<u32, ChannelWithAddress>,
     ) -> Vec<ChannelWithAddressAndRole>;
 
+    fn get_peers_id_with_condition<F>(
+        &self,
+        condition: F,
+    ) -> Vec<u32>
+    where
+        F: Fn(i32) -> bool + 'static;
+
     fn mark_leader_id(
         &self,
         leader_id: u32,

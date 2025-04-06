@@ -295,6 +295,7 @@ impl MockBuilder {
 pub fn mock_raft_log() -> MockRaftLog {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_get_last_entry_metadata().returning(|| (0, 0));
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log
 }
@@ -349,6 +350,7 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|| ClusterMembership { nodes: vec![] });
+    membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
 }
 

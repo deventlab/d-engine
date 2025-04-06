@@ -21,8 +21,9 @@ use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
 use crate::grpc::rpc_service::AppendEntriesRequest;
 use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
 use crate::grpc::rpc_service::VoteRequest;
-use crate::if_new_leader_found;
+use crate::if_higher_term_found;
 use crate::is_learner;
+use crate::is_target_log_more_recent;
 use crate::task_with_timeout_and_exponential_backoff;
 use crate::AppendResults;
 use crate::ChannelWithAddress;
@@ -35,6 +36,7 @@ use crate::RetryPolicies;
 use crate::Transport;
 use crate::API_SLO;
 
+#[derive(Debug)]
 pub struct GrpcTransport {
     pub(crate) my_id: u32,
 }
@@ -92,7 +94,7 @@ impl Transport for GrpcTransport {
                         let res = response.into_inner();
 
                         //special case for this func
-                        if if_new_leader_found(my_term, res.term, is_learner(peer_role)) {
+                        if if_higher_term_found(my_term, res.term, is_learner(peer_role)) {
                             return Err(crate::Error::FoundNewLeaderError(NewLeaderInfo {
                                 term: res.term,
                                 leader_id: res.id,
@@ -136,9 +138,9 @@ impl Transport for GrpcTransport {
         }
     }
 
+    #[tracing::instrument]
     async fn send_append_requests(
         &self,
-        // role_tx: mpsc::UnboundedSender<RoleEvent>,
         leader_current_term: u64,
         requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
         retry: &RetryPolicies,
@@ -219,7 +221,7 @@ impl Transport for GrpcTransport {
                     let peer_match_index;
                     let peer_next_index;
                     if !response.success {
-                        if if_new_leader_found(leader_current_term, response.term, false) {
+                        if if_higher_term_found(leader_current_term, response.term, false) {
                             error!("[send_append_requests] new leader found.");
                             return Err(crate::Error::FoundNewLeaderError(NewLeaderInfo {
                                 term: response.term,
@@ -247,19 +249,6 @@ impl Transport for GrpcTransport {
                         success: response.success,
                     };
                     peer_updates.insert(peer_id, update);
-
-                    // if let Err(e) =
-                    // role_tx.send(RoleEvent::UpdateMatchIndexAndNextIndex {
-                    //     node_id: peer_id,
-                    //     new_match_index: peer_match_index,
-                    //     new_next_index: peer_next_index,
-                    // }) {
-                    //     error!(
-                    //         "event_tx
-                    //     .send(RaftEvent::UpdateMatchIndexAndNextIndex)
-                    // timeout: {:?}",         e
-                    //     );
-                    // }
                 }
                 Ok(Err(e)) => {
                     error!("[send_append_requests] error: {:?}", e);
@@ -299,6 +288,9 @@ impl Transport for GrpcTransport {
 
         // make sure the collection items are unique
         let mut peer_ids = HashSet::new();
+        let my_term = req.term;
+        let my_last_log_index = req.last_log_index;
+        let my_last_log_term = req.last_log_term;
 
         debug!("send_vote_requests: {:?}, to: {:?}", &req, &peers);
 
@@ -347,7 +339,7 @@ impl Transport for GrpcTransport {
                     Ok(response) => {
                         debug!("resquest [peer({:?})] vote response: {:?}", &addr, response);
                         let res = response.into_inner();
-                        Ok(res.vote_granted)
+                        Ok(res)
                     }
                     Err(e) => {
                         warn!("Received RPC error: {}", e);
@@ -359,18 +351,29 @@ impl Transport for GrpcTransport {
         }
 
         let mut succeed = 1;
-        // if Self::if_vote_myself(state).await {
-        //     debug!("I have voted for myself!");
-        //     succeed += 1;
-        // }
 
         while let Some(result) = tasks.next().await {
             match result {
-                Ok(Ok(success)) => {
-                    if success {
+                Ok(Ok(vote_response)) => {
+                    if vote_response.vote_granted {
                         debug!("send_vote_requests_to_peers success!");
                         succeed += 1;
                     } else {
+                        if if_higher_term_found(my_term, vote_response.term, false) {
+                            warn!("Higher term found during election phase.");
+                            return Err(crate::Error::HigherTermFoundError(vote_response.term));
+                        }
+
+                        if is_target_log_more_recent(
+                            my_last_log_index,
+                            my_last_log_term,
+                            vote_response.last_log_index,
+                            vote_response.last_log_term,
+                        ) {
+                            warn!("More update to date log found in vote response");
+                            return Err(crate::Error::HigherTermFoundError(vote_response.term));
+                        }
+
                         warn!("send_vote_requests_to_peers failed!");
                     }
                 }

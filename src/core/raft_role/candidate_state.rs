@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -29,11 +30,12 @@ use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
+use crate::ReplicationCore;
 use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CandidateState<T: TypeConfig> {
     pub shared_state: SharedState,
 
@@ -142,10 +144,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         self.timer.next_deadline()
     }
 
-    // fn tick_interval(&self) -> Duration {
-    //     self.timer.tick_interval()
-    // }
-
     /// Election Timeout: as candidate, it should send vote requests now
     async fn tick(
         &mut self,
@@ -162,12 +160,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         self.increase_current_term();
         self.reset_voted_for()?;
 
-        // if self.can_vote_myself() {
         debug!("candidate new term: {}", self.current_term());
 
         self.vote_myself()?;
 
-        if let Ok(_) = ctx
+        match ctx
             .election_handler()
             .broadcast_vote_requests(
                 self.current_term(),
@@ -178,18 +175,28 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             )
             .await
         {
-            debug!("BecomeLeader");
-            if let Err(e) = role_tx.send(RoleEvent::BecomeLeader) {
-                error!(
-                    "self.my_role_change_event_sender.send(RaftRole::Leader) failed: {:?}",
-                    e
-                );
+            Ok(_) => {
+                debug!("BecomeLeader");
+                if let Err(e) = role_tx.send(RoleEvent::BecomeLeader) {
+                    error!(
+                        "self.my_role_change_event_sender.send(RaftRole::Leader) failed: {:?}",
+                        e
+                    );
+                }
+            }
+            Err(Error::HigherTermFoundError(higher_term)) => {
+                // Immediately update the Term and become a Follower.
+                self.update_current_term(higher_term);
+                self.send_become_follower_event(&role_tx)?;
+            }
+            Err(e) => {
+                warn!("candidate broadcast_vote_requests with error: {:?}", e);
             }
         }
-        // }
         Ok(())
     }
 
+    #[tracing::instrument]
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -201,13 +208,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
                 let my_term = self.current_term();
-                let mut last_log_index = 0;
-                let mut last_log_term = 0;
-                if let Some(last) = ctx.raft_log().last() {
-                    last_log_index = last.index;
-                    last_log_term = last.term;
-                    debug!("last_index: {:?}, last_term: {:?}", last_log_index, last_log_term);
-                }
+                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
 
                 if ctx.election_handler().check_vote_request_is_legal(
                     &vote_request,
@@ -226,6 +227,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     let response = VoteResponse {
                         term: my_term,
                         vote_granted: false,
+                        last_log_index,
+                        last_log_term,
                     };
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
@@ -266,13 +269,24 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 self.reset_timer();
 
                 let my_term = self.current_term();
-                if append_entries_request.term < my_term {
+
+                if !ctx.replication_handler().check_append_entries_request_is_legal(
+                    my_term,
+                    &append_entries_request,
+                    ctx.raft_log(),
+                ) {
                     let raft_log_last_index = ctx.raft_log.last_entry_id();
+                    let last_matched_id = if append_entries_request.prev_log_index < raft_log_last_index {
+                        append_entries_request.prev_log_index.saturating_sub(1)
+                    } else {
+                        raft_log_last_index
+                    };
+
                     let response = AppendEntriesResponse {
                         id: self.node_id(),
-                        term: self.current_term(),
+                        term: my_term,
                         success: false,
-                        match_index: raft_log_last_index,
+                        match_index: last_matched_id,
                     };
 
                     debug!(
@@ -433,5 +447,16 @@ impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
 impl<T: TypeConfig> Drop for CandidateState<T> {
     fn drop(&mut self) {
         // self.votes.clear();
+    }
+}
+
+impl<T: TypeConfig> Debug for CandidateState<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("CandidateState")
+            .field("shared_state", &self.shared_state)
+            .finish()
     }
 }

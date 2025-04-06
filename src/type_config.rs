@@ -15,17 +15,17 @@ use crate::Transport;
 pub trait TypeConfig:
     Sync + Send + Sized + Debug + Clone + Copy + Default + Eq + PartialEq + Ord + PartialOrd + 'static
 {
-    type R: RaftLog;
+    type R: RaftLog + Debug;
 
     type TR: Transport;
 
-    type SM: StateMachine;
+    type SM: StateMachine + Debug;
 
     type SS: StateStorage;
 
     type M: Membership<Self>;
 
-    type P: PeerChannels + PeerChannelsFactory + Clone;
+    type P: PeerChannels + PeerChannelsFactory + Clone + Debug;
 
     type E: ElectionCore<Self> + Clone;
 
@@ -33,7 +33,7 @@ pub trait TypeConfig:
 
     type C: CommitHandler;
 
-    type SMH: StateMachineHandler<Self>;
+    type SMH: StateMachineHandler<Self> + Debug;
 }
 
 pub mod alias {

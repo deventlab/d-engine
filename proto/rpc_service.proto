@@ -3,17 +3,20 @@ syntax = "proto3";
 package rpc_service;
 
 message VoteRequest {
-    uint64 term = 1;
-    uint32 candidateId = 2;
-    uint64 lastLogIndex = 3;
-    uint64 lastLogTerm= 4;
+  uint64 term = 1;
+  uint32 candidateId = 2;
+  uint64 lastLogIndex = 3;
+  uint64 lastLogTerm= 4;
 }
 
 message VoteResponse {
-      /// currentTerm, for candidate to update itself
-      uint64 term = 1;
-      /// true means candidate received vote
-      bool voteGranted = 2;
+  // currentTerm, for candidate to update itself
+  uint64 term = 1;
+  // true means candidate received vote
+  bool voteGranted = 2;
+  // Used to determine whether the rejection is due to the log being outdated or having already voted for another node.
+  uint64 lastLogIndex = 3;
+  uint64 lastLogTerm= 4;
 }
 
 message Entry {
@@ -28,28 +31,28 @@ message ActiveSnapshot {
 }
 
 message AppendEntriesRequest {
-  /// leader term
+  // leader term
   uint64 term = 1;
-  /// so follower can redirect clients
+  // so follower can redirect clients
   uint32 leaderId = 2;
-  /// index of log entry immediately preceding new ones
+  // index of log entry immediately preceding new ones
   uint64 prevLogIndex = 3;
-  /// term of prevLogIndex entry
+  // term of prevLogIndex entry
   uint64 prevLogTerm = 4;
-  /// log entries to store (empty for heartbeat; may send more than one for efficiency)
+  // log entries to store (empty for heartbeat; may send more than one for efficiency)
   repeated Entry entries = 5;
-  /// leader commitIndex
+  // leader commitIndex
   uint64 leaderCommitIndex = 6;
 }
 
 message AppendEntriesResponse {
-    /// record down the response owner id
+    // record down the response owner id
     uint32 id = 1;
-    /// currentTerm, for leader to update itself
+    // currentTerm, for leader to update itself
     uint64 term = 2;
-    /// true if follower contained entry matching prevLogIndex and prevLogTerm
+    // true if follower contained entry matching prevLogIndex and prevLogTerm
     bool success = 3;
-    /// the index of the last log entry it has received
+    // the index of the last log entry it has received
     uint64 matchIndex = 4;
 }
 
@@ -194,20 +197,20 @@ message Snapshot {
 }
 
 message ClusteMembershipChangeRequest {
-  /// the request sender id, (might be fake leader or real leader)
+  // the request sender id, (might be fake leader or real leader)
   uint32 id = 1;
-  /// leader term
+  // leader term
   uint64 term = 2;
-  /// so follower can redirect clients
-  /// when receiver receives the configure, they need compare the version
-  /// value is timestamp by default.
+  // so follower can redirect clients
+  // when receiver receives the configure, they need compare the version
+  // value is timestamp by default.
   uint64 version = 3;
 
   ClusterMembership cluster_membership = 4;
 }
 
 message ClusterConfUpdateResponse {
-  /// record down the response owner id
+  // record down the response owner id
   uint32 id = 1;
   uint64 term = 2;
   uint64 version = 3;

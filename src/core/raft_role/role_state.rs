@@ -228,7 +228,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
         state_snapshot: &StateSnapshot,
-        last_applied: u64,
     ) -> Result<()> {
         debug!(
             "handle_raft_event::RaftEvent::AppendEntries: {:?}",
@@ -268,7 +267,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Handle replication request
         match ctx
             .replication_handler()
-            .handle_append_entries(append_entries_request, state_snapshot, last_applied, ctx.raft_log())
+            .handle_append_entries(append_entries_request, state_snapshot, ctx.raft_log())
             .await
         {
             Ok(AppendResponseWithUpdates {

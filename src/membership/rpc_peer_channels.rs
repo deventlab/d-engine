@@ -10,6 +10,7 @@
 //! initial configuration and must be properly initialized before
 //! `raft_membership` can operate. This layer abstracts network implementation
 //! details from the consensus algorithm.
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,6 +49,16 @@ pub struct RpcPeerChannels {
     pub(super) settings: Arc<RaftNodeConfig>,
 }
 
+impl Debug for RpcPeerChannels {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RpcPeerChannels")
+            .field("node_id", &self.node_id)
+            .finish()
+    }
+}
 impl PeerChannelsFactory for RpcPeerChannels {
     fn create(
         node_id: u32,

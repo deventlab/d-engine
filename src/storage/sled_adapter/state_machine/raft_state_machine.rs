@@ -27,7 +27,6 @@ use crate::StateMachineIter;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
 
-#[derive(Debug)]
 pub struct RaftStateMachine {
     node_id: u32,
 
@@ -39,6 +38,17 @@ pub struct RaftStateMachine {
     db: Arc<sled::Db>,
     tree: Arc<sled::Tree>,
     is_serving: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for RaftStateMachine {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RaftStateMachine")
+            .field("tree_len", &self.tree.len())
+            .finish()
+    }
 }
 
 #[async_trait]
@@ -210,7 +220,7 @@ impl StateMachine for RaftStateMachine {
 
 impl RaftStateMachine {
     #[autometrics(objective = API_SLO)]
-    pub(crate) fn new(
+    pub fn new(
         node_id: u32,
         db: Arc<sled::Db>,
     ) -> Self {

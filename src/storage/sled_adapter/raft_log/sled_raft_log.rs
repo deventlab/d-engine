@@ -42,12 +42,21 @@ struct CachedDbSize {
     last_activity: DashMap<u64, Instant>, //<node_id, ms>
 }
 
-#[derive(Debug)]
 pub struct SledRaftLog {
     db: Arc<sled::Db>,
     tree: Arc<sled::Tree>,
     cache: RaftLogMemCache,
-    // db_size_cache: Arc<CachedDbSize>,
+}
+
+impl std::fmt::Debug for SledRaftLog {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("SledRaftLog")
+            .field("tree_len", &self.tree.len())
+            .finish()
+    }
 }
 
 /// This data structure is designed to improve read and write performance.
@@ -105,6 +114,25 @@ impl RaftLog for SledRaftLog {
         }
     }
 
+    fn is_empty(&self) -> bool {
+        self.last_entry().is_none()
+    }
+
+    /// Check if the log exists at the specified location and the term matches
+    fn has_log_at(
+        &self,
+        index: u64,
+        term: u64,
+    ) -> bool {
+        if index == 0 && term == 0 {
+            return self.is_empty();
+        }
+        match self.get_entry_by_index(index) {
+            Some(entry) => entry.term == term,
+            None => false, // The log does not exist
+        }
+    }
+
     #[autometrics(objective = API_SLO)]
     fn span_between_first_entry_and_last_entry(&self) -> u64 {
         let last = self.last_entry_id();
@@ -137,6 +165,10 @@ impl RaftLog for SledRaftLog {
         return None;
     }
 
+    fn get_last_entry_metadata(&self) -> (u64, u64) {
+        self.last().map(|entry| (entry.index, entry.term)).unwrap_or((0, 0))
+    }
+
     #[autometrics(objective = API_SLO)]
     fn get_entry_by_index(
         &self,
@@ -164,6 +196,60 @@ impl RaftLog for SledRaftLog {
         e.map(|entry| entry.term)
     }
 
+    fn filter_out_conflicts_and_append(
+        &self,
+        prev_log_index: u64,
+        prev_log_term: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<u64> {
+        debug!(
+            "Handling AppendEntries: prev_log_index={}, prev_log_term={}",
+            prev_log_index, prev_log_term
+        );
+
+        let mut batch = LocalLogBatch::default();
+        // Process virtual log (prev_log_index=0)
+        if prev_log_index == 0 && prev_log_term == 0 {
+            // Clear all local logs
+            self.clear()?;
+
+            // Last entry after insert
+            let last = new_entries.last().map(|e| e.index).unwrap_or(0);
+
+            // Append new log
+            for entry in new_entries {
+                batch.insert(kv(entry.index), entry);
+            }
+            self.apply(&batch).expect("Failed to apply batch");
+            return Ok(last);
+        }
+
+        // Check if prev_log_index matches
+        match self.get_entry_by_index(prev_log_index) {
+            Some(entry) if entry.term == prev_log_term => {
+                // Delete all logs after prev_log_index
+                for index in (prev_log_index + 1)..=self.last_entry_id() {
+                    batch.remove(kv(index));
+                }
+                // Append new log
+                for entry in new_entries {
+                    batch.insert(kv(entry.index), entry);
+                }
+            }
+            _ => {
+                // Mismatch, refuse to append (the upper-level logic handles the conflict response)
+                return Ok(self.last_entry_id());
+            }
+        }
+
+        // Apply batch processing
+        if !batch.is_empty() {
+            self.apply(&batch)?;
+        }
+
+        Ok(self.last_entry_id())
+    }
+
     /// TODO: process duplicated `new_ones`
     ///
     /// If an existing entry conflicts with a new one (same index
@@ -172,9 +258,10 @@ impl RaftLog for SledRaftLog {
     ///
     /// @return: last_matched_id
     #[autometrics(objective = API_SLO)]
-    fn filter_out_conflicts_and_append(
+    fn filter_out_conflicts_and_append2(
         &self,
-        _prev_log_index: u64,
+        prev_log_index: u64,
+        prev_log_term: u64,
         mut new_ones: Vec<Entry>,
     ) -> u64 {
         debug!("Start filter_out_conflicts_and_append");
@@ -249,33 +336,6 @@ impl RaftLog for SledRaftLog {
             Vec::new()
         }
     }
-
-    /// About checking duplicates. D-Engine will treat every client command as
-    /// unique command, maybe from client business logic view, there are
-    /// duplicated commands. But D-Engine make sure the command event will
-    /// be applied in sequence so the event the same client command will not
-    /// convert two multi entries, it will only be entry, but might be converted
-    /// several times because D-Engine receive duplicated command several
-    /// times.
-    ///
-    /// I think this is D-Engine pricinple: Only be event recorder.
-    ///
-    /// In RAFT this function will only be used by leader.
-    // #[autometrics(objective = API_SLO)]
-    // fn insert_client_commands(
-    //     &self,
-    //     term: u64,
-    //     commands: Vec<ClientCommand>,
-    //     leader_raft_log_batch_sender: mpsc::UnboundedSender<(u64, ClientCommand)>,
-    // ) -> Result<()> {
-    //     for c in commands {
-    //         if let Err(e) = leader_raft_log_batch_sender.send((term, c)) {
-    //             error!("insert_client_commands with e: {:?}", e);
-    //             return Err(ErrorType::IOError);
-    //         }
-    //     }
-    //     Ok(())
-    // }
 
     #[autometrics(objective = API_SLO)]
     fn insert_batch(
@@ -361,39 +421,6 @@ impl RaftLog for SledRaftLog {
 
         false
     }
-
-    // #[autometrics(objective = API_SLO)]
-    // fn prev_log_ok_2(&self, req_prev_log_index: u64, req_prev_log_term: u64) ->
-    // bool {     debug!(
-    //         "start checking if prev_log_ok: req_prev_log_index: {:?},
-    // req_prev_log_term: {:?}",         req_prev_log_index, req_prev_log_term
-    //     );
-    //     let matched_raft_log_entry = self.get_entry_by_index(req_prev_log_index);
-    //     let mlle_clone = matched_raft_log_entry.clone();
-    //     debug!("matched_raft_log_entry: {:?}", matched_raft_log_entry);
-
-    //     if req_prev_log_index == 0 {
-    //         debug!("req_prev_log_index == 0, return true");
-    //         //req_prev_log_index means it is first entry of this leader append
-    // request.         return true;
-    //     } else if req_prev_log_index > 0
-    //         && req_prev_log_index <= self.last_entry_id()
-    //         && matched_raft_log_entry.is_some()
-    //         && req_prev_log_term == matched_raft_log_entry.unwrap().term
-    //     {
-    //         //means we found conflict logs inside this follower's local log since
-    // index: req_prev_log_index         // we will do filter conflict operation
-    // later.         debug!("prev_log_ok return true.");
-    //         return true;
-    //     }
-    //     debug!(
-    //         "prev_log_ok return false. local log length: {:?},
-    // matched_raft_log_entry: {:?}",         self.last_entry_id(),
-    //         mlle_clone
-    //     );
-
-    //     false
-    // }
 
     #[autometrics(objective = API_SLO)]
     fn reset(&self) -> Result<()> {
@@ -641,7 +668,7 @@ impl SledRaftLog {
         }
     }
     #[autometrics(objective = API_SLO)]
-    pub(crate) fn new(
+    pub fn new(
         raft_log_db: Arc<sled::Db>,
         commit_index: Option<u64>,
     ) -> Self {
@@ -755,6 +782,7 @@ impl SledRaftLog {
     }
     #[autometrics(objective = API_SLO)]
     fn clear(&self) -> sled::Result<()> {
+        info!("Local raft log been cleared.");
         self.tree.clear()
     }
 

@@ -32,7 +32,7 @@ use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ReplicationHandler<T>
 where T: TypeConfig
 {
@@ -117,6 +117,7 @@ where T: TypeConfig
     }
 
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: Vec<Entry>,
@@ -163,24 +164,30 @@ where T: TypeConfig
     }
 
     /// As Follower only
+    #[tracing::instrument]
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,
         state_snapshot: &StateSnapshot,
-        last_applied: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates> {
         debug!("[F-{:?}] >> receive leader append request {:?}", self.my_id, request);
         let current_term = state_snapshot.current_term;
         let raft_log_last_index = raft_log.last_entry_id();
         let success;
-        //if there is no new entries need to insert, we just return the last local log
-        // index
+        //if there is no new entries need to insert, we just return the last local log index
         let mut last_matched_id = raft_log_last_index;
         let mut commit_index_update = None;
 
-        if current_term > request.term {
-            debug!(" current_term({}) >= req.term({}) ", current_term, request.term);
+        if !self.check_append_entries_request_is_legal(current_term, &request, raft_log) {
+            last_matched_id = if request.prev_log_index < raft_log_last_index {
+                request.prev_log_index.saturating_sub(1)
+            } else {
+                raft_log_last_index
+            };
+
+            debug!("Follower returns last_matched_id={}", last_matched_id);
+
             return Ok(AppendResponseWithUpdates {
                 success: false,
                 current_term,
@@ -189,34 +196,26 @@ where T: TypeConfig
             });
         }
 
-        if raft_log.prev_log_ok(request.prev_log_index, request.prev_log_term, last_applied) {
-            //switch to follower listening state
-            debug!("switch to follower listening state");
+        //switch to follower listening state
+        debug!("switch to follower listening state");
 
-            success = true;
+        success = true;
 
-            if !request.entries.is_empty() {
-                last_matched_id =
-                    raft_log.filter_out_conflicts_and_append(request.prev_log_index, request.entries.clone());
-            }
+        if !request.entries.is_empty() {
+            last_matched_id = raft_log.filter_out_conflicts_and_append(
+                request.prev_log_index,
+                request.prev_log_term,
+                request.entries.clone(),
+            )?;
+        }
 
-            if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
-                state_snapshot.commit_index,
-                raft_log.last_entry_id(),
-                request.leader_commit_index,
-            ) {
-                debug!("new commit index received: {:?}", new_commit_index);
-                commit_index_update = Some(new_commit_index);
-            }
-        } else {
-            warn!("prev log is not ok on req");
-            //bugfix: #112
-            last_matched_id = if request.prev_log_index < raft_log_last_index {
-                request.prev_log_index.saturating_sub(1)
-            } else {
-                raft_log_last_index
-            };
-            success = false;
+        if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
+            state_snapshot.commit_index,
+            raft_log.last_entry_id(),
+            request.leader_commit_index,
+        ) {
+            debug!("new commit index received: {:?}", new_commit_index);
+            commit_index_update = Some(new_commit_index);
         }
 
         debug!(
@@ -252,8 +251,40 @@ where T: TypeConfig
         }
         None
     }
+
+    #[tracing::instrument]
+    fn check_append_entries_request_is_legal(
+        &self,
+        my_term: u64,
+        request: &AppendEntriesRequest,
+        raft_log: &Arc<ROF<T>>,
+    ) -> bool {
+        // Rule 1: Term check
+        if my_term > request.term {
+            warn!(" my_term({}) >= req.term({}) ", my_term, request.term);
+            return false;
+        }
+
+        // Rule 2: Special handling for virtual log
+        if request.prev_log_index == 0 && request.prev_log_term == 0 {
+            // Accept virtual log request (regardless of whether the local log is empty)
+            return true;
+        }
+
+        // Rule 3: General log matching check
+        if !raft_log.has_log_at(request.prev_log_index, request.prev_log_term) {
+            // Get the index and term of the last record in the local log
+            let (last_log_index, last_log_term) = raft_log.get_last_entry_metadata();
+
+            warn!("Rejecting request: prev_log mismatch. Local last_log=[index={}, term={}], Request prev_log=[index={}, term={}]",last_log_index, last_log_term,request.prev_log_index, request.prev_log_term);
+            return false;
+        }
+
+        return true;
+    }
 }
 
+#[derive(Debug)]
 pub(super) struct ReplicationData {
     pub(super) leader_last_index_before: u64,
     pub(super) current_term: u64,
@@ -320,6 +351,7 @@ where T: TypeConfig
     }
 
     /// Build an append request for a single node
+    #[tracing::instrument]
     pub(super) fn build_append_request(
         &self,
         raft_log: &Arc<ROF<T>>,

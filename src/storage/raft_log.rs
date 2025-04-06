@@ -14,6 +14,12 @@ use crate::Result;
 pub trait RaftLog: Send + Sync + 'static {
     fn last_entry_id(&self) -> u64;
     fn first_entry_id(&self) -> u64;
+    fn is_empty(&self) -> bool;
+    fn has_log_at(
+        &self,
+        index: u64,
+        term: u64,
+    ) -> bool;
 
     /// v20241105
     /// mostly used when we want to calculate the roughtly number of entry
@@ -29,7 +35,13 @@ pub trait RaftLog: Send + Sync + 'static {
     fn span_between_first_entry_and_last_entry(&self) -> u64;
 
     fn pre_allocate_raft_logs_next_index(&self) -> u64;
+
     fn last(&self) -> Option<Entry>;
+
+    /// Get the metadata of the last log (term, index)
+    /// if no last log found, returning (0,0)
+    /// Return tuple format: (last_log_term, last_log_index)
+    fn get_last_entry_metadata(&self) -> (u64, u64);
 
     fn get_entry_by_index(
         &self,
@@ -64,12 +76,20 @@ pub trait RaftLog: Send + Sync + 'static {
         last_applied: u64,
     ) -> bool;
 
+    fn filter_out_conflicts_and_append(
+        &self,
+        prev_log_index: u64,
+        prev_log_term: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<u64>;
+
     /// If an existing entry conflicts with a new one (same index
     ///     but different terms), delete the existing entry and all that
     ///     follow it (§5.3)
-    fn filter_out_conflicts_and_append(
+    fn filter_out_conflicts_and_append2(
         &self,
-        _prev_log_index: u64,
+        prev_log_index: u64,
+        prev_log_term: u64,
         new_ones: Vec<Entry>,
     ) -> u64;
 
