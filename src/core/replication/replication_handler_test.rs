@@ -8,9 +8,14 @@ use super::ReplicationCore;
 use super::ReplicationData;
 use super::ReplicationHandler;
 use crate::convert::kv;
+use crate::grpc::rpc_service::append_entries_response;
 use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ConflictResult;
 use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::LogId;
+use crate::grpc::rpc_service::SuccessResult;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::simulate_insert_proposal;
 use crate::test_utils::MockNode;
@@ -457,15 +462,12 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
         channel_with_address: addr1,
         role: FOLLOWER,
     }];
-    let append_result = AppendResults {
-        commit_quorum_achieved: true,
-        peer_updates: HashMap::from([(peer2_id, PeerUpdate {
-            match_index: 3,
-            next_index: 4,
-            success: true,
-        })]),
-    };
-    let append_result_clone = append_result.clone();
+    let responses = vec![AppendEntriesResponse::success(
+        peer2_id,
+        1,
+        Some(LogId { term: 1, index: 3 }),
+    )];
+    let response_clone = responses.clone();
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
@@ -476,7 +478,7 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
     let mut transport = MockTransport::new();
     transport
         .expect_send_append_requests()
-        .returning(move |_, _, _| Ok(append_result_clone.clone()));
+        .return_once(move |_, _| Ok(response_clone));
 
     if let Ok(append_result) = handler
         .handle_client_proposal_in_batch(
@@ -559,7 +561,7 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
     let mut transport = MockTransport::new();
     transport
         .expect_send_append_requests()
-        .returning(move |_, _, _| Err(Error::FoundNewLeaderError(NewLeaderInfo { term: 1, leader_id: 7 })));
+        .returning(move |_, _| Err(Error::FoundNewLeaderError(NewLeaderInfo { term: 1, leader_id: 7 })));
 
     if let Err(Error::FoundNewLeaderError(new_leader)) = handler
         .handle_client_proposal_in_batch(
@@ -580,24 +582,177 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
     }
 }
 
+/// # Case3: Ignore success responses from stale terms
+/// ## Validation Criteria
+/// - Responses with term < leader's current term are ignored
+/// - Success counter remains unchanged, no peer updates
+#[tokio::test]
+async fn test_handle_client_proposal_in_batch_case3() {
+    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case3", None, false);
+    let my_id = 1;
+    let peer2_id = 2;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    let commands = vec![];
+    let state_snapshot = StateSnapshot {
+        current_term: 2, // Leader's term is 2
+        voted_for: None,
+        commit_index: 1,
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::from_iter(vec![(peer2_id, 3)]),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    let (_tx, rx) = oneshot::channel();
+    let addr = MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 12, rx, true)
+        .await
+        .unwrap();
+
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr,
+        role: FOLLOWER,
+    }];
+
+    // Response with term=1 (stale)
+    let responses = vec![AppendEntriesResponse::success(
+        peer2_id,
+        1,
+        Some(LogId { term: 1, index: 3 }),
+    )];
+    let mut transport = MockTransport::new();
+    transport
+        .expect_send_append_requests()
+        .return_once(|_, _| Ok(responses));
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(3_u64);
+    raft_log.expect_prev_log_term().return_const(1_u64);
+    raft_log.expect_get_entries_between().returning(|_| vec![]);
+
+    let result = handler
+        .handle_client_proposal_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &replication_members,
+            &Arc::new(raft_log),
+            &Arc::new(transport),
+            &context.settings.raft,
+            &context.settings.retry,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    let append_result = result.unwrap();
+    assert!(!append_result.commit_quorum_achieved); // successes=1 (leader only)
+    assert!(append_result.peer_updates.is_empty()); // No updates due to stale term
+}
+
+/// # Case4: Higher term response triggers leader step down
+/// ## Validation Criteria
+/// - HigherTerm response with term > leader's term returns error
+#[tokio::test]
+async fn test_handle_client_proposal_in_batch_case4() {
+    let context = setup_raft_components("/tmp/test_case4", None, false);
+    let my_id = 1;
+    let peer2_id = 2;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    let commands = vec![];
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 1,
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::new(),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    let (_tx, rx) = oneshot::channel();
+    let addr = MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 13, rx, true)
+        .await
+        .unwrap();
+
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr,
+        role: FOLLOWER,
+    }];
+
+    // HigherTerm response with term=2
+    let higher_term = 2;
+    let responses = vec![AppendEntriesResponse::higher_term(peer2_id, higher_term)];
+    let mut transport = MockTransport::new();
+    transport
+        .expect_send_append_requests()
+        .return_once(|_, _| Ok(responses));
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(1_u64);
+
+    let result = handler
+        .handle_client_proposal_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &replication_members,
+            &Arc::new(raft_log),
+            &Arc::new(transport),
+            &context.settings.raft,
+            &context.settings.retry,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::HigherTermFoundError(term)) if term == higher_term
+    ));
+}
+
 #[test]
 fn test_valid_request() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 2;
-    raft_log.expect_has_log_at().returning(|_, _| true);
-    raft_log.expect_get_last_entry_metadata().returning(|| (0, 0));
+    let entry_term = 10;
+    let prev_log_index = 5;
+    let prev_log_term = entry_term;
+    raft_log.expect_last_log_id().return_once(move || {
+        Some(LogId {
+            term: entry_term,
+            index: 1,
+        })
+    });
+    // entry_term != prev_log_term
+    raft_log.expect_entry_term().return_once(move |_| Some(entry_term));
 
     let request = AppendEntriesRequest {
         term: my_term,
-        prev_log_index: 5,
-        prev_log_term: 1,
+        prev_log_index,
+        prev_log_term,
         entries: vec![],
         leader_commit_index: 5,
         leader_id: 2,
     };
 
-    assert!(handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    assert!(response.is_success());
+    match response.result {
+        Some(append_entries_response::Result::Success(SuccessResult {
+            last_match: Some(last_match),
+        })) => {
+            assert_eq!(last_match.index, prev_log_index);
+            assert_eq!(last_match.term, prev_log_term);
+        }
+        _ => {
+            assert!(false);
+        }
+    }
 }
 
 #[test]
@@ -617,33 +772,105 @@ fn test_stale_term() {
         leader_id: 2,
     };
 
-    assert!(!handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+    assert!(handler
+        .check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log))
+        .is_higher_term());
 }
 
+/// # Case 1: follower local raft log length > prev_log_index
 #[test]
-fn test_mismatched_prev_log() {
+fn test_mismatched_prev_term_case1() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
-    let my_term = 2;
-    raft_log.expect_has_log_at().returning(|_, _| false);
-    raft_log.expect_get_last_entry_metadata().returning(|| (0, 0));
+    let my_term = 1;
+    let entry_term = 10;
+    let local_last_log_id = 2;
+    let prev_log_index = local_last_log_id - 1;
+    raft_log.expect_last_log_id().return_once(move || {
+        Some(LogId {
+            term: my_term,
+            index: local_last_log_id,
+        })
+    });
+    // entry_term != prev_log_term
+    raft_log.expect_entry_term().return_once(move |_| Some(entry_term));
 
     let request = AppendEntriesRequest {
-        term: my_term,
-        prev_log_index: 5,
+        term: 1,
+        prev_log_index,
         prev_log_term: 1,
         entries: vec![],
         leader_commit_index: 5,
         leader_id: 2,
     };
 
-    assert!(!handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    assert!(response.is_conflict());
+    match response.result {
+        Some(append_entries_response::Result::Conflict(ConflictResult {
+            conflict_term,
+            conflict_index,
+        })) => {
+            assert_eq!(conflict_term.unwrap(), entry_term);
+            assert_eq!(conflict_index.unwrap(), prev_log_index.saturating_sub(1));
+        }
+        _ => {
+            assert!(false);
+        }
+    }
+}
+
+/// # Case 2: follower local raft log length > prev_log_index
+#[test]
+fn test_mismatched_prev_term_case2() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 1;
+    let entry_term = 10;
+    let local_last_log_id = 2;
+    let prev_log_index = local_last_log_id + 1;
+    raft_log.expect_last_log_id().return_once(move || {
+        Some(LogId {
+            term: my_term,
+            index: local_last_log_id,
+        })
+    });
+    // entry_term != prev_log_term
+    raft_log.expect_entry_term().return_once(move |_| Some(entry_term));
+
+    let request = AppendEntriesRequest {
+        term: 1,
+        prev_log_index,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    assert!(response.is_conflict());
+    match response.result {
+        Some(append_entries_response::Result::Conflict(ConflictResult {
+            conflict_term,
+            conflict_index,
+        })) => {
+            assert_eq!(conflict_term.unwrap(), entry_term);
+            assert_eq!(conflict_index.unwrap(), local_last_log_id + 1);
+        }
+        _ => {
+            assert!(false);
+        }
+    }
 }
 
 #[test]
 fn test_virtual_log_handling() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
-    let raft_log = MockRaftLog::new();
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_last_log_id()
+        .returning(|| Some(LogId { term: 1, index: 5 }));
+
     let my_term = 2;
     let request = AppendEntriesRequest {
         term: my_term,
@@ -654,5 +881,165 @@ fn test_virtual_log_handling() {
         leader_id: 2,
     };
 
-    assert!(handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log)));
+    assert!(handler
+        .check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log))
+        .is_success());
+}
+#[test]
+fn test_virtual_log_with_non_empty_log() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 2;
+    raft_log
+        .expect_last_log_id()
+        .returning(|| Some(LogId { term: 1, index: 5 }));
+
+    let request = AppendEntriesRequest {
+        term: my_term,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![Entry {
+            term: 2,
+            index: 1,
+            command: vec![1; 8],
+        }],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    // Should accept the request and handle the actual conflict later
+    assert!(response.is_success());
+}
+
+/// # Case 1: conflict_with_term_and_index
+#[test]
+fn test_handle_conflict_response_case1() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let conflict_result = ConflictResult {
+        conflict_term: Some(3),
+        conflict_index: Some(5),
+    };
+    let raft_log = Arc::new(MockRaftLog::new());
+
+    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+
+    // Temporary logic: next_index = 5 - 1 = 4
+    assert_eq!(update.next_index, 4);
+    assert_eq!(update.match_index, 3);
+}
+
+/// # Case 2: conflict_with_index_only
+#[test]
+fn test_handle_conflict_response_case2() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let conflict_result = ConflictResult {
+        conflict_term: None,
+        conflict_index: Some(5),
+    };
+    let raft_log = Arc::new(MockRaftLog::new());
+
+    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+    assert_eq!(update.next_index, 5);
+    assert_eq!(update.match_index, 4);
+}
+
+/// # Case 3: conflict_with_no_info
+#[test]
+fn test_handle_conflict_response_case3() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let conflict_result = ConflictResult {
+        conflict_term: None,
+        conflict_index: None,
+    };
+    let raft_log = Arc::new(MockRaftLog::new());
+
+    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+    assert_eq!(update.next_index, 1);
+    assert_eq!(update.match_index, 0);
+}
+
+/// # Case 4: conflict_with_index_zero
+#[test]
+fn test_handle_conflict_response_case4() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let conflict_result = ConflictResult {
+        conflict_term: None,
+        conflict_index: Some(0), // Illegal but needs to be defended
+    };
+    let raft_log = Arc::new(MockRaftLog::new());
+
+    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+
+    // next_index is forced to be >= 1
+    assert_eq!(update.next_index, 1);
+    assert_eq!(update.match_index, 0);
+}
+
+/// # Case 1: test_higher_responder_term_triggers_step_down
+#[test]
+fn test_handle_success_response_case1() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let responder_term = 5; // Follower term > leader term (4)
+    let success_result = SuccessResult {
+        last_match: Some(LogId { term: 3, index: 10 }),
+    };
+    let result = handler.handle_success_response(2, responder_term, success_result, 4);
+    assert!(matches!(result, Err(Error::HigherTermFoundError(5))));
+}
+
+/// # Case 2: test_valid_success_response_updates_indices
+#[test]
+fn test_handle_success_response_case2() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let responder_term = 3;
+    let success_result = SuccessResult {
+        last_match: Some(LogId { term: 3, index: 10 }),
+    };
+    let update = handler
+        .handle_success_response(2, responder_term, success_result, 3)
+        .unwrap();
+    assert_eq!(update.match_index, 10);
+    assert_eq!(update.next_index, 11);
+}
+
+/// # Case 3: test_lower_responder_term_ignored
+#[test]
+fn test_handle_success_response_case3() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let responder_term = 3;
+    let success_result = SuccessResult {
+        last_match: Some(LogId { term: 3, index: 10 }),
+    };
+    let update = handler
+        .handle_success_response(2, responder_term, success_result, 5)
+        .unwrap();
+    assert_eq!(update.match_index, 10); // Update normally, do not trigger step down
+}
+
+/// # Case 4: test_empty_follower_log_handling
+#[test]
+fn test_handle_success_response_case4() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let responder_term = 3;
+    let success_result = SuccessResult { last_match: None };
+    let update = handler
+        .handle_success_response(2, responder_term, success_result, 3)
+        .unwrap();
+    assert_eq!(update.match_index, 0); // Synchronize from index 0
+    assert_eq!(update.next_index, 1);
+}
+
+/// # Case 5: test_zero_index_handling
+#[test]
+fn test_handle_success_response_case5() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let responder_term = 3;
+    let success_result = SuccessResult {
+        last_match: Some(LogId { term: 3, index: 0 }), // Legal scenario (initial state)
+    };
+    let update = handler
+        .handle_success_response(2, responder_term, success_result, 3)
+        .unwrap();
+    assert_eq!(update.next_index, 1); // Ensure next_index is at least 1
 }

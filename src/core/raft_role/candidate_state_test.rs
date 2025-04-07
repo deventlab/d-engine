@@ -8,6 +8,7 @@ use tonic::Status;
 use super::candidate_state::CandidateState;
 use crate::alias::POF;
 use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientProposeRequest;
 use crate::grpc::rpc_service::ClientReadRequest;
 use crate::grpc::rpc_service::ClientRequestError;
@@ -321,7 +322,7 @@ async fn test_handle_raft_event_case4_1() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_check_append_entries_request_is_legal()
-        .returning(|_, _, _| true);
+        .returning(move |_, _, _| AppendEntriesResponse::success(1, term, None));
 
     let mut membership = MockMembership::new();
 
@@ -380,93 +381,7 @@ async fn test_handle_raft_event_case4_1() {
 }
 
 /// # Case 4.2: As candidate, if I receive append request from Leader,
-///     and rcheck_append_entries_request_is_legal is true
-///
-/// ## Prepration Setup
-/// 1. receive Leader append request, with higher term and new commit index
-///
-/// ## Validation criterias:
-/// 1. I should mark new leader id in memberhip
-/// 2. I should update term
-/// 3. I should receive BecomeFollower event
-/// 4. I should replay the raft_event to let Follower continue handle it
-/// 5. I should not send out new commit signal
-/// 6. Should not receive response, (let Follower handle it)
-/// 7. `handle_raft_event` fun returns Ok(())
-/// 8. commit should not be updated. We should let Follower continue.
-#[tokio::test]
-async fn test_handle_raft_event_case4_2() {
-    // Prepare Follower State
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
-    let term = 1;
-    let new_leader_term = term + 1;
-    let new_leader_commit = 5;
-
-    // Mock replication handler
-    let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_check_append_entries_request_is_legal()
-        .returning(|_, _, _| true);
-
-    let mut membership = MockMembership::new();
-
-    // Validation criterias
-    // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(1);
-
-    context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
-
-    // New state
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
-    state.update_current_term(term);
-
-    // Prepare Append entries request
-    let append_entries_request = AppendEntriesRequest {
-        term: new_leader_term,
-        leader_id: 5,
-        prev_log_index: 0,
-        prev_log_term: 1,
-        entries: vec![],
-        leader_commit_index: new_leader_commit,
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Validation criterias: 7. `handle_raft_event` fun returns Ok(())
-    // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
-
-    // Validation criterias
-    // 3. I should  receive BecomeFollower event
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))));
-    // 4. I should replay the raft_event to let Follower continue handle it
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
-
-    // Validation criterias
-    // 2. I should update term
-    assert_eq!(state.current_term(), new_leader_term);
-    // 8. commit should not be updated. We should let Follower continue.
-    assert!(state.commit_index() != new_leader_commit);
-
-    // 6. Should not receive response, (let Follower handle it)
-    assert!(resp_rx.recv().await.is_err());
-}
-
-/// # Case 4.3: As candidate, if I receive append request from Leader,
-///     and check_append_entries_request_is_legal is false
+///     and check_append_entries_request_is_legal is false because of higher term
 ///
 /// ## Validation criterias:
 /// 1. I should not mark new leader id in memberhip
@@ -475,10 +390,10 @@ async fn test_handle_raft_event_case4_2() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
 #[tokio::test]
-async fn test_handle_raft_event_case4_3() {
+async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_3", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_2", graceful_rx, None);
     let term = 2;
     let new_leader_term = term - 1;
 
@@ -486,7 +401,8 @@ async fn test_handle_raft_event_case4_3() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_check_append_entries_request_is_legal()
-        .returning(|_, _, _| false);
+        .returning(move |_, _, _| AppendEntriesResponse::higher_term(1, term));
+
     let mut membership = MockMembership::new();
     // Validation criterias
     // 1. I should mark new leader id in memberhip
@@ -529,7 +445,77 @@ async fn test_handle_raft_event_case4_3() {
 
     // 5. send out AppendEntriesResponse with success=false
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.success),
+        Ok(response) => assert!(response.is_higher_term()),
+        Err(_) => assert!(false),
+    }
+}
+
+/// # Case 4.3: As candidate, if I receive append request from Leader,
+///     and check_append_entries_request_is_legal is false because of conflicts
+///
+/// ## Validation criterias:
+/// 1. I should not mark new leader id in memberhip
+/// 2. I should not receive any event
+/// 3. My term shoud not be updated
+/// 4. send out AppendEntriesResponse with success=false
+/// 5. `handle_raft_event` fun returns Err(())
+#[tokio::test]
+async fn test_handle_raft_event_case4_3() {
+    // Prepare Follower State
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case4_3", graceful_rx, None);
+    let term = 2;
+    let new_leader_term = term - 1;
+
+    // Mock replication handler
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_check_append_entries_request_is_legal()
+        .returning(move |_, _, _| AppendEntriesResponse::conflict(1, term, None, None));
+
+    let mut membership = MockMembership::new();
+    // Validation criterias
+    // 1. I should mark new leader id in memberhip
+    membership.expect_mark_leader_id().returning(|_| Ok(())).times(0);
+    context.membership = Arc::new(membership);
+    context.replication_handler = replication_handler;
+
+    // New state
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.settings.clone());
+    state.update_current_term(term);
+
+    // Prepare Append entries request
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
+    // Handle raft event
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    // Validation criterias
+    // 2. I should not receive any event
+    assert!(role_rx.try_recv().is_err());
+
+    // Validation criterias
+    // 3. My term shoud not be updated
+    assert_eq!(state.current_term(), term);
+
+    // 5. send out AppendEntriesResponse with success=false
+    match resp_rx.recv().await.expect("should succeed") {
+        Ok(response) => assert!(response.is_conflict()),
         Err(_) => assert!(false),
     }
 }

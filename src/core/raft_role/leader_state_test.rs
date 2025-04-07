@@ -650,7 +650,7 @@ async fn test_handle_raft_event_case4_1() {
 
     // Validate request should receive AppendEntriesResponse with success = false
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.success),
+        Ok(response) => assert!(response.is_higher_term()),
         Err(_) => assert!(false),
     }
 }
@@ -892,7 +892,7 @@ async fn test_handle_raft_event_case6_2() {
 }
 
 /// # Case 6.3: Test ClientReadRequest event
-///     if new Leader found during the replication,
+///     if higher term found during the replication,
 ///
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
@@ -912,12 +912,7 @@ async fn test_handle_raft_event_case6_3() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _, _, _, _| {
-            Err(Error::FoundNewLeaderError(NewLeaderInfo {
-                term: 1,
-                leader_id: new_leader_id,
-            }))
-        });
+        .returning(move |_, _, _, _, _, _, _, _| Err(Error::HigherTermFoundError(1)));
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();
@@ -926,7 +921,7 @@ async fn test_handle_raft_event_case6_3() {
         .returning(move |_, _, _| Some(expect_new_commit_index));
 
     // Initializing Shutdown Signal
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_3")
         .with_replication_handler(replication_handler)
@@ -958,7 +953,7 @@ async fn test_handle_raft_event_case6_3() {
 
     // Validation criteria 2: event "RoleEvent::BecomeFollower" should be received
     match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(event, RoleEvent::BecomeFollower(Some(new_leader_id_clone)))),
+        Ok(event) => assert!(matches!(event, RoleEvent::BecomeFollower(None))),
         Err(_) => assert!(false),
     };
 

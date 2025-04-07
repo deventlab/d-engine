@@ -172,8 +172,9 @@ fn test_filter_out_conflicts_and_append_case1() {
     let last_applied = context
         .raft_log
         .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
-        .expect("success");
-    assert_eq!(last_applied, 3);
+        .unwrap()
+        .unwrap();
+    assert_eq!(last_applied.index, 3);
 
     if let Some(e) = context.raft_log.get_entry_by_index(3) {
         assert_eq!(e.term, 3);
@@ -207,8 +208,9 @@ fn test_filter_out_conflicts_and_append() {
     let last_applied = context
         .raft_log
         .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
-        .expect("success");
-    assert_eq!(last_applied, 3);
+        .unwrap()
+        .unwrap();
+    assert_eq!(last_applied.index, 3);
 
     if let Some(e) = context.raft_log.get_entry_by_index(3) {
         assert_eq!(e.term, 3);
@@ -228,8 +230,9 @@ fn test_filter_out_conflicts_and_append() {
     let last_applied = context
         .raft_log
         .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
-        .expect("success");
-    assert_eq!(last_applied, 4);
+        .unwrap()
+        .unwrap();
+    assert_eq!(last_applied.index, 4);
     if let Some(e) = context.raft_log.get_entry_by_index(4) {
         assert_eq!(e.term, 2);
     } else {
@@ -784,8 +787,9 @@ async fn test_insert_batch_logs_case2() {
     // 6. Follower processes conflicting entries
     let ex_leader_last_appled_id = old_leader
         .filter_out_conflicts_and_append(8, 1, new_leader_entries.clone())
-        .expect("success");
-    assert_eq!(ex_leader_last_appled_id, 10);
+        .unwrap()
+        .unwrap();
+    assert_eq!(ex_leader_last_appled_id.index, 10);
 
     // // 7. Validate final log state
     // if let Some(ex_leader_last_entry) = old_leader.last() {

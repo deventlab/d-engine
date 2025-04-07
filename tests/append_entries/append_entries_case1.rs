@@ -30,7 +30,9 @@ use crate::commons::prepare_state_machine;
 use crate::commons::prepare_state_storage;
 use crate::commons::reset;
 use crate::commons::start_node;
+use crate::commons::verify_read;
 use crate::commons::ClientCommands;
+use crate::commons::ITERATIONS;
 use crate::commons::LATENCY_IN_MS;
 use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
@@ -94,17 +96,31 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
     assert_eq!(list_leader_id(&bootstrap_urls).await.unwrap(), 3);
 
     // Trigger client request
-    println!("put 1 100");
+    println!("put 11 100");
     assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(100))
+        execute_command(ClientCommands::PUT, &bootstrap_urls, 11, Some(100))
             .await
             .is_ok(),
         "Put command failed!"
     );
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    verify_read(&bootstrap_urls, 11, 100, ITERATIONS).await;
 
-    // 4. Verify global state
+    // 4.1 Verify global state
     assert_eq!(sm1.last_applied(), 11);
+
+    println!("put 12 200");
+    assert!(
+        execute_command(ClientCommands::PUT, &bootstrap_urls, 12, Some(200))
+            .await
+            .is_ok(),
+        "Put command failed!"
+    );
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    verify_read(&bootstrap_urls, 12, 200, ITERATIONS).await;
+
+    // 4.2 Verify global state
+    assert_eq!(sm1.last_applied(), 12);
 
     graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
     graceful_tx2.send(()).map_err(|_| Error::ServerError)?;

@@ -1,4 +1,4 @@
-// mod append_entries;
+mod append_entries;
 mod cluster_start_stop;
 mod commons;
 mod election;

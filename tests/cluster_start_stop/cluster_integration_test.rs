@@ -9,27 +9,28 @@ use crate::commons::ClientCommands;
 
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster
-#[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
     use crate::commons::check_cluster_is_ready;
     use crate::commons::reset;
+    use crate::commons::verify_read;
     use crate::commons::ITERATIONS;
     use crate::commons::LATENCY_IN_MS;
     use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
 
     crate::enable_logger();
 
-    reset("case1").await?;
+    reset("cluster_start_stop/case1").await?;
+
     let bootstrap_urls: Vec<String> = vec![
         "http://127.0.0.1:9083".to_string(),
         "http://127.0.0.1:9082".to_string(),
         "http://127.0.0.1:9081".to_string(),
     ];
 
-    let (graceful_tx3, node_n3) = start_node("tests/config/case1/n3", None, None, None).await?;
-    let (graceful_tx2, node_n2) = start_node("tests/config/case1/n2", None, None, None).await?;
-    let (graceful_tx1, node_n1) = start_node("tests/config/case1/n1", None, None, None).await?;
+    let (graceful_tx3, node_n3) = start_node("./tests/cluster_start_stop/case1/n3", None, None, None).await?;
+    let (graceful_tx2, node_n2) = start_node("./tests/cluster_start_stop/case1/n2", None, None, None).await?;
+    let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case1/n1", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     for port in [9081, 9082, 9083] {
@@ -104,18 +105,18 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
 /// 5
 /// - get 2
 /// 21
-#[cfg(not(tarpaulin))]
 #[tokio::test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     use crate::commons::check_cluster_is_ready;
     use crate::commons::reset;
+    use crate::commons::verify_read;
     use crate::commons::ITERATIONS;
     use crate::commons::LATENCY_IN_MS;
     use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
 
     crate::enable_logger();
 
-    reset("case2").await?;
+    reset("cluster_start_stop/case2").await?;
 
     let bootstrap_urls: Vec<String> = vec![
         "http://127.0.0.1:19083".to_string(),
@@ -128,9 +129,9 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
         "http://127.0.0.1:19082".to_string(),
     ];
 
-    let (graceful_tx1, node_n1) = start_node("tests/config/case2/n1", None, None, None).await?;
-    let (graceful_tx2, node_n2) = start_node("tests/config/case2/n2", None, None, None).await?;
-    let (graceful_tx3, node_n3) = start_node("tests/config/case2/n3", None, None, None).await?;
+    let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case2/n1", None, None, None).await?;
+    let (graceful_tx2, node_n2) = start_node("./tests/cluster_start_stop/case2/n2", None, None, None).await?;
+    let (graceful_tx3, node_n3) = start_node("./tests/cluster_start_stop/case2/n3", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     for port in [19081, 19082, 19083] {
@@ -174,7 +175,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
 
     // T3: Restart the node, perform PUT, and verify reads
     println!("------------------T3-----------------");
-    let (graceful_tx1, node_n1) = start_node("tests/config/case2/n1", None, None, None).await?;
+    let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case2/n1", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
     verify_read(&bootstrap_urls, 1, 3, ITERATIONS).await;
 
@@ -210,9 +211,9 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
 
     //T5: Start cluster again
     println!("------------------T5-----------------");
-    let (graceful_tx1, node_n1) = start_node("tests/config/case2/n1", None, None, None).await?;
-    let (graceful_tx2, node_n2) = start_node("tests/config/case2/n2", None, None, None).await?;
-    let (graceful_tx3, node_n3) = start_node("tests/config/case2/n3", None, None, None).await?;
+    let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case2/n1", None, None, None).await?;
+    let (graceful_tx2, node_n2) = start_node("./tests/cluster_start_stop/case2/n2", None, None, None).await?;
+    let (graceful_tx3, node_n3) = start_node("./tests/cluster_start_stop/case2/n3", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
     verify_read(&bootstrap_urls, 1, 4, ITERATIONS).await;
@@ -234,23 +235,4 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     node_n3.await??;
 
     Ok(())
-}
-
-// Helper function to verify linearizable reads
-async fn verify_read(
-    urls: &Vec<String>,
-    key: u64,
-    expected_value: u64,
-    iterations: u64,
-) {
-    println!("read: {}", key);
-    for _ in 0..iterations {
-        match execute_command(ClientCommands::LREAD, urls, key, None).await {
-            Ok(v) => assert_eq!(v, expected_value, "Linearizable read failed for key {}!", key),
-            Err(e) => {
-                error!("execute_command error: {:?}", e);
-                assert!(false);
-            }
-        }
-    }
 }

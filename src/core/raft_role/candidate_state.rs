@@ -18,7 +18,6 @@ use super::Result;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
-use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientResponse;
 use crate::grpc::rpc_service::VoteResponse;
 use crate::grpc::rpc_service::VotedFor;
@@ -270,29 +269,15 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
                 let my_term = self.current_term();
 
-                if !ctx.replication_handler().check_append_entries_request_is_legal(
+                let response = ctx.replication_handler().check_append_entries_request_is_legal(
                     my_term,
                     &append_entries_request,
                     ctx.raft_log(),
-                ) {
-                    let raft_log_last_index = ctx.raft_log.last_entry_id();
-                    let last_matched_id = if append_entries_request.prev_log_index < raft_log_last_index {
-                        append_entries_request.prev_log_index.saturating_sub(1)
-                    } else {
-                        raft_log_last_index
-                    };
+                );
 
-                    let response = AppendEntriesResponse {
-                        id: self.node_id(),
-                        term: my_term,
-                        success: false,
-                        match_index: last_matched_id,
-                    };
-
-                    debug!(
-                        "Reject append entries response: {:?}. Because my_term({}) > request.term({})",
-                        &response, my_term, append_entries_request.term
-                    );
+                // Handle illegal requests (return conflict or higher Term)
+                if response.is_conflict() || response.is_higher_term() {
+                    debug!("Rejecting AppendEntries: {:?}", &response);
 
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);

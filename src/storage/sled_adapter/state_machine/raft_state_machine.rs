@@ -202,7 +202,7 @@ impl StateMachine for RaftStateMachine {
             let msg_id = entry.index.to_string();
             let id = self.node_id.to_string();
             COMMITTED_LOG_METRIC.with_label_values(&[&id, &msg_id]).inc();
-            info!("COMMITTED_LOG_METRIC: {} ", &msg_id);
+            info!("[{}]- COMMITTED_LOG_METRIC: {} ", self.node_id, &msg_id);
         }
 
         if let Err(e) = self.apply_batch(batch) {

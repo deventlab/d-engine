@@ -26,6 +26,7 @@ use tonic::async_trait;
 use crate::convert::kv;
 use crate::convert::vki;
 use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::LogId;
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::Error;
 use crate::LocalLogBatch;
@@ -133,6 +134,13 @@ impl RaftLog for SledRaftLog {
         }
     }
 
+    fn entry_term(
+        &self,
+        entry_id: u64,
+    ) -> Option<u64> {
+        self.get_entry_by_index(entry_id).map(|entry| entry.term)
+    }
+
     #[autometrics(objective = API_SLO)]
     fn span_between_first_entry_and_last_entry(&self) -> u64 {
         let last = self.last_entry_id();
@@ -153,6 +161,7 @@ impl RaftLog for SledRaftLog {
         self.cache.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Deprecated: Use `last_log_id()` instead.
     #[autometrics(objective = API_SLO)]
     fn last(&self) -> Option<Entry> {
         if let Some(pair) = self.last_entry() {
@@ -165,8 +174,34 @@ impl RaftLog for SledRaftLog {
         return None;
     }
 
+    fn last_log_id(&self) -> Option<LogId> {
+        self.last()
+            .map(|entry| {
+                Some(LogId {
+                    term: entry.term,
+                    index: entry.index,
+                })
+            })
+            .unwrap_or(None)
+    }
+
+    /// Deprecated: Use `last_log_id()` instead.
     fn get_last_entry_metadata(&self) -> (u64, u64) {
         self.last().map(|entry| (entry.index, entry.term)).unwrap_or((0, 0))
+    }
+
+    fn first_index_for_term(
+        &self,
+        term: u64,
+    ) -> Option<u64> {
+        None
+    }
+
+    fn last_index_for_term(
+        &self,
+        term: u64,
+    ) -> Option<u64> {
+        None
     }
 
     #[autometrics(objective = API_SLO)]
@@ -201,7 +236,7 @@ impl RaftLog for SledRaftLog {
         prev_log_index: u64,
         prev_log_term: u64,
         new_entries: Vec<Entry>,
-    ) -> Result<u64> {
+    ) -> Result<Option<LogId>> {
         debug!(
             "Handling AppendEntries: prev_log_index={}, prev_log_term={}",
             prev_log_index, prev_log_term
@@ -214,7 +249,15 @@ impl RaftLog for SledRaftLog {
             self.clear()?;
 
             // Last entry after insert
-            let last = new_entries.last().map(|e| e.index).unwrap_or(0);
+            let last = new_entries
+                .last()
+                .map(|e| {
+                    Some(LogId {
+                        term: e.term,
+                        index: e.index,
+                    })
+                })
+                .unwrap_or(None);
 
             // Append new log
             for entry in new_entries {
@@ -238,7 +281,7 @@ impl RaftLog for SledRaftLog {
             }
             _ => {
                 // Mismatch, refuse to append (the upper-level logic handles the conflict response)
-                return Ok(self.last_entry_id());
+                return Ok(self.last_log_id());
             }
         }
 
@@ -247,7 +290,7 @@ impl RaftLog for SledRaftLog {
             self.apply(&batch)?;
         }
 
-        Ok(self.last_entry_id())
+        Ok(self.last_log_id())
     }
 
     /// TODO: process duplicated `new_ones`
@@ -306,12 +349,6 @@ impl RaftLog for SledRaftLog {
             0
         }
     }
-
-    // fn prev_log_index(&self, follower_id: u32, next_index: u64) -> u64 {
-    //     let next_id = self.next_index(follower_id).await;
-    //     if next_id > 0 {next_id - 1} else {0}
-
-    // }
 
     #[autometrics(objective = API_SLO)]
     fn prev_log_term(

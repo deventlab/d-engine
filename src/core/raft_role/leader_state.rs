@@ -46,7 +46,6 @@ use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
-use crate::NewLeaderInfo;
 use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -98,6 +97,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///Overwrite default behavior.
     /// As leader, I should not receive commit index,
     ///     which is lower than my current one
+    #[tracing::instrument]
     #[autometrics(objective = API_SLO)]
     fn update_commit_index(
         &mut self,
@@ -427,12 +427,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 // Reject the fake Leader append entries request
                 if my_term >= append_entries_request.term {
-                    let response = AppendEntriesResponse {
-                        id: my_id,
-                        term: my_term,
-                        success: false,
-                        match_index: raft_log.last_entry_id(),
-                    };
+                    let response = AppendEntriesResponse::higher_term(my_id, my_term);
 
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
@@ -664,7 +659,7 @@ impl<T: TypeConfig> LeaderState<T> {
             )
             .await;
 
-        debug!("process_client_proposal_in_batch_result");
+        debug!("process_client_proposal_in_batch_result: {:?}", &append_result);
 
         self.process_client_proposal_in_batch_result(batch, append_result, raft_log, role_tx)?;
 
@@ -769,16 +764,16 @@ impl<T: TypeConfig> LeaderState<T> {
             Err(e) => {
                 error!("Execute the client command failed with error: {:?}", e);
                 match e {
-                    Error::FoundNewLeaderError(NewLeaderInfo { term, leader_id }) => {
-                        warn!("found new leader");
-                        self.update_current_term(term);
+                    Error::HigherTermFoundError(higher_term) => {
+                        warn!("found higher term");
+                        self.update_current_term(higher_term);
 
-                        if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(Some(leader_id))) {
+                        if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(None)) {
                             error!("Send conflict leader signal failed with error: {:?}", e);
                         }
                     }
                     _ => {
-                        error("handle_client_proposal_in_batch", &e);
+                        error("process_client_proposal_in_batch_result", &e);
                     }
                 }
                 for r in batch {
@@ -813,6 +808,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// The enforce_quorum_consensus should be executed immediatelly
     ///  
+    #[tracing::instrument]
     pub async fn enforce_quorum_consensus(
         &mut self,
         replication_handler: &REPOF<T>,

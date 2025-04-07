@@ -5,10 +5,12 @@ use tokio::sync::watch;
 use tonic::Code;
 
 use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientProposeRequest;
 use crate::grpc::rpc_service::ClientReadRequest;
 use crate::grpc::rpc_service::ClientRequestError;
 use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
+use crate::grpc::rpc_service::LogId;
 use crate::grpc::rpc_service::MetadataRequest;
 use crate::grpc::rpc_service::VoteRequest;
 use crate::learner_state::LearnerState;
@@ -176,9 +178,14 @@ async fn test_handle_raft_event_case4_1() {
         .expect_handle_append_entries()
         .returning(move |_, _, _| {
             Ok(AppendResponseWithUpdates {
-                success: true,
-                current_term: new_leader_term,
-                last_matched_id: 1,
+                response: AppendEntriesResponse::success(
+                    1,
+                    new_leader_term,
+                    Some(LogId {
+                        term: new_leader_term,
+                        index: 1,
+                    }),
+                ),
                 commit_index_update: Some(expect_new_commit),
             })
         });
@@ -237,7 +244,7 @@ async fn test_handle_raft_event_case4_1() {
 
     // 5. send out AppendEntriesResponse with success=true
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.success),
+        Ok(response) => assert!(response.is_success()),
         Err(_) => assert!(false),
     }
 }
@@ -308,7 +315,7 @@ async fn test_handle_raft_event_case4_2() {
 
     // 5. send out AppendEntriesResponse with success=true
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.success),
+        Ok(response) => assert!(response.is_higher_term()),
         Err(_) => assert!(false),
     }
 }
@@ -388,7 +395,7 @@ async fn test_handle_raft_event_case4_3() {
 
     // 5. send out AppendEntriesResponse with success=true
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.success),
+        Ok(response) => assert!(!response.is_success()),
         Err(_) => assert!(false),
     }
 }

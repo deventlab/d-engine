@@ -19,6 +19,12 @@ message VoteResponse {
   uint64 lastLogTerm= 4;
 }
 
+// Unique identifier of the Raft log 
+message LogId {
+  uint64 term = 1;
+  uint64 index = 2; 
+}
+
 message Entry {
   uint64 index = 1;
   uint64 term = 2;
@@ -46,16 +52,32 @@ message AppendEntriesRequest {
 }
 
 message AppendEntriesResponse {
-    // record down the response owner id
-    uint32 id = 1;
-    // currentTerm, for leader to update itself
-    uint64 term = 2;
-    // true if follower contained entry matching prevLogIndex and prevLogTerm
-    bool success = 3;
-    // the index of the last log entry it has received
-    uint64 matchIndex = 4;
+  uint32 nodeId = 1;
+
+  // current term
+  uint64 term = 2;
+
+  oneof result {
+    // Success response (success = true)
+    SuccessResult success = 3;
+    
+    // Conflict response (success = false)
+    ConflictResult conflict = 4;
+
+    // Higher Term response (success = false)
+    uint64 higher_term = 5; // Observed Higher Term
+  }
+}
+// Success or partial success
+message SuccessResult {
+  LogId last_match = 1; // Confirmed highest matching log
 }
 
+// Log conflict information
+message ConflictResult {
+  optional uint64 conflict_term = 1; // Term of the conflicting entry (if any)
+  optional uint64 conflict_index = 2; // The first index of the conflicting term (if any)
+}
 message ClientCommand {
   oneof command {
     bytes get = 1;            // Key for GET
