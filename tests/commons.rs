@@ -155,32 +155,6 @@ async fn run_node(
     Ok(())
 }
 
-pub fn init_observability2(
-    config: &ClusterConfig
-) -> Result<(Arc<dyn Layer<Registry> + Send + Sync + 'static>, WorkerGuard)> {
-    let log_file = open_file_for_append(Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)))?;
-
-    let (writer, guard) = tracing_appender::non_blocking(log_file);
-    let layer = fmt::layer()
-        .with_writer(writer)
-        .with_filter(EnvFilter::from_default_env());
-
-    Ok((Arc::new(layer), guard))
-}
-
-pub fn init_observability(config: &ClusterConfig) -> Result<WorkerGuard> {
-    let log_file = open_file_for_append(Path::new(&config.log_dir).join(format!("{}/d.log", config.node_id)))?;
-
-    let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
-    let base_subscriber = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
-        .with_filter(EnvFilter::from_default_env());
-    if let Err(e) = tracing_subscriber::registry().with(base_subscriber).try_init() {
-        error!("{:?}", e);
-    }
-
-    Ok(guard)
-}
 pub async fn list_members(bootstrap_urls: &Vec<String>) -> Result<Vec<NodeMeta>> {
     let client = match dengine::ClientBuilder::new(bootstrap_urls.clone())
         .connect_timeout(Duration::from_secs(3))
@@ -215,7 +189,7 @@ pub async fn execute_command(
     value: Option<u64>,
 ) -> Result<u64> {
     let client = match dengine::ClientBuilder::new(bootstrap_urls.clone())
-        .connect_timeout(Duration::from_secs(3))
+        .connect_timeout(Duration::from_secs(10))
         .request_timeout(Duration::from_secs(10))
         .enable_compression(true)
         .build()
@@ -430,6 +404,25 @@ pub async fn check_cluster_is_ready(
                 peer_addr, timeout_secs
             );
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg))
+        }
+    }
+}
+
+// Helper function to verify linearizable reads
+pub async fn verify_read(
+    urls: &Vec<String>,
+    key: u64,
+    expected_value: u64,
+    iterations: u64,
+) {
+    println!("read: {}", key);
+    for _ in 0..iterations {
+        match execute_command(ClientCommands::LREAD, urls, key, None).await {
+            Ok(v) => assert_eq!(v, expected_value, "Linearizable read failed for key {}!", key),
+            Err(e) => {
+                error!("execute_command error: {:?}", e);
+                assert!(false);
+            }
         }
     }
 }

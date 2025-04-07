@@ -6,6 +6,7 @@
 //! - Configuration file support
 //! - Component-wise validation
 mod cluster;
+use std::fmt::Debug;
 mod monitoring;
 mod network;
 mod raft;
@@ -40,7 +41,7 @@ use crate::Result;
 /// 1. Default values from code implementation
 /// 2. Configuration file specified by `CONFIG_PATH`
 /// 3. Environment variables (highest priority)
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct RaftNodeConfig {
     /// Cluster topology and node configuration
     pub cluster: ClusterConfig,
@@ -55,7 +56,16 @@ pub struct RaftNodeConfig {
     /// TLS/SSL security configuration
     pub tls: TlsConfig,
 }
-
+impl Debug for RaftNodeConfig {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RaftNodeConfig")
+            .field("cluster", &self.cluster)
+            .finish()
+    }
+}
 impl RaftNodeConfig {
     /// Creates a new configuration with hierarchical override support:
     ///

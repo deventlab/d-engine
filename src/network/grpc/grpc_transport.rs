@@ -16,6 +16,7 @@ use tokio::task;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
 
+use super::rpc_service::AppendEntriesResponse;
 use crate::cluster::is_majority;
 use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
 use crate::grpc::rpc_service::AppendEntriesRequest;
@@ -25,12 +26,10 @@ use crate::if_higher_term_found;
 use crate::is_learner;
 use crate::is_target_log_more_recent;
 use crate::task_with_timeout_and_exponential_backoff;
-use crate::AppendResults;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::Error;
 use crate::NewLeaderInfo;
-use crate::PeerUpdate;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::Transport;
@@ -141,10 +140,9 @@ impl Transport for GrpcTransport {
     #[tracing::instrument]
     async fn send_append_requests(
         &self,
-        leader_current_term: u64,
         requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
         retry: &RetryPolicies,
-    ) -> Result<AppendResults> {
+    ) -> Result<Vec<AppendEntriesResponse>> {
         debug!("-------- send append entries requests --------");
         if requests_with_peer_address.is_empty() {
             warn!("requests_with_peer_address is empty.");
@@ -211,65 +209,24 @@ impl Transport for GrpcTransport {
             tasks.push(task_handle.boxed());
         }
 
-        let mut peer_updates = HashMap::new();
-        let mut successes = 1;
+        let mut responses = Vec::new();
         while let Some(result) = tasks.next().await {
             match result {
                 Ok(Ok(response)) => {
-                    let peer_id = response.id;
-                    debug!("recv append res from peer(id: {}): {:?}", &peer_id, response);
-                    let peer_match_index;
-                    let peer_next_index;
-                    if !response.success {
-                        if if_higher_term_found(leader_current_term, response.term, false) {
-                            error!("[send_append_requests] new leader found.");
-                            return Err(crate::Error::FoundNewLeaderError(NewLeaderInfo {
-                                term: response.term,
-                                leader_id: response.id,
-                            }));
-                        }
-                        //bugfix: #112
-                        peer_match_index = response.match_index;
-                        debug!("follower's log does not match with prev index and prev term. So now we change its next_index to it returned match_index({})", peer_match_index);
-                        peer_next_index = peer_match_index;
-                    } else {
-                        debug!("[send_append_requests] success!");
-                        successes += 1;
-                        peer_match_index = response.match_index;
-                        peer_next_index = peer_match_index + 1;
-                    }
-                    debug!(
-                        "[send_append_requests] update peer(id={}), match_index = {}, next_inde = {}: ",
-                        peer_id, peer_match_index, peer_next_index
-                    );
-
-                    let update = PeerUpdate {
-                        match_index: peer_match_index,
-                        next_index: peer_next_index,
-                        success: response.success,
-                    };
-                    peer_updates.insert(peer_id, update);
+                    responses.push(response);
                 }
                 Ok(Err(e)) => {
                     error!("[send_append_requests] error: {:?}", e);
+                    // return Err(e);
                 }
                 Err(e) => {
                     error!("[send_append_requests] Task failed with error: {:?}", e);
+                    // return Err(Error::JoinError(e));
                 }
             }
         }
 
-        debug!(
-            "send_append_requests to: {:?} with succeed number = {}",
-            &peer_ids, successes
-        );
-
-        let commit_quorum_achieved = is_majority(successes, peer_ids.len() + 1);
-
-        Ok(AppendResults {
-            commit_quorum_achieved,
-            peer_updates,
-        })
+        Ok(responses)
     }
 
     #[autometrics(objective = API_SLO)]

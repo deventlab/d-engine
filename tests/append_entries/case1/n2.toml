@@ -15,4 +15,8 @@ prometheus_enabled = false
 
 
 [raft.replication]
-append_entries_max_entries_per_replication = 5
+append_entries_max_entries_per_replication = 1
+
+[raft.commit_handler]
+batch_size = 1
+process_interval_ms = 100

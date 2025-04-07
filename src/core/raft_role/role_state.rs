@@ -221,6 +221,14 @@ pub trait RaftRoleState: Send + Sync + 'static {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>;
 
+    /// When a Follower receives an AppendEntries request, it performs the following logic (as
+    /// described in Section 5.1 of the Raft paper):
+    ///
+    /// - If the term T in the request is greater than
+    /// the Followers current term, the Follower updates its term and reverts to the Follower state.
+    ///
+    /// - If the term T in the request is less than the Followers current term, the Follower
+    ///   responds with a HigherTerm reply
     async fn handle_append_entries_request_workflow(
         &mut self,
         append_entries_request: AppendEntriesRequest,
@@ -237,15 +245,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
         // Init response with success is false
         let raft_log_last_index = ctx.raft_log.last_entry_id();
-        let mut response = AppendEntriesResponse {
-            id: self.node_id(),
-            term: self.current_term(),
-            success: false,
-            match_index: raft_log_last_index,
-        };
 
         let my_term = self.current_term();
         if my_term > append_entries_request.term {
+            let response = AppendEntriesResponse::higher_term(self.node_id(), my_term);
             debug!("AppendEntriesResponse: {:?}", response);
 
             sender.send(Ok(response)).map_err(|e| {
@@ -264,6 +267,9 @@ pub trait RaftRoleState: Send + Sync + 'static {
             self.update_current_term(append_entries_request.term);
         }
 
+        // My term might be updated, has to fetch it again
+        let my_term = self.current_term();
+
         // Handle replication request
         match ctx
             .replication_handler()
@@ -271,9 +277,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             .await
         {
             Ok(AppendResponseWithUpdates {
-                success,
-                current_term,
-                last_matched_id,
+                response,
                 commit_index_update,
             }) => {
                 if let Some(commit) = commit_index_update {
@@ -282,15 +286,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
                         return Err(e);
                     }
                 }
-
-                // Create a response
-                response = AppendEntriesResponse {
-                    id: self.node_id(),
-                    term: current_term,
-                    success,
-                    match_index: last_matched_id,
-                };
-
                 debug!("AppendEntriesResponse: {:?}", response);
 
                 sender.send(Ok(response)).map_err(|e| {
@@ -300,6 +295,11 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 })?;
             }
             Err(e) => {
+                // Conservatively fallback to a safe position, forcing the leader to retry or trigger a snapshot.
+                // Return a Conflict response (conflict index = current log length + 1)
+                error!("Replication failed. Conservatively fallback to a safe position, forcing the leader to retry");
+                let response =
+                    AppendEntriesResponse::conflict(self.node_id(), my_term, None, Some(raft_log_last_index + 1));
                 debug!("AppendEntriesResponse: {:?}", response);
 
                 sender.send(Ok(response)).map_err(|e| {

@@ -315,6 +315,7 @@ impl<T: TypeConfig> FollowerState<T> {
     }
 
     /// The fun will retrieve current state snapshot
+    #[tracing::instrument]
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
             current_term: self.current_term(),

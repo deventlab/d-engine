@@ -36,6 +36,7 @@ impl<T> RpcService for Node<T>
 where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     async fn request_vote(
         &self,
         request: tonic::Request<VoteRequest>,
@@ -45,7 +46,6 @@ where T: TypeConfig
             return Err(Status::unavailable("Service is not ready"));
         }
 
-        debug!("request_vote::Received: {:?}", request);
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
             .send(RaftEvent::ReceiveVoteRequest(request.into_inner(), resp_tx))
@@ -62,6 +62,7 @@ where T: TypeConfig
     // Candidate state      1.2.2 we should turn off election timeout and
     // heartbeat timeout
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     async fn append_entries(
         &self,
         request: Request<AppendEntriesRequest>,
@@ -71,7 +72,6 @@ where T: TypeConfig
             return Err(Status::unavailable("Service is not ready"));
         }
 
-        debug!("request_append_entries::Received: {:?}", request);
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
             .send(RaftEvent::AppendEntries(request.into_inner(), resp_tx))
@@ -84,6 +84,7 @@ where T: TypeConfig
     }
 
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     async fn update_cluster_conf(
         &self,
         request: tonic::Request<ClusteMembershipChangeRequest>,
@@ -92,8 +93,6 @@ where T: TypeConfig
             warn!("[rpc|update_cluster_conf] Node is not ready!");
             return Err(Status::unavailable("Service is not ready"));
         }
-
-        debug!("update_cluster_conf::Received req: {:?}", request);
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
@@ -108,6 +107,7 @@ where T: TypeConfig
     //----------------- External request handler---------------------
     ///Only `Propose` command need to be synced.
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     async fn handle_client_propose(
         &self,
         request: tonic::Request<ClientProposeRequest>,
@@ -117,31 +117,11 @@ where T: TypeConfig
             return Err(Status::unavailable("Service is not ready"));
         }
 
-        //--------------------
-
-        // let state = self.state();
-        // let is_leader = state.is_leader();
-        //Bugfix:
-        // The client could cancel the RPC, so we need keep the variable with static
-        // lifetime https://github.com/hyperium/tonic/blob/eeb3268f71ae5d1107c937392389db63d8f721fb/examples/src/cancellation/server.rs#L58
-        // let handler = self.get_client_request_handler();
-        // let cluster_membership_controller = self.cluster_membership_controller();
-        // let append_entries_controller = self.append_entries_controller();
-        // Deduplicate request using request_id
-        // if self.has_seen_request(&request.id).await {
-        //     return Ok(tonic::Response::new(ClientProposeResponse {
-        //         request_id: request.id.clone(),
-        //         status: "duplicate".into(),
-        //         timestamp: chrono::Utc::now().to_rfc3339(),
-        //     }));
-        // }
-
         let remote_addr = request.remote_addr();
         let event_tx = self.event_tx.clone();
         let timeout_duration = Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
 
         let request_future = async move {
-            debug!("[handle_client_propose] handle_client_propose::Received: {:?}", request);
             let req: ClientProposeRequest = request.into_inner();
             // Extract request and validate
             if req.commands.is_empty() {
@@ -168,6 +148,7 @@ where T: TypeConfig
     }
 
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     async fn get_cluster_metadata(
         &self,
         request: tonic::Request<MetadataRequest>,
@@ -177,7 +158,7 @@ where T: TypeConfig
             warn!("[rpc|get_cluster_metadata] Node is not ready!");
             return Err(Status::unavailable("Service is not ready"));
         }
-        debug!("[get_cluster_metadata] get_cluster_metadata::Received: {:?}", request);
+
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
             .send(RaftEvent::ClusterConf(request.into_inner(), resp_tx))
@@ -189,6 +170,7 @@ where T: TypeConfig
     }
 
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     async fn handle_client_read(
         &self,
         request: tonic::Request<ClientReadRequest>,
@@ -198,7 +180,6 @@ where T: TypeConfig
             return Err(Status::unavailable("Service is not ready"));
         }
 
-        debug!("[handle_client_read] req received: {:?}", request);
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
             .send(RaftEvent::ClientReadRequest(request.into_inner(), resp_tx))

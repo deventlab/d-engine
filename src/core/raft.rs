@@ -286,7 +286,10 @@ where T: TypeConfig
                 self.notify_role_transition();
             }
             RoleEvent::NotifyNewCommitIndex { new_commit_index } => {
-                debug!("RoleEvent::NotifyNewCommitIndex: {:?}", new_commit_index);
+                debug!(
+                    "[{}] RoleEvent::NotifyNewCommitIndex: {:?}",
+                    self.node_id, new_commit_index
+                );
                 self.notify_new_commit(new_commit_index);
             }
 

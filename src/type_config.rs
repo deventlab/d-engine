@@ -17,7 +17,7 @@ pub trait TypeConfig:
 {
     type R: RaftLog + Debug;
 
-    type TR: Transport;
+    type TR: Transport + Debug;
 
     type SM: StateMachine + Debug;
 
@@ -29,7 +29,7 @@ pub trait TypeConfig:
 
     type E: ElectionCore<Self> + Clone;
 
-    type REP: ReplicationCore<Self>;
+    type REP: ReplicationCore<Self> + Debug;
 
     type C: CommitHandler;
 
