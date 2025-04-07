@@ -561,9 +561,9 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
     let mut transport = MockTransport::new();
     transport
         .expect_send_append_requests()
-        .returning(move |_, _| Err(Error::FoundNewLeaderError(NewLeaderInfo { term: 1, leader_id: 7 })));
+        .returning(move |_, _| Err(Error::HigherTermFoundError(7)));
 
-    if let Err(Error::FoundNewLeaderError(new_leader)) = handler
+    if let Err(Error::HigherTermFoundError(higher_term)) = handler
         .handle_client_proposal_in_batch(
             commands,
             state_snapshot,
@@ -576,7 +576,7 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
         )
         .await
     {
-        assert_eq!(new_leader.leader_id, 7);
+        assert_eq!(higher_term, 7);
     } else {
         assert!(false);
     }

@@ -94,10 +94,7 @@ impl Transport for GrpcTransport {
 
                         //special case for this func
                         if if_higher_term_found(my_term, res.term, is_learner(peer_role)) {
-                            return Err(crate::Error::FoundNewLeaderError(NewLeaderInfo {
-                                term: res.term,
-                                leader_id: res.id,
-                            }));
+                            return Err(crate::Error::HigherTermFoundError(res.term));
                         }
 
                         Ok(res)

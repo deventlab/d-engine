@@ -137,43 +137,8 @@ impl NodeBuilder {
         node_config: RaftNodeConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let node_id = node_config.cluster.node_id;
-
-        // Initialize storage
-        // let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-        //     init_sled_storages(format!("{}/{}", db_root_dir.display(), node_id)).expect("init storage
-        // failed.");
-
-        // // Create a database instance with atomic references
-        // let raft_log_db = Arc::new(raft_log_db);
-        // let state_machine_db = Arc::new(state_machine_db);
-        // let state_storage_db = Arc::new(state_storage_db);
-
-        // Initialize the state machine and get the last index
-        // let sled_state_machine = RaftStateMachine::new(node_id, state_machine_db.clone());
-        // let last_applied_index = sled_state_machine.last_entry_index();
-
-        // Create Raft core components
-        // let sled_raft_log = SledRaftLog::new(raft_log_db, last_applied_index);
-        // let sled_state_storage = SledStateStorage::new(state_storage_db);
-
-        // Network transport layer
-        // let grpc_transport = GrpcTransport { my_id: node_id };
-
-        // State machine handler
-        // let state_machine = Arc::new(sled_state_machine);
-        // let state_machine_handler = Arc::new(DefaultStateMachineHandler::new(
-        //     last_applied_index,
-        //     node_config.raft.commit_handler.max_entries_per_chunk,
-        //     state_machine.clone(),
-        // ));
-
-        //Cluster member management
-        // let raft_membership = RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone());
-
-        // Build the final instance
         Self {
-            node_id,
+            node_id: node_config.cluster.node_id,
             raft_log: None,
             state_machine: None,
             state_storage: None,

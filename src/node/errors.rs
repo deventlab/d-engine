@@ -75,9 +75,6 @@ pub enum Error {
     #[error("Unexpected EOF")]
     UnexpectedEOF,
 
-    #[error("Found new leader({0:?}) error")]
-    FoundNewLeaderError(NewLeaderInfo),
-
     #[error("Append Entries: no result return")]
     AppendEntriesNoResultReturn,
 
