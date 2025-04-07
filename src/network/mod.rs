@@ -12,6 +12,7 @@ pub mod grpc;
 // Core model in Raft: Transport Definition
 //
 
+use grpc::rpc_service::AppendEntriesResponse;
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
@@ -57,24 +58,25 @@ pub trait Transport: Send + Sync + 'static {
         retry: &RetryPolicies,
     ) -> Result<bool>;
 
-    /// Only when Majority receives, true will be returned.
-    /// This function is special comapring with other rpc functions in this
-    /// file.
+    /// Sends AppendEntries RPCs to multiple peers concurrently with retry mechanisms.
     ///
-    /// It will also take responbility to maintain peer's next_index and
-    /// match_index
+    /// This transport-layer function handles:
+    /// 1. Request distribution to multiple cluster peers
+    /// 2. Network retries with exponential backoff
+    /// 3. Timeout handling for individual requests
+    /// 4. Response collection and aggregation
     ///
-    /// @requests_with_peer_address:
-    /// - only inlclude Follower and Candidates, no Learner will be considered.
-    /// - (peer_id,  peer_address, peer_request)
-    /// - the request send to each peer is unique.
+    /// # Parameters
+    /// - `requests_with_peer_address`: List of (peer_id, channel, request) tuples
+    /// - `retry`: Retry configuration parameters
+    ///
+    /// # Returns
+    /// - `Result<Vec<AppendEntriesResponse>>`: Aggregated responses from peers
     async fn send_append_requests(
         &self,
-        // role_tx: mpsc::UnboundedSender<RoleEvent>,
-        leader_term: u64,
         requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
         retry: &RetryPolicies,
-    ) -> Result<AppendResults>;
+    ) -> Result<Vec<AppendEntriesResponse>>;
 
     /// Send vote request to either Candidate or Followers,
     ///     which means, learner will not receive the vote request

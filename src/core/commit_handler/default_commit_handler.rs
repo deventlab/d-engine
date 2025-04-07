@@ -17,6 +17,7 @@ use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 
+#[derive(Debug)]
 pub struct DefaultCommitHandler<T>
 where T: TypeConfig
 {
@@ -25,6 +26,7 @@ where T: TypeConfig
     new_commit_rx: Option<mpsc::UnboundedReceiver<u64>>,
     batch_size_threshold: u64,
     process_interval_ms: u64,
+
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
 }

@@ -281,6 +281,15 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().update_next_index(node_id, new_next_id)
     }
 
+    pub fn init_peers_next_index_and_match_index(
+        &mut self,
+        last_entry_id: u64,
+        peer_ids: Vec<u32>,
+    ) -> Result<()> {
+        self.state_mut()
+            .init_peers_next_index_and_match_index(last_entry_id, peer_ids)
+    }
+
     pub async fn tick(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,

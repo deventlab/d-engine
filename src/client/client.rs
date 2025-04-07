@@ -6,7 +6,7 @@
 //! - [`ClusterClient`] for cluster management
 //!
 //! # Examples
-//! ```rust,no_run
+//! ```ignore
 //! use dengine::{Client, Error};
 //! use std::time::Duration;
 //!

@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -24,10 +25,10 @@ use crate::ElectionTimer;
 use crate::Error;
 use crate::RaftContext;
 use crate::RaftEvent;
+use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RoleEvent;
-use crate::StateMachine;
 use crate::TypeConfig;
 
 pub struct LearnerState<T: TypeConfig> {
@@ -127,6 +128,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         Ok(())
     }
 
+    #[tracing::instrument]
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -135,8 +137,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let state_snapshot = self.state_snapshot();
-        let state_machine = ctx.state_machine();
-        let last_applied = state_machine.last_applied();
         let my_term = self.current_term();
 
         match raft_event {
@@ -148,9 +148,12 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
 
                 // 2. Response sender with vote_granted=false
+                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
                 let response = VoteResponse {
                     term: my_term,
                     vote_granted: false,
+                    last_log_index,
+                    last_log_term,
                 };
                 debug!(
                     "Response candidate_{:?} with response: {:?}",
@@ -194,7 +197,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     ctx,
                     role_tx,
                     &state_snapshot,
-                    last_applied,
                 )
                 .await?;
             }
@@ -276,5 +278,16 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
             settings: candidate_state.settings.clone(),
             _marker: PhantomData,
         }
+    }
+}
+
+impl<T: TypeConfig> Debug for LearnerState<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("LearnerState")
+            .field("shared_state", &self.shared_state)
+            .finish()
     }
 }

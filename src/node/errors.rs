@@ -75,9 +75,6 @@ pub enum Error {
     #[error("Unexpected EOF")]
     UnexpectedEOF,
 
-    #[error("Found new leader({0:?}) error")]
-    FoundNewLeaderError(NewLeaderInfo),
-
     #[error("Append Entries: no result return")]
     AppendEntriesNoResultReturn,
 
@@ -198,6 +195,9 @@ pub enum Error {
 
     #[error(transparent)]
     StateTransitionError(#[from] StateTransitionError),
+
+    #[error("Higher term found error: higher term = {0}")]
+    HigherTermFoundError(u64),
     //===== Receive Exist Signals =====
     //
     #[error("Exit")]

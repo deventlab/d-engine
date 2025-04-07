@@ -1,5 +1,7 @@
 use std::cmp;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -15,14 +17,21 @@ use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::ROF;
 use crate::alias::TROF;
+use crate::cluster::is_majority;
+use crate::grpc::rpc_service::append_entries_response;
 use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientCommand;
+use crate::grpc::rpc_service::ConflictResult;
 use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::LogId;
+use crate::grpc::rpc_service::SuccessResult;
 use crate::AppendResults;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::Error;
 use crate::LeaderStateSnapshot;
+use crate::PeerUpdate;
 use crate::RaftConfig;
 use crate::RaftLog;
 use crate::Result;
@@ -44,18 +53,7 @@ where T: TypeConfig
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
 where T: TypeConfig
 {
-    /// As Leader, send replications to peers.
-    /// (combined regular heartbeat and client proposals)
-    ///
-    /// Each time handle_client_proposal_in_batch is called, perform peer
-    /// synchronization check
-    /// 1. Verify if any peer's next_id <= leader's commit_index
-    /// 2. For non-synced peers meeting this condition: a. Retrieve all unsynced log entries b.
-    ///    Buffer these entries before processing real entries
-    /// 3. Ensure unsynced entries are prepended to the entries queue before actual entries get
-    ///    pushed
-    ///
-    /// Leader state will be updated by LeaderState only(follows SRP).
+    #[tracing::instrument]
     async fn handle_client_proposal_in_batch(
         &self,
         commands: Vec<ClientCommand>,
@@ -103,20 +101,135 @@ where T: TypeConfig
         // ----------------------
         // Phase 4: Build Requests
         // ----------------------
+        let mut peer_ids = HashSet::new();
         let requests = replication_members
             .iter()
-            .map(|peer| self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data))
+            .map(|peer| {
+                peer_ids.insert(peer.id);
+                self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data)
+            })
             .collect();
 
         // ----------------------
         // Phase 5: Send Requests
         // ----------------------
-        transport
-            .send_append_requests(replication_data.current_term, requests, retry)
-            .await
+        let leader_current_term = state_snapshot.current_term;
+        let mut successes = 1; // Include leader itself
+        let mut peer_updates = HashMap::new();
+        match transport.send_append_requests(requests, retry).await {
+            Ok(responses) => {
+                for response in responses {
+                    // Skip responses from stale terms
+                    if response.term < leader_current_term {
+                        continue;
+                    }
+
+                    match response.result {
+                        Some(append_entries_response::Result::Success(success_result)) => {
+                            successes += 1;
+                            let update = self.handle_success_response(
+                                response.node_id,
+                                response.term,
+                                success_result,
+                                leader_current_term,
+                            )?;
+                            peer_updates.insert(response.node_id, update);
+                        }
+
+                        Some(append_entries_response::Result::Conflict(conflict_result)) => {
+                            let update = self.handle_conflict_response(response.node_id, conflict_result, raft_log)?;
+
+                            peer_updates.insert(response.node_id, update);
+                        }
+
+                        Some(append_entries_response::Result::HigherTerm(higher_term)) => {
+                            // Only handle higher term if it's greater than current term
+                            if higher_term > leader_current_term {
+                                return Err(Error::HigherTermFoundError(higher_term));
+                            }
+                        }
+
+                        None => {
+                            error!("TODO: need to figure out the reason of this cluase");
+                        }
+                    }
+                }
+            }
+            Err(e) => return Err(e),
+        }
+        debug!(
+            "send_append_requests to: {:?} with succeed number = {}",
+            &peer_ids, successes
+        );
+
+        let commit_quorum_achieved = is_majority(successes, peer_ids.len() + 1);
+        Ok(AppendResults {
+            commit_quorum_achieved,
+            peer_updates,
+        })
+    }
+
+    fn handle_success_response(
+        &self,
+        peer_id: u32,
+        peer_term: u64,
+        success_result: SuccessResult,
+        leader_term: u64,
+    ) -> Result<PeerUpdate> {
+        debug!("Received success response from peer {}", peer_id);
+
+        let match_log = success_result.last_match.unwrap_or(LogId { term: 0, index: 0 });
+
+        // Verify Term consistency
+        if peer_term > leader_term {
+            return Err(Error::HigherTermFoundError(peer_term));
+        }
+
+        let peer_match_index = match_log.index;
+        let peer_next_index = peer_match_index + 1;
+
+        Ok(PeerUpdate {
+            match_index: peer_match_index,
+            next_index: peer_next_index,
+            success: true,
+        })
+    }
+
+    fn handle_conflict_response(
+        &self,
+        peer_id: u32,
+        conflict_result: ConflictResult,
+        _raft_log: &Arc<ROF<T>>,
+    ) -> Result<PeerUpdate> {
+        debug!("Handling conflict from peer {}", peer_id);
+
+        // Calculate next_index based on conflict information
+        let next_index = match (conflict_result.conflict_term, conflict_result.conflict_index) {
+            (Some(_term), Some(index)) => {
+                // Find the last log that matches term
+                // TODO: feature in v0.2.0
+                // raft_log
+                //     .last_index_for_term(term)
+                //     .map(|last_index| last_index + 1)
+                //     .unwrap_or(index)
+                index.saturating_sub(1)
+            }
+            (None, Some(index)) => index,
+            _ => 1, // Return to the initial position
+        };
+
+        // Make sure next_index is not less than 1
+        let next_index = next_index.max(1);
+        // Update peer status (at least go back 1 position)
+        Ok(PeerUpdate {
+            match_index: next_index.saturating_sub(1),
+            next_index,
+            success: false,
+        })
     }
 
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: Vec<Entry>,
@@ -163,71 +276,61 @@ where T: TypeConfig
     }
 
     /// As Follower only
+    #[tracing::instrument]
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,
         state_snapshot: &StateSnapshot,
-        last_applied: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates> {
         debug!("[F-{:?}] >> receive leader append request {:?}", self.my_id, request);
         let current_term = state_snapshot.current_term;
-        let raft_log_last_index = raft_log.last_entry_id();
+        let mut last_log_id_option = raft_log.last_log_id();
         let success;
-        //if there is no new entries need to insert, we just return the last local log
-        // index
-        let mut last_matched_id = raft_log_last_index;
+        //if there is no new entries need to insert, we just return the last local log index
         let mut commit_index_update = None;
 
-        if current_term > request.term {
-            debug!(" current_term({}) >= req.term({}) ", current_term, request.term);
+        let response = self.check_append_entries_request_is_legal(current_term, &request, raft_log);
+
+        // Handle illegal requests (return conflict or higher Term)
+        if response.is_conflict() || response.is_higher_term() {
+            debug!("Rejecting AppendEntries: {:?}", &response);
+
             return Ok(AppendResponseWithUpdates {
-                success: false,
-                current_term,
-                last_matched_id,
+                response,
                 commit_index_update,
             });
         }
 
-        if raft_log.prev_log_ok(request.prev_log_index, request.prev_log_term, last_applied) {
-            //switch to follower listening state
-            debug!("switch to follower listening state");
+        //switch to follower listening state
+        debug!("switch to follower listening state");
 
-            success = true;
+        success = true;
 
-            if !request.entries.is_empty() {
-                last_matched_id =
-                    raft_log.filter_out_conflicts_and_append(request.prev_log_index, request.entries.clone());
-            }
+        if !request.entries.is_empty() {
+            last_log_id_option = raft_log.filter_out_conflicts_and_append(
+                request.prev_log_index,
+                request.prev_log_term,
+                request.entries.clone(),
+            )?;
+        }
 
-            if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
-                state_snapshot.commit_index,
-                raft_log.last_entry_id(),
-                request.leader_commit_index,
-            ) {
-                debug!("new commit index received: {:?}", new_commit_index);
-                commit_index_update = Some(new_commit_index);
-            }
-        } else {
-            warn!("prev log is not ok on req");
-            //bugfix: #112
-            last_matched_id = if request.prev_log_index < raft_log_last_index {
-                request.prev_log_index.saturating_sub(1)
-            } else {
-                raft_log_last_index
-            };
-            success = false;
+        if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
+            state_snapshot.commit_index,
+            raft_log.last_entry_id(),
+            request.leader_commit_index,
+        ) {
+            debug!("new commit index received: {:?}", new_commit_index);
+            commit_index_update = Some(new_commit_index);
         }
 
         debug!(
             "success: {:?}, current_term: {:?}, last_matched_id: {:?}",
-            success, current_term, last_matched_id
+            success, current_term, last_log_id_option
         );
 
         Ok(AppendResponseWithUpdates {
-            success,
-            current_term,
-            last_matched_id,
+            response: AppendEntriesResponse::success(self.my_id, current_term, last_log_id_option),
             commit_index_update,
         })
     }
@@ -235,6 +338,7 @@ where T: TypeConfig
     ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index
     /// of last new entry)
     #[autometrics(objective = API_SLO)]
+    #[tracing::instrument]
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
         last_raft_log_id: u64,
@@ -252,8 +356,60 @@ where T: TypeConfig
         }
         None
     }
+
+    #[tracing::instrument]
+    fn check_append_entries_request_is_legal(
+        &self,
+        my_term: u64,
+        request: &AppendEntriesRequest,
+        raft_log: &Arc<ROF<T>>,
+    ) -> AppendEntriesResponse {
+        // Rule 1: Term check
+        if my_term > request.term {
+            warn!(" my_term({}) >= req.term({}) ", my_term, request.term);
+            return AppendEntriesResponse::higher_term(self.my_id, my_term);
+        }
+
+        let last_log_id_option = raft_log.last_log_id();
+        let last_log_id = last_log_id_option.unwrap_or(LogId { term: 0, index: 0 }).index;
+
+        // Rule 2: Special handling for virtual log
+        if request.prev_log_index == 0 && request.prev_log_term == 0 {
+            // Accept virtual log request (regardless of whether the local log is empty)
+            return AppendEntriesResponse::success(self.my_id, my_term, last_log_id_option);
+        }
+
+        // Rule 3: General log matching check
+        match raft_log.entry_term(request.prev_log_index) {
+            Some(term) if term == request.prev_log_term => AppendEntriesResponse::success(
+                self.my_id,
+                my_term,
+                Some(LogId {
+                    term: request.prev_log_term,
+                    index: request.prev_log_index,
+                }),
+            ),
+            Some(conflict_term) => {
+                // Find first index of conflict term
+                // TODO:Upcoming feature #45 in v0.2.0
+                // let conflict_index = raft_log.first_index_for_term(conflict_term);
+                let conflict_index = if request.prev_log_index < last_log_id {
+                    request.prev_log_index.saturating_sub(1)
+                } else {
+                    last_log_id + 1
+                };
+                AppendEntriesResponse::conflict(self.my_id, my_term, Some(conflict_term), Some(conflict_index))
+            }
+            None => {
+                // prev_log_index not exist, return next expected index
+                let conflict_index = last_log_id + 1;
+                AppendEntriesResponse::conflict(self.my_id, my_term, None, Some(conflict_index))
+            }
+        }
+    }
 }
 
+#[derive(Debug)]
 pub(super) struct ReplicationData {
     pub(super) leader_last_index_before: u64,
     pub(super) current_term: u64,
@@ -320,6 +476,7 @@ where T: TypeConfig
     }
 
     /// Build an append request for a single node
+    #[tracing::instrument]
     pub(super) fn build_append_request(
         &self,
         raft_log: &Arc<ROF<T>>,
@@ -354,5 +511,18 @@ where T: TypeConfig
             entries,
             leader_commit_index: data.commit_index,
         })
+    }
+}
+
+impl<T> Debug for ReplicationHandler<T>
+where T: TypeConfig
+{
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("ReplicationHandler")
+            .field("my_id", &self.my_id)
+            .finish()
     }
 }

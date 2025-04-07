@@ -13,10 +13,21 @@ use crate::StateStorage;
 use crate::API_SLO;
 use crate::HARD_STATE_KEY;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SledStateStorage {
     db: Arc<sled::Db>,
     tree: Arc<sled::Tree>,
+}
+
+impl std::fmt::Debug for SledStateStorage {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("SledStateStorage")
+            .field("tree_len", &self.tree.len())
+            .finish()
+    }
 }
 
 impl StateStorage for SledStateStorage {
@@ -112,8 +123,7 @@ impl StateStorage for SledStateStorage {
 }
 
 impl SledStateStorage {
-    #[autometrics(objective = API_SLO)]
-    pub(crate) fn new(db: Arc<sled::Db>) -> Self {
+    pub fn new(db: Arc<sled::Db>) -> Self {
         match db.open_tree(STATE_STORAGE_NAMESPACE) {
             Ok(tree) => {
                 return SledStateStorage {

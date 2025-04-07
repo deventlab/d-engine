@@ -3,6 +3,10 @@ mod sled_adapter;
 mod state_machine;
 mod state_storage;
 
+use std::path::Path;
+
+use log::debug;
+use log::warn;
 pub use raft_log::*;
 pub use sled_adapter::*;
 pub use state_machine::*;
@@ -16,20 +20,23 @@ pub use state_storage::*;
 pub fn init_sled_storages(
     sled_db_root_path: String
 ) -> std::result::Result<(sled::Db, sled::Db, sled::Db, sled::Db), std::io::Error> {
-    use std::path::Path;
-
-    use log::debug;
-    use log::warn;
-
     debug!("init_sled_storages from path: {:?}", &sled_db_root_path);
 
-    let path = &Path::new(&sled_db_root_path);
-    let raft_log_db_path = path.join("raft_log");
-    let state_machine_db_path = path.join("state_machine");
-    let state_storage_db_path = path.join("state_storage");
-    let snapshot_storage_db_path = path.join("snapshot_storage");
+    Ok((
+        init_sled_raft_log_db(&sled_db_root_path)?,
+        init_sled_state_machine_db(&sled_db_root_path)?,
+        init_sled_state_storage_db(&sled_db_root_path)?,
+        init_sled_snapshot_storage_db(&sled_db_root_path)?,
+    ))
+}
 
-    let raft_log_db = sled::Config::default()
+pub fn init_sled_raft_log_db(sled_db_root_path: &str) -> std::result::Result<sled::Db, std::io::Error> {
+    debug!("init_sled_raft_log_db from path: {:?}", &sled_db_root_path);
+
+    let path = &Path::new(sled_db_root_path);
+    let raft_log_db_path = path.join("raft_log");
+
+    sled::Config::default()
         .path(&raft_log_db_path)
         .cache_capacity(4 * 1024 * 1024 * 1024) //4GB
         // .flush_every_ms(Some(1))
@@ -44,9 +51,15 @@ pub fn init_sled_storages(
                 raft_log_db_path, e
             );
             std::io::Error::other(e)
-        })?;
+        })
+}
+pub fn init_sled_state_machine_db(sled_db_root_path: &str) -> std::result::Result<sled::Db, std::io::Error> {
+    debug!("init_sled_state_machine_db from path: {:?}", &sled_db_root_path);
 
-    let state_machine_db = sled::Config::default()
+    let path = &Path::new(sled_db_root_path);
+    let state_machine_db_path = path.join("state_machine");
+
+    sled::Config::default()
         .path(&state_machine_db_path)
         .cache_capacity(10 * 1024 * 1024) //10MB
         .flush_every_ms(Some(3))
@@ -61,9 +74,15 @@ pub fn init_sled_storages(
                 state_machine_db_path, e
             );
             std::io::Error::other(e)
-        })?;
+        })
+}
+pub fn init_sled_state_storage_db(sled_db_root_path: &str) -> std::result::Result<sled::Db, std::io::Error> {
+    debug!("init_sled_state_storage_db from path: {:?}", &sled_db_root_path);
 
-    let state_storage_db = sled::Config::default()
+    let path = &Path::new(sled_db_root_path);
+    let state_storage_db_path = path.join("state_storage");
+
+    sled::Config::default()
         .path(&state_storage_db_path)
         .cache_capacity(10 * 1024 * 1024) //10MB
         .flush_every_ms(Some(3))
@@ -78,9 +97,15 @@ pub fn init_sled_storages(
                 state_storage_db_path, e
             );
             std::io::Error::other(e)
-        })?;
+        })
+}
+pub fn init_sled_snapshot_storage_db(sled_db_root_path: &str) -> std::result::Result<sled::Db, std::io::Error> {
+    debug!("init_sled_snapshot_storage_db from path: {:?}", &sled_db_root_path);
 
-    let snapshot_storage_db = sled::Config::default()
+    let path = &Path::new(sled_db_root_path);
+    let snapshot_storage_db_path = path.join("snapshot_storage");
+
+    sled::Config::default()
         .path(&snapshot_storage_db_path)
         .cache_capacity(10 * 1024 * 1024) //10MB
         .flush_every_ms(Some(3))
@@ -95,9 +120,7 @@ pub fn init_sled_storages(
                 snapshot_storage_db_path, e
             );
             std::io::Error::other(e)
-        })?;
-
-    Ok((raft_log_db, state_machine_db, state_storage_db, snapshot_storage_db))
+        })
 }
 
 #[cfg(test)]

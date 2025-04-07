@@ -24,10 +24,15 @@ use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
 use crate::alias::TROF;
+use crate::grpc::rpc_service::append_entries_response;
 use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientCommand;
 use crate::grpc::rpc_service::ClientResponse;
+use crate::grpc::rpc_service::ConflictResult;
 use crate::grpc::rpc_service::Entry;
+use crate::grpc::rpc_service::LogId;
+use crate::grpc::rpc_service::SuccessResult;
 use crate::AppendResults;
 use crate::ChannelWithAddressAndRole;
 use crate::MaybeCloneOneshotSender;
@@ -52,10 +57,7 @@ pub struct LeaderStateUpdate {
 
 #[derive(Debug)]
 pub struct AppendResponseWithUpdates {
-    pub success: bool,        // RPC success or failure
-    pub current_term: u64,    // Current node term (may have been updated)
-    pub last_matched_id: u64, // Last matched log index
-    // pub term_update: Option<u64>,         // Term to be updated (if a higher term is found)
+    pub response: AppendEntriesResponse,
     pub commit_index_update: Option<u64>, // Commit_index to be updated
 }
 
@@ -66,6 +68,18 @@ pub struct AppendResponseWithUpdates {
 pub trait ReplicationCore<T>: Send + Sync + 'static
 where T: TypeConfig
 {
+    /// As Leader, send replications to peers.
+    /// (combined regular heartbeat and client proposals)
+    ///
+    /// Each time handle_client_proposal_in_batch is called, perform peer
+    /// synchronization check
+    /// 1. Verify if any peer's next_id <= leader's commit_index
+    /// 2. For non-synced peers meeting this condition: a. Retrieve all unsynced log entries b.
+    ///    Buffer these entries before processing real entries
+    /// 3. Ensure unsynced entries are prepended to the entries queue before actual entries get
+    ///    pushed
+    ///
+    /// Leader state will be updated by LeaderState only(follows SRP).
     async fn handle_client_proposal_in_batch(
         &self,
         commands: Vec<ClientCommand>,
@@ -77,6 +91,21 @@ where T: TypeConfig
         raft: &RaftConfig,
         retry: &RetryPolicies,
     ) -> Result<AppendResults>;
+
+    fn handle_success_response(
+        &self,
+        peer_id: u32,
+        peer_term: u64,
+        success_result: SuccessResult,
+        leader_term: u64,
+    ) -> Result<crate::PeerUpdate>;
+
+    fn handle_conflict_response(
+        &self,
+        peer_id: u32,
+        conflict_result: ConflictResult,
+        raft_log: &Arc<ROF<T>>,
+    ) -> Result<crate::PeerUpdate>;
 
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
@@ -117,15 +146,103 @@ where T: TypeConfig
         &self,
         request: AppendEntriesRequest,
         state_snapshot: &StateSnapshot,
-        last_applied: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates>;
 
-    // async fn upon_receive_append_request(
-    //     &self,
-    //     req: &AppendEntriesRequest,
-    //     state_snapshot: &StateSnapshot,
-    //     last_applied: u64,
-    //     raft_log: &Arc<ROF<T>>,
-    // ) -> AppendResponseWithUpdates;
+    /// Validates an incoming AppendEntries RPC from a Leader against Raft protocol rules.
+    ///
+    /// This function implements the **log consistency checks** defined in Raft paper Section 5.3.
+    /// It determines whether to accept the Leader's log entries by verifying:
+    /// 1. Term freshness
+    /// 2. Virtual log (prev_log_index=0) handling
+    /// 3. Previous log entry consistency
+    ///
+    /// # Raft Protocol Rules Enforced
+    /// 1. **Term Check** (Raft Paper 5.1):
+    ///    - Reject requests with stale terms to prevent partitioned Leaders
+    /// 2. **Virtual Log Handling** (Implementation-Specific):
+    ///    - Special case for empty logs (prev_log_index=0 && prev_log_term=0)
+    /// 3. **Log Matching** (Raft Paper 5.3):
+    ///    - Ensure Leader's prev_log_index/term matches Follower's log
+    ///
+    /// # Parameters
+    /// - `my_term`: Current node's term
+    /// - `request`: Leader's AppendEntries RPC
+    /// - `raft_log`: Reference to node's log store
+    ///
+    /// # Return
+    /// - [`AppendEntriesResponse::success`] if validation passes
+    /// - [`AppendEntriesResponse::higher_term`] if Leader's term is stale
+    /// - [`AppendEntriesResponse::conflict`] with debugging info for log inconsistencies
+    fn check_append_entries_request_is_legal(
+        &self,
+        my_term: u64,
+        request: &AppendEntriesRequest,
+        raft_log: &Arc<ROF<T>>,
+    ) -> AppendEntriesResponse;
+}
+
+impl AppendEntriesResponse {
+    /// Generate a successful response (full success)
+    pub fn success(
+        node_id: u32,
+        term: u64,
+        last_match: Option<LogId>,
+    ) -> Self {
+        Self {
+            node_id,
+            term,
+            result: Some(append_entries_response::Result::Success(SuccessResult { last_match })),
+        }
+    }
+
+    /// Generate conflict response (with conflict details)
+    pub fn conflict(
+        node_id: u32,
+        term: u64,
+        conflict_term: Option<u64>,
+        conflict_index: Option<u64>,
+    ) -> Self {
+        Self {
+            node_id,
+            term,
+            result: Some(append_entries_response::Result::Conflict(ConflictResult {
+                conflict_term,
+                conflict_index,
+            })),
+        }
+    }
+
+    /// Generate a conflict response (Higher term found)
+    pub fn higher_term(
+        node_id: u32,
+        term: u64,
+    ) -> Self {
+        Self {
+            node_id,
+            term,
+            result: Some(append_entries_response::Result::HigherTerm(term)),
+        }
+    }
+
+    /// Check if it is a success response
+    pub fn is_success(&self) -> bool {
+        match &self.result {
+            Some(append_entries_response::Result::Success(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if it is a conflict response
+    pub fn is_conflict(&self) -> bool {
+        match &self.result {
+            Some(append_entries_response::Result::Conflict(_conflict)) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if it is a response of a higher Term
+    pub fn is_higher_term(&self) -> bool {
+        matches!(&self.result, Some(append_entries_response::Result::HigherTerm(_)))
+    }
 }

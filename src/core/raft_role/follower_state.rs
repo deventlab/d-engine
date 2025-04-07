@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -28,6 +29,7 @@ use crate::Error;
 use crate::Membership;
 use crate::RaftContext;
 use crate::RaftEvent;
+use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RoleEvent;
@@ -146,6 +148,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         Ok(())
     }
 
+    #[tracing::instrument]
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
@@ -154,13 +157,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let state_snapshot = self.state_snapshot();
-        let state_machine = ctx.state_machine();
-        let last_applied = state_machine.last_applied();
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 let candidate_id = vote_request.candidate_id;
                 let my_term = self.current_term();
+
+                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+
                 match ctx
                     .election_handler()
                     .handle_vote_request(vote_request, my_term, self.voted_for().unwrap(), ctx.raft_log())
@@ -185,6 +189,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         let response = VoteResponse {
                             term: my_term,
                             vote_granted: new_voted_for.is_some(),
+                            last_log_index,
+                            last_log_term,
                         };
                         debug!("Response candidate_{:?} with response: {:?}", candidate_id, response);
 
@@ -198,6 +204,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         let response = VoteResponse {
                             term: my_term,
                             vote_granted: false,
+                            last_log_index,
+                            last_log_term,
                         };
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{:?}", e);
@@ -238,7 +246,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     ctx,
                     role_tx,
                     &state_snapshot,
-                    last_applied,
                 )
                 .await?;
             }
@@ -308,6 +315,7 @@ impl<T: TypeConfig> FollowerState<T> {
     }
 
     /// The fun will retrieve current state snapshot
+    #[tracing::instrument]
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
             current_term: self.current_term(),
@@ -358,4 +366,15 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
 }
 impl<T: TypeConfig> Drop for FollowerState<T> {
     fn drop(&mut self) {}
+}
+
+impl<T: TypeConfig> Debug for FollowerState<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("FollowerState")
+            .field("shared_state", &self.shared_state)
+            .finish()
+    }
 }

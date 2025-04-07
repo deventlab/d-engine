@@ -9,11 +9,13 @@ use super::follower_state::FollowerState;
 use super::HardState;
 use crate::alias::POF;
 use crate::grpc::rpc_service::AppendEntriesRequest;
+use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientProposeRequest;
 use crate::grpc::rpc_service::ClientReadRequest;
 use crate::grpc::rpc_service::ClientRequestError;
 use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
 use crate::grpc::rpc_service::ClusterMembership;
+use crate::grpc::rpc_service::LogId;
 use crate::grpc::rpc_service::MetadataRequest;
 use crate::grpc::rpc_service::VoteRequest;
 use crate::grpc::rpc_service::VoteResponse;
@@ -29,6 +31,7 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
 use crate::MockElectionCore;
 use crate::MockMembership;
+use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::RaftEvent;
@@ -403,11 +406,16 @@ async fn test_handle_raft_event_case4_1() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(move |_, _, _, _| {
+        .returning(move |_, _, _| {
             Ok(AppendResponseWithUpdates {
-                success: true,
-                current_term: new_leader_term,
-                last_matched_id: 1,
+                response: AppendEntriesResponse::success(
+                    1,
+                    new_leader_term,
+                    Some(LogId {
+                        term: new_leader_term,
+                        index: 1,
+                    }),
+                ),
                 commit_index_update: Some(expect_new_commit),
             })
         });
@@ -466,7 +474,7 @@ async fn test_handle_raft_event_case4_1() {
 
     // 5. send out AppendEntriesResponse with success=true
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.success),
+        Ok(response) => assert!(response.is_success()),
         Err(_) => assert!(false),
     }
 }
@@ -488,6 +496,11 @@ async fn test_handle_raft_event_case4_2() {
     let follower_term = 2;
     let new_leader_term = follower_term - 1;
 
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_check_append_entries_request_is_legal()
+        .returning(move |_, _, _| AppendEntriesResponse::success(1, follower_term, None));
+
     let mut membership = MockMembership::new();
 
     // Validation criterias
@@ -501,6 +514,7 @@ async fn test_handle_raft_event_case4_2() {
         .times(0);
 
     context.membership = Arc::new(membership);
+    context.replication_handler = replication_handler;
 
     // New state
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
@@ -537,7 +551,7 @@ async fn test_handle_raft_event_case4_2() {
 
     // 5. send out AppendEntriesResponse with success=true
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.success),
+        Ok(response) => assert!(response.is_higher_term()),
         Err(_) => assert!(false),
     }
 }
@@ -566,7 +580,7 @@ async fn test_handle_raft_event_case4_3() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(|_, _, _, _| Err(Error::GeneralServerError("test".to_string())));
+        .returning(|_, _, _| Err(Error::GeneralServerError("test".to_string())));
 
     let mut membership = MockMembership::new();
 
@@ -618,7 +632,7 @@ async fn test_handle_raft_event_case4_3() {
 
     // 5. send out AppendEntriesResponse with success=true
     match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.success),
+        Ok(response) => assert!(!response.is_success()),
         Err(_) => assert!(false),
     }
 }

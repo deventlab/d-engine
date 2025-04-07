@@ -63,6 +63,20 @@ where T: TypeConfig
         })
     }
 
+    fn get_peers_id_with_condition<F>(
+        &self,
+        condition: F,
+    ) -> Vec<u32>
+    where
+        F: Fn(i32) -> bool + 'static,
+    {
+        self.membership
+            .iter()
+            .filter(|node_meta| condition(node_meta.role))
+            .map(|node_meta| node_meta.id)
+            .collect()
+    }
+
     #[autometrics(objective = API_SLO)]
     fn mark_leader_id(
         &self,

@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::grpc::rpc_service::VoteRequest;
 use crate::grpc::rpc_service::VotedFor;
+use crate::is_target_log_more_recent;
 use crate::ChannelWithAddressAndRole;
 use crate::Error;
 use crate::RaftEvent;
@@ -52,12 +54,7 @@ where T: TypeConfig
             debug!("going to send_vote_requests to: {:?}", &voting_members);
         }
 
-        let mut last_log_index = 0;
-        let mut last_log_term = 0;
-        if let Some(last) = raft_log.last() {
-            last_log_index = last.index;
-            last_log_term = last.term;
-        }
+        let (last_log_index, last_log_term) = raft_log.get_last_entry_metadata();
         let request = VoteRequest {
             term,
             candidate_id: self.my_id,
@@ -81,10 +78,7 @@ where T: TypeConfig
             }
             Err(e) => {
                 error!("RPC request encountered an error: {:?}", e);
-                return Err(Error::ElectionFailed(format!(
-                    "RPC request encountered an error: {:?}",
-                    e
-                )));
+                return Err(e);
             }
         }
     }
@@ -100,13 +94,7 @@ where T: TypeConfig
         let mut new_voted_for = None;
         let mut term_update = None;
         let mut step_to_follower = false;
-        let mut last_index = 0;
-        let mut last_term = 0;
-        if let Some(last) = raft_log.last() {
-            last_index = last.index;
-            last_term = last.term;
-            debug!("last_index: {:?}, last_term: {:?}", last_index, last_term);
-        }
+        let (last_index, last_term) = raft_log.get_last_entry_metadata();
 
         if self.check_vote_request_is_legal(&request, current_term, last_index, last_term, voted_for_option) {
             debug!("switch to follower");
@@ -140,7 +128,9 @@ where T: TypeConfig
     /// Criterias to check:
     /// - votedFor is null or candidateId
     /// - candidate s log is at least as up-to-date as receiver s log
-    #[autometrics(objective = API_SLO)]
+    /// e.g. { my_id: 2 } request=VoteRequest { term: 3, candidate_id: 1, last_log_index: 2,
+    /// last_log_term: 10 } current_term=3 last_log_index=3 last_log_term=8 voted_for_option=None
+    #[tracing::instrument]
     fn check_vote_request_is_legal(
         &self,
         request: &VoteRequest,
@@ -155,7 +145,12 @@ where T: TypeConfig
         }
 
         //step 1: check if I have more logs than the requester
-        if !self.if_node_log_is_less_than_requester(request, last_log_index, last_log_term) {
+        if !is_target_log_more_recent(
+            last_log_index,
+            last_log_term,
+            request.last_log_index,
+            request.last_log_term,
+        ) {
             debug!(
                 "node_log_is_less_than_requester{:?}, last_log_index={:?}, last_log_term={:?}",
                 request, last_log_index, last_log_term
@@ -195,19 +190,18 @@ where T: TypeConfig
     #[autometrics(objective = API_SLO)]
     fn if_node_log_is_less_than_requester(
         &self,
-        request: &VoteRequest,
+        request_last_log_index: u64,
+        request_last_log_term: u64,
         last_log_index: u64,
         last_log_term: u64,
     ) -> bool {
-        if request.last_log_term > last_log_term {
-            return true;
+        if (request_last_log_term > last_log_term)
+            || (request_last_log_term == last_log_term && request_last_log_index >= last_log_index)
+        {
+            true
+        } else {
+            false
         }
-
-        if request.last_log_term == last_log_term && request.last_log_index >= last_log_index {
-            return true;
-        }
-
-        false
     }
     #[autometrics(objective = API_SLO)]
     fn if_node_could_grant_the_vote_request(
@@ -230,5 +224,14 @@ where T: TypeConfig
         } else {
             true
         }
+    }
+}
+
+impl<T: TypeConfig> Debug for ElectionHandler<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("ElectionHandler").field("my_id", &self.my_id).finish()
     }
 }

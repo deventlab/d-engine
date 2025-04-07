@@ -45,13 +45,10 @@ async fn setup(port: u64) -> TestConext {
     }];
 
     let mut raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
-    raft_log_mock.expect_last().times(1).returning(|| {
-        Some(Entry {
-            index: 1,
-            term: 1,
-            command: vec![],
-        })
-    });
+    raft_log_mock
+        .expect_get_last_entry_metadata()
+        .times(1)
+        .returning(|| (1, 1));
 
     TestConext {
         election_handler,

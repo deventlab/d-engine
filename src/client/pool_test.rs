@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::vec;
 
 use log::error;
 use tokio::sync::oneshot;
@@ -50,7 +51,7 @@ async fn test_parse_cluster_metadata_success() {
         },
     ];
 
-    let result = ConnectionPool::parse_cluster_metadata(nodes).unwrap();
+    let result = ConnectionPool::parse_cluster_metadata(&nodes).unwrap();
     assert_eq!(result.0, "http://127.0.0.1:50051");
     assert_eq!(result.1, vec!["http://127.0.0.1:50052"]);
 }
@@ -64,7 +65,7 @@ async fn test_parse_cluster_metadata_no_leader() {
         port: 50051,
     }];
 
-    let result = ConnectionPool::parse_cluster_metadata(nodes);
+    let result = ConnectionPool::parse_cluster_metadata(&nodes);
     assert!(matches!(result.err(), Some(Error::NoLeaderFound)));
 }
 
@@ -141,6 +142,7 @@ async fn test_get_all_channels() {
         leader_conn: Channel::from_shared(addr1).unwrap().connect().await.unwrap(),
         follower_conns: vec![Channel::from_shared(addr2).unwrap().connect().await.unwrap()],
         config: ClientConfig::default(),
+        members: vec![], // this value will not affect the unit test result
     };
 
     let channels = pool.get_all_channels();

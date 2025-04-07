@@ -24,6 +24,7 @@ use crate::alias::SMOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::Error;
+use crate::Membership;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -251,9 +252,7 @@ where T: TypeConfig
         match role_event {
             RoleEvent::BecomeFollower(leader_id_option) => {
                 debug!("BecomeFollower");
-                if let Ok(role) = self.role.become_follower() {
-                    self.role = role
-                }
+                self.role = self.role.become_follower()?;
 
                 #[cfg(test)]
                 self.notify_role_transition();
@@ -262,33 +261,35 @@ where T: TypeConfig
             }
             RoleEvent::BecomeCandidate => {
                 debug!("BecomeCandidate");
-                if let Ok(role) = self.role.become_candidate() {
-                    self.role = role
-                }
+                self.role = self.role.become_candidate()?;
 
                 #[cfg(test)]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLeader => {
                 debug!("BecomeLeader");
-                if let Ok(role) = self.role.become_leader() {
-                    self.role = role
-                }
+                self.role = self.role.become_leader()?;
+
+                let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true);
+
+                self.role
+                    .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
 
                 #[cfg(test)]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLearner => {
                 debug!("BecomeLearner");
-                if let Ok(role) = self.role.become_learner() {
-                    self.role = role
-                }
+                self.role = self.role.become_learner()?;
 
                 #[cfg(test)]
                 self.notify_role_transition();
             }
             RoleEvent::NotifyNewCommitIndex { new_commit_index } => {
-                debug!("RoleEvent::NotifyNewCommitIndex: {:?}", new_commit_index);
+                debug!(
+                    "[{}] RoleEvent::NotifyNewCommitIndex: {:?}",
+                    self.node_id, new_commit_index
+                );
                 self.notify_new_commit(new_commit_index);
             }
 

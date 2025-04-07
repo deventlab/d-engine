@@ -19,17 +19,19 @@ use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
 
+/// These components should not be initialized during builder setup; developers should have the
+/// highest priority to customize them first.
 #[test]
-fn test_new_initializes_default_components() {
+fn test_new_initializes_default_components_with_none() {
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
 
-    assert!(builder.raft_log.is_some());
-    assert!(builder.state_machine.is_some());
-    assert!(builder.state_storage.is_some());
-    assert!(builder.raft_log.is_some());
-    assert!(builder.membership.is_some());
-    assert!(builder.state_machine_handler.is_some());
+    assert!(builder.raft_log.is_none());
+    assert!(builder.state_machine.is_none());
+    assert!(builder.state_storage.is_none());
+    assert!(builder.raft_log.is_none());
+    assert!(builder.membership.is_none());
+    assert!(builder.state_machine_handler.is_none());
     assert!(builder.commit_handler.is_none());
     assert!(builder.node.is_none());
 }
@@ -51,7 +53,7 @@ fn test_set_raft_log_replaces_default() {
     let expected_raft_log_ids = vec![1, 2];
     insert_raft_log(&sled_raft_log, expected_raft_log_ids.clone(), 1);
 
-    let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone());
+    let sled_state_machine = Arc::new(RaftStateMachine::new(id, state_machine_db.clone()));
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
 

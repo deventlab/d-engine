@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
@@ -17,12 +18,19 @@ pub trait RaftOneshot<T: Send> {
 #[derive(Clone)]
 pub struct MaybeCloneOneshot;
 
-#[derive(Debug)]
 pub struct MaybeCloneOneshotSender<T: Send + Clone> {
     inner: oneshot::Sender<T>,
 
     #[cfg(test)]
     test_inner: broadcast::Sender<T>,
+}
+impl<T: Send + Clone> Debug for MaybeCloneOneshotSender<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("MaybeCloneOneshotSender").finish()
+    }
 }
 pub struct MaybeCloneOneshotReceiver<T: Send + Clone> {
     inner: oneshot::Receiver<T>,

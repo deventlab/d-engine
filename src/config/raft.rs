@@ -1,10 +1,12 @@
+use std::fmt::Debug;
+
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Error;
 use crate::Result;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RaftConfig {
     #[serde(default)]
     pub replication: ReplicationConfig,
@@ -25,6 +27,14 @@ pub struct RaftConfig {
     pub general_raft_timeout_duration_in_ms: u64,
 }
 
+impl Debug for RaftConfig {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RaftConfig").finish()
+    }
+}
 impl Default for RaftConfig {
     fn default() -> Self {
         Self {

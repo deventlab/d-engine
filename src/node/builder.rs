@@ -52,6 +52,9 @@ use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::grpc::{self};
+use crate::init_sled_raft_log_db;
+use crate::init_sled_state_machine_db;
+use crate::init_sled_state_storage_db;
 use crate::init_sled_storages;
 use crate::metrics;
 use crate::ClusterConfig;
@@ -134,52 +137,17 @@ impl NodeBuilder {
         node_config: RaftNodeConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let node_id = node_config.cluster.node_id;
-        let db_root_dir = node_config.cluster.db_root_dir.clone();
-
-        // Initialize storage
-        let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-            init_sled_storages(format!("{}/{}", db_root_dir.display(), node_id)).expect("init storage failed.");
-
-        // Create a database instance with atomic references
-        let raft_log_db = Arc::new(raft_log_db);
-        let state_machine_db = Arc::new(state_machine_db);
-        let state_storage_db = Arc::new(state_storage_db);
-
-        // Initialize the state machine and get the last index
-        let sled_state_machine = RaftStateMachine::new(node_id, state_machine_db.clone());
-        let last_applied_index = sled_state_machine.last_entry_index();
-
-        // Create Raft core components
-        let sled_raft_log = SledRaftLog::new(raft_log_db, last_applied_index);
-        let sled_state_storage = SledStateStorage::new(state_storage_db);
-
-        // Network transport layer
-        let grpc_transport = GrpcTransport { my_id: node_id };
-
-        // State machine handler
-        let state_machine = Arc::new(sled_state_machine);
-        let state_machine_handler = Arc::new(DefaultStateMachineHandler::new(
-            last_applied_index,
-            node_config.raft.commit_handler.max_entries_per_chunk,
-            state_machine.clone(),
-        ));
-
-        //Cluster member management
-        let raft_membership = RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone());
-
-        // Build the final instance
         Self {
-            node_id,
-            raft_log: Some(sled_raft_log),
-            state_machine: Some(state_machine),
-            state_storage: Some(sled_state_storage),
-            transport: Some(grpc_transport),
-            membership: Some(raft_membership),
+            node_id: node_config.cluster.node_id,
+            raft_log: None,
+            state_machine: None,
+            state_storage: None,
+            transport: None,
+            membership: None,
             node_config,
             shutdown_signal,
             commit_handler: None,
-            state_machine_handler: Some(state_machine_handler),
+            state_machine_handler: None,
             node: None,
         }
     }
@@ -193,9 +161,9 @@ impl NodeBuilder {
 
     pub fn state_machine(
         mut self,
-        state_machine: SMOF<RaftTypeConfig>,
+        state_machine: Arc<SMOF<RaftTypeConfig>>,
     ) -> Self {
-        self.state_machine = Some(Arc::new(state_machine));
+        self.state_machine = Some(state_machine);
         self
     }
 
@@ -242,14 +210,48 @@ impl NodeBuilder {
     pub fn build(mut self) -> Self {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
+        let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<u64>();
 
-        let state_machine = self.state_machine.take().unwrap();
-        let raft_log = self.raft_log.take().unwrap();
-        let state_machine_handler = self.state_machine_handler.take().unwrap();
-        let membership = self.membership.take().unwrap();
+        let state_machine = self.state_machine.take().unwrap_or_else(|| {
+            let state_machine_db =
+                init_sled_state_machine_db(&db_root_dir).expect("init_sled_state_machine_db successfully.");
+            Arc::new(RaftStateMachine::new(node_id, Arc::new(state_machine_db)))
+        });
+
+        //Retrieve last applied index from state machine
+        let last_applied_index = state_machine.last_entry_index();
+
+        let raft_log = self.raft_log.take().unwrap_or_else(|| {
+            let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
+            SledRaftLog::new(Arc::new(raft_log_db), last_applied_index)
+        });
+
+        let state_storage = self.state_storage.take().unwrap_or_else(|| {
+            let state_storage_db =
+                init_sled_state_storage_db(&db_root_dir).expect("init_sled_state_storage_db successfully.");
+            SledStateStorage::new(Arc::new(state_storage_db))
+        });
+
+        let transport = self
+            .transport
+            .take()
+            .unwrap_or_else(|| GrpcTransport { my_id: node_id });
+
+        let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
+            Arc::new(DefaultStateMachineHandler::new(
+                last_applied_index,
+                node_config.raft.commit_handler.max_entries_per_chunk,
+                state_machine.clone(),
+            ))
+        });
+        let membership = self
+            .membership
+            .take()
+            .unwrap_or_else(|| RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone()));
+
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(1024);
 
@@ -259,8 +261,8 @@ impl NodeBuilder {
             node_id,
             raft_log,
             state_machine.clone(),
-            self.state_storage.take().unwrap(),
-            self.transport.take().unwrap(),
+            state_storage,
+            transport,
             ElectionHandler::new(node_id, event_tx.clone()),
             ReplicationHandler::new(node_id),
             state_machine_handler.clone(),

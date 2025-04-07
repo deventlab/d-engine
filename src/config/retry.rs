@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -25,7 +27,7 @@ pub struct BackoffPolicy {
 }
 
 /// Divide strategies by business domain
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RetryPolicies {
     // Log replication strategy (AppendEntries RPC)
     #[serde(default)]
@@ -44,6 +46,14 @@ pub struct RetryPolicies {
     pub healthcheck: BackoffPolicy,
 }
 
+impl Debug for RetryPolicies {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RetryPolicies").finish()
+    }
+}
 // Default value implementation
 impl Default for RetryPolicies {
     fn default() -> Self {

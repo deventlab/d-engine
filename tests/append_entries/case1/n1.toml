@@ -1,0 +1,21 @@
+[cluster]
+node_id = 1
+listen_address = "127.0.0.1:30201"
+initial_cluster = [
+    { id = 1, name = "n1", ip = "127.0.0.1", port = 30201, role = 1 },
+    { id = 2, name = "n2", ip = "127.0.0.1", port = 30202, role = 1 },
+    { id = 3, name = "n3", ip = "127.0.0.1", port = 30203, role = 1 },
+]
+db_root_dir = "./db/append_entries/case1"
+log_dir = "./logs/append_entries/case1"
+
+[monitoring]
+prometheus_enabled = false
+
+
+[raft.replication]
+append_entries_max_entries_per_replication = 1
+
+[raft.commit_handler]
+batch_size = 1
+process_interval_ms = 100

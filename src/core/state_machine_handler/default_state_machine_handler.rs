@@ -46,6 +46,7 @@ use crate::StateMachine;
 use crate::TypeConfig;
 use crate::API_SLO;
 
+#[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
 where T: TypeConfig
 {
@@ -54,7 +55,7 @@ where T: TypeConfig
     last_applied: AtomicU64,   // The last applied log index
     pending_commit: AtomicU64, // The highest pending commit index
     max_entries_per_chunk: usize,
-    state_machine: Arc<SMOF<T>>, // Assume StateMachine is a trait
+    state_machine: Arc<SMOF<T>>,
 }
 
 #[async_trait]

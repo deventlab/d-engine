@@ -14,6 +14,7 @@
 //! });
 //! ```
 
+use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -44,6 +45,16 @@ where T: TypeConfig
     pub settings: Arc<RaftNodeConfig>,
 }
 
+impl<T> Debug for Node<T>
+where T: TypeConfig
+{
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("Node").field("node_id", &self.node_id).finish()
+    }
+}
 impl<T> Node<T>
 where T: TypeConfig
 {

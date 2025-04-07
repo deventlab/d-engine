@@ -1,17 +1,18 @@
 [cluster]
-node_id = 1
-listen_address = "127.0.0.1:19081"
+node_id = 2
+listen_address = "127.0.0.1:19082"
 initial_cluster = [
     { id = 1, name = "n1", ip = "127.0.0.1", port = 19081, role = 1 },
     { id = 2, name = "n2", ip = "127.0.0.1", port = 19082, role = 1 },
     { id = 3, name = "n3", ip = "127.0.0.1", port = 19083, role = 1 },
 ]
-db_root_dir = "./tests/db/case2"
-log_dir = "./tests/logs/case2"
+db_root_dir = "./db/cluster_start_stop/case2"
+log_dir = "./logs/cluster_start_stop/case2"
 
 [monitoring]
 prometheus_enabled = false
-prometheus_port = 18081
+prometheus_port = 18082
+
 
 [raft]
 general_raft_timeout_duration_in_ms = 200
