@@ -897,7 +897,7 @@ async fn test_handle_raft_event_case6_2() {
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
 /// 2. calculate_majority_matched_index return Some(3), 3 is new commit index
-/// 3. handle_client_proposal_in_batch returns Err(Error::FoundNewLeaderError)
+/// 3. handle_client_proposal_in_batch returns Err(Error::HigherTermFoundError)
 ///
 /// ## Validation criterias:
 /// 1. Leader commit should still be: 1(new commit index)
