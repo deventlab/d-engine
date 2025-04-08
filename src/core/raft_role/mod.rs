@@ -323,6 +323,13 @@ impl<T: TypeConfig> RaftRole<T> {
     pub fn follower_role_i32() -> i32 {
         0
     }
+
+    pub(crate) async fn verify_leadership_in_new_term(
+        &self,
+        event_tx: mpsc::Sender<RaftEvent>,
+    ) -> Result<()> {
+        self.state().verify_leadership_in_new_term(event_tx).await
+    }
 }
 
 #[inline]

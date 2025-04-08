@@ -275,6 +275,9 @@ where T: TypeConfig
                 self.role
                     .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
 
+                //async action
+                self.role.verify_leadership_in_new_term(self.event_tx.clone());
+
                 #[cfg(test)]
                 self.notify_role_transition();
             }
