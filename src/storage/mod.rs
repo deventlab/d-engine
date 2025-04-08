@@ -3,17 +3,20 @@ mod sled_adapter;
 mod state_machine;
 mod state_storage;
 
+// Module level utils
+// -----------------------------------------------------------------------------
 use std::path::Path;
 
 use log::debug;
 use log::warn;
+#[doc(hidden)]
 pub use raft_log::*;
+#[doc(hidden)]
 pub use sled_adapter::*;
+#[doc(hidden)]
 pub use state_machine::*;
+#[doc(hidden)]
 pub use state_storage::*;
-
-// Module level utils
-// -----------------------------------------------------------------------------
 
 /// raft logs storage
 /// (raft_log_db, state_machine_db, state_storage_db, snapshot_storge_db)
@@ -128,8 +131,8 @@ mod tests {
     use super::*;
     use crate::convert::kv;
     use crate::convert::skv;
-    use crate::grpc::rpc_service::ClusterMembership;
-    use crate::grpc::rpc_service::NodeMeta;
+    use crate::proto::ClusterMembership;
+    use crate::proto::NodeMeta;
     use crate::test_utils;
     use crate::FOLLOWER;
     use crate::LEARNER;

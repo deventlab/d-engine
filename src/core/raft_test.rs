@@ -9,11 +9,11 @@ use tokio::time::{self};
 
 use super::*;
 use crate::candidate_state::CandidateState;
-use crate::grpc::rpc_service::MetadataRequest;
-use crate::grpc::rpc_service::VoteResponse;
 use crate::is_candidate;
 use crate::is_leader;
 use crate::leader_state::LeaderState;
+use crate::proto::MetadataRequest;
+use crate::proto::VoteResponse;
 use crate::test_utils::mock_raft;
 use crate::test_utils::MockNode;
 use crate::test_utils::MOCK_RAFT_PORT_BASE;

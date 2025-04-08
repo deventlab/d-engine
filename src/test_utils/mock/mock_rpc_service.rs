@@ -11,10 +11,10 @@ use tonic_health::server::health_reporter;
 
 use super::MockRpcService;
 use super::MockTypeConfig;
-use crate::grpc::rpc_service::rpc_service_server::RpcServiceServer;
-use crate::grpc::rpc_service::AppendEntriesResponse;
-use crate::grpc::rpc_service::ClusterMembership;
-use crate::grpc::rpc_service::VoteResponse;
+use crate::proto::rpc_service_server::RpcServiceServer;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::ClusterMembership;
+use crate::proto::VoteResponse;
 use crate::ChannelWithAddress;
 use crate::Error;
 use crate::Node;

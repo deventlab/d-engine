@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::convert::kv;
-use crate::grpc::rpc_service::Entry;
+use crate::proto::Entry;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::StateMachine;
@@ -12,7 +12,7 @@ use crate::StateMachine;
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     use prost::Message;
 
-    use crate::grpc::rpc_service::ClientCommand;
+    use crate::proto::ClientCommand;
 
     let mut buffer = Vec::new();
 
@@ -31,7 +31,7 @@ pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
     use prost::Message;
 
-    use crate::grpc::rpc_service::ClientCommand;
+    use crate::proto::ClientCommand;
 
     let mut buffer = Vec::new();
 
@@ -112,7 +112,7 @@ pub(crate) fn prepare_locallog_entry_with_specify_ids_and_term(
     ids: Vec<u64>,
     term: u64,
 ) {
-    use crate::grpc::rpc_service::Entry;
+    use crate::proto::Entry;
     use crate::RaftLog;
     let mut entries = Vec::new();
     for index in ids {

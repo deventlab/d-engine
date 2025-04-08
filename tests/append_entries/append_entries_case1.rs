@@ -17,8 +17,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dengine::storage::StateMachine;
 use dengine::Error;
-use dengine::StateMachine;
 
 use crate::commons::check_cluster_is_ready;
 use crate::commons::execute_command;

@@ -51,7 +51,7 @@ use tokio::sync::watch;
 
 //------------------------------------------------------
 use super::{enable_logger, MockTypeConfig};
-use crate::grpc::rpc_service::NodeMeta;
+use crate::proto::NodeMeta;
 use crate::Node;
 use crate::Raft;
 use crate::RaftContext;

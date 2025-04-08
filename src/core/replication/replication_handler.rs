@@ -17,15 +17,15 @@ use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::ROF;
 use crate::alias::TROF;
-use crate::cluster::is_majority;
-use crate::grpc::rpc_service::append_entries_response;
-use crate::grpc::rpc_service::AppendEntriesRequest;
-use crate::grpc::rpc_service::AppendEntriesResponse;
-use crate::grpc::rpc_service::ClientCommand;
-use crate::grpc::rpc_service::ConflictResult;
-use crate::grpc::rpc_service::Entry;
-use crate::grpc::rpc_service::LogId;
-use crate::grpc::rpc_service::SuccessResult;
+use crate::proto::append_entries_response;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::ClientCommand;
+use crate::proto::ConflictResult;
+use crate::proto::Entry;
+use crate::proto::LogId;
+use crate::proto::SuccessResult;
+use crate::utils::cluster::is_majority;
 use crate::AppendResults;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
@@ -449,10 +449,7 @@ where T: TypeConfig
         }
 
         if !entries.is_empty() {
-            raft_log.insert_batch(entries.clone()).map_err(|e| {
-                error!("Failed to insert batch: {:?}", e);
-                Error::GeneralLocalLogIOError
-            })?;
+            raft_log.insert_batch(entries.clone())?;
         }
 
         Ok(entries)

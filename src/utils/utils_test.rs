@@ -6,10 +6,10 @@ use tokio::time::sleep;
 
 use super::cluster::find_nearest_lower_number;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
-use crate::cluster::is_majority;
 use crate::convert::abs_ceil;
 use crate::convert::kv;
 use crate::convert::vk;
+use crate::utils::cluster::is_majority;
 use crate::Error;
 use crate::Result;
 
@@ -23,7 +23,7 @@ fn test_kv_1() {
 
 #[test]
 fn test_kv_2() {
-    let i = std::u64::MAX; //max of u64
+    let i = u64::MAX; //max of u64
     let v = kv(i);
     assert_eq!(i, vk(&v));
 }

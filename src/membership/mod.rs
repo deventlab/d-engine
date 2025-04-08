@@ -27,8 +27,8 @@ use tonic::async_trait;
 use tonic::transport::Channel;
 
 use crate::alias::POF;
-use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::grpc::rpc_service::ClusterMembership;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::ClusterMembership;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;

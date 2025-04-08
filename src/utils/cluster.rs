@@ -5,7 +5,7 @@ use std::time::UNIX_EPOCH;
 use dashmap::DashSet;
 use log::error;
 
-use crate::grpc::rpc_service::Entry;
+use crate::proto::Entry;
 use crate::CLUSTER_FATAL_ERROR;
 
 pub(crate) fn collect_ids(entries: &Vec<Entry>) -> Vec<u64> {

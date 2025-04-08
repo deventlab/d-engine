@@ -88,10 +88,7 @@ impl StateStorage for SledStateStorage {
             Ok(v) => {
                 if let Err(e) = self.insert(skv(HARD_STATE_KEY.to_string()), v) {
                     error!("self.node_state_metadata_db.insert error: {}", e);
-                    return Err(Error::NodeStateError(format!(
-                        "self.node_state_metadata_db.insert error: {}",
-                        e
-                    )));
+                    return Err(e);
                 }
                 info!("persistent_state_into_db successfully!");
                 println!("persistent_state_into_db successfully!");
@@ -99,7 +96,7 @@ impl StateStorage for SledStateStorage {
             Err(e) => {
                 error!("persistent_state_into_db: {}", e);
                 eprintln!("persistent_state_into_db: {}", e);
-                return Err(Error::NodeStateError(format!("persistent_state_into_db: {}", e)));
+                return Err(Error::BincodeError(e));
             }
         }
         match self.flush() {

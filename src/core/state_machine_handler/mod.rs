@@ -12,8 +12,8 @@ use mockall::automock;
 use tonic::async_trait;
 
 use crate::alias::ROF;
-use crate::grpc::rpc_service::ClientCommand;
-use crate::grpc::rpc_service::ClientResult;
+use crate::proto::ClientCommand;
+use crate::proto::ClientResult;
 use crate::Result;
 use crate::TypeConfig;
 

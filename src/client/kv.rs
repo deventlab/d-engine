@@ -7,16 +7,20 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 use super::ConnectionPool;
-use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
-use crate::grpc::rpc_service::ClientCommand;
-use crate::grpc::rpc_service::ClientProposeRequest;
-use crate::grpc::rpc_service::ClientReadRequest;
-use crate::grpc::rpc_service::ClientRequestError;
-use crate::grpc::rpc_service::ClientResponse;
-use crate::grpc::rpc_service::ClientResult;
+use crate::proto::rpc_service_client::RpcServiceClient;
+use crate::proto::ClientCommand;
+use crate::proto::ClientProposeRequest;
+use crate::proto::ClientReadRequest;
+use crate::proto::ClientRequestError;
+use crate::proto::ClientResponse;
+use crate::proto::ClientResult;
 use crate::Error;
 use crate::Result;
 
+/// Key-value store client interface
+///
+/// Implements CRUD operations with configurable consistency levels.
+/// All write operations use strong consistency.
 pub struct KvClient {
     client_id: u32,
     pool: ConnectionPool,
@@ -30,6 +34,11 @@ impl KvClient {
         Self { client_id, pool }
     }
 
+    // Stores a value with strong consistency
+    ///
+    /// # Errors
+    /// - [`Error::FailedToSendWriteRequestError`] on network failures
+    /// - [`Error::InvalidResponse`] for malformed server responses
     pub async fn put(
         &self,
         key: impl AsRef<[u8]>,
@@ -70,6 +79,17 @@ impl KvClient {
         Err(Error::FailedToSendWriteRequestError)
     }
 
+    /// Deletes a key with strong consistency guarantees
+    ///
+    /// Permanently removes the specified key and its associated value from the store.
+    ///
+    /// # Parameters
+    /// - `key`: The byte-serialized key to delete. Supports any type implementing `AsRef<[u8]>`
+    ///   (e.g. `String`, `&str`, `Vec<u8>`)
+    ///
+    /// # Errors
+    /// - [`Error::FailedToSendWriteRequestError`] if unable to reach the leader node
+    /// - [`Error::InvalidResponse`] for malformed server responses
     pub async fn delete(
         &self,
         key: impl AsRef<[u8]>,

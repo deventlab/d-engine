@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use tokio::task;
 
 use super::ChannelWithAddress;
-use crate::grpc::rpc_service::NodeMeta;
+use crate::proto::NodeMeta;
 use crate::test_utils::enable_logger;
 use crate::test_utils::settings;
 use crate::test_utils::MockNode;

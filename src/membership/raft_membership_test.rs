@@ -2,10 +2,10 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 use super::RaftMembership;
-use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::grpc::rpc_service::ClusterMembership;
-use crate::grpc::rpc_service::NodeMeta;
 use crate::is_follower;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::ClusterMembership;
+use crate::proto::NodeMeta;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockNode;
 use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;

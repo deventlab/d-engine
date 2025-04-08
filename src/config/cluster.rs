@@ -4,25 +4,52 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::grpc::rpc_service::NodeMeta;
+use crate::proto::NodeMeta;
 use crate::Error;
 use crate::Result;
 use crate::FOLLOWER;
 
+/// Cluster node configuration parameters
+///
+/// Encapsulates all essential settings for cluster node initialization and operation,
+/// including network settings, storage paths, and cluster topology.
+///
+/// # Defaults
+/// Configuration can be loaded from file with default values generated via `serde`'s
+/// default implementations. Field-level defaults use helper functions prefixed with `default_`.
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClusterConfig {
+    /// Unique node identifier in cluster
+    ///
+    /// Default: `default_node_id()` (typically 0 for single-node setup)
     #[serde(default = "default_node_id")]
     pub node_id: u32,
 
+    /// Network listening address (IP:PORT)
+    ///
+    /// Default: `default_listen_addr()` (127.0.0.1:8000)
     #[serde(default = "default_listen_addr")]
     pub listen_address: SocketAddr,
 
+    /// Seed nodes for cluster initialization
+    ///
+    /// Default: `default_initial_cluster()` (empty vector)
+    ///
+    /// # Note
+    /// Should contain at least 3 nodes for production deployment
     #[serde(default = "default_initial_cluster")]
     pub initial_cluster: Vec<NodeMeta>,
 
+    /// Database storage root directory
+    ///
+    /// Default: `default_db_dir()` (./data/db)
     #[serde(default = "default_db_dir")]
     pub db_root_dir: PathBuf,
 
+    /// Log files output directory
+    ///
+    /// Default: `default_log_dir()` (./logs)
     #[serde(default = "default_log_dir")]
     pub log_dir: PathBuf,
 }

@@ -1,40 +1,10 @@
-//! Distributed consensus client module
+//! Distributed consensus client implementation
 //!
-//! Provides high-level abstractions for interacting with the dengine cluster.
-//! Contains two main components:
-//! - [`KvClient`] for key-value operations
-//! - [`ClusterClient`] for cluster management
+//! Contains the primary interface [`Client`] that combines:
+//! - Key-value store operations through [`KvClient`]
+//! - Cluster management via [`ClusterClient`]
 //!
-//! # Examples
-//! ```ignore
-//! use dengine::{Client, Error};
-//! use std::time::Duration;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Error> {
-//!     // Initialize client with automatic cluster discovery
-//!     let client = Client::builder(vec![
-//!         "http://node1:9081".into(),
-//!         "http://node2:9082".into()
-//!     ])
-//!     .connect_timeout(Duration::from_secs(3))
-//!     .request_timeout(Duration::from_secs(1))
-//!     .enable_compression(true)
-//!     .build()
-//!     .await?;
-//!
-//!     // Execute key-value operations
-//!     client.kv().put("user:1001", "Alice").await?;
-//!     let value = client.kv().get("user:1001", false).await?;
-//!     println!("User data: {:?}", value);
-//!
-//!     // Perform cluster management
-//!     let members = client.cluster().list_members().await?;
-//!     println!("Cluster members: {:?}", members);
-//!
-//!     Ok(())
-//! }
-//! ```
+//! Manages connection pooling and request routing to cluster nodes.
 
 use super::ClientBuilder;
 use super::ClusterClient;
