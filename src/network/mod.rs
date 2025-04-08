@@ -12,14 +12,14 @@ pub mod grpc;
 // Core model in Raft: Transport Definition
 //
 
-use grpc::rpc_service::AppendEntriesResponse;
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::grpc::rpc_service::AppendEntriesRequest;
-use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::grpc::rpc_service::VoteRequest;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::VoteRequest;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::Result;
@@ -27,7 +27,7 @@ use crate::RetryPolicies;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
-pub struct AppendResults {
+pub(crate) struct AppendResults {
     /// Whether a majority quorum is achieved (can be directly determined via
     /// peer_updates)
     pub commit_quorum_achieved: bool,
@@ -36,7 +36,7 @@ pub struct AppendResults {
 }
 
 #[derive(Debug, Clone)]
-pub struct PeerUpdate {
+pub(crate) struct PeerUpdate {
     pub match_index: u64,
     pub next_index: u64,
     /// if peer response success
@@ -165,9 +165,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use grpc::rpc_service::ClusterConfUpdateResponse;
-
     use super::*;
+    use crate::proto::ClusterConfUpdateResponse;
 
     async fn async_ok(number: u64) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         sleep(Duration::from_millis(number)).await;

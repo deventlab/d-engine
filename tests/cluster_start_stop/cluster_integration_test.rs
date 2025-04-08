@@ -157,7 +157,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     println!("------------------T2-----------------");
     graceful_tx1.send(()).map_err(|e| {
         error!("Failed to send shutdown signal: {}", e);
-        Error::SignalSenderClosed(format!("Failed to send shutdown signal: {}", e))
+        Error::ServerError
     })?;
     node_n1.await??;
 

@@ -1,6 +1,5 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -16,20 +15,19 @@ use tokio::task;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
 
-use super::rpc_service::AppendEntriesResponse;
-use crate::cluster::is_majority;
-use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
-use crate::grpc::rpc_service::AppendEntriesRequest;
-use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::grpc::rpc_service::VoteRequest;
 use crate::if_higher_term_found;
 use crate::is_learner;
 use crate::is_target_log_more_recent;
+use crate::proto::rpc_service_client::RpcServiceClient;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::VoteRequest;
 use crate::task_with_timeout_and_exponential_backoff;
+use crate::utils::cluster::is_majority;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::Error;
-use crate::NewLeaderInfo;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::Transport;

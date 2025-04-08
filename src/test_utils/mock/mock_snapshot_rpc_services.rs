@@ -1,4 +1,4 @@
-use crate::grpc::rpc_service::{
+use crate::proto::{
     snapshot_rpc_service_server::SnapshotRpcService, InstallSnapshotRequest,
     InstallSnapshotResponse,
 };

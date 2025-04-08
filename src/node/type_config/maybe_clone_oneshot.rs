@@ -16,9 +16,9 @@ pub trait RaftOneshot<T: Send> {
 }
 
 #[derive(Clone)]
-pub struct MaybeCloneOneshot;
+pub(crate) struct MaybeCloneOneshot;
 
-pub struct MaybeCloneOneshotSender<T: Send + Clone> {
+pub(crate) struct MaybeCloneOneshotSender<T: Send + Clone> {
     inner: oneshot::Sender<T>,
 
     #[cfg(test)]
@@ -32,7 +32,7 @@ impl<T: Send + Clone> Debug for MaybeCloneOneshotSender<T> {
         f.debug_struct("MaybeCloneOneshotSender").finish()
     }
 }
-pub struct MaybeCloneOneshotReceiver<T: Send + Clone> {
+pub(crate) struct MaybeCloneOneshotReceiver<T: Send + Clone> {
     inner: oneshot::Receiver<T>,
 
     #[cfg(test)]

@@ -3,8 +3,8 @@
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::grpc::rpc_service::Entry;
-use crate::grpc::rpc_service::SnapshotEntry;
+use crate::proto::Entry;
+use crate::proto::SnapshotEntry;
 use crate::Result;
 
 //TODO

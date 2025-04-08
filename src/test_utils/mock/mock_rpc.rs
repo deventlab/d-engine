@@ -1,15 +1,15 @@
-use crate::grpc::rpc_service::rpc_service_server::RpcService;
-use crate::grpc::rpc_service::ClientResponse;
-use crate::network::grpc::rpc_service::AppendEntriesRequest;
-use crate::network::grpc::rpc_service::AppendEntriesResponse;
-use crate::network::grpc::rpc_service::ClientProposeRequest;
-use crate::network::grpc::rpc_service::ClientReadRequest;
-use crate::network::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::network::grpc::rpc_service::ClusterConfUpdateResponse;
-use crate::network::grpc::rpc_service::ClusterMembership;
-use crate::network::grpc::rpc_service::MetadataRequest;
-use crate::network::grpc::rpc_service::VoteRequest;
-use crate::network::grpc::rpc_service::VoteResponse;
+use crate::proto::rpc_service_server::RpcService;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::ClientProposeRequest;
+use crate::proto::ClientReadRequest;
+use crate::proto::ClientResponse;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::ClusterConfUpdateResponse;
+use crate::proto::ClusterMembership;
+use crate::proto::MetadataRequest;
+use crate::proto::VoteRequest;
+use crate::proto::VoteResponse;
 
 #[derive(Debug, Clone, Default)]
 pub struct MockRpcService {

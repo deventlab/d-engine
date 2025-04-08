@@ -8,7 +8,7 @@ use tokio::sync::watch;
 use tokio::sync::Mutex;
 
 use super::MockTypeConfig;
-use crate::grpc::rpc_service::ClusterMembership;
+use crate::proto::ClusterMembership;
 use crate::ElectionConfig;
 use crate::MockElectionCore;
 use crate::MockMembership;

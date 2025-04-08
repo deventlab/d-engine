@@ -14,8 +14,8 @@ use tonic::async_trait;
 
 use crate::alias::ROF;
 use crate::alias::TROF;
-use crate::grpc::rpc_service::VoteRequest;
-use crate::grpc::rpc_service::VotedFor;
+use crate::proto::VoteRequest;
+use crate::proto::VotedFor;
 use crate::ChannelWithAddressAndRole;
 use crate::RaftNodeConfig;
 use crate::Result;

@@ -11,7 +11,7 @@ use tonic::async_trait;
 use super::CommitHandler;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
-use crate::cluster::error;
+use crate::utils::cluster::error;
 use crate::Error;
 use crate::Result;
 use crate::StateMachineHandler;

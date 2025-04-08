@@ -50,12 +50,11 @@ use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
+use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::grpc::{self};
 use crate::init_sled_raft_log_db;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_state_storage_db;
-use crate::init_sled_storages;
 use crate::metrics;
 use crate::ClusterConfig;
 use crate::CommitHandler;
@@ -74,6 +73,9 @@ use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
 
+/// Builder pattern implementation for constructing a Raft node with configurable components.
+/// Provides a fluent interface to set up node configuration, storage, transport, and other
+/// dependencies.
 pub struct NodeBuilder {
     node_id: u32,
     pub(super) node_config: RaftNodeConfig,
@@ -151,6 +153,8 @@ impl NodeBuilder {
             node: None,
         }
     }
+
+    /// Sets a custom Raft log storage implementation
     pub fn raft_log(
         mut self,
         raft_log: ROF<RaftTypeConfig>,
@@ -159,6 +163,7 @@ impl NodeBuilder {
         self
     }
 
+    /// Sets a custom state machine implementation
     pub fn state_machine(
         mut self,
         state_machine: Arc<SMOF<RaftTypeConfig>>,
@@ -167,6 +172,7 @@ impl NodeBuilder {
         self
     }
 
+    /// Sets a custom state storage implementation
     pub fn state_storage(
         mut self,
         state_storage: SSOF<RaftTypeConfig>,
@@ -175,6 +181,7 @@ impl NodeBuilder {
         self
     }
 
+    /// Sets a custom network transport implementation
     pub fn transport(
         mut self,
         transport: TROF<RaftTypeConfig>,
@@ -183,6 +190,7 @@ impl NodeBuilder {
         self
     }
 
+    /// Sets a custom commit handler implementation
     pub fn commit_handler(
         mut self,
         commit_handler: COF<RaftTypeConfig>,
@@ -191,6 +199,7 @@ impl NodeBuilder {
         self
     }
 
+    /// Sets a custom membership management implementation
     pub fn membership(
         mut self,
         membership: MOF<RaftTypeConfig>,
@@ -199,6 +208,7 @@ impl NodeBuilder {
         self
     }
 
+    /// Replaces the entire node configuration
     pub fn node_config(
         mut self,
         node_config: RaftNodeConfig,
@@ -207,6 +217,16 @@ impl NodeBuilder {
         self
     }
 
+    /// Finalizes the builder and constructs the Raft node instance.
+    ///
+    /// Initializes default implementations for any unconfigured components:
+    /// - Creates sled-based databases for state machine and logs
+    /// - Sets up default gRPC transport
+    /// - Initializes commit handling subsystem
+    /// - Configures membership management
+    ///
+    /// # Panics
+    /// Panics if essential components cannot be initialized
     pub fn build(mut self) -> Self {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
@@ -316,6 +336,9 @@ impl NodeBuilder {
         self
     }
 
+    /// Starts the metrics server for monitoring node operations.
+    ///
+    /// Launches a Prometheus endpoint on the configured port.
     pub fn start_metrics_server(
         self,
         shutdown_signal: watch::Receiver<()>,
@@ -328,6 +351,10 @@ impl NodeBuilder {
         self
     }
 
+    /// Starts the gRPC server for cluster communication.
+    ///
+    /// # Panics
+    /// Panics if node hasn't been built or address binding fails
     pub async fn start_rpc_server(self) -> Self {
         debug!("1. --- start RPC server --- ");
         if let Some(ref node) = self.node {
@@ -343,13 +370,16 @@ impl NodeBuilder {
             });
             self
         } else {
-            error!("failed to start RPC server");
             panic!("failed to start RPC server");
         }
     }
 
+    /// Returns the built node instance after successful construction.
+    ///
+    /// # Errors
+    /// Returns Error::NodeFailedToStartError if build hasn't completed
     pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig>>> {
-        self.node.ok_or_else(|| Error::ServerFailedToStartError)
+        self.node.ok_or_else(|| Error::NodeFailedToStartError)
     }
 
     /// Test constructor with custom database path

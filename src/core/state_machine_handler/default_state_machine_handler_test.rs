@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::DefaultStateMachineHandler;
 use super::StateMachineHandler;
-use crate::grpc::rpc_service::Entry;
+use crate::proto::Entry;
 use crate::test_utils::MockTypeConfig;
 use crate::MockRaftLog;
 use crate::MockStateMachine;

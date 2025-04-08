@@ -1,4 +1,8 @@
-//! The core node implementation for Raft consensus protocol execution.
+//! Raft node container and lifecycle management.
+//!
+//! The [`Node`] struct acts as a host for a Raft consensus participant,
+//! coordinating between the core protocol implementation ([`crate::core::raft::Raft`])
+//! and external subsystems:
 //!
 //! ## Key Responsibilities
 //! - Manages the Raft finite state machine lifecycle
@@ -31,6 +35,7 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
 
+/// Raft node container
 pub struct Node<T>
 where T: TypeConfig
 {
@@ -39,9 +44,10 @@ where T: TypeConfig
 
     // Network & Storage events, (copied from Raft)
     // TODO: find a better solution
-    pub event_tx: mpsc::Sender<RaftEvent>,
+    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) ready: AtomicBool,
 
+    /// Raft node config
     pub settings: Arc<RaftNodeConfig>,
 }
 
@@ -68,6 +74,29 @@ where T: TypeConfig
         Ok(peer_channels)
     }
 
+    /// Starts and runs the Raft node's main execution loop.
+    ///
+    /// # Workflow
+    /// 1. Establishes network connections with cluster peers
+    /// 2. Performs cluster health check
+    /// 3. Marks node as ready for operation
+    /// 4. Joins the Raft cluster
+    /// 5. Executes the core Raft event processing loop
+    ///
+    /// # Errors
+    /// Returns `Err` if any of these operations fail:
+    /// - Peer connection establishment
+    /// - Cluster health check
+    /// - Raft core initialization
+    /// - Event processing failures
+    ///
+    /// # Example
+    /// ```ignore
+    /// let node = Node::new(...);
+    /// tokio::spawn(async move {
+    ///     node.run().await.expect("Node execution failed");
+    /// });
+    /// ```
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
         let peer_channels = Self::connect_with_peers(self.node_id, self.settings.clone()).await?;
@@ -89,6 +118,15 @@ where T: TypeConfig
         Ok(())
     }
 
+    /// Controls the node's operational readiness state.
+    ///
+    /// # Parameters
+    /// - `is_ready`: When `true`, marks node as ready to participate in cluster. When `false`,
+    ///   marks node as temporarily unavailable.
+    ///
+    /// # Usage
+    /// Typically used during cluster bootstrap or maintenance operations.
+    /// The readiness state is atomically updated using SeqCst ordering.
     pub fn set_ready(
         &self,
         is_ready: bool,
@@ -96,6 +134,11 @@ where T: TypeConfig
         self.ready.store(is_ready, Ordering::SeqCst);
     }
 
+    /// Checks if the node is in a ready state to participate in cluster operations.
+    ///
+    /// # Returns
+    /// `true` if the node is operational and ready to handle Raft protocol operations,
+    /// `false` otherwise.
     pub fn server_is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }

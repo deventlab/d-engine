@@ -7,6 +7,20 @@ use super::ConnectionPool;
 use super::KvClient;
 use crate::Result;
 
+/// Configurable builder for [`Client`] instances
+///
+/// Implements the **builder pattern** for constructing clients with
+/// customized connection parameters and timeouts.
+///
+/// # Typical Usage Flow
+/// 1. Create with `ClientBuilder::new()`
+/// 2. Chain configuration methods
+/// 3. Finalize with `.build()`
+///
+/// # Default Configuration
+/// - Compression: Enabled
+/// - Connect Timeout: 1s
+/// - Request Timeout: 3s
 pub struct ClientBuilder {
     config: ClientConfig,
     endpoints: Vec<String>,

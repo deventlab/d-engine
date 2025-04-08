@@ -6,9 +6,7 @@
 
 // Protobuf GRPC service introduction
 // -----------------------------------------------------------------------------
-pub mod rpc_service {
-    tonic::include_proto!("rpc_service");
-}
+
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
 
@@ -40,7 +38,7 @@ use tonic::transport::Identity;
 use tonic::transport::ServerTlsConfig;
 use tonic_health::server::health_reporter;
 
-use crate::grpc::rpc_service::rpc_service_server::RpcServiceServer;
+use crate::proto::rpc_service_server::RpcServiceServer;
 use crate::Error;
 use crate::Node;
 use crate::RaftNodeConfig;

@@ -94,7 +94,7 @@ fn test_ready_fails_without_build() {
     let builder = NodeBuilder::new_from_db_path("/tmp/test_ready_fails_without_build", shutdown_rx);
 
     let result = builder.ready();
-    assert!(matches!(result, Err(Error::ServerFailedToStartError)));
+    assert!(matches!(result, Err(Error::NodeFailedToStartError)));
 }
 
 #[tokio::test]

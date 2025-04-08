@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::grpc::rpc_service::Entry;
+use crate::proto::Entry;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct LocalLogBatch {

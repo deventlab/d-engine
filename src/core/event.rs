@@ -1,16 +1,16 @@
 use tonic::Status;
 
-use crate::grpc::rpc_service::AppendEntriesRequest;
-use crate::grpc::rpc_service::AppendEntriesResponse;
-use crate::grpc::rpc_service::ClientProposeRequest;
-use crate::grpc::rpc_service::ClientReadRequest;
-use crate::grpc::rpc_service::ClientResponse;
-use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::grpc::rpc_service::ClusterConfUpdateResponse;
-use crate::grpc::rpc_service::ClusterMembership;
-use crate::grpc::rpc_service::MetadataRequest;
-use crate::grpc::rpc_service::VoteRequest;
-use crate::grpc::rpc_service::VoteResponse;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::ClientProposeRequest;
+use crate::proto::ClientReadRequest;
+use crate::proto::ClientResponse;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::ClusterConfUpdateResponse;
+use crate::proto::ClusterMembership;
+use crate::proto::MetadataRequest;
+use crate::proto::VoteRequest;
+use crate::proto::VoteResponse;
 use crate::MaybeCloneOneshotSender;
 
 #[derive(Debug)]

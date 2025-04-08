@@ -6,23 +6,38 @@ use serde::Serialize;
 use crate::Error;
 use crate::Result;
 
+/// Configuration parameters for the Raft consensus algorithm implementation
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RaftConfig {
+    /// Configuration settings related to log replication
+    /// Includes parameters like replication batch size and network retry behavior
     #[serde(default)]
     pub replication: ReplicationConfig,
 
+    /// Configuration settings for leader election mechanism
+    /// Controls timeouts and randomization factors for election timing
     #[serde(default)]
     pub election: ElectionConfig,
 
+    /// Configuration settings for cluster membership changes
+    /// Handles joint consensus transitions and cluster reconfiguration rules
     #[serde(default)]
     pub membership: MembershipConfig,
 
+    /// Configuration settings for commit application handling
+    /// Controls how committed log entries are applied to the state machine
     #[serde(default)]
     pub commit_handler: CommitHandlerConfig,
 
+    /// Maximum allowed log entry gap between leader and learner nodes
+    /// Learners with larger gaps than this value will trigger catch-up replication
+    /// Default value is set via default_learner_gap() function
     #[serde(default = "default_learner_gap")]
     pub learner_raft_log_gap: u64,
 
+    /// Base timeout duration (in milliseconds) for general Raft operations
+    /// Used as fallback timeout when operation-specific timeouts are not set
+    /// Default value is set via default_general_timeout() function
     #[serde(default = "default_general_timeout")]
     pub general_raft_timeout_duration_in_ms: u64,
 }

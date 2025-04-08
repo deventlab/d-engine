@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,26 +6,25 @@ use std::time::Duration;
 use dengine::alias::ROF;
 use dengine::alias::SMOF;
 use dengine::alias::SSOF;
+use dengine::client::ClientBuilder;
+use dengine::config::RaftNodeConfig;
 use dengine::convert::kv;
 use dengine::convert::vk;
-use dengine::file_io::open_file_for_append;
-use dengine::grpc::rpc_service::ClientCommand;
-use dengine::grpc::rpc_service::Entry;
-use dengine::grpc::rpc_service::NodeMeta;
-use dengine::grpc::rpc_service::VotedFor;
-use dengine::ClusterConfig;
+use dengine::node::Node;
+use dengine::node::NodeBuilder;
+use dengine::node::RaftTypeConfig;
+use dengine::proto::ClientCommand;
+use dengine::proto::Entry;
+use dengine::proto::NodeMeta;
+use dengine::proto::VotedFor;
+use dengine::storage::RaftLog;
+use dengine::storage::RaftStateMachine;
+use dengine::storage::SledRaftLog;
+use dengine::storage::SledStateStorage;
+use dengine::storage::StateStorage;
 use dengine::Error;
 use dengine::HardState;
-use dengine::Node;
-use dengine::NodeBuilder;
-use dengine::RaftLog;
-use dengine::RaftNodeConfig;
-use dengine::RaftStateMachine;
-use dengine::RaftTypeConfig;
 use dengine::Result;
-use dengine::SledRaftLog;
-use dengine::SledStateStorage;
-use dengine::StateStorage;
 use dengine::LEADER;
 use log::debug;
 use log::error;
@@ -37,13 +35,6 @@ use tokio::fs::{self};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time;
-use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::fmt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::Layer;
-use tracing_subscriber::Registry;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -156,7 +147,7 @@ async fn run_node(
 }
 
 pub async fn list_members(bootstrap_urls: &Vec<String>) -> Result<Vec<NodeMeta>> {
-    let client = match dengine::ClientBuilder::new(bootstrap_urls.clone())
+    let client = match ClientBuilder::new(bootstrap_urls.clone())
         .connect_timeout(Duration::from_secs(3))
         .request_timeout(Duration::from_secs(10))
         .enable_compression(true)
@@ -188,7 +179,7 @@ pub async fn execute_command(
     key: u64,
     value: Option<u64>,
 ) -> Result<u64> {
-    let client = match dengine::ClientBuilder::new(bootstrap_urls.clone())
+    let client = match ClientBuilder::new(bootstrap_urls.clone())
         .connect_timeout(Duration::from_secs(10))
         .request_timeout(Duration::from_secs(10))
         .enable_compression(true)
@@ -221,7 +212,7 @@ pub async fn execute_command(
                 }
                 Err(e) => {
                     error!("Error: {:?}", e);
-                    Err(Error::ClientError(format!("Error: {:?}", e)))
+                    Err(Error::GeneralClientError(format!("Error: {:?}", e)))
                 }
             }
         }
@@ -236,7 +227,7 @@ pub async fn execute_command(
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(Error::ClientError(format!("Error: {:?}", e)))
+                Err(Error::GeneralClientError(format!("Error: {:?}", e)))
             }
         },
         ClientCommands::READ => match client.kv().get(kv(key), false).await? {
@@ -247,7 +238,7 @@ pub async fn execute_command(
             }
             None => {
                 error!("No entry found for key: {}", key);
-                Err(Error::ClientError(format!("No entry found for key: {}", key)))
+                Err(Error::GeneralClientError(format!("No entry found for key: {}", key)))
             }
         },
         ClientCommands::LREAD => match client.kv().get(kv(key), true).await? {
@@ -258,12 +249,12 @@ pub async fn execute_command(
             }
             None => {
                 error!("No result found for key: {}", key);
-                Err(Error::ClientError(format!("No entry found for key: {}", key)))
+                Err(Error::GeneralClientError(format!("No entry found for key: {}", key)))
             }
         },
         _ => {
             error!("Invalid subcommand");
-            Err(Error::ClientError("Invalid subcommand".to_string()))
+            Err(Error::GeneralClientError("Invalid subcommand".to_string()))
         }
     }
 }

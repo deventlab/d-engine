@@ -1,12 +1,13 @@
 use tokio::sync::oneshot;
 use tonic::Status;
 
-use super::rpc_service::AppendEntriesRequest;
-use super::rpc_service::VoteRequest;
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::grpc::rpc_service::AppendEntriesResponse;
-use crate::grpc::rpc_service::VoteResponse;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
+use crate::proto::LogId;
+use crate::proto::VoteRequest;
+use crate::proto::VoteResponse;
 use crate::test_utils::settings;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
@@ -77,7 +78,7 @@ async fn test_send_append_requests_case2() {
     let response = AppendEntriesResponse::success(
         peer_2_id,
         peer_2_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_2_term,
             index: peer_2_match_index,
         }),
@@ -142,7 +143,7 @@ async fn test_send_append_requests_case3_1() {
     let peer_2_response = AppendEntriesResponse::success(
         peer_2_id,
         peer_2_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_2_term,
             index: peer_2_match_index,
         }),
@@ -224,7 +225,7 @@ async fn test_send_append_requests_case3_2() {
     let peer_2_response = AppendEntriesResponse::success(
         peer_2_id,
         peer_2_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_2_term,
             index: peer_2_match_index,
         }),
@@ -300,7 +301,7 @@ async fn test_send_append_requests_case4() {
     let peer_2_response = AppendEntriesResponse::success(
         peer_2_id,
         peer_2_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_2_term,
             index: peer_2_match_index,
         }),
@@ -308,7 +309,7 @@ async fn test_send_append_requests_case4() {
     let peer_3_response = AppendEntriesResponse::success(
         peer_3_id,
         peer_3_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_3_term,
             index: peer_3_match_index,
         }),
@@ -432,7 +433,7 @@ async fn test_send_append_requests_case6() {
     let peer_2_response = AppendEntriesResponse::success(
         peer_2_id,
         peer_2_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_2_term,
             index: peer_2_match_index,
         }),
@@ -440,7 +441,7 @@ async fn test_send_append_requests_case6() {
     let peer_3_response = AppendEntriesResponse::success(
         peer_3_id,
         peer_3_term,
-        Some(rpc_service::LogId {
+        Some(LogId {
             term: peer_3_term,
             index: peer_3_match_index,
         }),
@@ -572,7 +573,7 @@ async fn test_send_append_requests_case6() {
 //             peer_response = AppendEntriesResponse::success(
 //                 id,
 //                 term,
-//                 Some(rpc_service::LogId {
+//                 Some(LogId {
 //                     term,
 //                     index: match_index,
 //                 }),

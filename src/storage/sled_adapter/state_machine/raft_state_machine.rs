@@ -14,11 +14,11 @@ use sled::Batch;
 use tonic::async_trait;
 
 use crate::convert::vk;
-use crate::grpc::rpc_service::client_command::Command;
-use crate::grpc::rpc_service::client_command::Insert;
-use crate::grpc::rpc_service::ClientCommand;
-use crate::grpc::rpc_service::Entry;
-use crate::grpc::rpc_service::SnapshotEntry;
+use crate::proto::client_command::Command;
+use crate::proto::client_command::Insert;
+use crate::proto::ClientCommand;
+use crate::proto::Entry;
+use crate::proto::SnapshotEntry;
 use crate::storage::sled_adapter::STATE_MACHINE_NAMESPACE;
 use crate::Error;
 use crate::Result;
@@ -207,7 +207,7 @@ impl StateMachine for RaftStateMachine {
 
         if let Err(e) = self.apply_batch(batch) {
             error!("local insert commit entry into kv store failed: {:?}", e);
-            Err(Error::MessageIOError)
+            Err(e)
         } else {
             debug!("[ConverterEngine] convert bath successfully! ");
             if highest_index.is_some() {

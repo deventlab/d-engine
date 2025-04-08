@@ -2,6 +2,17 @@ use std::time::Duration;
 
 use crate::time::get_now_as_u32;
 
+/// Client configuration parameters for network connection management
+///
+/// Encapsulates all tunable settings for establishing and maintaining
+/// network connections, including timeouts, keepalive policies,
+/// and performance-related options.
+///
+/// # Key Configuration Areas
+/// - Connection establishment (TCP handshake timeout)
+/// - Request/response lifecycle control
+/// - HTTP/2 protocol optimization
+/// - Network efficiency settings (compression, frame sizing)
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// Client id representation

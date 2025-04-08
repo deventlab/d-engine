@@ -3,20 +3,25 @@ mod election;
 mod event;
 mod raft;
 mod raft_context;
+
 mod raft_role;
+
 mod replication;
+
 mod state_machine_handler;
+
 mod timer;
 
-pub use commit_handler::*;
-pub use election::*;
-pub use event::*;
-pub use raft::*;
-pub use raft_context::*;
+pub(crate) use commit_handler::*;
+pub(crate) use election::*;
+pub(crate) use event::*;
+pub(crate) use raft::*;
+pub(crate) use raft_context::*;
+#[doc(hidden)]
 pub use raft_role::*;
-pub use replication::*;
-pub use state_machine_handler::*;
-pub use timer::*;
+pub(crate) use replication::*;
+pub(crate) use state_machine_handler::*;
+pub(crate) use timer::*;
 
 #[cfg(test)]
 mod event_test;
@@ -55,7 +60,7 @@ pub(crate) fn if_higher_term_found(
 /// entries in the  logs. If the logs have last entries with different terms, then the log with the
 /// later term is more up-to-date. If the logs end with the same term, then whichever log is longer
 /// is more up-to-date.
-pub fn is_target_log_more_recent(
+pub(crate) fn is_target_log_more_recent(
     my_last_log_index: u64,
     my_last_log_term: u64,
     target_last_log_index: u64,

@@ -5,24 +5,34 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 
-use crate::grpc::rpc_service::rpc_service_client::RpcServiceClient;
-use crate::grpc::rpc_service::MetadataRequest;
-use crate::grpc::rpc_service::NodeMeta;
+use crate::proto::rpc_service_client::RpcServiceClient;
+use crate::proto::MetadataRequest;
+use crate::proto::NodeMeta;
 use crate::ClientConfig;
 use crate::Error;
 use crate::Result;
 
+/// Manages connections to cluster nodes
+///
+/// Implements connection pooling and leader/follower routing.
+/// Automatically handles connection health checks and failover.
 #[derive(Clone)]
 pub struct ConnectionPool {
     // Tonic's Channel is thread-safe and reference-counted.
-    pub leader_conn: Channel,
-    pub follower_conns: Vec<Channel>,
-    pub config: ClientConfig,
-    pub members: Vec<NodeMeta>,
+    pub(super) leader_conn: Channel,
+    pub(super) follower_conns: Vec<Channel>,
+    pub(super) config: ClientConfig,
+    pub(super) members: Vec<NodeMeta>,
 }
 
 impl ConnectionPool {
-    pub async fn new(
+    /// Creates new connection pool with bootstrap nodes
+    ///
+    /// # Implementation Details
+    /// 1. Discovers cluster metadata
+    /// 2. Establishes leader connection
+    /// 3. Creates follower connections
+    pub(crate) async fn new(
         endpoints: Vec<String>,
         config: ClientConfig,
     ) -> Result<Self> {
@@ -65,18 +75,20 @@ impl ConnectionPool {
             .await
             .map_err(Into::into)
     }
-
-    pub fn get_leader(&self) -> Channel {
+    /// Retrieves active leader connection
+    ///
+    /// Used for all write operations and linear reads
+    pub(crate) fn get_leader(&self) -> Channel {
         self.leader_conn.clone()
     }
 
-    pub fn get_all_channels(&self) -> Vec<Channel> {
+    pub(crate) fn get_all_channels(&self) -> Vec<Channel> {
         let mut cloned = self.follower_conns.clone();
         cloned.push(self.leader_conn.clone());
         cloned
     }
 
-    pub fn get_all_members(&self) -> Vec<NodeMeta> {
+    pub(crate) fn get_all_members(&self) -> Vec<NodeMeta> {
         self.members.clone()
     }
 
@@ -108,7 +120,7 @@ impl ConnectionPool {
                 } // Connection failed, try next
             }
         }
-        Err(Error::ClusterUnavailable)
+        Err(Error::ClusterMembershipNotFound)
     }
 
     /// Extract leader address from metadata

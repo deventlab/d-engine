@@ -1,10 +1,10 @@
 use super::RaftEvent;
-use crate::grpc::rpc_service::AppendEntriesRequest;
-use crate::grpc::rpc_service::ClientProposeRequest;
-use crate::grpc::rpc_service::ClientReadRequest;
-use crate::grpc::rpc_service::ClusteMembershipChangeRequest;
-use crate::grpc::rpc_service::MetadataRequest;
-use crate::grpc::rpc_service::VoteRequest;
+use crate::proto::AppendEntriesRequest;
+use crate::proto::ClientProposeRequest;
+use crate::proto::ClientReadRequest;
+use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::MetadataRequest;
+use crate::proto::VoteRequest;
 use crate::MaybeCloneOneshot;
 use crate::RaftOneshot;
 impl RaftEvent {

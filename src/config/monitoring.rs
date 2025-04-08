@@ -1,14 +1,23 @@
+//! Monitoring configuration settings for the application.
+//!
+//! This module defines configuration parameters related to system monitoring,
+//! particularly for Prometheus metrics collection.
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Error;
 use crate::Result;
 
+/// Configuration structure for monitoring features
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MonitoringConfig {
+    /// Enables Prometheus metrics endpoint when set to true
+    /// Default value: false (via default_prometheus_enabled)
     #[serde(default = "default_prometheus_enabled")]
     pub prometheus_enabled: bool,
 
+    /// TCP port number for Prometheus metrics endpoint
+    /// Default value: 8080 (via default_prometheus_port)
     #[serde(default = "default_prometheus_port")]
     pub prometheus_port: u16,
 }

@@ -9,8 +9,8 @@ use tokio::time::Instant;
 use super::*;
 use crate::alias::ROF;
 use crate::convert::kv;
-use crate::grpc::rpc_service::Entry;
 use crate::init_sled_storages;
+use crate::proto::Entry;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::{self};
 use crate::RaftLog;
@@ -316,7 +316,7 @@ fn test_sled_last() {
 fn test_sled_last_max() {
     let context = setup("/tmp/test_sled_last_max");
 
-    let max = std::u64::MAX; //max of u64
+    let max = u64::MAX; //max of u64
     test_utils::simulate_insert_proposal(&context.raft_log, ((max - 1)..max).collect(), 1);
     // for i in max - 1..max {
     //     debug!("key:{:?}, buffer:{:?}", i, kv(i));

@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::Error;
 use crate::Result;
 
-/// Basic retry policy template
+/// Configuration for exponential backoff retry strategy
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
 pub struct BackoffPolicy {
     /// Maximum number of retries (0 means unlimited retries)
@@ -26,22 +26,27 @@ pub struct BackoffPolicy {
     pub max_delay_ms: u64,
 }
 
-/// Divide strategies by business domain
+/// Domain-specific retry strategy configurations for Raft subsystems
+/// Enables fine-grained control over different RPC types and operations
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RetryPolicies {
-    // Log replication strategy (AppendEntries RPC)
+    /// Retry policy for AppendEntries RPC operations
+    /// Governs log replication attempts between leader and followers
     #[serde(default)]
     pub append_entries: BackoffPolicy,
 
-    // Election strategy (RequestVote RPC)
+    /// Retry policy for RequestVote RPC operations
+    /// Controls election-related communication retry behavior
     #[serde(default)]
     pub election: BackoffPolicy,
 
-    // Member change strategy (high reliability requirement)
+    /// Retry policy for cluster membership changes
+    /// Requires higher reliability for configuration change operations
     #[serde(default)]
     pub membership: BackoffPolicy,
 
-    // Health check strategy (high frequency detection)
+    /// Retry policy for node health checks
+    /// Optimized for frequent liveness detection with lower overhead
     #[serde(default)]
     pub healthcheck: BackoffPolicy,
 }

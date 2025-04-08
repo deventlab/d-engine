@@ -45,7 +45,7 @@ use super::RoleEvent;
 use crate::alias::POF;
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
-use crate::grpc::rpc_service::VotedFor;
+use crate::proto::VotedFor;
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
 use crate::Result;

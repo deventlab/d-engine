@@ -25,8 +25,8 @@ use tonic::async_trait;
 
 use crate::convert::kv;
 use crate::convert::vki;
-use crate::grpc::rpc_service::Entry;
-use crate::grpc::rpc_service::LogId;
+use crate::proto::Entry;
+use crate::proto::LogId;
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::Error;
 use crate::LocalLogBatch;
@@ -396,7 +396,7 @@ impl RaftLog for SledRaftLog {
         }
         if let Err(e) = self.apply(&batch) {
             error!("apply batch error: {:?}", e);
-            return Err(Error::GeneralLocalLogIOError);
+            return Err(Error::SledError(e));
         }
         Ok(())
     }
@@ -463,7 +463,7 @@ impl RaftLog for SledRaftLog {
     fn reset(&self) -> Result<()> {
         if let Err(e) = self.tree.clear() {
             error!("error: {:?}", e);
-            Err(Error::NotFound)
+            Err(Error::SledError(e))
         } else {
             Ok(())
         }
