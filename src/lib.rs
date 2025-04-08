@@ -1,5 +1,6 @@
 mod client;
 mod config;
+mod constants;
 mod core;
 mod membership;
 mod metrics;
@@ -7,6 +8,7 @@ mod network;
 mod node;
 mod storage;
 mod type_config;
+
 pub mod utils;
 
 pub use core::*;

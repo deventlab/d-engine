@@ -93,6 +93,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(Error::NotLeader)
     }
 
+    async fn verify_leadership_in_new_term(
+        &self,
+        _event_tx: mpsc::Sender<RaftEvent>,
+    ) -> Result<()> {
+        Err(Error::NotLeader)
+    }
     fn is_follower(&self) -> bool {
         false
     }

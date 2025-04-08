@@ -29,6 +29,7 @@ use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
+use crate::constants::INTERNAL_CLIENT_ID;
 use crate::grpc::rpc_service::AppendEntriesResponse;
 use crate::grpc::rpc_service::ClientCommand;
 use crate::grpc::rpc_service::ClientProposeRequest;
@@ -198,6 +199,30 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(self.noop_log_id)
     }
 
+    // TODO: to be implemenmted in ticket #43(v0.2.0)
+    async fn verify_leadership_in_new_term(
+        &self,
+        event_tx: mpsc::Sender<RaftEvent>,
+    ) -> Result<()> {
+        // debug!("verify_leadership_in_new_term...");
+        // let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        // let command = ClientCommand::no_op();
+
+        // let req = ClientProposeRequest {
+        //     client_id: INTERNAL_CLIENT_ID,
+        //     commands: vec![command],
+        // };
+        // event_tx
+        //     .send(RaftEvent::ClientPropose(req, resp_tx))
+        //     .await
+        //     .map_err(|e| {
+        //         let error_str = format!("{:?}", e);
+        //         error!("Failed to send: {}", error_str);
+        //         Error::TokioSendStatusError(error_str)
+        //     })
+        Ok(())
+    }
     /// Decrease next id for node(node_id) by 1
     #[cfg(test)]
     fn decr_next_index(
