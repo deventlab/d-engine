@@ -1,6 +1,6 @@
 [package]
 name = "dengine"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 resolver = "2" # Workspace-level unified configuration
 authors = [
