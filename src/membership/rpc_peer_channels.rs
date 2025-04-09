@@ -34,7 +34,7 @@ use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::proto::NodeMeta;
-use crate::utils::network::address_str;
+use crate::utils::net::address_str;
 use crate::Error;
 use crate::NetworkConfig;
 use crate::RaftNodeConfig;

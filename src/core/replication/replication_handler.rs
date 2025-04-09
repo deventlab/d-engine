@@ -292,7 +292,7 @@ where T: TypeConfig
         debug!("[F-{:?}] >> receive leader append request {:?}", self.my_id, request);
         let current_term = state_snapshot.current_term;
         let mut last_log_id_option = raft_log.last_log_id();
-        
+
         //if there is no new entries need to insert, we just return the last local log index
         let mut commit_index_update = None;
 

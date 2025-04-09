@@ -255,10 +255,7 @@ impl NodeBuilder {
             SledStateStorage::new(Arc::new(state_storage_db))
         });
 
-        let transport = self
-            .transport
-            .take()
-            .unwrap_or(GrpcTransport { my_id: node_id });
+        let transport = self.transport.take().unwrap_or(GrpcTransport { my_id: node_id });
 
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             Arc::new(DefaultStateMachineHandler::new(
