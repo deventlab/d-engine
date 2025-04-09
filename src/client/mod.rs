@@ -11,9 +11,10 @@
 //! ```no_run
 //! use dengine::client::{Client, ClientBuilder};
 //! use std::time::Duration;
+//! use core::error::Error;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Error> {
+//! #[tokio::main(flavor = "current_thread")]
+//! async fn main(){
 //!     // Initialize client with automatic cluster discovery
 //!     let client = Client::builder(vec![
 //!         "http://node1:9081".into(),
@@ -23,18 +24,20 @@
 //!     .request_timeout(Duration::from_secs(1))
 //!     .enable_compression(true)
 //!     .build()
-//!     .await?;
+//!     .await
+//!     .unwrap();
 //!
 //!     // Execute key-value operations
-//!     client.kv().put("user:1001", "Alice").await?;
-//!     let value = client.kv().get("user:1001", false).await?;
+//!     client.kv().put("user:1001", "Alice").await.unwrap();
+//!
+//!     let value = client.kv().get("user:1001", false).await.unwrap();
+//!
 //!     println!("User data: {:?}", value);
 //!
 //!     // Perform cluster management
-//!     let members = client.cluster().list_members().await?;
+//!     let members = client.cluster().list_members().await.unwrap();
 //!     println!("Cluster members: {:?}", members);
 //!
-//!     Ok(())
 //! }
 //! ```
 

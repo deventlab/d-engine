@@ -17,8 +17,10 @@
 //! ```no_run
 //! use dengine::NodeBuilder;
 //! use tokio::sync::watch;
+//! use log::error;
+//! use log::info;
 //!
-//! #[tokio::main]
+//! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
 //!     let (graceful_tx, graceful_rx) = watch::channel(());
 //!
