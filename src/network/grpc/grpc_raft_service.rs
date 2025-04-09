@@ -42,7 +42,7 @@ where T: TypeConfig
         request: tonic::Request<VoteRequest>,
     ) -> std::result::Result<Response<VoteResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[rpc|request_vote] Node is not ready!");
+            warn!("[rpc|request_vote] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -68,7 +68,7 @@ where T: TypeConfig
         request: Request<AppendEntriesRequest>,
     ) -> std::result::Result<Response<AppendEntriesResponse>, tonic::Status> {
         if !self.server_is_ready() {
-            warn!("[rpc|append_entries] Node is not ready!");
+            warn!("[rpc|append_entries] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -90,7 +90,7 @@ where T: TypeConfig
         request: tonic::Request<ClusteMembershipChangeRequest>,
     ) -> std::result::Result<Response<ClusterConfUpdateResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[rpc|update_cluster_conf] Node is not ready!");
+            warn!("[rpc|update_cluster_conf] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -113,7 +113,7 @@ where T: TypeConfig
         request: tonic::Request<ClientProposeRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[handle_client_propose] Node is not ready!");
+            warn!("[handle_client_propose] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -155,7 +155,7 @@ where T: TypeConfig
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         debug!("receive get_cluster_metadata");
         if !self.server_is_ready() {
-            warn!("[rpc|get_cluster_metadata] Node is not ready!");
+            warn!("[rpc|get_cluster_metadata] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -176,7 +176,7 @@ where T: TypeConfig
         request: tonic::Request<ClientReadRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         if !self.server_is_ready() {
-            warn!("handle_client_read: Node is not ready!");
+            warn!("handle_client_read: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 

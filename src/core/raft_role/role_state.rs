@@ -29,7 +29,7 @@ use crate::RoleEvent;
 use crate::TypeConfig;
 
 #[async_trait]
-pub trait RaftRoleState: Send + Sync + 'static {
+pub(crate) trait RaftRoleState: Send + Sync + 'static {
     type T: TypeConfig;
 
     //--- For sharing state behaviors
