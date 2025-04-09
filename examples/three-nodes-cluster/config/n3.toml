@@ -12,3 +12,6 @@ log_dir = "./logs"
 [monitoring]
 prometheus_enabled = true
 prometheus_port = 8083
+
+[raft.commit_handler]
+batch_size = 100
