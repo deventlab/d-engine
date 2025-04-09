@@ -195,13 +195,7 @@ where T: TypeConfig
         last_log_index: u64,
         last_log_term: u64,
     ) -> bool {
-        if (request_last_log_term > last_log_term)
-            || (request_last_log_term == last_log_term && request_last_log_index >= last_log_index)
-        {
-            true
-        } else {
-            false
-        }
+        (request_last_log_term > last_log_term) || (request_last_log_term == last_log_term && request_last_log_index >= last_log_index)
     }
     #[autometrics(objective = API_SLO)]
     fn if_node_could_grant_the_vote_request(

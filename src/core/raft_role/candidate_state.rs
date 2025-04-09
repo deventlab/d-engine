@@ -186,7 +186,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             Err(Error::HigherTermFoundError(higher_term)) => {
                 // Immediately update the Term and become a Follower.
                 self.update_current_term(higher_term);
-                self.send_become_follower_event(&role_tx)?;
+                self.send_become_follower_event(role_tx)?;
             }
             Err(e) => {
                 warn!("candidate broadcast_vote_requests with error: {:?}", e);

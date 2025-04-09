@@ -258,7 +258,7 @@ impl NodeBuilder {
         let transport = self
             .transport
             .take()
-            .unwrap_or_else(|| GrpcTransport { my_id: node_id });
+            .unwrap_or(GrpcTransport { my_id: node_id });
 
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             Arc::new(DefaultStateMachineHandler::new(

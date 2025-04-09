@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use autometrics::autometrics;
 use log::error;
 use log::info;
 
@@ -10,7 +9,6 @@ use crate::Error;
 use crate::HardState;
 use crate::Result;
 use crate::StateStorage;
-use crate::API_SLO;
 use crate::HARD_STATE_KEY;
 
 #[derive(Clone)]
@@ -123,7 +121,7 @@ impl SledStateStorage {
     pub fn new(db: Arc<sled::Db>) -> Self {
         match db.open_tree(STATE_STORAGE_NAMESPACE) {
             Ok(tree) => {
-                return SledStateStorage {
+                SledStateStorage {
                     db,
                     tree: Arc::new(tree),
                 }
