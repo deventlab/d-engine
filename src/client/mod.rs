@@ -8,7 +8,7 @@
 //! - [`ConnectionPool`] - Underlying connection management
 //!
 //! # Basic Usage
-//! ```ignore
+//! ```no_run
 //! use dengine::client::{Client, ClientBuilder};
 //! use std::time::Duration;
 //!

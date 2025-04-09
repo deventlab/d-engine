@@ -1,3 +1,7 @@
+//! Raft gRPC service implementation handling RPC communication between cluster nodes
+//! and client requests. Implements core Raft protocol logic for leader election,
+//! log replication, and cluster configuration management.
+
 use std::future::Future;
 use std::time::Duration;
 
@@ -35,7 +39,12 @@ use crate::API_SLO;
 impl<T> RpcService for Node<T>
 where T: TypeConfig
 {
-    #[autometrics(objective = API_SLO)]
+    /// Handles RequestVote RPC calls from candidate nodes during leader elections
+    /// # Raft Protocol Logic
+    /// - Part of leader election mechanism (Section 5.2)
+    /// - Validates candidate's term and log completeness
+    /// - Grants vote if candidate's log is at least as up-to-date as local log
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
     async fn request_vote(
         &self,
@@ -55,13 +64,14 @@ where T: TypeConfig
         handle_rpc_timeout(resp_rx, timeout_duration, "request_vote").await
     }
 
-    // 1: compare request.term and current_term
-    // 1.1: if request.term <= current_term:
-    // 1.2: if request.term > current_term:
-    //      1.2.1 we should swith node state to Follower if it is in Leader or
-    // Candidate state      1.2.2 we should turn off election timeout and
-    // heartbeat timeout
-    #[autometrics(objective = API_SLO)]
+    /// Processes AppendEntries RPC calls from cluster leader
+    /// # Raft Protocol Logic
+    /// - Heartbeat mechanism (Section 5.2)
+    /// - Log replication entry point (Section 5.3)
+    /// - Term comparison logic:
+    ///   - If incoming term > current term: revert to follower state
+    ///   - Reset election timeout on valid leader communication
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
     async fn append_entries(
         &self,
@@ -83,7 +93,12 @@ where T: TypeConfig
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }
 
-    #[autometrics(objective = API_SLO)]
+    /// Handles cluster membership changes (joint consensus)
+    /// # Raft Protocol Logic
+    /// - Implements cluster configuration changes (Section 6)
+    /// - Validates new configuration against current cluster state
+    /// - Ensures safety during membership transitions
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
     async fn update_cluster_conf(
         &self,
@@ -104,9 +119,12 @@ where T: TypeConfig
         handle_rpc_timeout(resp_rx, timeout_duration, "update_cluster_conf").await
     }
 
-    //----------------- External request handler---------------------
-    ///Only `Propose` command need to be synced.
-    #[autometrics(objective = API_SLO)]
+    /// Processes client write requests requiring consensus
+    /// # Raft Protocol Logic
+    /// - Entry point for client proposals (Section 7)
+    /// - Validates requests before appending to leader's log
+    /// - Ensures linearizable writes through log replication
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
     async fn handle_client_propose(
         &self,
@@ -147,7 +165,11 @@ where T: TypeConfig
         with_cancellation_handler(request_future, cancellation_future).await
     }
 
-    #[autometrics(objective = API_SLO)]
+    /// Returns current cluster membership and state metadata
+    /// # Usage
+    /// - Administrative API for cluster inspection
+    /// - Provides snapshot of current configuration
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
     async fn get_cluster_metadata(
         &self,
@@ -169,7 +191,12 @@ where T: TypeConfig
         handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
     }
 
-    #[autometrics(objective = API_SLO)]
+    /// Handles client read requests with linearizability guarantees
+    /// # Raft Protocol Logic
+    /// - Implements lease-based leader reads (Section 6.4)
+    /// - Verifies leadership before serving reads
+    /// - Ensures read-after-write consistency
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
     async fn handle_client_read(
         &self,
@@ -191,6 +218,11 @@ where T: TypeConfig
     }
 }
 
+/// Gracefully handles client request cancellations
+/// # Functionality
+/// - Manages cleanup of abandoned requests
+/// - Tracks request cancellation metrics
+/// - Prevents resource leaks from dropped requests
 pub(crate) async fn with_cancellation_handler<FRequest, FCancellation>(
     request_future: FRequest,
     cancellation_future: FCancellation,
@@ -215,7 +247,14 @@ where
     select_task.await.unwrap()
 }
 
-/// Generic timeout handler for RPC response channels
+/// Centralized timeout handler for all RPC operations
+/// # Features
+/// - Uniform timeout enforcement across RPC types
+/// - Detailed error categorization:
+///   - Channel errors
+///   - Application-level errors
+///   - Deadline exceeded
+/// - Logging and metrics integration
 async fn handle_rpc_timeout<T, E>(
     resp_rx: impl Future<Output = Result<Result<T, Status>, E>>,
     timeout_duration: Duration,

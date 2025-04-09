@@ -14,7 +14,7 @@
 //! - **Extensible**: Decoupled protocol and application logic
 //!
 //! ## Quick Start
-//! ```ignore
+//! ```no_run
 //! use dengine::NodeBuilder;
 //! use tokio::sync::watch;
 //!
@@ -54,6 +54,7 @@ pub mod storage;
 pub use client::*;
 #[doc(hidden)]
 pub use config::*;
+#[doc(hidden)]
 pub use node::*;
 
 mod constants;

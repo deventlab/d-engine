@@ -75,7 +75,7 @@ impl ClientBuilder {
     /// - Use this method to provide a full configuration object
     ///
     /// # Example: Full Configuration
-    /// ```ignore
+    /// ```no_run
     /// use dengine::client::{ClientBuilder, ClientConfig};
     /// use std::time::Duration;
     ///

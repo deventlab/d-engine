@@ -120,12 +120,10 @@ impl StateStorage for SledStateStorage {
 impl SledStateStorage {
     pub fn new(db: Arc<sled::Db>) -> Self {
         match db.open_tree(STATE_STORAGE_NAMESPACE) {
-            Ok(tree) => {
-                SledStateStorage {
-                    db,
-                    tree: Arc::new(tree),
-                }
-            }
+            Ok(tree) => SledStateStorage {
+                db,
+                tree: Arc::new(tree),
+            },
             Err(e) => {
                 error!("Failed to open state machine db tree: {}", e);
                 panic!("failed to open sled tree: {}", e);
