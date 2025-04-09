@@ -158,7 +158,7 @@ impl SharedState {
 }
 
 impl<T: TypeConfig> RaftRole<T> {
-    pub fn state(&self) -> &dyn RaftRoleState<T = T> {
+    pub(crate) fn state(&self) -> &dyn RaftRoleState<T = T> {
         match self {
             RaftRole::Follower(state) => state,
             RaftRole::Candidate(state) => state,
@@ -167,7 +167,7 @@ impl<T: TypeConfig> RaftRole<T> {
         }
     }
 
-    pub fn state_mut(&mut self) -> &mut dyn RaftRoleState<T = T> {
+    pub(crate) fn state_mut(&mut self) -> &mut dyn RaftRoleState<T = T> {
         match self {
             RaftRole::Follower(state) => state,
             RaftRole::Candidate(state) => state,
@@ -184,12 +184,12 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().reset_timer()
     }
 
-    pub fn next_deadline(&self) -> Instant {
+    pub(crate) fn next_deadline(&self) -> Instant {
         self.state().next_deadline()
     }
 
     #[inline]
-    pub fn as_i32(&self) -> i32 {
+    pub(crate) fn as_i32(&self) -> i32 {
         match self {
             RaftRole::Follower(_) => 0,
             RaftRole::Candidate(_) => 1,
@@ -198,33 +198,33 @@ impl<T: TypeConfig> RaftRole<T> {
         }
     }
 
-    pub fn become_leader(&self) -> Result<RaftRole<T>> {
+    pub(crate) fn become_leader(&self) -> Result<RaftRole<T>> {
         self.state().become_leader()
     }
-    pub fn become_candidate(&mut self) -> Result<RaftRole<T>> {
+    pub(crate) fn become_candidate(&mut self) -> Result<RaftRole<T>> {
         self.state_mut().become_candidate()
     }
-    pub fn become_follower(&self) -> Result<RaftRole<T>> {
+    pub(crate) fn become_follower(&self) -> Result<RaftRole<T>> {
         self.state().become_follower()
     }
-    pub fn become_learner(&self) -> Result<RaftRole<T>> {
+    pub(crate) fn become_learner(&self) -> Result<RaftRole<T>> {
         self.state().become_learner()
     }
 
-    pub fn is_follower(&self) -> bool {
+    pub(crate) fn is_follower(&self) -> bool {
         self.state().is_follower()
     }
-    pub fn is_candidate(&self) -> bool {
+    pub(crate) fn is_candidate(&self) -> bool {
         self.state().is_candidate()
     }
-    pub fn is_leader(&self) -> bool {
+    pub(crate) fn is_leader(&self) -> bool {
         self.state().is_leader()
     }
-    pub fn is_learner(&self) -> bool {
+    pub(crate) fn is_learner(&self) -> bool {
         self.state().is_learner()
     }
 
-    pub fn current_term(&self) -> u64 {
+    pub(crate) fn current_term(&self) -> u64 {
         self.state().current_term()
     }
 
@@ -233,18 +233,18 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().voted_for()
     }
     #[cfg(test)]
-    pub fn commit_index(&self) -> u64 {
+    pub(crate) fn commit_index(&self) -> u64 {
         self.state().commit_index()
     }
     #[cfg(test)]
-    pub fn match_index(
+    pub(crate) fn match_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
         self.state().match_index(node_id)
     }
     #[cfg(test)]
-    pub fn next_index(
+    pub(crate) fn next_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
@@ -265,7 +265,7 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().update_voted_for(voted_for)
     }
 
-    pub fn update_match_index(
+    pub(crate) fn update_match_index(
         &mut self,
         node_id: u32,
         new_match_id: u64,
@@ -273,7 +273,7 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().update_match_index(node_id, new_match_id)
     }
 
-    pub fn update_next_index(
+    pub(crate) fn update_next_index(
         &mut self,
         node_id: u32,
         new_next_id: u64,
@@ -281,7 +281,7 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().update_next_index(node_id, new_next_id)
     }
 
-    pub fn init_peers_next_index_and_match_index(
+    pub(crate) fn init_peers_next_index_and_match_index(
         &mut self,
         last_entry_id: u64,
         peer_ids: Vec<u32>,
@@ -290,7 +290,7 @@ impl<T: TypeConfig> RaftRole<T> {
             .init_peers_next_index_and_match_index(last_entry_id, peer_ids)
     }
 
-    pub async fn tick(
+    pub(crate) async fn tick(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         event_tx: &mpsc::Sender<RaftEvent>,
@@ -304,7 +304,7 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().tick(role_tx, event_tx, peer_channels, ctx).await
     }
 
-    pub async fn handle_raft_event(
+    pub(crate) async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
         peer_channels: Arc<POF<T>>,
@@ -320,7 +320,7 @@ impl<T: TypeConfig> RaftRole<T> {
     }
 
     #[cfg(test)]
-    pub fn follower_role_i32() -> i32 {
+    pub(crate) fn follower_role_i32() -> i32 {
         0
     }
 
@@ -333,22 +333,22 @@ impl<T: TypeConfig> RaftRole<T> {
 }
 
 #[inline]
-pub fn is_follower(role_i32: i32) -> bool {
+pub(crate) fn is_follower(role_i32: i32) -> bool {
     role_i32 == FOLLOWER
 }
 
 #[inline]
-pub fn is_candidate(role_i32: i32) -> bool {
+pub(crate) fn is_candidate(role_i32: i32) -> bool {
     role_i32 == CANDIDATE
 }
 
 #[inline]
-pub fn is_leader(role_i32: i32) -> bool {
+pub(crate) fn is_leader(role_i32: i32) -> bool {
     role_i32 == LEADER
 }
 
 #[inline]
-pub fn is_learner(role_i32: i32) -> bool {
+pub(crate) fn is_learner(role_i32: i32) -> bool {
     role_i32 == LEARNER
 }
 

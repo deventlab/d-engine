@@ -41,11 +41,11 @@ pub struct MockBuilder {
     pub settings: Option<RaftNodeConfig>,
     shutdown_signal: watch::Receiver<()>,
 
-    pub event_tx: Option<mpsc::Sender<RaftEvent>>,
-    pub event_rx: Option<mpsc::Receiver<RaftEvent>>,
+    pub(crate) event_tx: Option<mpsc::Sender<RaftEvent>>,
+    pub(crate) event_rx: Option<mpsc::Receiver<RaftEvent>>,
 
-    pub role_tx: Option<mpsc::UnboundedSender<RoleEvent>>,
-    pub role_rx: Option<mpsc::UnboundedReceiver<RoleEvent>>,
+    pub(crate) role_tx: Option<mpsc::UnboundedSender<RoleEvent>>,
+    pub(crate) role_rx: Option<mpsc::UnboundedReceiver<RoleEvent>>,
 }
 
 impl MockBuilder {
@@ -72,11 +72,7 @@ impl MockBuilder {
     }
 
     pub fn build_context(self) -> RaftContext<MockTypeConfig> {
-        let (role_tx, role_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::channel(10);
-
         let (
-            id,
             raft_log,
             state_machine,
             state_storage,
@@ -85,14 +81,8 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
             membership,
-            peer_channels,
             settings,
-            role_tx,
-            role_rx,
-            event_tx,
-            event_rx,
         ) = (
-            self.id.unwrap_or(1),
             Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
             Box::new(self.state_storage.unwrap_or_else(mock_state_storage)),
@@ -102,13 +92,8 @@ impl MockBuilder {
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
-            self.peer_channels.unwrap_or_else(mock_peer_channels),
             self.settings
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
-            self.role_tx.unwrap_or(role_tx),
-            self.role_rx.unwrap_or(role_rx),
-            self.event_tx.unwrap_or(event_tx),
-            self.event_rx.unwrap_or(event_rx),
         );
 
         mock_raft_context_internal(

@@ -111,17 +111,31 @@ sequenceDiagram
     - `grpc_raft_service.rs`: RPC service definitions
 - `rpc_peer_channels.rs`: Peer-to-peer communication channels
 
-### Observability
+## Release Plan 
 
-#### Key Metrics
+This project follows semantic versioning. Below is our development roadmap:
 
-```promql
-# Commit Rate
-count(count by (id, msg_id) (committed_log)) by (id)
+### Version Status
+- ✅ Released | 🚧 In Development | ⏳ Planned
 
-# Write Latency
-avg((log_commit_at - log_receive_at))
-```
+### Upcoming Releases
+
+#### [v0.1.0](link-to-release) - Laying the Foundation ✅
+**Key Goals**:  
+- Initial implementation of core Raft consensus algorithm  
+- Basic cluster communication layer  
+- Minimal working example demonstration
+
+#### v0.2.0 - Cluster Scalability 🚧
+**Key Features**:  
+- Snapshot support for state compaction
+- Dynamic membership: Add/remove nodes without full restart  
+- Improved leadership transfer mechanics
+
+#### v0.3.0 - Production Ready ⏳
+**Milestone**:  
+- Publish crate to [crates.io](https://crates.io)  
+- Performance benchmarking suite (e.g. 100K RPS)
 
 ## Contribution Guide
 

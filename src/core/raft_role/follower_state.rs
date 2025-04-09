@@ -33,7 +33,6 @@ use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RoleEvent;
-use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 

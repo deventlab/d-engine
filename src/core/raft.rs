@@ -45,11 +45,11 @@ where T: TypeConfig
     pub peer_channels: Option<Arc<POF<T>>>,
 
     // Network & Storage events
-    pub event_tx: mpsc::Sender<RaftEvent>,
+    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     event_rx: mpsc::Receiver<RaftEvent>,
 
     // Timer
-    pub role_tx: mpsc::UnboundedSender<RoleEvent>,
+    pub(crate) role_tx: mpsc::UnboundedSender<RoleEvent>,
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
 
     // For business logic to apply logs into state machine
@@ -69,7 +69,7 @@ where T: TypeConfig
 impl<T> Raft<T>
 where T: TypeConfig
 {
-    pub fn new(
+    pub(crate) fn new(
         node_id: u32,
         raft_log: ROF<T>,
         state_machine: Arc<SMOF<T>>,
@@ -243,7 +243,7 @@ where T: TypeConfig
 
     /// `handle_role_event` will be responsbile to process role trasnsition and
     /// role state events.
-    pub async fn handle_role_event(
+    pub(crate) async fn handle_role_event(
         &mut self,
         role_event: RoleEvent,
     ) -> Result<()> {
@@ -276,7 +276,7 @@ where T: TypeConfig
                     .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
 
                 //async action
-                self.role.verify_leadership_in_new_term(self.event_tx.clone());
+                self.role.verify_leadership_in_new_term(self.event_tx.clone()).await?;
 
                 #[cfg(test)]
                 self.notify_role_transition();
@@ -352,7 +352,7 @@ where T: TypeConfig
     }
 
     #[cfg(test)]
-    pub fn register_raft_event_listener(
+    pub(crate) fn register_raft_event_listener(
         &mut self,
         tx: mpsc::UnboundedSender<RaftEvent>,
     ) {
@@ -360,7 +360,7 @@ where T: TypeConfig
     }
 
     #[cfg(test)]
-    pub fn notify_raft_event(
+    pub(crate) fn notify_raft_event(
         &self,
         event: RaftEvent,
     ) {

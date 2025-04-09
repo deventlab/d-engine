@@ -70,7 +70,7 @@ impl RpcService for MockRpcService {
 
     async fn handle_client_read(
         &self,
-        request: tonic::Request<ClientReadRequest>,
+        _request: tonic::Request<ClientReadRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         match &self.expected_client_read_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
@@ -81,7 +81,7 @@ impl RpcService for MockRpcService {
 
     async fn get_cluster_metadata(
         &self,
-        request: tonic::Request<MetadataRequest>,
+        _request: tonic::Request<MetadataRequest>,
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         match &self.expected_metadata_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
