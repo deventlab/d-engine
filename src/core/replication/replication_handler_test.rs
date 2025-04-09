@@ -257,6 +257,40 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
     };
 }
 
+/// # Case 5: returned entries should not has leader ones
+///
+/// ## Validate criterias
+/// 1. No leader ones should be retruned
+#[test]
+fn test_retrieve_to_be_synced_logs_for_peers_case5() {
+    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case5", None, false);
+    let my_id = 1;
+    let peer3_id = 3;
+    let new_entries = vec![Entry {
+        index: 1,
+        term: 1,
+        command: vec![1; 8],
+    }];
+    let leader_last_index_before_inserting_new_entries = 10;
+    let max_entries = 100;
+    let peer_next_indices = HashMap::from([(my_id, 1), (peer3_id, leader_last_index_before_inserting_new_entries)]);
+    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+
+    let r = handler.retrieve_to_be_synced_logs_for_peers(
+        new_entries.clone(),
+        leader_last_index_before_inserting_new_entries,
+        max_entries,
+        &peer_next_indices,
+        &context.raft_log,
+    );
+    if let Some(entries) = r.get(&peer3_id) {
+        assert_eq!(*entries, new_entries, "Entries do not match expected value");
+    } else {
+        assert!(false);
+    };
+    assert!(r.get(&my_id).is_none());
+}
+
 /// # Case 1: Test with empty commands
 ///
 /// ## Validation criterias:
@@ -653,7 +687,7 @@ async fn test_handle_client_proposal_in_batch_case3() {
 /// - HigherTerm response with term > leader's term returns error
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case4() {
-    let context = setup_raft_components("/tmp/test_case4", None, false);
+    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case4", None, false);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -709,6 +743,104 @@ async fn test_handle_client_proposal_in_batch_case4() {
         result,
         Err(Error::HigherTermFoundError(term)) if term == higher_term
     ));
+}
+
+/// # Case 5: Test prepare_peer_entries ensures new commands appear only once in AppendEntries.
+///
+/// ## Validation Criteria
+/// - For each peer, entries in AppendEntries start exactly at their `next_index`.
+/// - New commands are only included in the first replication attempt.
+#[tokio::test]
+async fn test_handle_client_proposal_in_batch_case5() {
+    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case5", None, false);
+    let my_id = 1;
+    let peer2_id = 2;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    // ----------------------
+    // Initialization state
+    // ----------------------
+    //Leader's current term and initial log
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(5_u64);
+    raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
+    raft_log.expect_get_entries_between().returning(|_| vec![]);
+    raft_log.expect_prev_log_term().returning(|_, _| 0);
+    raft_log.expect_insert_batch().returning(|_| Ok(()));
+
+    // New commands submitted by the client generate logs with index=6~7
+    let commands = vec![
+        ClientCommand::insert(kv(100), kv(100)),
+        ClientCommand::insert(kv(200), kv(200)),
+    ];
+
+    // Leader status snapshot
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 5,
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::from([(peer2_id, 6)]),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    // ----------------------
+    // Configure MockTransport to capture requests and verify parameters
+    // ----------------------
+    let (tx, rx) = std::sync::mpsc::channel(); // used to pass captured requests
+    let mut transport = MockTransport::new();
+
+    // Use `with` to capture request parameters
+    transport
+        .expect_send_append_requests()
+        .withf(move |requests, _| {
+            // Send the request to the channel for subsequent assertions
+            let _ = tx.send(requests.clone());
+            true // Return true to indicate that the parameters match successfully
+        })
+        .return_once(|_, _| Ok(vec![])); // Returns an empty response without affecting the test logic
+
+    // ----------------------
+    //Call the function to be tested
+    // ----------------------
+    let (_stx, srx) = oneshot::channel();
+    let addr = MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 14, srx, true)
+        .await
+        .unwrap();
+
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr,
+        role: FOLLOWER,
+    }];
+
+    let _ = handler
+        .handle_client_proposal_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &replication_members,
+            &Arc::new(raft_log),
+            &Arc::new(transport),
+            &context.settings.raft,
+            &context.settings.retry,
+        )
+        .await;
+
+    // ----------------------
+    // Get the captured request from the channel and verify
+    // ----------------------
+    let captured_requests = rx.recv().unwrap();
+
+    // Verify Peer2's request
+    let peer2_request = captured_requests
+        .iter()
+        .find(|(peer_id, _, _)| *peer_id == peer2_id)
+        .unwrap();
+    let peer2_entries = &peer2_request.2.entries;
+    assert_eq!(peer2_entries.len(), 2);
 }
 
 #[test]

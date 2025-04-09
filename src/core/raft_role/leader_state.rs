@@ -29,7 +29,6 @@ use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
-use crate::constants::INTERNAL_CLIENT_ID;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
@@ -314,6 +313,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.timer.reset_batch();
 
             if self.batch_buffer.should_flush() {
+                self.timer.reset_replication();
+
                 // Take out the batched messages and send them immediately
                 // Do not move batch out of this block
                 let batch = self.batch_buffer.take();
@@ -607,7 +608,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// # Params
     /// - `exexute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
-    pub async fn process_client_propose(
+    pub(crate) async fn process_client_propose(
         &mut self,
         client_propose_request: ClientProposeRequest,
         sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
@@ -710,8 +711,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// The `ReplicationHandler` remains focused on protocol mechanics, while
     /// state-aware result processing naturally belongs to the state owner.
-    #[tracing::instrument]
-    pub fn process_client_proposal_in_batch_result(
+    pub(crate) fn process_client_proposal_in_batch_result(
         &mut self,
         batch: VecDeque<ClientRequestWithSignal>,
         append_result: Result<AppendResults>,
@@ -890,7 +890,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    pub fn ensure_state_machine_upto_commit_index(
+    pub(crate) fn ensure_state_machine_upto_commit_index(
         &self,
         state_machine_handler: &Arc<SMHOF<T>>,
         last_applied: u64,
@@ -942,7 +942,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
 impl<T: TypeConfig> LeaderState<T> {
     #[cfg(test)]
-    pub fn new(
+    pub(crate) fn new(
         node_id: u32,
         settings: Arc<RaftNodeConfig>,
     ) -> Self {

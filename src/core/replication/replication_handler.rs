@@ -53,7 +53,6 @@ where T: TypeConfig
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
 where T: TypeConfig
 {
-    #[tracing::instrument]
     async fn handle_client_proposal_in_batch(
         &self,
         commands: Vec<ClientCommand>,
@@ -79,13 +78,17 @@ where T: TypeConfig
         // ----------------------
         // Phase 2: Process Client Commands
         // ----------------------
+
+        // Record down the last index before new inserts, to avoid duplicated entries, bugfix#48
+        let leader_last_index_before = raft_log.last_entry_id();
+
         let new_entries = self.generate_new_entries(commands, state_snapshot.current_term, raft_log)?;
 
         // ----------------------
         // Phase 3: Prepare Replication Data
         // ----------------------
         let replication_data = ReplicationData {
-            leader_last_index_before: raft_log.last_entry_id(),
+            leader_last_index_before,
             current_term: state_snapshot.current_term,
             commit_index: state_snapshot.commit_index,
             peer_next_indices: leader_state_snapshot.next_index,
@@ -244,6 +247,9 @@ where T: TypeConfig
             leader_last_index_before_inserting_new_entries
         );
         peer_next_indices.keys().for_each(|&id| {
+            if id == self.my_id {
+                return;
+            }
             let peer_next_id = peer_next_indices.get(&id).copied().unwrap_or(1);
 
             debug!("peer: {} next: {}", id, peer_next_id);

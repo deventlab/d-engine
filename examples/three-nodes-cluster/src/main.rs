@@ -11,6 +11,7 @@ use log::info;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
+use tokio::time::sleep;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -36,43 +37,42 @@ async fn main() {
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Start the client
-    let client_handler = tokio::spawn(simulate_client());
-
     // Monitor shutdown signals
     let shutdown_handler = tokio::spawn(graceful_shutdown(graceful_tx));
 
     // Wait for all tasks to complete (or error)
-    let (_server_result, _client_result, _shutdown_result) =
-        tokio::join!(server_handler, client_handler, shutdown_handler);
+    let (_server_result, _shutdown_result) = tokio::join!(server_handler, shutdown_handler);
 }
 
+/// Code to show you how to make a request to dengine cluster
 async fn simulate_client() {
+    sleep(Duration::from_secs(10)).await;
+
     // Initialization (automatically discover clusters)
-    let client = dengine::ClientBuilder::new(vec![
-        "http://node1:9081".into(),
-        "http://node2:9082".into(),
-        "http://node2:9083".into(),
+    if let Ok(client) = dengine::ClientBuilder::new(vec![
+        "http://127.0.0.1:9081".into(),
+        "http://127.0.0.1:9082".into(),
+        "http://127.0.0.1:9083".into(),
     ])
-    .connect_timeout(Duration::from_secs(3))
-    .request_timeout(Duration::from_secs(1))
+    .connect_timeout(Duration::from_secs(10))
+    .request_timeout(Duration::from_secs(10))
     .enable_compression(true)
     .build()
     .await
-    .unwrap();
+    {
+        // Key-value operations
+        client.kv().put("user:1001", "Alice").await.unwrap();
+        let value = client.kv().get("user:1001", true).await.unwrap();
+        info!("User data: {:?}", value);
 
-    // Key-value operations
-    client.kv().put("user:1001", "Alice").await.unwrap();
-    let value = client.kv().get("user:1001", true).await.unwrap();
-    info!("User data: {:?}", value);
-
-    // Cluster management
-    let members = client
-        .cluster()
-        .list_members()
-        .await
-        .expect("List cluster members successfully.");
-    info!("Cluster members: {:?}", members);
+        // Cluster management
+        let members = client
+            .cluster()
+            .list_members()
+            .await
+            .expect("List cluster members successfully.");
+        info!("Cluster members: {:?}", members);
+    }
 }
 async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     // Build Node

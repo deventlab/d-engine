@@ -111,7 +111,11 @@ impl ConnectionPool {
                         .await
                     {
                         Ok(response) => return Ok(response.into_inner().nodes),
-                        Err(_) => continue, // Try next node
+                        Err(e) => {
+                            error!("get_cluster_metadata: {:?}", e);
+                            // Try next node
+                            continue;
+                        }
                     }
                 }
                 Err(e) => {

@@ -41,7 +41,7 @@
 //!
 //! For production deployments, a minimum cluster size of **3 nodes** is required.
 
-#![warn(missing_docs)]
+// #![warn(missing_docs)]
 
 pub mod client;
 pub mod config;
