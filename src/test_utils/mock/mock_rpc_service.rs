@@ -1,6 +1,5 @@
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use log::info;
 use tokio::net::TcpListener;
@@ -10,30 +9,24 @@ use tonic::transport::Channel;
 use tonic_health::server::health_reporter;
 
 use super::MockRpcService;
-use super::MockTypeConfig;
 use crate::proto::rpc_service_server::RpcServiceServer;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::VoteResponse;
 use crate::ChannelWithAddress;
 use crate::Error;
-use crate::Node;
 use crate::Result;
 
 pub(crate) const MOCK_RAFT_PORT_BASE: u64 = 60100;
 pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60200;
-pub(crate) const MOCK_SERVER_PORT_BASE: u64 = 60300;
 pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60400;
 pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60500;
 pub(crate) const MOCK_REPLICATION_HANDLER_PORT_BASE: u64 = 60600;
 pub(crate) const MOCK_MEMBERSHIP_PORT_BASE: u64 = 60700;
 pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
-pub(crate) const MOCK_EVENT_LISTENER_PORT_BASE: u64 = 60900;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
-pub struct MockNode {
-    pub(crate) node: Arc<Node<MockTypeConfig>>,
-}
+pub struct MockNode;
 
 impl MockNode {
     pub async fn mock_listener(

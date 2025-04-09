@@ -35,16 +35,9 @@ fn setup(path: &str) -> TestContext {
     let (raft_log_db, _, state_storage_db, _) = reset_dbs(path);
     let arc_raft_log_db = Arc::new(raft_log_db);
 
-    let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
     let sled_raft_log = Arc::new(SledRaftLog::new(arc_raft_log_db, None));
 
     TestContext {
-        // s: Arc::new(RaftState::new(
-        //     1,
-        //     // sled_raft_log.clone(),
-        //     sled_state_storage,
-        //     None,
-        // )),
         raft_log: sled_raft_log,
     }
 }
@@ -725,16 +718,11 @@ async fn test_insert_batch_logs_case1() {
 /// - Log continuity: index 7 (term 1) and 8 (term 2) must coexist
 #[tokio::test]
 async fn test_insert_batch_logs_case2() {
-    let (raft_log_db, _, state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
-
     // 1. Initialize two nodes (old_leader and new_leader)
-    let ex_leader_id = 1;
-    let new_leader_id = 2;
-    let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
+    let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
     let old_leader = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
 
-    let (raft_log_db, _, state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
-    let sled_state_storage = Arc::new(SledStateStorage::new(Arc::new(state_storage_db)));
+    let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
     let new_leader = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), None));
 
     let mut entries: Vec<Entry> = Vec::new();
@@ -992,20 +980,9 @@ fn test_calculate_majority_matched_index_case0() {
 
     let current_term = 2;
     let commit_index = 2;
-    let peer_ids = [2, 3];
-    let map = HashMap::from([(3, 2), (1, 3), (2, 12)]);
-    // for (id, mid) in map.iter() {
-    //     state.update_match_index(*id, *mid);
-    // }
-    // state.update_current_term(current_term);
-    // state.update_commit_index(commit_index);
+
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
     test_utils::simulate_insert_proposal(&raft_log, vec![2, 3], 2);
-
-    // let matched_ids: Vec<u64> = peer_ids
-    //     .iter()
-    //     .map(|&id| state.match_index(id).unwrap_or(0))
-    //     .collect();
 
     assert_eq!(
         Some(3),
@@ -1021,102 +998,62 @@ fn test_calculate_majority_matched_index_case1() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case1");
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
-    let peer_ids = [2, 3];
     //case 1: majority matched index is 2, commit_index: 4, current_term is 3,
     // while log(2) term is 2, return None
     let ct = 3;
     let ci = 4;
-    // state.update_current_term(ct);
-    // state.update_commit_index(ci);
-    // // state.update_match_index(1, 3);
-    // state.update_match_index(2, 1);
-    // state.update_match_index(3, 2);
 
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
     test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
-    // let matched_ids: Vec<u64> = peer_ids
-    //     .iter()
-    //     .map(|&id| state.match_index(id).unwrap_or(0))
-    //     .collect();
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2]));
 }
 
 #[test]
 fn test_calculate_majority_matched_index_case2() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case2");
-    // let state = c.s.clone();
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
-    let peer_ids = [2, 3];
 
     //case 2: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 3, return Some(3)
     let ct = 3;
     let ci = 2;
-    // state.update_current_term(ct);
-    // let _ct = state.current_term();
-    // state.update_commit_index(ci);
-    // // state.update_match_index(1, 3);
-    // state.update_match_index(2, 4);
-    // state.update_match_index(3, 2);
 
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
     test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
     test_utils::simulate_insert_proposal(&raft_log, vec![3], 3);
-    // let matched_ids: Vec<u64> = peer_ids
-    //     .iter()
-    //     .map(|&id| state.match_index(id).unwrap_or(0))
-    //     .collect();
     assert_eq!(Some(3), raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2]));
 }
 
 #[test]
 fn test_calculate_majority_matched_index_case3() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case3");
-    // let state = c.s.clone();
     let raft_log = c.raft_log.clone();
 
-    let peer_ids = [2, 3];
     //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 2, return None
     let ct = 3;
     let ci = 2;
-    // state.update_current_term(ct);
-    // state.update_commit_index(ci);
-    // // state.update_match_index(1, 4);
-    // state.update_match_index(2, 3);
-    // state.update_match_index(3, 2);
-
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
     test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
-    // let matched_ids: Vec<u64> = peer_ids
-    //     .iter()
-    //     .map(|&id| state.match_index(id).unwrap_or(0))
-    //     .collect();
+
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2]));
 }
 
 #[test]
 fn test_calculate_majority_matched_index_case4() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case4");
-    // let state = c.s.clone();
+
     let raft_log = c.raft_log.clone();
-    let peer_ids = [2, 3];
+
     //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 2, return None
     let ct = 3;
     let ci = 2;
-    // state.update_current_term(ct);
-    // state.update_commit_index(ci);
-    // // state.update_match_index(1, 2);
-    // state.update_match_index(2, 2);
-    // state.update_match_index(3, 2);
+
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
     test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
-    // let matched_ids: Vec<u64> = peer_ids
-    //     .iter()
-    //     .map(|&id| state.match_index(id).unwrap_or(0))
-    //     .collect();
+
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2]));
 }
 
@@ -1136,20 +1073,13 @@ fn test_calculate_majority_matched_index_case5() {
     let term = 1;
     let raft_log_length = 100000;
     let commit = 90000;
-    let peer1_id = 2;
-    let peer2_id = 3;
+
     let peer1_match = 97000;
     let peer2_match = 98000;
-    // state.update_current_term(term);
-    // state.update_commit_index(commit);
-    // state.update_match_index(2, peer1_match);
-    // state.update_match_index(3, peer2_match);
+
     let raft_log_entry_ids: Vec<u64> = (1..=raft_log_length).collect();
     test_utils::simulate_insert_proposal(&raft_log, raft_log_entry_ids, 1);
-    // let matched_ids: Vec<u64> = vec![peer1_id, peer2_id]
-    //     .iter()
-    //     .map(|&id| state.match_index(id).unwrap_or(0))
-    //     .collect();
+
     let now = Instant::now();
     assert_eq!(
         Some(peer2_match),

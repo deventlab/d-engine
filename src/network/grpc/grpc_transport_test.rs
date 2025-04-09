@@ -219,8 +219,6 @@ async fn test_send_append_requests_case3_2() {
     let peer_3_id = 3;
     let peer_2_term = leader_current_term;
     let peer_2_match_index = 10;
-    let peer_3_term = leader_current_term;
-    let peer_3_match_index = 1;
 
     let peer_2_response = AppendEntriesResponse::success(
         peer_2_id,

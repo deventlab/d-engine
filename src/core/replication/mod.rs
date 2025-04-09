@@ -1,3 +1,9 @@
+//! Raft log replication implementation (Section 5.3)
+//!
+//! Handles core replication mechanics including:
+//! - Leader log propagation
+//! - Follower log consistency checks
+//! - Conflict resolution algorithms
 mod batch_buffer;
 mod replication_handler;
 
@@ -40,6 +46,8 @@ use crate::RaftConfig;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::TypeConfig;
+
+/// Client request with response channel
 #[derive(Debug)]
 pub struct ClientRequestWithSignal {
     pub id: String,
@@ -47,6 +55,7 @@ pub struct ClientRequestWithSignal {
     pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
 }
 
+/// Replication state updates from Leader perspective
 #[derive(Debug)]
 pub struct LeaderStateUpdate {
     /// (peer_id -> (next_index, match_index))
@@ -55,14 +64,14 @@ pub struct LeaderStateUpdate {
     pub new_commit_index: Option<u64>,
 }
 
+/// AppendEntries response with possible state changes
 #[derive(Debug)]
 pub struct AppendResponseWithUpdates {
     pub response: AppendEntriesResponse,
     pub commit_index_update: Option<u64>, // Commit_index to be updated
 }
 
-// ------------------------------------------------------------------------------
-// Trait Definition
+/// Core replication protocol operations
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
@@ -92,6 +101,11 @@ where T: TypeConfig
         retry: &RetryPolicies,
     ) -> Result<AppendResults>;
 
+    /// Handles successful AppendEntries responses
+    ///
+    /// Updates peer match/next indices according to:
+    /// - Last matched log index
+    /// - Current leader term
     fn handle_success_response(
         &self,
         peer_id: u32,
@@ -100,6 +114,9 @@ where T: TypeConfig
         leader_term: u64,
     ) -> Result<crate::PeerUpdate>;
 
+    /// Resolves log conflicts from follower responses
+    ///
+    /// Implements conflict backtracking optimization (Section 5.3)
     fn handle_conflict_response(
         &self,
         peer_id: u32,
@@ -107,12 +124,21 @@ where T: TypeConfig
         raft_log: &Arc<ROF<T>>,
     ) -> Result<crate::PeerUpdate>;
 
+    /// Determines follower commit index advancement
+    ///
+    /// Applies Leader's commit index according to:
+    /// - min(leader_commit, last_local_log_index)
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
         last_raft_log_id: u64,
         leader_commit_index: u64,
     ) -> Option<u64>;
 
+    /// Gathers legacy logs for lagging peers
+    ///
+    /// Performs log segmentation based on:
+    /// - Peer's next_index
+    /// - Max allowed historical entries
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: Vec<Entry>,

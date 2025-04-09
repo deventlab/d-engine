@@ -14,7 +14,7 @@ use crate::proto::VoteResponse;
 use crate::MaybeCloneOneshotSender;
 
 #[derive(Debug)]
-pub enum RoleEvent {
+pub(crate) enum RoleEvent {
     BecomeFollower(Option<u32>), // BecomeFollower(Option<leader_id>)
     BecomeCandidate,
     BecomeLeader,
@@ -26,7 +26,7 @@ pub enum RoleEvent {
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
-pub enum RaftEvent {
+pub(crate) enum RaftEvent {
     ReceiveVoteRequest(
         VoteRequest,
         MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
