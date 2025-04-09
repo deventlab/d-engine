@@ -93,7 +93,6 @@ where T: TypeConfig
         debug!("VoteRequest::Received: {:?}", request);
         let mut new_voted_for = None;
         let mut term_update = None;
-        let mut step_to_follower = false;
         let (last_index, last_term) = raft_log.get_last_entry_metadata();
 
         if self.check_vote_request_is_legal(&request, current_term, last_index, last_term, voted_for_option) {
@@ -103,10 +102,7 @@ where T: TypeConfig
             // 1. Update term
             term_update = Some(term);
 
-            // 2. switch to follower
-            step_to_follower = true;
-
-            // 3. update vote for
+            // 2. update vote for
             debug!(
                 "updated my voted for: target node: {:?} with term:{:?}",
                 request.candidate_id, term
@@ -118,7 +114,6 @@ where T: TypeConfig
         }
         Ok(StateUpdate {
             new_voted_for,
-            step_to_follower,
             term_update,
         })
     }

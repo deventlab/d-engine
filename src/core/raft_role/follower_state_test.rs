@@ -180,7 +180,6 @@ async fn test_handle_raft_event_case1_1() {
         .returning(|_, _, _, _| {
             Ok(StateUpdate {
                 new_voted_for: None,
-                step_to_follower: false,
                 term_update: None,
             })
         });
@@ -238,7 +237,6 @@ async fn test_handle_raft_event_case1_2() {
                     voted_for_id: 1,
                     voted_for_term: 1,
                 }),
-                step_to_follower: true,
                 term_update: Some(updated_term),
             })
         });
