@@ -270,7 +270,7 @@ impl NodeBuilder {
             .unwrap_or_else(|| RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone()));
 
         let (role_tx, role_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::channel(1024);
+        let (event_tx, event_rx) = mpsc::channel(10240);
 
         let settings_arc = Arc::new(node_config);
         let shutdown_signal = self.shutdown_signal.clone();
