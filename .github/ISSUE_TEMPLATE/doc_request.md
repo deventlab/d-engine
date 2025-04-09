@@ -2,8 +2,9 @@
 name: Request for documentation
 about: Suggest more doc to explain something.
 title: ''
-labels: 'documentation'
+labels: documentation
 assignees: ''
+
 ---
 
 **What kind of doc do you ask for?**
