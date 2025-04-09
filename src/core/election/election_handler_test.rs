@@ -184,7 +184,6 @@ async fn test_handle_vote_request_case1() {
         .await
     {
         Ok(state_update) => {
-            assert!(state_update.step_to_follower);
             assert!(state_update.new_voted_for.is_some());
             assert_eq!(state_update.term_update.unwrap(), request_term);
         }
@@ -227,7 +226,6 @@ async fn test_handle_vote_request_case2() {
         .await
     {
         Ok(state_update) => {
-            assert!(!state_update.step_to_follower);
             assert!(state_update.new_voted_for.is_none());
         }
         Err(_) => assert!(false),

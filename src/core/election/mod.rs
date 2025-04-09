@@ -1,3 +1,9 @@
+//! Raft leader election protocol implementation (Section 5.2)
+//!
+//! Handles leader election mechanics including:
+//! - Vote request broadcasting
+//! - Candidate vote collection
+//! - Voter eligibility validation
 mod election_handler;
 pub use election_handler::*;
 
@@ -21,12 +27,13 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
 
+/// State transition data for election outcomes
 #[derive(Debug)]
 pub struct StateUpdate {
-    // New votes, if there is
+    /// Updated term if election term changed
     pub term_update: Option<u64>,
+    /// New vote assignment if granted
     pub new_voted_for: Option<VotedFor>,
-    pub step_to_follower: bool,
 }
 
 #[cfg_attr(test, automock)]
