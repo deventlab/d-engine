@@ -91,7 +91,6 @@ pub mod test_utils;
 use autometrics::objectives::Objective;
 use autometrics::objectives::ObjectiveLatency;
 use autometrics::objectives::ObjectivePercentile;
-use log::warn;
 
 #[doc(hidden)]
 const API_SLO: Objective = Objective::new("api")

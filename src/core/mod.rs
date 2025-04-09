@@ -66,11 +66,5 @@ pub(crate) fn is_target_log_more_recent(
     target_last_log_index: u64,
     target_last_log_term: u64,
 ) -> bool {
-    if (target_last_log_term > my_last_log_term)
-        || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
-    {
-        true
-    } else {
-        false
-    }
+    (target_last_log_term > my_last_log_term) || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
 }

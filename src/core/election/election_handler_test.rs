@@ -6,7 +6,6 @@ use tokio::sync::watch;
 
 use crate::alias::ROF;
 use crate::alias::TROF;
-use crate::proto::Entry;
 use crate::proto::VoteRequest;
 use crate::proto::VotedFor;
 use crate::test_utils::setup_raft_components;
