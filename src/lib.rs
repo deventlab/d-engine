@@ -1,8 +1,8 @@
-//! # dengine
+//! # d_engine
 //!
-//! [![codecov](https://askmanyai-1255660719.cos.ap-beijing.myqcloud.com/pics/245cf90b-ce96-4f.svg)](https://codecov.io/gh/deventlab/dengine)
+//! [![codecov](https://codecov.io/gh/deventlab/d-engine/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/d-engine)
 //! ![License](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
-//! [![CI](https://github.com/deventlab/dengine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/dengine/actions/workflows/ci.yml)
+//! [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 //!
 //! A lightweight, strongly-consistent Raft engine for building reliable distributed systems.
 //!
@@ -15,7 +15,7 @@
 //!
 //! ## Quick Start
 //! ```no_run
-//! use dengine::NodeBuilder;
+//! use d_engine::NodeBuilder;
 //! use tokio::sync::watch;
 //! use log::error;
 //! use log::info;

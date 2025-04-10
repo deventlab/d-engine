@@ -5,7 +5,7 @@ To launch a cluster with three nodes, open three separate terminal windows and r
 ```shell
 CONFIG_PATH=config/n1 \
 LOG_DIR="./logs/1" \
-RUST_LOG=demo=debug,dengine=debug \
+RUST_LOG=demo=debug,d-engine=debug \
 RUST_BACKTRACE=1 \
 target/release/demo
 ```
@@ -14,7 +14,7 @@ target/release/demo
 ```shell
 CONFIG_PATH=config/n2 \
 LOG_DIR="./logs/2" \
-RUST_LOG=demo=debug,dengine=debug \
+RUST_LOG=demo=debug,d-engine=debug \
 target/release/demo
 ```
 
@@ -22,7 +22,7 @@ target/release/demo
 ```shell
 CONFIG_PATH=config/n3 \
 LOG_DIR="./logs/3" \
-RUST_LOG=demo=debug,dengine=debug \
+RUST_LOG=demo=debug,d-engine=debug \
 target/release/demo
 ```
 

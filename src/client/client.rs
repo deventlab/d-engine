@@ -10,7 +10,7 @@ use super::ClientBuilder;
 use super::ClusterClient;
 use super::KvClient;
 
-/// Main entry point for interacting with the dengine cluster
+/// Main entry point for interacting with the d_engine cluster
 ///
 /// Manages connections and provides access to specialized clients:
 /// - Use [`kv()`](Client::kv) for data operations

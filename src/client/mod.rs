@@ -1,6 +1,6 @@
 //! Client module for distributed consensus system
 //!
-//! Provides core components for interacting with the dengine cluster:
+//! Provides core components for interacting with the d_engine cluster:
 //! - [`Client`] - Main entry point with cluster access
 //! - [`ClientBuilder`] - Configurable client construction
 //! - [`KvClient`] - Key-value store operations
@@ -9,7 +9,7 @@
 //!
 //! # Basic Usage
 //! ```no_run
-//! use dengine::client::{Client, ClientBuilder};
+//! use d_engine::client::{Client, ClientBuilder};
 //! use std::time::Duration;
 //! use core::error::Error;
 //!

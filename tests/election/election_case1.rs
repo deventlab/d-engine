@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use dengine::Error;
+use d_engine::Error;
 
 use crate::commons::check_cluster_is_ready;
 use crate::commons::init_state_storage;

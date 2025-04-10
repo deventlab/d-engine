@@ -20,12 +20,9 @@ keywords = [
     "fault-tolerance"
 ]
 description = "A lightweight strongly-consistent Raft consensus engine for building reliable and scalable distributed systems."
-homepage = "https://github.com/deventlab/dengine"
+homepage = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/deventlab/dengine"
-
-[lib]
-name = "dengine"
+repository = "https://github.com/deventlab/d-engine"
 
 [features]
 default = []

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dengine::Error;
+use d_engine::Error;
 use log::error;
 
 use crate::commons::execute_command;
@@ -10,7 +10,7 @@ use crate::commons::ClientCommands;
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster
 #[tokio::test]
-async fn test_cluster_put_and_lread_case1() -> Result<(), dengine::Error> {
+async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
     use crate::commons::check_cluster_is_ready;
     use crate::commons::reset;
     use crate::commons::verify_read;

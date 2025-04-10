@@ -1,7 +1,7 @@
 use super::*;
 
 fn create_test_registry() -> Registry {
-    let registry = Registry::new_custom(Some("dengine".to_string()), None).unwrap();
+    let registry = Registry::new_custom(Some("d_engine".to_string()), None).unwrap();
     register_custom_metrics(&registry);
     registry
 }
@@ -20,8 +20,8 @@ fn test_custom_registry() {
     let metric_names: Vec<_> = metrics.iter().map(|m| m.get_name()).collect();
     // Verify that key indicators exist
     assert!(
-        metric_names.contains(&"dengine_committed_log"),
-        "Missing dengine_committed_log"
+        metric_names.contains(&"d_engine_committed_log"),
+        "Missing d_engine_committed_log"
     );
 }
 // Test the correctness of the indicator update logic
@@ -93,7 +93,7 @@ async fn test_metrics_endpoint_format() {
 
     println!("body: {:?}", &body);
     // Check custom indicator characteristics
-    assert!(body.contains("dengine_committed_log")); // Verify prefix
+    assert!(body.contains("d_engine_committed_log")); // Verify prefix
 }
 
 // Test timestamp indicator logic

@@ -1,11 +1,11 @@
-# Contributing to dengine
+# Contributing to d-engine
 
-Thank you for considering contributing to dengine! We welcome all forms of contributions.
+Thank you for considering contributing to d-engine! We welcome all forms of contributions.
 
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/<your-username>/dengine.git`
+2. Clone your fork: `git clone https://github.com/<your-username>/d-engine.git`
 3. Create a new branch from `develop`:
    - Features: `feature/<short-description>`
    - Bug fixes: `bug/<short-description>`

@@ -63,7 +63,7 @@ lazy_static! {
         &["msg_id"]
     )
     .expect("metric can not be created");
-    pub static ref CUSTOM_REGISTRY: Registry = Registry::new_custom(Some("dengine".to_string()), None).unwrap();
+    pub static ref CUSTOM_REGISTRY: Registry = Registry::new_custom(Some("d_engine".to_string()), None).unwrap();
 }
 
 fn register_custom_metrics(registry: &Registry) {
