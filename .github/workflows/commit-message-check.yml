@@ -1,0 +1,39 @@
+name: Validate Commit Messages
+
+on:
+  pull_request:
+
+jobs:
+  validate-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Check commit message format
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+
+          # Validate the format of all new submissions
+          for commit in $(git rev-list $BASE_SHA..$HEAD_SHA); do
+            msg=$(git show -s --format=%s $commit)
+            
+            # Basic format check regular expression
+            if ! echo "$msg" | grep -qE '^(feat|fix|refs|doc|perf|refactor) #[0-9]+: .+$'; then
+              echo "::error::Invalid commit format: $msg"
+              echo "Commit must follow: <type> #<ticket>: <description>"
+              echo "Allowed types: feat, fix, refs, doc, perf, refactor"
+              exit 1
+            fi
+
+            # Verify that non-chore/ci commits contain tickets
+            if echo "$msg" | grep -qE '^(feat|fix|refs|doc|perf|refactor) '; then
+              if ! echo "$msg" | grep -qE '#[0-9]+'; then
+                echo "::error::Ticket number missing: $msg"
+                echo "All non-chore/ci commits must reference a ticket"
+                exit 1
+              fi
+            fi
+          done
