@@ -134,7 +134,6 @@ This project follows semantic versioning. Below is our development roadmap:
 
 #### v0.3.0 - Production Ready ⏳
 **Milestone**:  
-- Publish crate to [crates.io](https://crates.io)  
 - Performance benchmarking suite (e.g. 100K RPS)
 
 ## Contribution Guide
