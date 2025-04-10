@@ -7,10 +7,10 @@ authors = [
     "Joshua Chi <joshokn@gmail.com>",
 ]
 categories = [
-    "distributed-systems",
+    "concurrency",
     "asynchronous",
     "algorithms",
-    "data-storage"
+    "database"
 ]
 keywords = [
     "raft",
