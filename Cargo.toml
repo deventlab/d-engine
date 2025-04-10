@@ -1,5 +1,5 @@
 [package]
-name = "dengine"
+name = "deventlab-dengine"
 version = "0.1.0"
 edition = "2021"
 resolver = "2" # Workspace-level unified configuration
@@ -24,7 +24,8 @@ homepage = "https://github.com/deventlab/dengine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/deventlab/dengine"
 
-
+[lib]
+name = "dengine"
 
 [features]
 default = []
