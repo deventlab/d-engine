@@ -1,5 +1,5 @@
 [package]
-name = "deventlab-dengine"
+name = "d-engine"
 version = "0.1.0"
 edition = "2021"
 resolver = "2" # Workspace-level unified configuration
