@@ -1,4 +1,6 @@
 # d-engine 🚀
+[![Crates.io](https://img.shields.io/crates/v/d-engine.svg)](https://crates.io/crates/d-engine)
+[![docs.rs](https://docs.rs/d-engine/badge.svg)](https://docs.rs/d-engine)
 [![codecov](https://codecov.io/gh/deventlab/d-engine/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/d-engine)
 ![Static Badge](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
