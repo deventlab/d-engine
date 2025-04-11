@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dengine = { path = "../../../dengine" }
+d-engine = { path = "../../../dengine" }
 
 # autometrics = { version = "1.0.1", features = ["prometheus-exporter"] }
 tokio = { version = "1.4", features = ["signal", "rt-multi-thread"] }

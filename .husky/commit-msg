@@ -1,0 +1,7 @@
+# .husky/commit-msg
+#!/bin/sh
+# format：<type>: <desc> #<ticket>
+if ! grep -qE "^(feat|fix|wip|perf|refactor|docs): .*#\d+" "$1"; then
+  echo "Error: Commit message format invalid. Use: <type>: <message> #<ticket>"
+  exit 1
+fi

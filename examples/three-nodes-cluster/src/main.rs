@@ -4,8 +4,9 @@ use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
 
-use dengine::file_io::open_file_for_append;
-use dengine::NodeBuilder;
+use d_engine::client::ClientBuilder;
+use d_engine::file_io::open_file_for_append;
+use d_engine::node::NodeBuilder;
 use log::error;
 use log::info;
 use tokio::signal::unix::signal;
@@ -44,12 +45,12 @@ async fn main() {
     let (_server_result, _shutdown_result) = tokio::join!(server_handler, shutdown_handler);
 }
 
-/// Code to show you how to make a request to dengine cluster
+/// Code to show you how to make a request to d_engine cluster
 async fn simulate_client() {
     sleep(Duration::from_secs(10)).await;
 
     // Initialization (automatically discover clusters)
-    if let Ok(client) = dengine::ClientBuilder::new(vec![
+    if let Ok(client) = ClientBuilder::new(vec![
         "http://127.0.0.1:9081".into(),
         "http://127.0.0.1:9082".into(),
         "http://127.0.0.1:9083".into(),

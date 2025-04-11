@@ -1,9 +1,11 @@
-# dengine 🚀
-[![codecov](https://codecov.io/gh/deventlab/dengine/branch/develop/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/dengine)
+# d-engine 🚀
+[![Crates.io](https://img.shields.io/crates/v/d-engine.svg)](https://crates.io/crates/d-engine)
+[![docs.rs](https://docs.rs/d-engine/badge.svg)](https://docs.rs/d-engine)
+[![codecov](https://codecov.io/gh/deventlab/d-engine/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/d-engine)
 ![Static Badge](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
-[![CI](https://github.com/deventlab/dengine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/dengine/actions/workflows/ci.yml)
+[![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 
-**dengine** is a lightweight, strongly-consistent Raft engine designed to help developers build scalable and reliable distributed systems. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
+**d-engine** is a lightweight, strongly-consistent Raft engine designed to help developers build scalable and reliable distributed systems. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
 
 ---
 
@@ -21,15 +23,15 @@
 
 ### Installation
 
-Add dengine to your `Cargo.toml`:
+Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dengine = { git = "https://github.com/deventlab/dengine" }
+d-engine = "0.1.0"
 ```
 
 ## Basic Usage (Single-Node Mode)
-use dengine::{RaftCore, MemoryStorage, Config};
+use d-engine::{RaftCore, MemoryStorage, Config};
 
 ```rust
 async fn main() -> Result<()> {
@@ -134,7 +136,6 @@ This project follows semantic versioning. Below is our development roadmap:
 
 #### v0.3.0 - Production Ready ⏳
 **Milestone**:  
-- Publish crate to [crates.io](https://crates.io)  
 - Performance benchmarking suite (e.g. 100K RPS)
 
 ## Contribution Guide
@@ -163,7 +164,7 @@ Raft requires a majority quorum (N/2 + 1) to achieve consensus. A 3-node cluster
 **How do I customize storage?**
 Implement the Storage trait and pass it to RaftCore::new.
 
-**Is dengine production-ready?**
+**Is d-engine production-ready?**
 The current release (v0.0.1) focuses on correctness and reliability. Performance optimizations are planned for future releases.
 
 ## Supported Platforms

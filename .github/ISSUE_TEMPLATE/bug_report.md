@@ -22,7 +22,7 @@ A clear and concise description of what you expected to happen.
  applicable, add screenshots to help explain your problem.
 
 **Env (please complete the following information):**
-- dengine version [e.g., a tag such as `v0.1.0` or a commit hash]
+- d-engine version [e.g., a tag such as `v0.1.0` or a commit hash]
 - Does the bug still there in the latest version?(`main` for the latest release branch)?
 - Rust-toolchain: [e.g. `cargo 1.65.0-nightly (ce40690a5 2022-08-09)`; Find toolchain with `cargo version` in a crate dir]
 - OS: [e.g. mac os 12.0.1, centos 7.0]

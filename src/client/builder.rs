@@ -76,7 +76,7 @@ impl ClientBuilder {
     ///
     /// # Example: Full Configuration
     /// ```no_run
-    /// use dengine::client::{ClientBuilder, ClientConfig};
+    /// use d_engine::client::{ClientBuilder, ClientConfig};
     /// use std::time::Duration;
     ///
     /// let custom_config = ClientConfig {
