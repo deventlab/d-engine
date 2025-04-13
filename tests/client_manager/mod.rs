@@ -22,8 +22,8 @@ impl ClientManager {
         let bootstrap_urls = bootstrap_urls.to_vec();
 
         let client = match ClientBuilder::new(bootstrap_urls.clone())
-            .connect_timeout(Duration::from_secs(120))
-            .request_timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(600))
+            .request_timeout(Duration::from_secs(600))
             .enable_compression(true)
             .build()
             .await
