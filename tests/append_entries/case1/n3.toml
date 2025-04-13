@@ -12,6 +12,9 @@ log_dir = "./logs/append_entries/case1"
 [monitoring]
 prometheus_enabled = false
 
+[raft]
+general_raft_timeout_duration_in_ms = 1000
+
 
 [raft.replication]
 append_entries_max_entries_per_replication = 1
