@@ -1,6 +1,7 @@
 mod append_entries;
+mod client_manager;
 mod cluster_start_stop;
-mod commons;
+mod common;
 mod election;
 
 static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {

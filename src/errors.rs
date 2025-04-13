@@ -85,6 +85,10 @@ pub enum Error {
     #[error("Dispatch client request leader error")]
     NodeIsNotLeaderError,
 
+    /// The request was canceled by client
+    #[error("Client canceled the request error")]
+    ClientRequestCanceledError,
+
     /// The cluster has no known membership configuration; it may be unavailable or uninitialized.
     #[error("Cluster is unavailable")]
     ClusterMembershipNotFound,

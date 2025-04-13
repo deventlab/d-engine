@@ -1,23 +1,21 @@
 use std::time::Duration;
 
+use crate::common::check_cluster_is_ready;
+use crate::common::reset;
+use crate::common::ITERATIONS;
+use crate::common::LATENCY_IN_MS;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use d_engine::Error;
 use log::error;
 
-use crate::commons::execute_command;
-use crate::commons::start_node;
-use crate::commons::ClientCommands;
+use crate::client_manager::ClientManager;
+use crate::common::start_node;
+use crate::common::ClientCommands;
 
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster
 #[tokio::test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
-    use crate::commons::check_cluster_is_ready;
-    use crate::commons::reset;
-    use crate::commons::verify_read;
-    use crate::commons::ITERATIONS;
-    use crate::commons::LATENCY_IN_MS;
-    use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
-
     crate::enable_logger();
 
     reset("cluster_start_stop/case1").await?;
@@ -42,9 +40,12 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
 
     // Testing `put` command
     println!("Testing put command...");
+
+    let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
     println!("put 2 202");
     assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(202))
+        client_manager
+            .execute_command(ClientCommands::PUT, 2, Some(202))
             .await
             .is_ok(),
         "Put command failed!"
@@ -52,7 +53,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     // Testing `get` command
     println!("Testing get command...");
-    verify_read(&bootstrap_urls, 2, 202, ITERATIONS).await;
+    client_manager.verify_read(2, 202, ITERATIONS).await;
 
     graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
     graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
@@ -107,13 +108,6 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
 /// 21
 #[tokio::test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
-    use crate::commons::check_cluster_is_ready;
-    use crate::commons::reset;
-    use crate::commons::verify_read;
-    use crate::commons::ITERATIONS;
-    use crate::commons::LATENCY_IN_MS;
-    use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
-
     crate::enable_logger();
 
     reset("cluster_start_stop/case2").await?;
@@ -139,19 +133,23 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     }
     // T1: PUT and linearizable reads
     println!("------------------T1-----------------");
+    let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
     println!("put 1 1");
-    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(1))
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 1, Some(1))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 1, 1, ITERATIONS).await;
+    client_manager.verify_read(1, 1, ITERATIONS).await;
 
     println!("put 1 2");
-    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(2))
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 1, Some(2))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 1, 2, ITERATIONS).await;
+    client_manager.verify_read(1, 2, ITERATIONS).await;
 
     // T2: Stop one node and verify reads
     println!("------------------T2-----------------");
@@ -162,40 +160,44 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     node_n1.await??;
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-    verify_read(&bootstrap_urls_without_n1, 1, 2, ITERATIONS).await;
+    let mut client_manager = ClientManager::new(&bootstrap_urls_without_n1).await?;
+    client_manager.verify_read(1, 2, ITERATIONS).await;
 
     println!("put 1 3");
-    assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls_without_n1, 1, Some(3))
-            .await
-            .is_ok()
-    );
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 1, Some(3))
+        .await
+        .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls_without_n1, 1, 3, ITERATIONS).await;
+    client_manager.verify_read(1, 3, ITERATIONS).await;
 
     // T3: Restart the node, perform PUT, and verify reads
     println!("------------------T3-----------------");
     let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case2/n1", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-    verify_read(&bootstrap_urls, 1, 3, ITERATIONS).await;
+    let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
+    client_manager.verify_read(1, 3, ITERATIONS).await;
 
     println!("put 1 4");
-    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(4))
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 1, Some(4))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 1, 4, ITERATIONS).await;
+    client_manager.verify_read(1, 4, ITERATIONS).await;
 
     println!("put 2 20");
-    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(20))
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 2, Some(20))
         .await
         .is_ok());
     println!("put 2 21");
-    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 2, Some(21))
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 2, Some(21))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 2, 21, ITERATIONS).await;
+    client_manager.verify_read(2, 21, ITERATIONS).await;
 
     // T4: stop cluster
     println!("------------------T4-----------------");
@@ -216,15 +218,16 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     let (graceful_tx3, node_n3) = start_node("./tests/cluster_start_stop/case2/n3", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-    verify_read(&bootstrap_urls, 1, 4, ITERATIONS).await;
-    verify_read(&bootstrap_urls, 2, 21, ITERATIONS).await;
+    client_manager.verify_read(1, 4, ITERATIONS).await;
+    client_manager.verify_read(2, 21, ITERATIONS).await;
     println!("put 1 5");
-    assert!(execute_command(ClientCommands::PUT, &bootstrap_urls, 1, Some(5))
+    assert!(client_manager
+        .execute_command(ClientCommands::PUT, 1, Some(5))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 2, 21, ITERATIONS).await;
-    verify_read(&bootstrap_urls, 1, 5, ITERATIONS).await;
+    client_manager.verify_read(2, 21, ITERATIONS).await;
+    client_manager.verify_read(1, 5, ITERATIONS).await;
 
     // Finally: stop cluster
     graceful_tx3.send(()).map_err(|_| Error::ServerError)?;

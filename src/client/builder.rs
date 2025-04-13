@@ -1,7 +1,11 @@
+use std::sync::Arc;
 use std::time::Duration;
+
+use arc_swap::ArcSwap;
 
 use super::Client;
 use super::ClientConfig;
+use super::ClientInner;
 use super::ClusterClient;
 use super::ConnectionPool;
 use super::KvClient;
@@ -98,10 +102,18 @@ impl ClientBuilder {
 
     /// Build the client with current configuration
     pub async fn build(self) -> Result<Client> {
-        let connection_pool = ConnectionPool::new(self.endpoints, self.config.clone()).await?;
+        let pool = ConnectionPool::create(self.endpoints.clone(), self.config.clone()).await?;
+        let inner = Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: self.config.id,
+            config: self.config,
+            endpoints: self.endpoints,
+        }));
+
         Ok(Client {
-            kv: KvClient::new(self.config.id, connection_pool.clone()),
-            cluster: ClusterClient::new(connection_pool),
+            kv: KvClient::new(inner.clone()),
+            cluster: ClusterClient::new(inner.clone()),
+            inner,
         })
     }
 }

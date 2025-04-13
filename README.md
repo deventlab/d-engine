@@ -5,7 +5,7 @@
 ![Static Badge](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 
-**d-engine** is a lightweight, strongly-consistent Raft engine designed to help developers build scalable and reliable distributed systems. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
+**d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
 
 ---
 
@@ -172,5 +172,5 @@ The current release (v0.0.1) focuses on correctness and reliability. Performance
 - macOS: x86_64, aarch64
 
 ## License
-deninge is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
+d-eninge is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
 or the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your choosing.

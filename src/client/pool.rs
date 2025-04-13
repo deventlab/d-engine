@@ -1,3 +1,5 @@
+use std::mem;
+
 use log::debug;
 use log::error;
 use log::info;
@@ -23,6 +25,7 @@ pub struct ConnectionPool {
     pub(super) follower_conns: Vec<Channel>,
     pub(super) config: ClientConfig,
     pub(super) members: Vec<NodeMeta>,
+    pub(super) endpoints: Vec<String>,
 }
 
 impl ConnectionPool {
@@ -32,32 +35,70 @@ impl ConnectionPool {
     /// 1. Discovers cluster metadata
     /// 2. Establishes leader connection
     /// 3. Creates follower connections
-    pub(crate) async fn new(
+    pub(crate) async fn create(
         endpoints: Vec<String>,
         config: ClientConfig,
     ) -> Result<Self> {
-        let members = Self::load_cluster_metadata(&endpoints, &config).await?;
-        info!("Retrieved members: {:?}", &members);
-        let (leader_addr, followers) = Self::parse_cluster_metadata(&members)?;
+        let (leader_conn, follower_conns, members) = Self::build_connections(&endpoints, &config).await?;
 
-        let leader_conn = Self::create_channel(leader_addr, &config).await?;
-        let mut follower_conns = Vec::new();
-
-        // Build follower connections asynchronously
-        let follower_futures = followers.into_iter().map(|addr| Self::create_channel(addr, &config));
-        let connections = futures::future::join_all(follower_futures).await;
-
-        for conn in connections {
-            if let Ok(channel) = conn {
-                follower_conns.push(channel);
-            }
-        }
         Ok(Self {
             leader_conn,
             follower_conns,
             config,
             members,
+            endpoints,
         })
+    }
+
+    /// Refreshes cluster connections by reloading metadata and rebuilding channels
+    ///
+    /// # Behavior
+    /// 1. Discovers fresh cluster metadata from provided endpoints
+    /// 2. Re-establishes leader connection using latest config
+    /// 3. Rebuilds follower connections pool
+    ///
+    pub(crate) async fn refresh(
+        &mut self,
+        new_endpoints: Option<Vec<String>>,
+    ) -> Result<()> {
+        if let Some(endpoints) = new_endpoints {
+            self.endpoints = endpoints;
+        }
+        let (leader_conn, follower_conns, members) = Self::build_connections(&self.endpoints, &self.config).await?;
+
+        // Atomic update of fields
+        self.leader_conn = leader_conn;
+        self.follower_conns = follower_conns;
+        self.members = members;
+
+        Ok(())
+    }
+
+    /// Create the core logic of the connection pool (extract common code)
+    async fn build_connections(
+        endpoints: &[String],
+        config: &ClientConfig,
+    ) -> Result<(Channel, Vec<Channel>, Vec<NodeMeta>)> {
+        // 1. Load cluster metadata
+        let members = Self::load_cluster_metadata(endpoints, config).await?;
+        info!("Cluster members discovered: {:?}", members);
+
+        // 2. Parse leader and follower addresses
+        let (leader_addr, follower_addrs) = Self::parse_cluster_metadata(&members)?;
+
+        // 3. Establish all connections in parallel
+        let leader_future = Self::create_channel(leader_addr, config);
+        let follower_futures = follower_addrs
+            .into_iter()
+            .map(|addr| Self::create_channel(addr, config));
+
+        let (leader_conn, follower_conns) = tokio::join!(leader_future, futures::future::join_all(follower_futures));
+
+        // 4. Filter valid connections
+        let leader_conn = leader_conn?;
+        let follower_conns = follower_conns.into_iter().filter_map(Result::ok).collect();
+
+        Ok((leader_conn, follower_conns, members))
     }
 
     pub(super) async fn create_channel(

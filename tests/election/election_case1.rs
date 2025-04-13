@@ -19,15 +19,15 @@ use std::time::Duration;
 
 use d_engine::Error;
 
-use crate::commons::check_cluster_is_ready;
-use crate::commons::init_state_storage;
-use crate::commons::list_leader_id;
-use crate::commons::manipulate_log;
-use crate::commons::prepare_raft_log;
-use crate::commons::prepare_state_storage;
-use crate::commons::reset;
-use crate::commons::start_node;
-use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::client_manager::ClientManager;
+use crate::common::check_cluster_is_ready;
+use crate::common::init_state_storage;
+use crate::common::manipulate_log;
+use crate::common::prepare_raft_log;
+use crate::common::prepare_state_storage;
+use crate::common::reset;
+use crate::common::start_node;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
 
 #[tokio::test]
@@ -69,7 +69,9 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Error>
         format!("http://127.0.0.1:{}", port2),
         format!("http://127.0.0.1:{}", port3),
     ];
-    assert_eq!(list_leader_id(&bootstrap_urls).await.unwrap(), 2);
+
+    let client_manager = ClientManager::new(&bootstrap_urls).await?;
+    assert_eq!(client_manager.list_leader_id(&bootstrap_urls).await.unwrap(), 2);
 
     graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
     graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
