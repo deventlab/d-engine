@@ -20,7 +20,8 @@ use crate::TypeConfig;
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait StateMachineHandler<T>: Send + Sync + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn update_pending(
         &self,

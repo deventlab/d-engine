@@ -360,28 +360,34 @@ async fn test_build_append_request_case() {
 
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
-    entries_per_peer.insert(peer2_id, vec![Entry {
-        index: 3,
-        term: 1,
-        command: vec![1; 8],
-    }]);
-    entries_per_peer.insert(peer3_id, vec![
-        Entry {
-            index: 1,
-            term: 1,
-            command: vec![1; 8],
-        },
-        Entry {
-            index: 2,
-            term: 1,
-            command: vec![1; 8],
-        },
-        Entry {
+    entries_per_peer.insert(
+        peer2_id,
+        vec![Entry {
             index: 3,
             term: 1,
             command: vec![1; 8],
-        },
-    ]);
+        }],
+    );
+    entries_per_peer.insert(
+        peer3_id,
+        vec![
+            Entry {
+                index: 1,
+                term: 1,
+                command: vec![1; 8],
+            },
+            Entry {
+                index: 2,
+                term: 1,
+                command: vec![1; 8],
+            },
+            Entry {
+                index: 3,
+                term: 1,
+                command: vec![1; 8],
+            },
+        ],
+    );
 
     let data = ReplicationData {
         leader_last_index_before: 3,

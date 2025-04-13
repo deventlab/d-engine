@@ -71,7 +71,8 @@ pub trait PeerChannels: Sync + Send + 'static {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn voting_members(
         &self,
