@@ -138,33 +138,6 @@ async fn run_node(
     Ok(())
 }
 
-pub async fn list_members(bootstrap_urls: &Vec<String>) -> Result<Vec<NodeMeta>> {
-    let client = match ClientBuilder::new(bootstrap_urls.clone())
-        .connect_timeout(Duration::from_secs(3))
-        .request_timeout(Duration::from_secs(10))
-        .enable_compression(true)
-        .build()
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            error!("execute_command, {:?}", e);
-            return Err(e);
-        }
-    };
-    client.cluster().list_members().await
-}
-pub async fn list_leader_id(bootstrap_urls: &Vec<String>) -> Result<u32> {
-    let members = list_members(bootstrap_urls).await?;
-    let mut ids: Vec<u32> = members
-        .iter()
-        .filter(|meta| meta.role == LEADER)
-        .map(|n| n.id)
-        .collect();
-
-    Ok(ids.pop().unwrap_or(0))
-}
-
 pub fn get_root_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }

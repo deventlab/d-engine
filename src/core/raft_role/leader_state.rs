@@ -5,19 +5,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
-use nanoid::nanoid;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
 use super::LeaderStateSnapshot;
@@ -29,10 +16,10 @@ use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
+use crate::constants::INTERNAL_CLIENT_ID;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClientResponse;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::VoteResponse;
@@ -62,6 +49,18 @@ use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use log::debug;
+use log::error;
+use log::info;
+use log::trace;
+use log::warn;
+use nanoid::nanoid;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
 
 pub struct LeaderState<T: TypeConfig> {
     // Leader State
@@ -198,29 +197,38 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(self.noop_log_id)
     }
 
-    // TODO: to be implemenmted in ticket #43(v0.2.0)
     async fn verify_leadership_in_new_term(
-        &self,
-        event_tx: mpsc::Sender<RaftEvent>,
-    ) -> Result<()> {
-        // debug!("verify_leadership_in_new_term...");
-        // let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        &mut self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+    ) -> bool {
+        debug!("verify_leadership_in_new_term...");
+        let command = ClientCommand::no_op();
 
-        // let command = ClientCommand::no_op();
+        let client_propose_request = ClientProposeRequest {
+            client_id: INTERNAL_CLIENT_ID,
+            commands: vec![command],
+        };
 
-        // let req = ClientProposeRequest {
-        //     client_id: INTERNAL_CLIENT_ID,
-        //     commands: vec![command],
-        // };
-        // event_tx
-        //     .send(RaftEvent::ClientPropose(req, resp_tx))
-        //     .await
-        //     .map_err(|e| {
-        //         let error_str = format!("{:?}", e);
-        //         error!("Failed to send: {}", error_str);
-        //         Error::TokioSendStatusError(error_str)
-        //     })
-        Ok(())
+        let settings = ctx.settings();
+        if let Ok(true) = self
+            .check_leadership_consensus(
+                client_propose_request,
+                ctx.replication_handler(),
+                &ctx.voting_members(peer_channels),
+                ctx.raft_log(),
+                ctx.transport(),
+                &settings.raft,
+                &settings.retry,
+                &role_tx,
+            )
+            .await
+        {
+            true
+        } else {
+            false
+        }
     }
     /// Decrease next id for node(node_id) by 1
     #[cfg(test)]
@@ -849,44 +857,22 @@ impl<T: TypeConfig> LeaderState<T> {
             commands: vec![],
         };
 
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        if let Err(e) = self
-            .process_client_propose(
+        if let Ok(true) = self
+            .check_leadership_consensus(
                 client_propose_request,
-                resp_tx,
                 replication_handler,
                 voting_members,
                 raft_log,
                 transport,
                 raft_config,
                 retry_policies,
-                true,
                 role_tx,
             )
             .await
         {
-            error("Leader::process_client_propose", &e);
-            false
+            true
         } else {
-            match timeout(
-                Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
-                resp_rx,
-            )
-            .await
-            {
-                Ok(Ok(Ok(ClientResponse { error_code, result }))) => {
-                    debug!(
-                        "process_client_propose error_code:{:?}, result: {:?}",
-                        error_code, &result
-                    );
-                    error_code == ClientRequestError::NoError as i32
-                }
-                _ => {
-                    warn!("process_client_propose failed");
-                    false
-                }
-            }
+            false
         }
     }
 
@@ -941,6 +927,68 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 }
 
 impl<T: TypeConfig> LeaderState<T> {
+    /// Checks if the current leader still has consensus from the majority of the cluster.
+    /// This is used for both new term leadership verification and read operation quorum checks.
+    ///
+    /// # Parameters
+    /// - `request`: The ClientProposeRequest to send (no-op entry for term verification, empty for quorum check)
+    /// - `timeout_ms`: Max wait time for the response
+    /// - `success_condition`: Closure defining what constitutes a successful response
+    async fn check_leadership_consensus(
+        &mut self,
+        request: ClientProposeRequest,
+        replication_handler: &REPOF<T>,
+        voting_members: &Vec<ChannelWithAddressAndRole>,
+        raft_log: &Arc<ROF<T>>,
+        transport: &Arc<TROF<T>>,
+        raft_config: &RaftConfig,
+        retry_policies: &RetryPolicies,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        if let Err(e) = self
+            .process_client_propose(
+                request,
+                resp_tx,
+                replication_handler,
+                voting_members,
+                raft_log,
+                transport,
+                raft_config,
+                retry_policies,
+                true,
+                role_tx,
+            )
+            .await
+        {
+            error("Leader::process_client_propose", &e);
+            Err(e)
+        } else {
+            // Wait for response with timeout
+            let timeout_duration = Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
+
+            match timeout(timeout_duration, resp_rx).await {
+                Ok(Ok(Ok(response))) => {
+                    debug!("Leadership check response: {:?}", response);
+                    Ok(response.validate_error().is_ok())
+                }
+                Ok(Ok(Err(status))) => {
+                    warn!("Leadership check failed with status: {:?}", status);
+                    Ok(false)
+                }
+                Ok(Err(e)) => {
+                    error!("Channel error during leadership check: {:?}", e);
+                    Err(Error::LeadershipConsensusError(e.to_string()))
+                }
+                Err(_) => {
+                    warn!("Leadership check timed out after {:?}", timeout_duration);
+                    Ok(false)
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         node_id: u32,

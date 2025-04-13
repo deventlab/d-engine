@@ -94,10 +94,12 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     }
 
     async fn verify_leadership_in_new_term(
-        &self,
-        _event_tx: mpsc::Sender<RaftEvent>,
-    ) -> Result<()> {
-        Err(Error::NotLeader)
+        &mut self,
+        _peer_channels: Arc<POF<Self::T>>,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: mpsc::UnboundedSender<RoleEvent>,
+    ) -> bool {
+        false
     }
     fn is_follower(&self) -> bool {
         false

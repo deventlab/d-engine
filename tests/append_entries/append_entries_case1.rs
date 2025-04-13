@@ -92,7 +92,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
 
     let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
     // Node C becomes Leader
-    assert_eq!(client_manager.list_leader_id(&bootstrap_urls).await.unwrap(), 3);
+    assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
 
     // Trigger client request
     println!("put 11 100");
@@ -107,7 +107,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
     client_manager.verify_read(11, 100, ITERATIONS).await;
 
     // 4.1 Verify global state
-    assert_eq!(sm1.last_applied(), 11);
+    assert_eq!(sm1.last_applied(), 11 + 1); //should consider no_op log
 
     println!("put 12 200");
     assert!(
@@ -121,7 +121,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
     client_manager.verify_read(12, 200, ITERATIONS).await;
 
     // 4.2 Verify global state
-    assert_eq!(sm1.last_applied(), 12);
+    assert_eq!(sm1.last_applied(), 12 + 1); //should consider no_op log
 
     graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
     graceful_tx2.send(()).map_err(|_| Error::ServerError)?;

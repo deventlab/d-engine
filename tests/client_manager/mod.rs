@@ -161,36 +161,18 @@ impl ClientManager {
             match self.execute_command(ClientCommands::LREAD, key, None).await {
                 Ok(v) => assert_eq!(v, expected_value, "Linearizable read failed for key {}!", key),
                 Err(status) => {
+                    error!("verify_read::status: {:?}", status);
                     assert!(false);
                 }
             }
         }
     }
 
-    pub async fn list_members(
-        &self,
-        bootstrap_urls: &Vec<String>,
-    ) -> Result<Vec<NodeMeta>> {
-        let client = match ClientBuilder::new(bootstrap_urls.clone())
-            .connect_timeout(Duration::from_secs(3))
-            .request_timeout(Duration::from_secs(10))
-            .enable_compression(true)
-            .build()
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                error!("execute_command, {:?}", e);
-                return Err(e);
-            }
-        };
-        client.cluster().list_members().await
+    pub async fn list_members(&self) -> Result<Vec<NodeMeta>> {
+        self.client.cluster().list_members().await
     }
-    pub async fn list_leader_id(
-        &self,
-        bootstrap_urls: &Vec<String>,
-    ) -> Result<u32> {
-        let members = self.list_members(bootstrap_urls).await?;
+    pub async fn list_leader_id(&self) -> Result<u32> {
+        let members = self.list_members().await?;
         let mut ids: Vec<u32> = members
             .iter()
             .filter(|meta| meta.role == LEADER)

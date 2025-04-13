@@ -206,7 +206,7 @@ impl ClientResponse {
     ///
     /// # Internal Logic
     /// Converts numeric error code to enum variant
-    fn validate_error(&self) -> Result<()> {
+    pub(crate) fn validate_error(&self) -> Result<()> {
         match ClientRequestError::try_from(self.error_code).unwrap_or(ClientRequestError::NoError) {
             ClientRequestError::NoError => Ok(()),
             e => Err(e.into()),

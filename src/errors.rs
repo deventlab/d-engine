@@ -247,6 +247,12 @@ pub enum Error {
     /// the config.
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
+
+    //===== RAFT::election =====
+    /// Indicates a failure to reach consensus on leadership, typically due to
+    /// disagreements or lack of quorum during leader election or leadership verification.
+    #[error("Leadership Consensus Error: {0}")]
+    LeadershipConsensusError(String),
 }
 
 #[doc(hidden)]

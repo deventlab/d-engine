@@ -325,10 +325,14 @@ impl<T: TypeConfig> RaftRole<T> {
     }
 
     pub(crate) async fn verify_leadership_in_new_term(
-        &self,
-        event_tx: mpsc::Sender<RaftEvent>,
-    ) -> Result<()> {
-        self.state().verify_leadership_in_new_term(event_tx).await
+        &mut self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+    ) -> bool{
+        self.state_mut()
+            .verify_leadership_in_new_term(peer_channels, ctx, role_tx)
+            .await
     }
 }
 

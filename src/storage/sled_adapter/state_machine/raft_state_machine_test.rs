@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use prost::Message;
-use sled::Batch;
-
 use super::*;
 use crate::convert::kv;
 use crate::init_sled_storages;
@@ -14,6 +9,9 @@ use crate::test_utils::setup_raft_components;
 use crate::test_utils::{self};
 use crate::StateMachine;
 use crate::COMMITTED_LOG_METRIC;
+use prost::Message;
+use sled::Batch;
+use std::sync::Arc;
 
 #[test]
 fn test_start_stop() {
@@ -221,8 +219,8 @@ async fn test_apply_chunk_functionality() {
     assert_eq!(sm.last_applied(), 2);
 }
 
-#[tokio::test]
-async fn test_metrics_integration() {
+#[test]
+fn test_metrics_integration() {
     let root_path = "/tmp/test_metrics_integration";
     let context = setup_raft_components(root_path, None, false);
     let sm = context.state_machine.clone();
@@ -233,6 +231,7 @@ async fn test_metrics_integration() {
     };
 
     // Verify metric increment
+    COMMITTED_LOG_METRIC.reset();
     let initial = COMMITTED_LOG_METRIC.with_label_values(&["1", "1"]).get();
 
     sm.apply_chunk(vec![test_entry]).unwrap();
