@@ -14,4 +14,4 @@ log_dir = "./logs/cluster_start_stop/case1"
 prometheus_enabled = false
 
 [raft]
-general_raft_timeout_duration_in_ms = 1000
+general_raft_timeout_duration_in_ms = 10000

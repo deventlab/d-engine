@@ -18,8 +18,8 @@ jobs:
 
           ALLOWED_TYPES="feat|fix|refs|doc|perf|refactor|chore"
           SCOPE_PATTERN="([a-z][a-z0-9-]*)"
-          TICKET_PATTERN="#[0-9]+"
-          FULL_PATTERN="^($ALLOWED_TYPES)(\($SCOPE_PATTERN\))? $TICKET_PATTERN: .+$"
+          TICKET_PATTERN="#[0-9]+:"
+          FULL_PATTERN="^($ALLOWED_TYPES)(\($SCOPE_PATTERN\))? $TICKET_PATTERN.+$"
 
           # Validate the format of all new submissions
           for commit in $(git rev-list $BASE_SHA..$HEAD_SHA); do
