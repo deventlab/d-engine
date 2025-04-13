@@ -16,7 +16,8 @@ use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
 pub struct RaftContext<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub node_id: u32,
 
@@ -42,7 +43,8 @@ where T: TypeConfig
 }
 
 impl<T> RaftContext<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn raft_log(&self) -> &Arc<ROF<T>> {
         &self.raft_log
@@ -102,7 +104,8 @@ where T: TypeConfig
 }
 
 impl<T> Debug for RaftContext<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn fmt(
         &self,

@@ -1,12 +1,15 @@
+use arc_swap::ArcSwap;
 use log::debug;
 use log::error;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
+use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
+use tonic::Code;
 
-use super::ConnectionPool;
+use super::ClientInner;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
@@ -21,17 +24,14 @@ use crate::Result;
 ///
 /// Implements CRUD operations with configurable consistency levels.
 /// All write operations use strong consistency.
+#[derive(Clone)]
 pub struct KvClient {
-    client_id: u32,
-    pool: ConnectionPool,
+    pub(super) client_inner: Arc<ArcSwap<ClientInner>>,
 }
 
 impl KvClient {
-    pub(crate) fn new(
-        client_id: u32,
-        pool: ConnectionPool,
-    ) -> Self {
-        Self { client_id, pool }
+    pub(crate) fn new(client_inner: Arc<ArcSwap<ClientInner>>) -> Self {
+        Self { client_inner }
     }
 
     // Stores a value with strong consistency
@@ -44,13 +44,15 @@ impl KvClient {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
+        let client_inner = self.client_inner.load();
+
         // Build request
         let mut commands = Vec::new();
         let client_command_insert = ClientCommand::insert(key, value);
         commands.push(client_command_insert);
 
         let request = ClientProposeRequest {
-            client_id: self.client_id,
+            client_id: client_inner.client_id,
             commands,
         };
 
@@ -94,13 +96,14 @@ impl KvClient {
         &self,
         key: impl AsRef<[u8]>,
     ) -> Result<()> {
+        let client_inner = self.client_inner.load();
         // Build request
         let mut commands = Vec::new();
         let client_command_insert = ClientCommand::delete(key);
         commands.push(client_command_insert);
 
         let request = ClientProposeRequest {
-            client_id: self.client_id,
+            client_id: client_inner.client_id,
             commands,
         };
 
@@ -161,6 +164,7 @@ impl KvClient {
         keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
         linear: bool,
     ) -> Result<Vec<Option<ClientResult>>> {
+        let client_inner = self.client_inner.load();
         // Convert keys to commands
         let commands: Vec<ClientCommand> = keys.into_iter().map(|k| ClientCommand::get(k.as_ref())).collect();
 
@@ -178,7 +182,7 @@ impl KvClient {
 
         // Build request
         let request = ClientReadRequest {
-            client_id: self.client_id,
+            client_id: client_inner.client_id,
             linear,
             commands,
         };
@@ -191,15 +195,21 @@ impl KvClient {
             }
             Err(status) => {
                 error!("Read request failed: {:?}", status);
-                Err(Error::FailedToSendReadRequestError)
+                match status.code() {
+                    Code::PermissionDenied => Err(Error::NodeIsNotLeaderError),
+                    Code::Cancelled => Err(Error::ClientRequestCanceledError),
+                    _ => Err(Error::FailedToSendReadRequestError),
+                }
             }
         }
     }
 
     async fn make_leader_client(&self) -> Result<RpcServiceClient<Channel>> {
-        let channel = self.pool.get_leader();
+        let client_inner = self.client_inner.load();
+
+        let channel = client_inner.pool.get_leader();
         let mut client = RpcServiceClient::new(channel);
-        if self.pool.config.enable_compression {
+        if client_inner.pool.config.enable_compression {
             client = client
                 .send_compressed(CompressionEncoding::Gzip)
                 .accept_compressed(CompressionEncoding::Gzip);
@@ -209,14 +219,16 @@ impl KvClient {
     }
 
     async fn make_client(&self) -> Result<RpcServiceClient<Channel>> {
+        let client_inner = self.client_inner.load();
+
         // Balance from read clients
         let mut rng = StdRng::from_entropy();
-        let channels = self.pool.get_all_channels();
+        let channels = client_inner.pool.get_all_channels();
         let i = rng.gen_range(0..channels.len());
 
         let mut client = RpcServiceClient::new(channels[i].clone());
 
-        if self.pool.config.enable_compression {
+        if client_inner.pool.config.enable_compression {
             client = client
                 .send_compressed(CompressionEncoding::Gzip)
                 .accept_compressed(CompressionEncoding::Gzip);

@@ -37,7 +37,8 @@ use crate::TypeConfig;
 
 /// Raft node container
 pub struct Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub(crate) node_id: u32,
     pub(crate) raft_core: Arc<Mutex<Raft<T>>>,
@@ -52,7 +53,8 @@ where T: TypeConfig
 }
 
 impl<T> Debug for Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn fmt(
         &self,
@@ -62,7 +64,8 @@ where T: TypeConfig
     }
 }
 impl<T> Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     async fn connect_with_peers(
         node_id: u32,

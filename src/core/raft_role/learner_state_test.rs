@@ -233,9 +233,10 @@ async fn test_handle_raft_event_case4_1() {
     // Validation criterias
     // 2. I should not receive BecomeFollower event
     // 4. I should send out new commit signal
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::NotifyNewCommitIndex {
-        new_commit_index: _
-    }));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::NotifyNewCommitIndex { new_commit_index: _ }
+    ));
 
     // Validation criterias
     // 3. I should update term

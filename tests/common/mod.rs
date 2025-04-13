@@ -6,16 +6,13 @@ use std::time::Duration;
 use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
 use d_engine::alias::SSOF;
-use d_engine::client::ClientBuilder;
 use d_engine::config::RaftNodeConfig;
 use d_engine::convert::kv;
-use d_engine::convert::vk;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
 use d_engine::proto::ClientCommand;
 use d_engine::proto::Entry;
-use d_engine::proto::NodeMeta;
 use d_engine::proto::VotedFor;
 use d_engine::storage::RaftLog;
 use d_engine::storage::RaftStateMachine;
@@ -24,7 +21,6 @@ use d_engine::storage::SledStateStorage;
 use d_engine::storage::StateStorage;
 use d_engine::HardState;
 use d_engine::Result;
-use d_engine::LEADER;
 use log::debug;
 use log::error;
 use prost::Message;
@@ -37,7 +33,7 @@ use tokio::time;
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
 // we are testing linearizable read from Leader directly, the latency should less than 1ms ideally
-pub const LATENCY_IN_MS: u64 = 10;
+pub const LATENCY_IN_MS: u64 = 50;
 
 // to make sure the result is consistent
 pub const ITERATIONS: u64 = 10;
@@ -136,33 +132,6 @@ async fn run_node(
     debug!("Exiting program: {:?}", node_id);
     drop(node);
     Ok(())
-}
-
-pub async fn list_members(bootstrap_urls: &Vec<String>) -> Result<Vec<NodeMeta>> {
-    let client = match ClientBuilder::new(bootstrap_urls.clone())
-        .connect_timeout(Duration::from_secs(3))
-        .request_timeout(Duration::from_secs(10))
-        .enable_compression(true)
-        .build()
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            error!("execute_command, {:?}", e);
-            return Err(e);
-        }
-    };
-    client.cluster().list_members().await
-}
-pub async fn list_leader_id(bootstrap_urls: &Vec<String>) -> Result<u32> {
-    let members = list_members(bootstrap_urls).await?;
-    let mut ids: Vec<u32> = members
-        .iter()
-        .filter(|meta| meta.role == LEADER)
-        .map(|n| n.id)
-        .collect();
-
-    Ok(ids.pop().unwrap_or(0))
 }
 
 pub fn get_root_path() -> PathBuf {

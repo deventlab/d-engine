@@ -21,15 +21,18 @@ use crate::LEADER;
 async fn mock_listener(
     port: u64,
     rx: oneshot::Receiver<()>,
+    expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
 ) {
     let mut mock_service = MockRpcService::default();
-    mock_service.expected_metadata_response = Some(Ok(ClusterMembership {
-        nodes: vec![NodeMeta {
-            id: 1,
-            role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: port as u32,
-        }],
+    mock_service.expected_metadata_response = Some(expected_metadata_response.unwrap_or_else(|| {
+        Ok(ClusterMembership {
+            nodes: vec![NodeMeta {
+                id: 1,
+                role: LEADER,
+                ip: "127.0.0.1".to_string(),
+                port: port as u32,
+            }],
+        })
     }));
     let r = MockNode::mock_listener(mock_service, port, rx, true).await;
     assert!(r.is_ok());
@@ -73,7 +76,7 @@ async fn test_parse_cluster_metadata_no_leader() {
 async fn test_load_cluster_metadata_success() {
     let (_tx, rx) = oneshot::channel::<()>();
     let port = MOCK_CLIENT_PORT_BASE + 1;
-    mock_listener(port, rx).await;
+    mock_listener(port, rx, None).await;
 
     let endpoints = vec![format!("http://localhost:{}", port)];
     let config = ClientConfig::default();
@@ -107,12 +110,12 @@ async fn test_connection_pool_creation() {
     enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let port = MOCK_CLIENT_PORT_BASE + 3;
-    mock_listener(port, rx).await;
+    mock_listener(port, rx, None).await;
 
     let endpoints = vec![format!("http://localhost:{}", port)];
     let config = ClientConfig::default();
 
-    let pool = match ConnectionPool::new(endpoints, config).await {
+    let pool = match ConnectionPool::create(endpoints, config).await {
         Ok(p) => p,
         Err(e) => {
             error!("{:?}", e);
@@ -134,17 +137,70 @@ async fn test_get_all_channels() {
     let (_tx2, rx2) = oneshot::channel::<()>();
     let port1 = MOCK_CLIENT_PORT_BASE + 4;
     let port2 = MOCK_CLIENT_PORT_BASE + 5;
-    mock_listener(port1, rx1).await;
-    mock_listener(port2, rx2).await;
+    mock_listener(port1, rx1, None).await;
+    mock_listener(port2, rx2, None).await;
     let addr1 = format!("http://localhost:{}", port1);
     let addr2 = format!("http://localhost:{}", port2);
     let pool = ConnectionPool {
-        leader_conn: Channel::from_shared(addr1).unwrap().connect().await.unwrap(),
-        follower_conns: vec![Channel::from_shared(addr2).unwrap().connect().await.unwrap()],
+        leader_conn: Channel::from_shared(addr1.clone()).unwrap().connect().await.unwrap(),
+        follower_conns: vec![Channel::from_shared(addr2.clone()).unwrap().connect().await.unwrap()],
         config: ClientConfig::default(),
         members: vec![], // this value will not affect the unit test result
+        endpoints: vec![addr1, addr2],
     };
 
     let channels = pool.get_all_channels();
     assert_eq!(channels.len(), 2);
+}
+
+#[tokio::test]
+async fn test_refresh_successful_leader_change() {
+    enable_logger();
+    let leader_id = 1;
+    let new_leader_id = 2;
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let port = MOCK_CLIENT_PORT_BASE + 6;
+    let metadata = ClusterMembership {
+        nodes: vec![NodeMeta {
+            id: leader_id,
+            role: LEADER,
+            ip: "127.0.0.1".to_string(),
+            port: port as u32,
+        }],
+    };
+    mock_listener(port, rx, Some(Ok(metadata))).await;
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+
+    let mut pool = match ConnectionPool::create(endpoints, config).await {
+        Ok(p) => p,
+        Err(e) => {
+            error!("{:?}", e);
+            assert!(false);
+            panic!("f");
+        }
+    };
+    // Verify we have at least the leader connection
+    assert!(pool.members[0].id == leader_id);
+    // Check follower count matches test setup (adjust based on your mock data)
+    assert_eq!(pool.follower_conns.len(), 0);
+
+    // Now let's refresh the connections
+    let (_tx, rx) = oneshot::channel::<()>();
+    let port = MOCK_CLIENT_PORT_BASE + 7;
+    let metadata = ClusterMembership {
+        nodes: vec![NodeMeta {
+            id: new_leader_id,
+            role: LEADER,
+            ip: "127.0.0.1".to_string(),
+            port: port as u32,
+        }],
+    };
+    mock_listener(port, rx, Some(Ok(metadata))).await;
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    pool.refresh(Some(endpoints)).await.expect("success");
+    println!("-------- {:?}", pool.members);
+    assert!(pool.members[0].id == new_leader_id);
 }

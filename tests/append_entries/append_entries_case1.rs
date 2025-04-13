@@ -20,21 +20,19 @@ use std::time::Duration;
 use d_engine::storage::StateMachine;
 use d_engine::Error;
 
-use crate::commons::check_cluster_is_ready;
-use crate::commons::execute_command;
-use crate::commons::init_state_storage;
-use crate::commons::list_leader_id;
-use crate::commons::manipulate_log;
-use crate::commons::prepare_raft_log;
-use crate::commons::prepare_state_machine;
-use crate::commons::prepare_state_storage;
-use crate::commons::reset;
-use crate::commons::start_node;
-use crate::commons::verify_read;
-use crate::commons::ClientCommands;
-use crate::commons::ITERATIONS;
-use crate::commons::LATENCY_IN_MS;
-use crate::commons::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::client_manager::ClientManager;
+use crate::common::check_cluster_is_ready;
+use crate::common::init_state_storage;
+use crate::common::manipulate_log;
+use crate::common::prepare_raft_log;
+use crate::common::prepare_state_machine;
+use crate::common::prepare_state_storage;
+use crate::common::reset;
+use crate::common::start_node;
+use crate::common::ClientCommands;
+use crate::common::ITERATIONS;
+use crate::common::LATENCY_IN_MS;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
 
 #[tracing::instrument]
@@ -92,32 +90,35 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
         format!("http://127.0.0.1:{}", port3),
     ];
 
+    let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
     // Node C becomes Leader
-    assert_eq!(list_leader_id(&bootstrap_urls).await.unwrap(), 3);
+    assert_eq!(client_manager.list_leader_id(&bootstrap_urls).await.unwrap(), 3);
 
     // Trigger client request
     println!("put 11 100");
     assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 11, Some(100))
+        client_manager
+            .execute_command(ClientCommands::PUT, 11, Some(100))
             .await
             .is_ok(),
         "Put command failed!"
     );
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 11, 100, ITERATIONS).await;
+    client_manager.verify_read(11, 100, ITERATIONS).await;
 
     // 4.1 Verify global state
     assert_eq!(sm1.last_applied(), 11);
 
     println!("put 12 200");
     assert!(
-        execute_command(ClientCommands::PUT, &bootstrap_urls, 12, Some(200))
+        client_manager
+            .execute_command(ClientCommands::PUT, 12, Some(200))
             .await
             .is_ok(),
         "Put command failed!"
     );
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-    verify_read(&bootstrap_urls, 12, 200, ITERATIONS).await;
+    client_manager.verify_read(12, 200, ITERATIONS).await;
 
     // 4.2 Verify global state
     assert_eq!(sm1.last_applied(), 12);
