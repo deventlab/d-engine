@@ -27,7 +27,7 @@ Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = "0.1.0"
+d-engine = "0.1.1"
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -113,31 +113,6 @@ sequenceDiagram
     - `grpc_raft_service.rs`: RPC service definitions
 - `rpc_peer_channels.rs`: Peer-to-peer communication channels
 
-## Release Plan 
-
-This project follows semantic versioning. Below is our development roadmap:
-
-### Version Status
-- ✅ Released | 🚧 In Development | ⏳ Planned
-
-### Upcoming Releases
-
-#### [v0.1.0](link-to-release) - Laying the Foundation ✅
-**Key Goals**:  
-- Initial implementation of core Raft consensus algorithm  
-- Basic cluster communication layer  
-- Minimal working example demonstration
-
-#### v0.2.0 - Cluster Scalability 🚧
-**Key Features**:  
-- Snapshot support for state compaction
-- Dynamic membership: Add/remove nodes without full restart  
-- Improved leadership transfer mechanics
-
-#### v0.3.0 - Production Ready ⏳
-**Milestone**:  
-- Performance benchmarking suite (e.g. 100K RPS)
-
 ## Contribution Guide
 
 ### Prerequisites
@@ -149,8 +124,8 @@ This project follows semantic versioning. Below is our development roadmap:
 ```bash
 # Build and test
 cargo test --all-features
-cargo clippy --all-targets -- -D clippy::all
-cargo fmt --check
+cargo clippy --all-targets --all-features
+cargo fmt --all -- --check
 ```
 ## Code Style
 Follow Rust community standards (rustfmt, clippy).
