@@ -187,41 +187,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_task_with_exponential_backoff() {
+        tokio::time::pause();
+
         // Case 1: when ok task return ok
-        if let Ok(_) = task_with_timeout_and_exponential_backoff(
+        assert!(task_with_timeout_and_exponential_backoff(
             || async { async_ok(3).await },
             3,
             Duration::from_millis(100),
             Duration::from_secs(1),
         )
         .await
-        {
-            assert!(true);
-        } else {
-            assert!(false);
-        }
+        .is_ok());
+
         // Case 2: when err task return error
-        if let Ok(_) =
-            task_with_timeout_and_exponential_backoff(async_err, 3, Duration::from_millis(100), Duration::from_secs(1))
-                .await
-        {
-            assert!(false);
-        } else {
-            assert!(true);
-        }
+        assert!(task_with_timeout_and_exponential_backoff(
+            async_err,
+            3,
+            Duration::from_millis(100),
+            Duration::from_secs(1)
+        )
+        .await
+        .is_err());
 
         // Case 3: when ok task always failed on timeout error
-        if let Ok(_) = task_with_timeout_and_exponential_backoff(
+        assert!(task_with_timeout_and_exponential_backoff(
             || async { async_ok(3).await },
             3,
             Duration::from_millis(100),
             Duration::from_millis(1),
         )
         .await
-        {
-            assert!(false);
-        } else {
-            assert!(true);
-        }
+        .is_err());
     }
 }

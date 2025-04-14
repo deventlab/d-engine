@@ -278,10 +278,11 @@ where
                     .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
 
                 //async action
-                if !self
+                if self
                     .role
                     .verify_leadership_in_new_term(self.peer_channels()?, &self.ctx, self.role_tx.clone())
                     .await
+                    .is_err()
                 {
                     info!("Verify leadership in new term failed. Now the node is going to step back to Follower...");
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {

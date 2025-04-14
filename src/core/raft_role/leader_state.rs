@@ -31,8 +31,10 @@ use crate::ChannelWithAddressAndRole;
 use crate::ClientRequestWithSignal;
 use crate::Error;
 use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
+use crate::QuorumStatus;
 use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -202,7 +204,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
-    ) -> bool {
+    ) -> Result<()> {
         debug!("verify_leadership_in_new_term...");
         let command = ClientCommand::no_op();
 
@@ -212,23 +214,23 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         };
 
         let settings = ctx.settings();
-        if let Ok(true) = self
-            .check_leadership_consensus(
-                client_propose_request,
-                ctx.replication_handler(),
-                &ctx.voting_members(peer_channels),
-                ctx.raft_log(),
-                ctx.transport(),
-                &settings.raft,
-                &settings.retry,
-                &role_tx,
-            )
-            .await
-        {
-            true
-        } else {
-            false
-        }
+
+        let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+
+        self.process_client_propose(
+            client_propose_request,
+            resp_tx,
+            ctx.replication_handler(),
+            &ctx.voting_members(peer_channels),
+            ctx.raft_log(),
+            ctx.transport(),
+            &settings.raft,
+            &settings.retry,
+            false,
+            &role_tx,
+        )
+        .await?;
+        Ok(())
     }
     /// Decrease next id for node(node_id) by 1
     #[cfg(test)]
@@ -525,7 +527,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                     if client_read_request.linear {
                         let voting_members = ctx.voting_members(peer_channels);
-                        if !self
+                        let quorum_result = self
                             .enforce_quorum_consensus(
                                 ctx.replication_handler(),
                                 &voting_members,
@@ -535,8 +537,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 &settings.retry,
                                 &role_tx,
                             )
-                            .await
-                        {
+                            .await;
+
+                        let quorum_succeeded = matches!(quorum_result, Ok(true));
+
+                        if !quorum_succeeded {
                             warn!("enforce_quorum_consensus failed for linear read request");
 
                             Err(tonic::Status::failed_precondition(
@@ -614,7 +619,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// # Params
-    /// - `exexute_now`: should this propose been executed immediatelly. e.g.
+    /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
     pub(crate) async fn process_client_propose(
         &mut self,
@@ -626,7 +631,7 @@ impl<T: TypeConfig> LeaderState<T> {
         transport: &Arc<TROF<T>>,
         raft_config: &RaftConfig,
         retry_policies: &RetryPolicies,
-        exexute_now: bool,
+        execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         debug!(
@@ -641,7 +646,7 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // only buffer exceeds the max, the size will return
-        if exexute_now || push_result.is_some() {
+        if execute_now || push_result.is_some() {
             let batch = self.batch_buffer.take();
 
             trace!(
@@ -851,14 +856,14 @@ impl<T: TypeConfig> LeaderState<T> {
         raft_config: &RaftConfig,
         retry_policies: &RetryPolicies,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> bool {
+    ) -> Result<bool> {
         let client_propose_request = ClientProposeRequest {
             client_id: self.settings.raft.election.internal_rpc_client_request_id,
             commands: vec![],
         };
 
-        if let Ok(true) = self
-            .check_leadership_consensus(
+        let status = self
+            .check_leadership_quorum_immediate(
                 client_propose_request,
                 replication_handler,
                 voting_members,
@@ -868,11 +873,12 @@ impl<T: TypeConfig> LeaderState<T> {
                 retry_policies,
                 role_tx,
             )
-            .await
-        {
-            true
-        } else {
-            false
+            .await?;
+        debug!("enforce_quorum_consensus:status = {:?}", status);
+        match status {
+            QuorumStatus::Confirmed => Ok(true),
+            QuorumStatus::LostQuorum => Ok(false),
+            QuorumStatus::NetworkError => Ok(false),
         }
     }
 
@@ -927,14 +933,17 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 }
 
 impl<T: TypeConfig> LeaderState<T> {
-    /// Checks if the current leader still has consensus from the majority of the cluster.
-    /// This is used for both new term leadership verification and read operation quorum checks.
+    /// Check leadership quorum verification Immidiatelly
     ///
-    /// # Parameters
-    /// - `request`: The ClientProposeRequest to send (no-op entry for term verification, empty for quorum check)
-    /// - `timeout_ms`: Max wait time for the response
-    /// - `success_condition`: Closure defining what constitutes a successful response
-    async fn check_leadership_consensus(
+    /// - Bypasses all queues with direct RPC transmission
+    /// - Enforces synchronous quorum validation
+    /// - Guarantees real-time network visibility
+    ///
+    /// # Returns
+    /// - `Ok(true)`: Real-time majority quorum confirmed
+    /// - `Ok(false)`: Failed to verify immediate quorum
+    /// - `Err(_)`: Network or processing failure during real-time verification
+    async fn check_leadership_quorum_immediate(
         &mut self,
         request: ClientProposeRequest,
         replication_handler: &REPOF<T>,
@@ -944,47 +953,63 @@ impl<T: TypeConfig> LeaderState<T> {
         raft_config: &RaftConfig,
         retry_policies: &RetryPolicies,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
+    ) -> Result<QuorumStatus> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
-        if let Err(e) = self
-            .process_client_propose(
-                request,
-                resp_tx,
-                replication_handler,
-                voting_members,
-                raft_log,
-                transport,
-                raft_config,
-                retry_policies,
-                true,
-                role_tx,
-            )
-            .await
-        {
-            error("Leader::process_client_propose", &e);
-            Err(e)
-        } else {
-            // Wait for response with timeout
-            let timeout_duration = Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
+        self.process_client_propose(
+            request,
+            resp_tx,
+            replication_handler,
+            voting_members,
+            raft_log,
+            transport,
+            raft_config,
+            retry_policies,
+            true,
+            role_tx,
+        )
+        .await?;
 
-            match timeout(timeout_duration, resp_rx).await {
-                Ok(Ok(Ok(response))) => {
-                    debug!("Leadership check response: {:?}", response);
-                    Ok(response.validate_error().is_ok())
-                }
-                Ok(Ok(Err(status))) => {
-                    warn!("Leadership check failed with status: {:?}", status);
-                    Ok(false)
-                }
-                Ok(Err(e)) => {
-                    error!("Channel error during leadership check: {:?}", e);
-                    Err(Error::LeadershipConsensusError(e.to_string()))
-                }
-                Err(_) => {
-                    warn!("Leadership check timed out after {:?}", timeout_duration);
-                    Ok(false)
-                }
+        self.wait_quorum_response(
+            resp_rx,
+            Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
+        )
+        .await
+    }
+
+    async fn wait_quorum_response(
+        &self,
+        receiver: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>,
+        timeout_duration: Duration,
+    ) -> Result<QuorumStatus> {
+        // Wait for response with timeout
+        match timeout(timeout_duration, receiver).await {
+            // Case 1: Response received successfully and verification passed
+            Ok(Ok(Ok(response))) => {
+                debug!("Leadership check response: {:?}", response);
+                Ok(if response.validate_error().is_ok() {
+                    QuorumStatus::Confirmed
+                } else {
+                    QuorumStatus::LostQuorum
+                })
+            }
+
+            // Case 2: Received explicit rejection status
+            Ok(Ok(Err(status))) => {
+                warn!("Leadership check failed with status: {:?}", status);
+                Ok(QuorumStatus::LostQuorum)
+            }
+
+            // Case 3: Channel communication failure (unrecoverable error)
+            Ok(Err(e)) => {
+                error!("Channel error during leadership check: {:?}", e);
+                Err(Error::LeadershipConsensusError(e.to_string()))
+            }
+
+            // Case 4: Waiting for response timeout
+            Err(_) => {
+                warn!("Leadership check timed out after {:?}", timeout_duration);
+                Ok(QuorumStatus::NetworkError)
             }
         }
     }

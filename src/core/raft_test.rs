@@ -972,19 +972,31 @@ fn prepare_failed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<M
 }
 
 /// # Case 1.5.1: as Leader, try to verify leadership in new term failed
+/// due to **technical failures in the verification process**, not quorum rejection.
 ///
 /// ## Validation criterias:
 /// 1. should monitor BecomeFollower event been send out.
 ///
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_5_1() {
+    tokio::time::pause();
     enable_logger();
     // 1. Create a Raft instance with mocks
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_state_update_case1_5_1", graceful_rx, None);
-    let (raft_log, replication_core) = prepare_failed_majority_confirmation();
+    let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    replication_handler
+        .expect_handle_client_proposal_in_batch()
+        .returning(move |_, _, _, _, _, _, _, _| Err(Error::GeneralServerError("".to_string())));
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, _, _| Some(5));
+    raft_log.expect_last_entry_id().return_const(1_u64);
+    raft_log.expect_flush().return_once(|| Ok(()));
     raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.replication_handler = replication_handler;
 
     // 2. Add state listeners
     let role_tx = raft.role_tx.clone();
@@ -993,11 +1005,15 @@ async fn test_handle_role_event_state_update_case1_5_1() {
 
     // 3. Start the Raft main loop
     let raft_handle = tokio::spawn(async move {
-        let _ = time::timeout(Duration::from_millis(1000), raft.run()).await;
+        let _ = time::timeout(Duration::from_millis(20), raft.run()).await;
     });
 
-    // 5. Send RoleEvent（role == Candidate）
+    // 4. Send RoleEvent（role == Candidate）
     role_tx.send(RoleEvent::BecomeLeader).unwrap();
+
+    // 5. Time advancement control (step-by-step trigger Tick)
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::time::sleep(Duration::from_millis(10)).await; // **key of test**  Ensure Tick is processed
 
     // 6. Wait for Tick to trigger and process
     let role_state = monitor_rx.recv().await.unwrap();
@@ -1020,7 +1036,7 @@ async fn test_handle_role_event_state_update_case1_5_1() {
 /// # Case 1.5.2: as Leader, verify leadership in new term successfully
 ///
 /// ## Validation criterias:
-/// 1. should monitor BecomeFollower event been send out.
+/// 1. should no BecomeFollower event been sent out.
 ///
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_5_2() {

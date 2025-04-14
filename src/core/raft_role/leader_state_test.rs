@@ -304,7 +304,7 @@ async fn test_process_client_propose_case1_2() {
 /// # Case 2: Test process_client_propose by client propose request
 ///
 /// ## Setup
-/// - exexute_now = false
+/// - execute_now = false
 /// - batch is not full yet(rpc_append_entries_in_batch_threshold = 100)
 ///
 /// ## Criterias
@@ -760,7 +760,7 @@ async fn test_handle_raft_event_case6_1() {
         .returning(|_, _, _, _, _, _, _, _| Err(Error::AppendEntriesCommitNotConfirmed));
 
     // Initializing Shutdown Signal
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_1")
         .with_replication_handler(replication_handler)
@@ -921,7 +921,6 @@ async fn test_handle_raft_event_case6_2() {
 async fn test_handle_raft_event_case6_3() {
     enable_logger();
     // Prepare Leader State
-    let new_leader_id = 7;
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_client_proposal_in_batch()

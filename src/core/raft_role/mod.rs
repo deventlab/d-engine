@@ -324,12 +324,36 @@ impl<T: TypeConfig> RaftRole<T> {
         0
     }
 
+    /// Verifies leadership validity in the new term by attempting to replicate a no-op entry.
+    ///
+    /// This critical safety check ensures the new leader can actually communicate with a quorum of
+    /// cluster nodes before accepting client requests. The verification is done by replicating
+    /// a special no-op log entry and confirming its commitment.
+    ///
+    /// # Key Behaviors
+    /// - **Non-blocking verification**: Operates asynchronously without stalling main Raft loop
+    /// - **Term-aware retries**: Automatically aborts if higher term is detected
+    ///
+    /// # Error Semantics
+    /// Returned errors indicate **technical failures in the verification process**, not quorum rejection:
+    /// - Network errors (gRPC failures, unreachable nodes)
+    /// - Storage I/O errors (failed to persist no-op entry)
+    /// - Internal channel errors (message queue overflows)
+    ///
+    /// # Success Conditions
+    /// A successful `Ok(())` return only means:
+    /// The noop request has been successfully enqueued into the leader’s replication batch queue.
+    ///
+    /// # Arguments
+    /// - `peer_channels`: Network channels to cluster peers
+    /// - `ctx`: Shared Raft state context
+    /// - `role_tx`: Role transition event channel
     pub(crate) async fn verify_leadership_in_new_term(
         &mut self,
         peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
-    ) -> bool{
+    ) -> Result<()> {
         self.state_mut()
             .verify_leadership_in_new_term(peer_channels, ctx, role_tx)
             .await

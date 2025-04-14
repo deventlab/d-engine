@@ -69,3 +69,10 @@ pub(crate) fn is_target_log_more_recent(
     (target_last_log_term > my_last_log_term)
         || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum QuorumStatus {
+    Confirmed,    // Confirmed by the majority of nodes
+    LostQuorum,   // Unable to obtain majority
+    NetworkError, // Network problem (can be retried)
+}

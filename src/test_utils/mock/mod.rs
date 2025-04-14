@@ -83,6 +83,8 @@ pub fn mock_raft(
     enable_logger();
 
     let mut settings = settings(db_path);
+    // Set batch_threshold=0, means the replication will be triggered immediatelly.
+    settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
