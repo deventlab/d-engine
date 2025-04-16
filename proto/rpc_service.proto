@@ -108,7 +108,48 @@ message ClientResult {  // Renamed from ClientGetResult
   bytes value = 2;
 }
 
+enum ErrorCode {
+  // 0: Success
+  SUCCESS = 0;
+  
+  // 1xxx: Network/transport layer error (usually does not appear in the business response, only for expansion)
+  NETWORK_TIMEOUT = 1001;
+  NETWORK_UNREACHABLE = 1002;
+  
+  // 2xxx: protocol/parsing/compatibility error
+  PROTOCOL_INVALID_RESPONSE = 2001;
+  PROTOCOL_VERSION_MISMATCH = 2002;
+  
+  // 3xxx: Business logic error
+  // 3.1: Retryable
+  BUSINESS_RETRYABLE_TIMEOUT = 3101;
+  BUSINESS_RETRYABLE_NOT_LEADER = 3102;
+  // 3.2: Human intervention required
+  BUSINESS_ACTION_REQUIRED_LEADER_CHANGE = 3201;
+  // 3.3: Fatal Error
+  BUSINESS_FATAL_CONSISTENCY_BROKEN = 3301;
+  
+  // 4xxx: Client request error
+  CLIENT_INVALID_REQUEST = 4001;
+  CLIENT_UNAUTHORIZED = 4002;
+  
+  // 5xxx: Internal error on the server
+  SERVER_INTERNAL_ERROR = 5001;
+  SERVER_DISK_FULL = 5002;
+}
 
+message ErrorMetadata {
+  // Errors suitable for retry
+  optional uint64 retry_after_ms = 1;
+  
+  // Leader change information
+  optional string leader_id = 2;
+  optional string leader_address = 3;
+  
+  // Error details (for debugging only)
+  optional string debug_message = 15;
+}
+  
 enum ClientRequestError {
   NO_ERROR = 0;
   COMMIT_NOT_CONFIRMED = 1;
@@ -119,11 +160,14 @@ enum ClientRequestError {
 }
 
 message ClientResponse {
-  ClientRequestError error_code = 1;
-  oneof result {
-    bool write_result = 2;          // Single value for writes
-    ReadResults read_results = 3;    // Wrapped repeated for reads
+  ErrorCode error = 1;
+
+  oneof success_result {
+    bool write_ack = 2;
+    ReadResults read_data = 3;
   }
+
+  ErrorMetadata metadata = 4;
 }
 
 message ReadResults {
