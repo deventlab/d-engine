@@ -1,5 +1,9 @@
-use std::mem;
-
+use crate::proto::rpc_service_client::RpcServiceClient;
+use crate::proto::MetadataRequest;
+use crate::proto::NodeMeta;
+use crate::ClientConfig;
+use crate::Error;
+use crate::Result;
 use log::debug;
 use log::error;
 use log::info;
@@ -7,12 +11,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::MetadataRequest;
-use crate::proto::NodeMeta;
-use crate::ClientConfig;
-use crate::Error;
-use crate::Result;
+use super::ClientApiError;
 
 /// Manages connections to cluster nodes
 ///
@@ -104,7 +103,7 @@ impl ConnectionPool {
     pub(super) async fn create_channel(
         addr: String,
         config: &ClientConfig,
-    ) -> Result<Channel> {
+    ) -> std::result::Result<Channel, ClientApiError> {
         debug!("create_channel, addr = {:?}", &addr);
         Endpoint::try_from(addr)?
             .connect_timeout(config.connect_timeout)

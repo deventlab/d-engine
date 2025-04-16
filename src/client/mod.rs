@@ -45,6 +45,7 @@ mod builder;
 mod client;
 mod cluster;
 mod config;
+mod error;
 mod kv;
 mod pool;
 
@@ -52,24 +53,21 @@ pub use builder::*;
 pub use client::*;
 pub use cluster::*;
 pub use config::*;
+pub use error::*;
 pub use kv::*;
-use log::error;
 pub use pool::*;
 
 #[cfg(test)]
 mod pool_test;
 
-//---
-
 use crate::proto::client_command;
-use crate::proto::client_response;
+use crate::proto::client_response::SuccessResult;
 use crate::proto::ClientCommand;
-use crate::proto::ClientRequestError;
 use crate::proto::ClientResponse;
 use crate::proto::ClientResult;
+use crate::proto::ErrorCode;
 use crate::proto::ReadResults;
-use crate::Error;
-use crate::Result;
+use log::error;
 
 impl ClientCommand {
     /// Create read command for specified key
@@ -127,18 +125,9 @@ impl ClientResponse {
     /// Response with NoError code and write confirmation
     pub fn write_success() -> Self {
         Self {
-            error_code: ClientRequestError::NoError as i32,
-            result: Some(client_response::Result::WriteResult(true)),
-        }
-    }
-    /// Build error response for write operations
-    ///
-    /// # Parameters
-    /// - `error`: Error type implementing conversion to ClientRequestError
-    pub fn write_error(error: Error) -> Self {
-        Self {
-            error_code: <ClientRequestError as Into<i32>>::into(ClientRequestError::from(error)),
-            result: None,
+            error: ErrorCode::Success as i32,
+            success_result: Some(SuccessResult::WriteAck(true)),
+            metadata: None,
         }
     }
 
@@ -148,19 +137,21 @@ impl ClientResponse {
     /// - `results`: Vector of retrieved key-value pairs
     pub fn read_results(results: Vec<ClientResult>) -> Self {
         Self {
-            error_code: ClientRequestError::NoError as i32,
-            result: Some(client_response::Result::ReadResults(ReadResults { results })),
+            error: ErrorCode::Success as i32,
+            success_result: Some(SuccessResult::ReadData(ReadResults { results })),
+            metadata: None,
         }
     }
 
     /// Build generic error response for any operation type
     ///
     /// # Parameters
-    /// - `error`: Predefined client request error code
-    pub fn error(error: ClientRequestError) -> Self {
+    /// - `error_code`: Predefined client request error code
+    pub fn client_error(error_code: ErrorCode) -> Self {
         Self {
-            error_code: error as i32,
-            result: None,
+            error: error_code as i32,
+            success_result: None,
+            metadata: None,
         }
     }
 
@@ -169,10 +160,10 @@ impl ClientResponse {
     /// # Returns
     /// - `Ok(true)` on successful write
     /// - `Err` with converted error code on failure
-    pub fn into_write_result(&self) -> Result<bool> {
+    pub fn into_write_result(&self) -> std::result::Result<bool, ClientApiError> {
         self.validate_error()?;
-        Ok(match self.result {
-            Some(client_response::Result::WriteResult(success)) => success,
+        Ok(match self.success_result {
+            Some(SuccessResult::WriteAck(success)) => success,
             _ => false,
         })
     }
@@ -181,10 +172,10 @@ impl ClientResponse {
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    pub fn into_read_results(&self) -> Result<Vec<Option<ClientResult>>> {
+    pub fn into_read_results(&self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         self.validate_error()?;
-        match &self.result {
-            Some(client_response::Result::ReadResults(read_results)) => read_results
+        match &self.success_result {
+            Some(SuccessResult::ReadData(data)) => data
                 .results
                 .clone()
                 .into_iter()
@@ -197,7 +188,7 @@ impl ClientResponse {
                 .collect(),
             _ => {
                 error!("Invalid response type for read operation");
-                Err(Error::InvalidResponseType)
+                unreachable!()
             }
         }
     }
@@ -206,9 +197,9 @@ impl ClientResponse {
     ///
     /// # Internal Logic
     /// Converts numeric error code to enum variant
-    pub(crate) fn validate_error(&self) -> Result<()> {
-        match ClientRequestError::try_from(self.error_code).unwrap_or(ClientRequestError::NoError) {
-            ClientRequestError::NoError => Ok(()),
+    pub(crate) fn validate_error(&self) -> std::result::Result<(), ClientApiError> {
+        match ErrorCode::try_from(self.error).unwrap_or(ErrorCode::ServerInternalError) {
+            ErrorCode::Success => Ok(()),
             e => Err(e.into()),
         }
     }
