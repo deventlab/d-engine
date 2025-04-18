@@ -40,9 +40,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::error;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tracing::error;
 
 use super::generate_insert_commands;
 use crate::alias::MOF;

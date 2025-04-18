@@ -164,11 +164,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use tracing::debug;
-use tracing::warn;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tonic::Code;
+use tracing::debug;
+use tracing::warn;
 
 use crate::Error;
 

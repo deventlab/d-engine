@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use tracing::trace;
 use tokio::time::Instant;
+use tracing::trace;
 
 pub struct BatchBuffer<E> {
     pub(super) max_batch_size: usize,

@@ -1,12 +1,12 @@
 use std::io;
 use std::net::SocketAddr;
 
-use tracing::info;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic_health::server::health_reporter;
+use tracing::info;
 
 use super::MockRpcService;
 use crate::proto::rpc_service_server::RpcServiceServer;

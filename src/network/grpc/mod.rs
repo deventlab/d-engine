@@ -24,10 +24,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::FutureExt;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
 use rcgen::generate_simple_self_signed;
 use rcgen::CertifiedKey;
 use tokio::sync::watch;
@@ -36,6 +32,10 @@ use tonic::transport::Certificate;
 use tonic::transport::Identity;
 use tonic::transport::ServerTlsConfig;
 use tonic_health::server::health_reporter;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use crate::proto::rpc_service_server::RpcServiceServer;
 use crate::Node;

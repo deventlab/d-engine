@@ -3,11 +3,11 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use autometrics::autometrics;
+use tokio::sync::mpsc;
+use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
-use tokio::sync::mpsc;
-use tonic::async_trait;
 
 use super::ElectionCore;
 use crate::alias::ROF;

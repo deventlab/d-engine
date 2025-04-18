@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tracing::debug;
-use tracing::error;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
+use tracing::debug;
+use tracing::error;
 
 use super::ClientInner;
 use crate::proto::rpc_service_client::RpcServiceClient;

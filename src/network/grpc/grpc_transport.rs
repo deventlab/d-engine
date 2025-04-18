@@ -7,13 +7,13 @@ use autometrics::autometrics;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
+use tokio::task;
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-use tokio::task;
-use tonic::async_trait;
-use tonic::codec::CompressionEncoding;
 
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::AppendEntriesRequest;

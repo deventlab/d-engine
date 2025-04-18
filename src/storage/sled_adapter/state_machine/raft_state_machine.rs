@@ -6,13 +6,13 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use autometrics::autometrics;
+use prost::Message;
+use sled::Batch;
+use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-use prost::Message;
-use sled::Batch;
-use tonic::async_trait;
 
 use crate::convert::vk;
 use crate::proto::client_command::Command;

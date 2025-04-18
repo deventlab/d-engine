@@ -1,10 +1,10 @@
 use std::time::Duration;
 
+use tokio::time::sleep;
+use tokio::time::timeout;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
-use tokio::time::sleep;
-use tokio::time::timeout;
 
 use crate::BackoffPolicy;
 use crate::NetworkError;

@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::vec;
 
 use futures::future::join_all;
-use tracing::debug;
 use tokio::time::Instant;
+use tracing::debug;
 
 use super::*;
 use crate::alias::ROF;

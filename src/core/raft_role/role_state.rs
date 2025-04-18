@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::async_trait;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 
 use super::RaftRole;
 use super::SharedState;

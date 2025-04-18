@@ -30,8 +30,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use autometrics::autometrics;
-use tracing::error;
 use tonic::async_trait;
+use tracing::error;
 
 use super::StateMachineHandler;
 use crate::alias::ROF;

@@ -35,12 +35,12 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use tracing::debug;
-use tracing::error;
-use tracing::info;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
 
 use super::RaftTypeConfig;
 use crate::alias::COF;

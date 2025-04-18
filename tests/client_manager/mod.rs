@@ -9,10 +9,10 @@ use d_engine::proto::NodeMeta;
 use d_engine::ClientApiError;
 use d_engine::Result;
 use d_engine::LEADER;
+use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tokio::time::sleep;
 
 use crate::common::ClientCommands;
 use crate::common::{self};

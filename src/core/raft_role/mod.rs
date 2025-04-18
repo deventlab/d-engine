@@ -26,8 +26,6 @@ use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
 use learner_state::LearnerState;
-use tracing::debug;
-use tracing::trace;
 use role_state::RaftRoleState;
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
@@ -36,6 +34,8 @@ use serde::Serialize;
 use serde::Serializer;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use tracing::debug;
+use tracing::trace;
 
 use super::RaftContext;
 use super::RaftEvent;

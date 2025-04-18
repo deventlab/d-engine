@@ -1,9 +1,9 @@
 use std::time::Duration;
 use std::vec;
 
-use tracing::error;
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
+use tracing::error;
 
 use crate::proto::ClusterMembership;
 use crate::proto::ErrorCode;

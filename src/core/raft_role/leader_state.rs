@@ -6,17 +6,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use autometrics::autometrics;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
 use nanoid::nanoid;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio::time::Instant;
 use tonic::async_trait;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;

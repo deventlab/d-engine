@@ -6,15 +6,15 @@ use std::future::Future;
 use std::time::Duration;
 
 use autometrics::autometrics;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 
 use crate::proto::rpc_service_server::RpcService;
 use crate::proto::AppendEntriesRequest;

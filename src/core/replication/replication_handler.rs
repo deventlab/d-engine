@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
+use prost::Message;
+use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
 use tracing::warn;
-use prost::Message;
-use tonic::async_trait;
 
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;

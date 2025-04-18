@@ -7,8 +7,6 @@ mod state_storage;
 // -----------------------------------------------------------------------------
 use std::path::Path;
 
-use tracing::debug;
-use tracing::warn;
 #[doc(hidden)]
 pub use raft_log::*;
 #[doc(hidden)]
@@ -17,6 +15,8 @@ pub use sled_adapter::*;
 pub use state_machine::*;
 #[doc(hidden)]
 pub use state_storage::*;
+use tracing::debug;
+use tracing::warn;
 
 /// raft logs storage
 /// (raft_log_db, state_machine_db, state_storage_db, snapshot_storge_db)

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep_until;
 
 use super::follower_state::FollowerState;
 use super::RaftContext;

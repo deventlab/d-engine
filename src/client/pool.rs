@@ -1,8 +1,8 @@
-use tracing::debug;
-use tracing::error;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::error;
 use tracing::info;
 
 use super::ClientApiError;
