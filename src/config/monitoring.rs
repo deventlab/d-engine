@@ -68,7 +68,7 @@ impl MonitoringConfig {
             // Warn about unused port configuration
             #[cfg(debug_assertions)]
             if self.prometheus_port != default_prometheus_port() {
-                log::warn!(
+                tracing::warn!(
                     "prometheus_port configured to {} but monitoring is disabled",
                     self.prometheus_port
                 );

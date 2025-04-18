@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::debug;
-use log::trace;
-use log::warn;
+use tracing::debug;
+use tracing::trace;
+use tracing::warn;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;

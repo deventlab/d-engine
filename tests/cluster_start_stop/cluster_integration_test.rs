@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use d_engine::ClientApiError;
-use log::error;
+use tracing::error;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;

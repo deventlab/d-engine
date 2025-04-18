@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 use nanoid::nanoid;
 use tokio::sync::mpsc;
 use tokio::time::timeout;

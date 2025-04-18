@@ -1,7 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
 
-use log::info;
+use tracing::info;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;

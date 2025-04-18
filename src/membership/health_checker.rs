@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use log::error;
 #[cfg(test)]
 use mockall::automock;
 #[cfg(test)]
@@ -11,6 +10,7 @@ use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::HealthCheckResponse;
+use tracing::error;
 
 use crate::NetworkConfig;
 use crate::NetworkError;

@@ -6,9 +6,9 @@ use std::future::Future;
 use std::time::Duration;
 
 use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;

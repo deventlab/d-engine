@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;

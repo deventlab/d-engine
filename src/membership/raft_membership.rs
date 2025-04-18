@@ -19,11 +19,11 @@ use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::debug;
-use log::error;
-use log::trace;
-use log::warn;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::trace;
+use tracing::warn;
 
 use super::ChannelWithAddress;
 use super::Membership;

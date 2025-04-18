@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use log::debug;
+use tracing::debug;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;

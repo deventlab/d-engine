@@ -19,14 +19,14 @@ use dashmap::DashMap;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
+use tracing::error;
 use tokio::task;
 use tonic::async_trait;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::info;
+use tracing::warn;
 
 use super::ChannelWithAddress;
 use super::PeerChannels;

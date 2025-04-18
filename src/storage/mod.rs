@@ -7,8 +7,8 @@ mod state_storage;
 // -----------------------------------------------------------------------------
 use std::path::Path;
 
-use log::debug;
-use log::warn;
+use tracing::debug;
+use tracing::warn;
 #[doc(hidden)]
 pub use raft_log::*;
 #[doc(hidden)]

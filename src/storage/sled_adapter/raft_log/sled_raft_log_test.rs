@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::vec;
 
 use futures::future::join_all;
-use log::debug;
+use tracing::debug;
 use tokio::time::Instant;
 
 use super::*;

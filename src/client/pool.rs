@@ -1,9 +1,9 @@
-use log::debug;
-use log::error;
-use log::info;
+use tracing::debug;
+use tracing::error;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+use tracing::info;
 
 use super::ClientApiError;
 use crate::proto::rpc_service_client::RpcServiceClient;

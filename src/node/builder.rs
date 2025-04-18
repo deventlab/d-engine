@@ -35,9 +35,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;

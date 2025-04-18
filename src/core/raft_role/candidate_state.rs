@@ -2,10 +2,10 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::async_trait;

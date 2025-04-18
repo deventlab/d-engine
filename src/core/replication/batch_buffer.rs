@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use log::trace;
+use tracing::trace;
 use tokio::time::Instant;
 
 pub struct BatchBuffer<E> {

@@ -3,8 +3,8 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 
-use log::debug;
-use log::error;
+use tracing::debug;
+use tracing::error;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 

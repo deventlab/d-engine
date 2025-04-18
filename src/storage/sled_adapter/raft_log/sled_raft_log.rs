@@ -12,17 +12,17 @@ use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
 use prost::Message;
 use sled::Batch;
 use sled::IVec;
 use sled::Subscriber;
 use tokio::time::Instant;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 use crate::convert::kv;
 use crate::convert::vki;

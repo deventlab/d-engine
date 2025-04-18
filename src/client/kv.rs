@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use log::debug;
-use log::error;
+use tracing::debug;
+use tracing::error;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;

@@ -164,8 +164,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use log::debug;
-use log::warn;
+use tracing::debug;
+use tracing::warn;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tonic::Code;

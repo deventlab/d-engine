@@ -3,7 +3,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use dashmap::DashSet;
-use log::error;
+use tracing::error;
 
 use crate::proto::Entry;
 use crate::CANDIDATE;

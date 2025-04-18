@@ -60,7 +60,7 @@ pub use pool::*;
 #[cfg(test)]
 mod pool_test;
 
-use log::error;
+use tracing::error;
 
 use crate::proto::client_command;
 use crate::proto::client_response::SuccessResult;

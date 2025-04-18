@@ -1,7 +1,7 @@
 use std::time::Duration;
 use std::vec;
 
-use log::error;
+use tracing::error;
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
 

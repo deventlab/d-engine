@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use log::error;
-use log::info;
+use tracing::error;
+use tracing::info;
 
 use super::STATE_STORAGE_NAMESPACE;
 use crate::convert::skv;

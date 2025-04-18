@@ -3,9 +3,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 use tokio::sync::mpsc;
 use tonic::async_trait;
 

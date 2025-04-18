@@ -30,7 +30,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use autometrics::autometrics;
-use log::error;
+use tracing::error;
 use tonic::async_trait;
 
 use super::StateMachineHandler;

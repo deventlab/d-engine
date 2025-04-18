@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use log::debug;
-use log::error;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 use tokio::time::sleep;
 use tokio::time::timeout;
 

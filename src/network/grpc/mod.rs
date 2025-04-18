@@ -24,10 +24,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::FutureExt;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 use rcgen::generate_simple_self_signed;
 use rcgen::CertifiedKey;
 use tokio::sync::watch;
