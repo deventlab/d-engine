@@ -1,10 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-
 use super::follower_state::FollowerState;
 use super::HardState;
 use crate::alias::POF;
@@ -12,9 +5,9 @@ use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
+use crate::proto::ErrorCode;
 use crate::proto::LogId;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
@@ -33,11 +26,18 @@ use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
+use crate::NetworkError;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RaftTypeConfig;
 use crate::RoleEvent;
 use crate::StateUpdate;
+use crate::SystemError;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
 
 /// # Case 1: assume it is fresh cluster start
 ///
@@ -284,7 +284,11 @@ async fn test_handle_raft_event_case1_3() {
     election_handler
         .expect_handle_vote_request()
         .times(1)
-        .returning(|_, _, _, _| Err(Error::TokioSendStatusError("".to_string())));
+        .returning(|_, _, _, _| {
+            Err(Error::System(SystemError::Network(NetworkError::SingalSendFailed(
+                "".to_string(),
+            ))))
+        });
     context.election_handler = election_handler;
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
@@ -578,7 +582,7 @@ async fn test_handle_raft_event_case4_3() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(|_, _, _| Err(Error::GeneralServerError("test".to_string())));
+        .returning(|_, _, _| Err(Error::Fatal("test".to_string())));
 
     let mut membership = MockMembership::new();
 
@@ -661,7 +665,7 @@ async fn test_handle_raft_event_case5() {
         .is_ok());
 
     match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error_code, ClientRequestError::NotLeader as i32),
+        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
         _ => assert!(false),
     }
 }
@@ -728,7 +732,7 @@ async fn test_handle_raft_event_case6_2() {
 
     match resp_rx.recv().await {
         Ok(r) => match r {
-            Ok(r) => assert_eq!(r.error_code, ClientRequestError::NoError as i32),
+            Ok(r) => assert_eq!(r.error, ErrorCode::Success as i32),
             Err(_) => assert!(false),
         },
         Err(_) => assert!(false),

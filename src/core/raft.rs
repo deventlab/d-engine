@@ -1,14 +1,3 @@
-use std::sync::Arc;
-
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep_until;
-
 use super::follower_state::FollowerState;
 use super::RaftContext;
 use super::RaftEvent;
@@ -25,12 +14,23 @@ use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::Error;
 use crate::Membership;
+use crate::MembershipError;
+use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
+use log::debug;
+use log::error;
+use log::info;
+use log::trace;
+use log::warn;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
 
 pub struct Raft<T>
 where
@@ -252,7 +252,7 @@ where
         // All inbound and outbound raft event
 
         match role_event {
-            RoleEvent::BecomeFollower(leader_id_option) => {
+            RoleEvent::BecomeFollower(_leader_id_option) => {
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
 
@@ -288,7 +288,7 @@ where
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 }
 
@@ -315,7 +315,7 @@ where
                 self.event_tx.send(raft_event).await.map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
         };
@@ -326,7 +326,7 @@ where
     pub fn peer_channels(&self) -> Result<Arc<POF<T>>> {
         self.peer_channels
             .clone()
-            .ok_or_else(|| Error::FailedSetPeerConnection("handle_raft_event".to_string()))
+            .ok_or_else(|| MembershipError::SetupClusterConnectionFailed("handle_raft_event".to_string()).into())
     }
 
     pub fn register_new_commit_listener(

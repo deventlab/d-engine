@@ -1,10 +1,8 @@
-use std::time::Duration;
-
+use crate::NetworkConfig;
+use crate::NetworkError;
+use crate::Result;
 use log::error;
-#[cfg(test)]
-use mockall::automock;
-#[cfg(test)]
-use mockall::predicate::*;
+use std::time::Duration;
 use tonic::async_trait;
 use tonic::transport::Channel;
 use tonic_health::pb::health_check_response::ServingStatus;
@@ -12,9 +10,10 @@ use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::HealthCheckResponse;
 
-use crate::Error;
-use crate::NetworkConfig;
-use crate::Result;
+#[cfg(test)]
+use mockall::automock;
+#[cfg(test)]
+use mockall::predicate::*;
 
 #[cfg_attr(test, automock)]
 #[async_trait]
@@ -35,7 +34,7 @@ impl HealthChecker {
         settings: NetworkConfig,
     ) -> Result<Self> {
         let channel = Channel::from_shared(addr.to_string())
-            .map_err(|_| Error::InvalidURI(addr.into()))?
+            .map_err(|_| NetworkError::InvalidURI(addr.into()))?
             .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))
             .timeout(Duration::from_millis(settings.request_timeout_in_ms))
             .tcp_keepalive(Some(Duration::from_secs(settings.tcp_keepalive_in_secs)))
@@ -46,7 +45,7 @@ impl HealthChecker {
             .map_err(|err| {
                 error!("connect to {} failed: {}", addr, err);
                 eprintln!("{:?}", err);
-                Error::ConnectError
+                NetworkError::ConnectError
             })?;
 
         let client = HealthClient::new(channel)
@@ -74,14 +73,14 @@ impl HealthCheckerApis for HealthChecker {
             .await
             .map_err(|err| {
                 error!("client.check to {} failed: {}", peer_addr, err);
-                Error::ConnectError
+                NetworkError::ConnectError
             })?
             .into_inner();
 
         if response.status == ServingStatus::Serving as i32 {
             return Ok(());
         } else {
-            return Err(Error::ServerIsNotReadyError);
+            return Err(NetworkError::ServiceUnavailable("RPC service is not ready yet".to_string()).into());
         }
     }
 }

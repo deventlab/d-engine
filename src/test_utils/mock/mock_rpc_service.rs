@@ -103,7 +103,7 @@ impl MockNode {
             Ok(a) => a,
             Err(e) => {
                 assert!(false);
-                return Err(Error::GeneralServerError(format!(
+                return Err(Error::Fatal(format!(
                     "test_utils::MockNode::mock_listener failed: {:?}",
                     e
                 )));
@@ -124,7 +124,7 @@ impl MockNode {
             Ok(a) => a,
             Err(e) => {
                 assert!(false);
-                return Err(Error::GeneralServerError(format!(
+                return Err(Error::Fatal(format!(
                     "simulate_mock_service_with_append_reps failed: {:?}",
                     e
                 )));
@@ -145,10 +145,7 @@ impl MockNode {
             Ok(a) => a,
             Err(e) => {
                 assert!(false);
-                return Err(Error::GeneralServerError(format!(
-                    "simulate_send_votes_mock_server failed: {:?}",
-                    e
-                )));
+                return Err(Error::Fatal(format!("simulate_send_votes_mock_server failed: {:?}", e)));
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
@@ -156,17 +153,17 @@ impl MockNode {
 
     pub(crate) async fn simulate_mock_service_with_cluster_conf_reps(
         port: u64,
-        response: ClusterMembership,
+        response: std::result::Result<ClusterMembership, tonic::Status>,
         rx: oneshot::Receiver<()>,
     ) -> Result<ChannelWithAddress> {
         //prepare learner's channel address inside membership config
         let mut mock_service = MockRpcService::default();
-        mock_service.expected_metadata_response = Some(Ok(response));
+        mock_service.expected_metadata_response = Some(response);
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {
             Ok(a) => a,
             Err(e) => {
                 assert!(false);
-                return Err(Error::GeneralServerError(format!(
+                return Err(Error::Fatal(format!(
                     "simulate_mock_service_with_cluster_conf_reps failed: {:?}",
                     e
                 )));

@@ -1,17 +1,15 @@
+use super::ClientApiError;
 use crate::proto::rpc_service_client::RpcServiceClient;
+use crate::proto::ErrorCode;
 use crate::proto::MetadataRequest;
 use crate::proto::NodeMeta;
 use crate::ClientConfig;
-use crate::Error;
-use crate::Result;
 use log::debug;
 use log::error;
 use log::info;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
-
-use super::ClientApiError;
 
 /// Manages connections to cluster nodes
 ///
@@ -37,7 +35,7 @@ impl ConnectionPool {
     pub(crate) async fn create(
         endpoints: Vec<String>,
         config: ClientConfig,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, ClientApiError> {
         let (leader_conn, follower_conns, members) = Self::build_connections(&endpoints, &config).await?;
 
         Ok(Self {
@@ -59,7 +57,7 @@ impl ConnectionPool {
     pub(crate) async fn refresh(
         &mut self,
         new_endpoints: Option<Vec<String>>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), ClientApiError> {
         if let Some(endpoints) = new_endpoints {
             self.endpoints = endpoints;
         }
@@ -77,7 +75,7 @@ impl ConnectionPool {
     async fn build_connections(
         endpoints: &[String],
         config: &ClientConfig,
-    ) -> Result<(Channel, Vec<Channel>, Vec<NodeMeta>)> {
+    ) -> std::result::Result<(Channel, Vec<Channel>, Vec<NodeMeta>), ClientApiError> {
         // 1. Load cluster metadata
         let members = Self::load_cluster_metadata(endpoints, config).await?;
         info!("Cluster members discovered: {:?}", members);
@@ -95,7 +93,7 @@ impl ConnectionPool {
 
         // 4. Filter valid connections
         let leader_conn = leader_conn?;
-        let follower_conns = follower_conns.into_iter().filter_map(Result::ok).collect();
+        let follower_conns = follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
 
         Ok((leader_conn, follower_conns, members))
     }
@@ -136,7 +134,7 @@ impl ConnectionPool {
     pub(super) async fn load_cluster_metadata(
         endpoints: &[String],
         config: &ClientConfig,
-    ) -> Result<Vec<NodeMeta>> {
+    ) -> std::result::Result<Vec<NodeMeta>, ClientApiError> {
         for addr in endpoints {
             match Self::create_channel(addr.clone(), config).await {
                 Ok(channel) => {
@@ -164,11 +162,13 @@ impl ConnectionPool {
                 } // Connection failed, try next
             }
         }
-        Err(Error::ClusterMembershipNotFound)
+        Err(ErrorCode::ClusterUnavailable.into())
     }
 
     /// Extract leader address from metadata
-    pub(super) fn parse_cluster_metadata(nodes: &Vec<NodeMeta>) -> Result<(String, Vec<String>)> {
+    pub(super) fn parse_cluster_metadata(
+        nodes: &Vec<NodeMeta>
+    ) -> std::result::Result<(String, Vec<String>), ClientApiError> {
         let mut leader_addr = None;
         let mut followers = Vec::new();
 
@@ -182,6 +182,8 @@ impl ConnectionPool {
             }
         }
 
-        leader_addr.map(|addr| (addr, followers)).ok_or(Error::NoLeaderFound)
+        leader_addr
+            .map(|addr| (addr, followers))
+            .ok_or(ErrorCode::NotLeader.into())
     }
 }

@@ -19,8 +19,8 @@ use d_engine::storage::RaftStateMachine;
 use d_engine::storage::SledRaftLog;
 use d_engine::storage::SledStateStorage;
 use d_engine::storage::StateStorage;
+use d_engine::ClientApiError;
 use d_engine::HardState;
-use d_engine::Result;
 use log::debug;
 use log::error;
 use prost::Message;
@@ -46,7 +46,7 @@ pub enum ClientCommands {
     DELETE,
 }
 
-pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> Result<()> {
+pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result<(), ClientApiError> {
     // Start all nodes
     let mut controllers = vec![];
     for config_path in nodes_config_paths {
@@ -69,7 +69,13 @@ pub async fn start_node(
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     raft_log: Option<ROF<RaftTypeConfig>>,
     state_storage: Option<SSOF<RaftTypeConfig>>,
-) -> Result<(watch::Sender<()>, tokio::task::JoinHandle<Result<()>>)> {
+) -> std::result::Result<
+    (
+        watch::Sender<()>,
+        tokio::task::JoinHandle<std::result::Result<(), ClientApiError>>,
+    ),
+    ClientApiError,
+> {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     let root_path = get_root_path();
@@ -89,7 +95,7 @@ async fn build_node(
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     raft_log: Option<ROF<RaftTypeConfig>>,
     state_storage: Option<SSOF<RaftTypeConfig>>,
-) -> Result<Arc<Node<RaftTypeConfig>>> {
+) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
     // Load configuration from the specified path
     let config = RaftNodeConfig::default();
     config
@@ -123,7 +129,7 @@ async fn build_node(
 async fn run_node(
     node_id: u32,
     node: Arc<Node<RaftTypeConfig>>,
-) -> Result<()> {
+) -> std::result::Result<(), ClientApiError> {
     // Run the node until shutdown
     if let Err(e) = node.run().await {
         error!("Node error: {:?}", e);
@@ -223,7 +229,7 @@ pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     buffer
 }
 
-pub async fn reset(case_name: &str) -> Result<()> {
+pub async fn reset(case_name: &str) -> std::result::Result<(), ClientApiError> {
     let root_path = get_root_path();
     // Define path
     let logs_dir = format!("{}/logs/{}", root_path.display(), case_name);

@@ -198,7 +198,7 @@ impl ClientResponse {
     /// # Internal Logic
     /// Converts numeric error code to enum variant
     pub(crate) fn validate_error(&self) -> std::result::Result<(), ClientApiError> {
-        match ErrorCode::try_from(self.error).unwrap_or(ErrorCode::ServerInternalError) {
+        match ErrorCode::try_from(self.error).unwrap_or(ErrorCode::Uncategorized) {
             ErrorCode::Success => Ok(()),
             e => Err(e.into()),
         }

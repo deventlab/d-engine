@@ -2,14 +2,14 @@ use crate::common::{self, ClientCommands};
 use d_engine::{
     client::{Client, ClientBuilder},
     convert::{kv, vk},
-    proto::NodeMeta,
-    Error, Result, LEADER,
+    proto::{ErrorCode, NodeMeta},
+    ClientApiError, Result, LEADER,
 };
 use log::{debug, error, info};
 use std::time::Duration;
 use tokio::time::sleep;
 
-const MAX_RETRIES: u32 = 3;
+const MAX_RETRIES: u32 = 10;
 const RETRY_DELAY_MS: u64 = 50;
 
 #[derive(Clone)]
@@ -18,7 +18,7 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
-    pub async fn new(bootstrap_urls: &[String]) -> Result<Self> {
+    pub async fn new(bootstrap_urls: &[String]) -> std::result::Result<Self, ClientApiError> {
         let bootstrap_urls = bootstrap_urls.to_vec();
 
         let client = match ClientBuilder::new(bootstrap_urls.clone())
@@ -39,7 +39,7 @@ impl ClientManager {
     }
 
     /// Update Leader client (polling all nodes)
-    async fn refresh_client(&mut self) -> Result<()> {
+    async fn refresh_client(&mut self) -> std::result::Result<(), ClientApiError> {
         self.client.refresh(None).await
     }
 
@@ -48,7 +48,7 @@ impl ClientManager {
         command: common::ClientCommands,
         key: u64,
         value: Option<u64>,
-    ) -> Result<u64> {
+    ) -> std::result::Result<u64, ClientApiError> {
         debug!("recevied command = {:?}", &command);
         let mut retries = 0;
         loop {
@@ -64,20 +64,20 @@ impl ClientManager {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
                         }
-                        Err(Error::NodeIsNotLeaderError) if retries < MAX_RETRIES => {
+                        Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
                             retries += 1;
                             self.refresh_client().await?;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
-                        Err(Error::ClientRequestCanceledError) if retries < MAX_RETRIES => {
+                        Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
                             retries += 1;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
                         Err(e) => {
-                            error!("Error: {:?}", e);
-                            return Err(Error::GeneralClientError(format!("Error: {:?}", e)));
+                            error!("ClientCommands::PUT, ErrorCode = {:?}", e.code());
+                            return Err(e);
                         }
                     }
                 }
@@ -86,20 +86,20 @@ impl ClientManager {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
                     }
-                    Err(Error::NodeIsNotLeaderError) if retries < MAX_RETRIES => {
+                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(Error::ClientRequestCanceledError) if retries < MAX_RETRIES => {
+                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        return Err(Error::GeneralClientError(format!("Error: {:?}", e)));
+                        return Err(e);
                     }
                 },
                 ClientCommands::READ => match self.client.kv().get(kv(key), false).await? {
@@ -110,7 +110,7 @@ impl ClientManager {
                     }
                     None => {
                         error!("No entry found for key: {}", key);
-                        return Err(Error::GeneralClientError(format!("No entry found for key: {}", key)));
+                        return Err(ErrorCode::KeyNotExist.into());
                     }
                 },
                 ClientCommands::LREAD => match self.client.kv().get(kv(key), true).await {
@@ -122,28 +122,28 @@ impl ClientManager {
                         }
                         None => {
                             error!("No entry found for key: {}", key);
-                            return Err(Error::GeneralClientError(format!("No entry found for key: {}", key)));
+                            return Err(ErrorCode::KeyNotExist.into());
                         }
                     },
-                    Err(Error::NodeIsNotLeaderError) if retries < MAX_RETRIES => {
+                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(Error::ClientRequestCanceledError) if retries < MAX_RETRIES => {
+                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
                     Err(e) => {
-                        error!("Error: {:?}", e);
-                        return Err(Error::GeneralClientError(format!("Error: {:?}", e)));
+                        error!("Error Code = {:?}", e.code());
+                        return Err(e);
                     }
                 },
                 _ => {
                     error!("Invalid subcommand");
-                    return Err(Error::GeneralClientError("Invalid subcommand".to_string()));
+                    unreachable!()
                 }
             }
         }

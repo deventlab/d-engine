@@ -1,13 +1,12 @@
-use std::net::SocketAddr;
-use std::path::PathBuf;
-
-use serde::Deserialize;
-use serde::Serialize;
-
 use crate::proto::NodeMeta;
 use crate::Error;
 use crate::Result;
 use crate::FOLLOWER;
+use config::ConfigError;
+use serde::Deserialize;
+use serde::Serialize;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Cluster node configuration parameters
 ///
@@ -72,43 +71,43 @@ impl ClusterConfig {
     pub fn validate(&self) -> Result<()> {
         // Validate node identity
         if self.node_id == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "node_id cannot be 0 (reserved for invalid nodes)".into(),
-            ));
+            )));
         }
 
         // Validate cluster membership
         if self.initial_cluster.is_empty() {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "initial_cluster must contain at least one node".into(),
-            ));
+            )));
         }
 
         // Check node existence in cluster
         let self_in_cluster = self.initial_cluster.iter().any(|n| n.id == self.node_id);
         if !self_in_cluster {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "Current node {} not found in initial_cluster",
                 self.node_id
-            )));
+            ))));
         }
 
         // Check unique node IDs
         let mut ids = std::collections::HashSet::new();
         for node in &self.initial_cluster {
             if !ids.insert(node.id) {
-                return Err(Error::InvalidConfig(format!(
+                return Err(Error::Config(ConfigError::Message(format!(
                     "Duplicate node_id {} in initial_cluster",
                     node.id
-                )));
+                ))));
             }
         }
 
         // Validate network configuration
         if self.listen_address.port() == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "listen_address must specify a non-zero port".into(),
-            ));
+            )));
         }
 
         // Validate storage paths
@@ -125,7 +124,10 @@ impl ClusterConfig {
         name: &str,
     ) -> Result<()> {
         if path.as_os_str().is_empty() {
-            return Err(Error::InvalidConfig(format!("{} path cannot be empty", name)));
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{} path cannot be empty",
+                name
+            ))));
         }
 
         #[cfg(not(test))]
@@ -134,24 +136,24 @@ impl ClusterConfig {
             // Check directory existence or create ability
             if !path.exists() {
                 fs::create_dir_all(path).map_err(|e| {
-                    Error::InvalidConfig(format!(
+                    Error::Config(ConfigError::Message(format!(
                         "Failed to create {} directory at {}: {}",
                         name,
                         path.display(),
                         e
-                    ))
+                    )))
                 })?;
             }
 
             // Check write permissions
             let test_file = path.join(".permission_test");
             fs::write(&test_file, b"test").map_err(|e| {
-                Error::InvalidConfig(format!(
+                Error::Config(ConfigError::Message(format!(
                     "No write permission in {} directory {}: {}",
                     name,
                     path.display(),
                     e
-                ))
+                )))
             })?;
             fs::remove_file(&test_file).ok();
         }

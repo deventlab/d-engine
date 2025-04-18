@@ -5,7 +5,7 @@ use crate::common::reset;
 use crate::common::ITERATIONS;
 use crate::common::LATENCY_IN_MS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
-use d_engine::Error;
+use d_engine::ClientApiError;
 use log::error;
 
 use crate::client_manager::ClientManager;
@@ -15,7 +15,7 @@ use crate::common::ClientCommands;
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster
 #[tokio::test]
-async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
+async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     crate::enable_logger();
 
     reset("cluster_start_stop/case1").await?;
@@ -55,9 +55,15 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
     println!("Testing get command...");
     client_manager.verify_read(2, 202, ITERATIONS).await;
 
-    graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx1.send(()).map_err(|_| Error::ServerError)?;
+    graceful_tx3
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx2
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx1
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     node_n3.await??;
     node_n2.await??;
     node_n1.await??;
@@ -107,7 +113,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), d_engine::Error> {
 /// - get 2
 /// 21
 #[tokio::test]
-async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
+async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     crate::enable_logger();
 
     reset("cluster_start_stop/case2").await?;
@@ -155,7 +161,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     println!("------------------T2-----------------");
     graceful_tx1.send(()).map_err(|e| {
         error!("Failed to send shutdown signal: {}", e);
-        Error::ServerError
+        ClientApiError::general_client_error("failed to shutdown".to_string())
     })?;
     node_n1.await??;
 
@@ -202,9 +208,15 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     // T4: stop cluster
     println!("------------------T4-----------------");
     // Stop the nodes and notify the parent
-    graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx1.send(()).map_err(|_| Error::ServerError)?;
+    graceful_tx3
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx2
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx1
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     node_n1.await??;
     node_n2.await??;
     node_n3.await??;
@@ -230,9 +242,15 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), Error> {
     client_manager.verify_read(1, 5, ITERATIONS).await;
 
     // Finally: stop cluster
-    graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx1.send(()).map_err(|_| Error::ServerError)?;
+    graceful_tx3
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx2
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx1
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     node_n1.await??;
     node_n2.await??;
     node_n3.await??;

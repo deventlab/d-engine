@@ -14,11 +14,6 @@
 //! - Node C becomes the leader
 //! - last_commit_index is 10
 //! - Node A and B's log-3's term is 2
-use std::sync::Arc;
-use std::time::Duration;
-
-use d_engine::storage::StateMachine;
-use d_engine::Error;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
@@ -34,10 +29,14 @@ use crate::common::ITERATIONS;
 use crate::common::LATENCY_IN_MS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
+use d_engine::storage::StateMachine;
+use d_engine::ClientApiError;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[tracing::instrument]
 #[tokio::test]
-async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
+async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     crate::enable_logger();
     reset("append_entries/case1").await?;
 
@@ -123,9 +122,15 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
     // 4.2 Verify global state
     assert_eq!(sm1.last_applied(), 12 + 1); //should consider no_op log
 
-    graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx1.send(()).map_err(|_| Error::ServerError)?;
+    graceful_tx3
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx2
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx1
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     node_n3.await??;
     node_n2.await??;
     node_n1.await??;

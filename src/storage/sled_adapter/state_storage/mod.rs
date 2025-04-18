@@ -1,15 +1,13 @@
-use std::sync::Arc;
-
-use log::error;
-use log::info;
-
 use super::STATE_STORAGE_NAMESPACE;
 use crate::convert::skv;
-use crate::Error;
 use crate::HardState;
 use crate::Result;
 use crate::StateStorage;
+use crate::StorageError;
 use crate::HARD_STATE_KEY;
+use log::error;
+use log::info;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SledStateStorage {
@@ -51,7 +49,7 @@ impl StateStorage for SledStateStorage {
     }
 
     fn flush(&self) -> crate::Result<usize> {
-        self.tree.flush().map_err(Error::SledError)
+        self.tree.flush().map_err(|e| StorageError::SledError(e).into())
     }
 
     fn load_hard_state(&self) -> Option<crate::HardState> {
@@ -94,7 +92,7 @@ impl StateStorage for SledStateStorage {
             Err(e) => {
                 error!("persistent_state_into_db: {}", e);
                 eprintln!("persistent_state_into_db: {}", e);
-                return Err(Error::BincodeError(e));
+                return Err(StorageError::BincodeError(e).into());
             }
         }
         match self.flush() {

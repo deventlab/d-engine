@@ -1,10 +1,3 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
 use super::LeaderStateSnapshot;
@@ -22,6 +15,7 @@ use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientResponse;
 use crate::proto::ClusterConfUpdateResponse;
+use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::utils::cluster::error;
@@ -29,11 +23,13 @@ use crate::AppendResults;
 use crate::BatchBuffer;
 use crate::ChannelWithAddressAndRole;
 use crate::ClientRequestWithSignal;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
+use crate::NetworkError;
 use crate::QuorumStatus;
 use crate::RaftConfig;
 use crate::RaftContext;
@@ -43,12 +39,14 @@ use crate::RaftNodeConfig;
 use crate::RaftOneshot;
 use crate::ReplicationConfig;
 use crate::ReplicationCore;
+use crate::ReplicationError;
 use crate::ReplicationTimer;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::RoleEvent;
 use crate::StateMachine;
 use crate::StateMachineHandler;
+use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::API_SLO;
 use autometrics::autometrics;
@@ -58,6 +56,12 @@ use log::info;
 use log::trace;
 use log::warn;
 use nanoid::nanoid;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio::time::Instant;
@@ -252,12 +256,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
         warn!("I am leader already");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         error!("Leader can not become Candidate");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn become_follower(&self) -> Result<RaftRole<T>> {
@@ -284,7 +290,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     fn become_learner(&self) -> Result<RaftRole<T>> {
         error!("Leader can not become Learner");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn is_timer_expired(&self) -> bool {
@@ -410,7 +417,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 }
             }
@@ -422,7 +429,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender.send(Ok(cluster_conf)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
 
@@ -451,7 +458,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
 
@@ -468,7 +475,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 } else {
                     // Step down as Follower as new Leader found
@@ -479,7 +486,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         .map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
+                            NetworkError::SingalSendFailed(error_str)
                         })?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
@@ -567,7 +574,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender.send(response).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
         }
@@ -602,7 +609,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str).into()
         })
     }
 
@@ -614,7 +621,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx.send(RoleEvent::ReprocessEvent(raft_event)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str).into()
         })
     }
 
@@ -683,7 +690,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         let commands: Vec<ClientCommand> = batch.iter().flat_map(|req| &req.commands).cloned().collect();
 
-        debug!("process_batch.., commands:{:?}", &commands);
+        trace!("process_batch.., commands:{:?}", &commands);
 
         let append_result = replication_handler
             .handle_client_proposal_in_batch(
@@ -792,7 +799,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         debug!("notify client that replication failed.");
                         if let Err(e) = r
                             .sender
-                            .send(Ok(ClientResponse::write_error(Error::AppendEntriesCommitNotConfirmed)))
+                            .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
                         {
                             error!("r.sender.send response failed: {:?}", e);
                         }
@@ -802,7 +809,7 @@ impl<T: TypeConfig> LeaderState<T> {
             Err(e) => {
                 error!("Execute the client command failed with error: {:?}", e);
                 match e {
-                    Error::HigherTermFoundError(higher_term) => {
+                    Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(higher_term))) => {
                         warn!("found higher term");
                         self.update_current_term(higher_term);
 
@@ -817,7 +824,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 for r in batch {
                     if let Err(e) = r
                         .sender
-                        .send(Ok(ClientResponse::write_error(Error::AppendEntriesCommitNotConfirmed)))
+                        .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
                     {
                         error!("r.sender.send response failed: {:?}", e);
                     }
@@ -1003,7 +1010,7 @@ impl<T: TypeConfig> LeaderState<T> {
             // Case 3: Channel communication failure (unrecoverable error)
             Ok(Err(e)) => {
                 error!("Channel error during leadership check: {:?}", e);
-                Err(Error::LeadershipConsensusError(e.to_string()))
+                Err(NetworkError::SingalReceiveFailed(e.to_string()).into())
             }
 
             // Case 4: Waiting for response timeout

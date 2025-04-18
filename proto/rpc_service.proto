@@ -109,33 +109,47 @@ message ClientResult {  // Renamed from ClientGetResult
 }
 
 enum ErrorCode {
-  // 0: Success
+  // Success status (non-error)
   SUCCESS = 0;
-  
-  // 1xxx: Network/transport layer error (usually does not appear in the business response, only for expansion)
-  NETWORK_TIMEOUT = 1001;
-  NETWORK_UNREACHABLE = 1002;
-  
-  // 2xxx: protocol/parsing/compatibility error
-  PROTOCOL_INVALID_RESPONSE = 2001;
-  PROTOCOL_VERSION_MISMATCH = 2002;
-  
-  // 3xxx: Business logic error
-  // 3.1: Retryable
-  BUSINESS_RETRYABLE_TIMEOUT = 3101;
-  BUSINESS_RETRYABLE_NOT_LEADER = 3102;
-  // 3.2: Human intervention required
-  BUSINESS_ACTION_REQUIRED_LEADER_CHANGE = 3201;
-  // 3.3: Fatal Error
-  BUSINESS_FATAL_CONSISTENCY_BROKEN = 3301;
-  
-  // 4xxx: Client request error
-  CLIENT_INVALID_REQUEST = 4001;
-  CLIENT_UNAUTHORIZED = 4002;
-  
-  // 5xxx: Internal error on the server
-  SERVER_INTERNAL_ERROR = 5001;
-  SERVER_DISK_FULL = 5002;
+
+  // ======================
+  // Network layer error (1000-1999)
+  // ======================
+  CONNECTION_TIMEOUT = 1001; 
+  INVALID_ADDRESS = 1002;
+  LEADER_CHANGED = 1003; 
+  JOIN_ERROR = 1004;
+
+  // ======================
+  // Protocol layer error (2000-2999)
+  // ======================
+  INVALID_RESPONSE = 2001;
+  VERSION_MISMATCH = 2002;
+
+  // ======================
+  // Storage layer error (3000-3999)
+  // ======================
+  DISK_FULL = 3001; 
+  DATA_CORRUPTION = 3002; 
+  STORAGE_IO_ERROR = 3003;
+  STORAGE_PERMISSION_DENIED = 3004;
+  KEY_NOT_EXIST = 3005;
+
+  // ======================
+  // Business logic error (4000-4999)
+  // ======================
+  NOT_LEADER = 4001; 
+  STALE_OPERATION = 4002; 
+  INVALID_REQUEST = 4003; 
+  RATE_LIMITED = 4004; 
+  CLUSTER_UNAVAILABLE = 4005; 
+  PROPOSE_FAILED = 4006;
+
+  // ======================
+  // Unclassified error
+  // ======================
+  GENERAL = 8888;
+  UNCATEGORIZED = 9999; 
 }
 
 message ErrorMetadata {
@@ -148,15 +162,6 @@ message ErrorMetadata {
   
   // Error details (for debugging only)
   optional string debug_message = 15;
-}
-  
-enum ClientRequestError {
-  NO_ERROR = 0;
-  COMMIT_NOT_CONFIRMED = 1;
-  NOT_LEADER = 2;
-  SERVER_TIMEOUT = 3;
-  SERVER_ERROR = 4;
-  UNKNOWN = 5;
 }
 
 message ClientResponse {

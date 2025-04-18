@@ -1,19 +1,17 @@
-use std::time::Duration;
-
+use crate::BackoffPolicy;
+use crate::NetworkError;
+use crate::Result;
+use log::debug;
 use log::error;
 use log::warn;
+use std::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;
-
-use crate::Error;
-use crate::Result;
 
 /// General one
 pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, P>(
     task: F,
-    max_retries: usize,
-    delay_duration: Duration,
-    timeout_duration: Duration,
+    policy: BackoffPolicy,
 ) -> Result<P>
 where
     F: Fn() -> T,                               // The type of the async function
@@ -21,8 +19,12 @@ where
 {
     // let max_retries = 5;
     let mut retries = 0;
-    let mut delay = delay_duration; // Initial delay
-    let mut e = Error::RetryTaskFailed("Task failed after max retries".to_string());
+    let mut current_delay = Duration::from_millis(policy.base_delay_ms);
+    let timeout_duration = Duration::from_millis(policy.timeout_ms);
+    let max_delay = Duration::from_millis(policy.max_delay_ms);
+    let max_retries = policy.max_retries;
+
+    let mut last_error = NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
         match timeout(timeout_duration, task()).await {
             Ok(Ok(r)) => {
@@ -30,26 +32,28 @@ where
             }
             Ok(Err(error)) => {
                 warn!("failed with error: {:?}", &error);
-                e = error;
+                last_error = NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
             }
             Err(error) => {
-                warn!("task_with_timeout_and_exponential_backoff timeout: {:?}", &error);
-                e = Error::RetryTimeoutError;
+                warn!("Task timed out after {:?}", timeout_duration);
+                last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };
 
-        retries += 1;
-        if retries < max_retries {
-            sleep(delay).await;
-            delay *= 2; // Exponential backoff (double the delay each
-                        // time)
+        if retries < max_retries - 1 {
+            debug!("Retrying in {:?}...", current_delay);
+            sleep(current_delay).await;
+
+            // Exponential backoff (double the delay each time)
+            current_delay = (current_delay * 2).min(max_delay);
         } else {
             warn!("Task failed after {} retries", retries);
-            e = Error::RetryTaskFailed("Task failed after max retries".to_string());
             // Return the last error after max retries
         }
+        retries += 1;
     }
-    Err(e) // Fallback error message if no task returns Ok
+    warn!("Task failed after {} retries", max_retries);
+    Err(last_error.into()) // Fallback error message if no task returns Ok
 }
 
 // Helper function to spawn tasks and track their JoinHandles

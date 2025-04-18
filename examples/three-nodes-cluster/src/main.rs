@@ -1,14 +1,13 @@
 use core::panic;
-use std::env;
-use std::error::Error;
-use std::path::Path;
-use std::time::Duration;
-
 use d_engine::client::ClientBuilder;
 use d_engine::file_io::open_file_for_append;
 use d_engine::node::NodeBuilder;
 use log::error;
 use log::info;
+use std::env;
+use std::error::Error;
+use std::path::Path;
+use std::time::Duration;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
@@ -19,7 +18,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     // Get the log directory path from the environment variable
     let log_dir = env::var("LOG_DIR")

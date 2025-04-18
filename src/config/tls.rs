@@ -2,6 +2,7 @@
 use std::fs;
 use std::path::Path;
 
+use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -62,15 +63,17 @@ impl TlsConfig {
 
         // Validate mTLS dependencies
         if self.enable_mtls && !self.enable_tls {
-            return Err(Error::InvalidConfig("mTLS requires enable_tls to be true".into()));
+            return Err(Error::Config(ConfigError::Message(
+                "mTLS requires enable_tls to be true".into(),
+            )));
         }
 
         // Handle self-signed certificate generation case
         if self.generate_self_signed_certificates {
             if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty() {
-                return Err(Error::InvalidConfig(
+                return Err(Error::Config(ConfigError::Message(
                     "Cannot specify certificate paths with generate_self_signed_certificates=true".into(),
-                ));
+                )));
             }
             return Ok(());
         }
@@ -101,16 +104,21 @@ impl TlsConfig {
             {
                 // Check file readability
                 fs::File::open(path).map_err(|e| {
-                    Error::InvalidConfig(format!("{} file {} is unreadable: {}", name, path.display(), e))
+                    Error::Config(ConfigError::Message(format!(
+                        "{} file {} is unreadable: {}",
+                        name,
+                        path.display(),
+                        e
+                    )))
                 })?;
             }
             Ok(())
         } else {
-            Err(Error::InvalidConfig(format!(
+            Err(Error::Config(ConfigError::Message(format!(
                 "{} file {} not found",
                 name,
                 path.display()
-            )))
+            ))))
         }
     }
 
@@ -127,7 +135,11 @@ impl TlsConfig {
             {
                 // Check key file permissions (should be 600)
                 let metadata = fs::metadata(path).map_err(|e| {
-                    Error::InvalidConfig(format!("Cannot access {} permissions: {}", path.display(), e))
+                    Error::Config(ConfigError::Message(format!(
+                        "Cannot access {} permissions: {}",
+                        path.display(),
+                        e
+                    )))
                 })?;
 
                 #[cfg(unix)]
@@ -135,21 +147,21 @@ impl TlsConfig {
                     use std::os::unix::fs::PermissionsExt;
                     let mode = metadata.permissions().mode();
                     if mode & 0o777 != 0o600 {
-                        return Err(Error::InvalidConfig(format!(
+                        return Err(Error::Config(ConfigError::Message(format!(
                             "Insecure permissions {:o} for {} (should be 600)",
                             mode & 0o777,
                             path.display()
-                        )));
+                        ))));
                     }
                 }
             }
             Ok(())
         } else {
-            Err(Error::InvalidConfig(format!(
+            Err(Error::Config(ConfigError::Message(format!(
                 "{} file {} not found",
                 name,
                 path.display()
-            )))
+            ))))
         }
     }
 }

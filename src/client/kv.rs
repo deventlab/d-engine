@@ -1,3 +1,4 @@
+use super::BusinessErrorType;
 use super::ClientInner;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::ClientCommand;
@@ -6,7 +7,6 @@ use crate::proto::ClientReadRequest;
 use crate::proto::ClientResult;
 use crate::proto::ErrorCode;
 use crate::ClientApiError;
-use crate::Error;
 use arc_swap::ArcSwap;
 use log::debug;
 use log::error;
@@ -16,7 +16,6 @@ use rand::SeedableRng;
 use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-use tonic::Code;
 
 /// Key-value store client interface
 ///
@@ -155,11 +154,7 @@ impl KvClient {
 
         // Validate at least one key
         if commands.is_empty() {
-            return Err(ClientApiError::Business(super::BusinessError::ActionRequired {
-                code: ErrorCode::ClientInvalidRequest as u32,
-                message: "Please provide the keys you want to get".to_string(),
-                suggested_action: "Please double check your request".to_string(),
-            }));
+            return Err(ErrorCode::InvalidRequest.into());
         }
 
         // Select client based on consistency level

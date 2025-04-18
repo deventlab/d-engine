@@ -1,7 +1,19 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::timeout;
+
 use super::*;
 use crate::candidate_state::CandidateState;
-use crate::is_candidate;
-use crate::is_leader;
+use crate::cluster::is_candidate;
+use crate::cluster::is_follower;
+use crate::cluster::is_leader;
+use crate::cluster::is_learner;
 use crate::leader_state::LeaderState;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteResponse;
@@ -12,6 +24,8 @@ use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_RAFT_PORT_BASE;
 use crate::AppendResults;
 use crate::ChannelWithAddressAndRole;
+use crate::ConsensusError;
+use crate::ElectionError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MockElectionCore;
@@ -22,14 +36,7 @@ use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::PeerUpdate;
 use crate::RaftOneshot;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tokio::time::timeout;
-use tokio::time::{self};
+use crate::VoteResult;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
@@ -252,7 +259,14 @@ async fn test_election_timeout_case2_2() {
     election_handler_mock
         .expect_broadcast_vote_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::ElectionFailed("failed to receive majority votes.".to_string())));
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Election(
+                ElectionError::QuorumFailure {
+                    required: 3,
+                    succeed: 1,
+                },
+            )))
+        });
 
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -407,7 +421,17 @@ async fn test_election_timeout_case4() {
     raft.ctx.set_membership(Arc::new(mock_membership));
 
     let mut mock_transport = MockTransport::new();
-    mock_transport.expect_send_vote_requests().returning(|_, _, _| Ok(true));
+    mock_transport.expect_send_vote_requests().returning(|_, _, _| {
+        Ok(VoteResult {
+            peer_ids: vec![2].into_iter().collect(),
+            responses: vec![Ok(VoteResponse {
+                term: 1,
+                vote_granted: true,
+                last_log_index: 1,
+                last_log_term: 1,
+            })],
+        })
+    });
     raft.ctx.set_transport(Arc::new(mock_transport));
 
     // 5. Add state listeners
@@ -819,22 +843,16 @@ async fn test_handle_role_event_state_update_case1_3_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 11,
-                            next_index: 12,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 11,
-                            next_index: 12,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 11,
+                        next_index: 12,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 11,
+                        next_index: 12,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -901,22 +919,16 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -942,22 +954,16 @@ fn prepare_failed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<M
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: false,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: false,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: false,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: false,
+                    }),
                 ]),
             })
         });
@@ -976,7 +982,6 @@ fn prepare_failed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<M
 ///
 /// ## Validation criterias:
 /// 1. should monitor BecomeFollower event been send out.
-///
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_5_1() {
     tokio::time::pause();
@@ -987,7 +992,7 @@ async fn test_handle_role_event_state_update_case1_5_1() {
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_client_proposal_in_batch()
-        .returning(move |_, _, _, _, _, _, _, _| Err(Error::GeneralServerError("".to_string())));
+        .returning(move |_, _, _, _, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     let mut raft_log = MockRaftLog::new();
     raft_log
@@ -1037,7 +1042,6 @@ async fn test_handle_role_event_state_update_case1_5_1() {
 ///
 /// ## Validation criterias:
 /// 1. should no BecomeFollower event been sent out.
-///
 #[tokio::test]
 async fn test_handle_role_event_state_update_case1_5_2() {
     tokio::time::pause();

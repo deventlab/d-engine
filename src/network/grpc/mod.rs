@@ -18,12 +18,13 @@ mod grpc_transport_test;
 
 //-------------------------------------------------------------------------------
 // Start RPC Server
-
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::proto::rpc_service_server::RpcServiceServer;
+use crate::Node;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::SystemError;
+use crate::TlsConfig;
+use crate::TypeConfig;
 use futures::FutureExt;
 use log::debug;
 use log::error;
@@ -31,20 +32,16 @@ use log::info;
 use log::warn;
 use rcgen::generate_simple_self_signed;
 use rcgen::CertifiedKey;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Certificate;
 use tonic::transport::Identity;
 use tonic::transport::ServerTlsConfig;
 use tonic_health::server::health_reporter;
-
-use crate::proto::rpc_service_server::RpcServiceServer;
-use crate::Error;
-use crate::Node;
-use crate::RaftNodeConfig;
-use crate::Result;
-use crate::TlsConfig;
-use crate::TypeConfig;
 
 /// RPC server works for RAFT protocol
 /// It mainly listens on two request: Vote RPC Request and Append Entries RPC
@@ -126,7 +123,7 @@ where
         .await
     {
         error!("error to start internal rpc server :{:?}.", e);
-        return Err(Error::RPCServerDies);
+        return Err(SystemError::ServerUnavailable.into());
     }
     debug!("rpc service finished!");
     Ok(())

@@ -52,8 +52,7 @@ where
                     // P0: shutdown received;
                     _ = shutdown_signal.changed() => {
                         warn!("[CommitHandler] shutdown signal received.");
-
-                        return Err(Error::Exit);
+                        return Ok(());
                     }
 
                     // Scheduled batch processing

@@ -1,16 +1,10 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-
 use crate::learner_state::LearnerState;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::ErrorCode;
 use crate::proto::LogId;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
@@ -25,6 +19,10 @@ use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::RaftOneshot;
 use crate::RoleEvent;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
@@ -344,7 +342,7 @@ async fn test_handle_raft_event_case4_3() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(|_, _, _| Err(Error::GeneralServerError("test".to_string())));
+        .returning(|_, _, _| Err(Error::Fatal("test".to_string())));
 
     let mut membership = MockMembership::new();
 
@@ -427,7 +425,7 @@ async fn test_handle_raft_event_case5() {
         .is_ok());
 
     match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error_code, ClientRequestError::NotLeader as i32),
+        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
         _ => assert!(false),
     }
 }

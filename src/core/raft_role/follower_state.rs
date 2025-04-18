@@ -1,16 +1,3 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-
 use super::candidate_state::CandidateState;
 use super::leader_state::LeaderState;
 use super::learner_state::LearnerState;
@@ -21,12 +8,14 @@ use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
+use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::utils::cluster::error;
 use crate::ElectionCore;
 use crate::ElectionTimer;
 use crate::Error;
 use crate::Membership;
+use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -34,7 +23,19 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RoleEvent;
 use crate::StateMachineHandler;
+use crate::StateTransitionError;
 use crate::TypeConfig;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
 
 pub struct FollowerState<T: TypeConfig> {
     pub shared_state: SharedState,
@@ -63,7 +64,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
         error!("become_leader Illegal. I am Follower");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         info!(
@@ -88,7 +90,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     }
     fn become_follower(&self) -> Result<RaftRole<T>> {
         warn!("I am follower already");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_learner(&self) -> Result<RaftRole<T>> {
         info!(
@@ -141,7 +144,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         role_tx.send(RoleEvent::BecomeCandidate).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str)
         })?;
 
         Ok(())
@@ -196,7 +199,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
+                            NetworkError::SingalSendFailed(error_str)
                         })?;
                     }
                     Err(e) => {
@@ -209,7 +212,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
+                            NetworkError::SingalSendFailed(error_str)
                         })?;
                         error("handle_raft_event::RaftEvent::ReceiveVoteRequest", &e);
                         return Err(e);
@@ -224,7 +227,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 sender.send(Ok(cluster_conf)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
@@ -235,7 +238,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -252,11 +255,11 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
                 sender
-                    .send(Ok(ClientResponse::write_error(Error::AppendEntriesNotLeader)))
+                    .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
@@ -269,7 +272,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         .map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
+                            NetworkError::SingalSendFailed(error_str)
                         })?;
                 } else {
                     // Otherwise
@@ -285,7 +288,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 }
             }

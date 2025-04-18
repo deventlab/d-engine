@@ -1,11 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::alias::POF;
@@ -15,10 +7,10 @@ use crate::proto::AppendEntriesRequest;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClientResponse;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
+use crate::proto::ErrorCode;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
@@ -29,10 +21,12 @@ use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResults;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
+use crate::MembershipError;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -43,7 +37,14 @@ use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::RaftOneshot;
 use crate::ReplicationConfig;
+use crate::ReplicationError;
 use crate::RoleEvent;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
 
 struct TestContext {
     state: LeaderState<MockTypeConfig>,
@@ -128,10 +129,7 @@ async fn setup_test_case(
 /// Verify client response
 pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>) {
     match rx.recv().await {
-        Ok(Ok(response)) => assert_eq!(
-            ClientRequestError::try_from(response.error_code).unwrap(),
-            ClientRequestError::NoError
-        ),
+        Ok(Ok(response)) => assert_eq!(ErrorCode::try_from(response.error).unwrap(), ErrorCode::Success),
         Ok(Err(e)) => panic!("Unexpected error response: {:?}", e),
         Err(_) => panic!("Response channel closed unexpectedly"),
     }
@@ -586,7 +584,11 @@ async fn test_handle_raft_event_case3_2() {
     membership
         .expect_update_cluster_conf_from_leader()
         .times(1)
-        .returning(|_, _| Err(Error::ClusterMembershipUpdateFailed("".to_string())));
+        .returning(|_, _| {
+            Err(Error::Consensus(ConsensusError::Membership(
+                MembershipError::UpdateFailed("".to_string()),
+            )))
+        });
     membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
     context.membership = Arc::new(membership);
 
@@ -725,7 +727,7 @@ async fn test_handle_raft_event_case5_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Handle raft event
-    let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientPropose(
         ClientProposeRequest {
             client_id: 1,
@@ -757,7 +759,7 @@ async fn test_handle_raft_event_case6_1() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _, _, _, _| Err(Error::AppendEntriesCommitNotConfirmed));
+        .returning(|_, _, _, _, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -925,7 +927,11 @@ async fn test_handle_raft_event_case6_3() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _, _, _, _| Err(Error::HigherTermFoundError(1)));
+        .returning(move |_, _, _, _, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Replication(
+                ReplicationError::HigherTerm(1),
+            )))
+        });
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();

@@ -335,7 +335,8 @@ impl<T: TypeConfig> RaftRole<T> {
     /// - **Term-aware retries**: Automatically aborts if higher term is detected
     ///
     /// # Error Semantics
-    /// Returned errors indicate **technical failures in the verification process**, not quorum rejection:
+    /// Returned errors indicate **technical failures in the verification process**, not quorum
+    /// rejection:
     /// - Network errors (gRPC failures, unreachable nodes)
     /// - Storage I/O errors (failed to persist no-op entry)
     /// - Internal channel errors (message queue overflows)
@@ -360,26 +361,6 @@ impl<T: TypeConfig> RaftRole<T> {
     }
 }
 
-#[inline]
-pub(crate) fn is_follower(role_i32: i32) -> bool {
-    role_i32 == FOLLOWER
-}
-
-#[inline]
-pub(crate) fn is_candidate(role_i32: i32) -> bool {
-    role_i32 == CANDIDATE
-}
-
-#[inline]
-pub(crate) fn is_leader(role_i32: i32) -> bool {
-    role_i32 == LEADER
-}
-
-#[inline]
-pub(crate) fn is_learner(role_i32: i32) -> bool {
-    role_i32 == LEARNER
-}
-
 impl Serialize for HardState {
     fn serialize<S>(
         &self,
@@ -397,9 +378,7 @@ impl Serialize for HardState {
 
 impl<'de> Deserialize<'de> for HardState {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         #[derive(Deserialize)]
         struct HardStateDe {
             current_term: u64,

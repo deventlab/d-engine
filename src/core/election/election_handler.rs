@@ -1,21 +1,13 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use log::debug;
-use log::error;
-use tokio::sync::mpsc;
-use tonic::async_trait;
-
 use super::ElectionCore;
 use crate::alias::ROF;
 use crate::alias::TROF;
+use crate::cluster::is_majority;
+use crate::if_higher_term_found;
 use crate::is_target_log_more_recent;
 use crate::proto::VoteRequest;
 use crate::proto::VotedFor;
 use crate::ChannelWithAddressAndRole;
-use crate::Error;
+use crate::ElectionError;
 use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
@@ -24,11 +16,20 @@ use crate::StateUpdate;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use log::debug;
+use log::error;
+use log::warn;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tonic::async_trait;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
-    pub my_id: u32,
-    pub event_tx: mpsc::Sender<RaftEvent>, //cloned from Raft
+    pub(crate) my_id: u32,
+    pub(crate) event_tx: mpsc::Sender<RaftEvent>, //cloned from Raft
     _phantom: PhantomData<T>,
 }
 
@@ -50,7 +51,10 @@ where
 
         if voting_members.is_empty() {
             error!("my(id={}) peers is empty.", self.my_id);
-            return Err(Error::ElectionFailed(format!("my(id={}) peers is empty.", self.my_id)));
+            return Err(ElectionError::NoVotingMemberFound {
+                candidate_id: self.my_id,
+            }
+            .into());
         } else {
             debug!("going to send_vote_requests to: {:?}", &voting_members);
         }
@@ -67,18 +71,61 @@ where
             .send_vote_requests(voting_members, request, &settings.retry)
             .await
         {
-            Ok(is_won) => {
-                debug!("Received peers' vote result: {}", is_won);
+            Ok(vote_result) => {
+                let mut succeed = 1;
+                for response in vote_result.responses {
+                    match response {
+                        Ok(vote_response) => {
+                            if vote_response.vote_granted {
+                                debug!("send_vote_requests_to_peers success!");
+                                succeed += 1;
+                            } else {
+                                debug!("if_higher_term_found({}, {}, false)", term, vote_response.term,);
+                                if if_higher_term_found(term, vote_response.term, false) {
+                                    warn!("Higher term found during election phase.");
+                                    return Err(ElectionError::HigherTerm(vote_response.term).into());
+                                }
 
-                if is_won {
+                                if is_target_log_more_recent(
+                                    last_log_index,
+                                    last_log_term,
+                                    vote_response.last_log_index,
+                                    vote_response.last_log_term,
+                                ) {
+                                    warn!("More update to date log found in vote response");
+
+                                    return Err(ElectionError::LogConflict {
+                                        index: last_log_index,
+                                        expected_term: last_log_term,
+                                        actual_term: vote_response.last_log_term,
+                                    }
+                                    .into());
+                                }
+
+                                warn!("send_vote_requests_to_peers failed!");
+                            }
+                        }
+                        Err(e) => {
+                            error!("send_vote_requests_to_peers error: {:?}", e);
+                        }
+                    }
+                }
+                debug!(
+                    "send_vote_requests to: {:?} with succeed number = {}",
+                    &vote_result.peer_ids, succeed
+                );
+
+                let required = vote_result.peer_ids.len() + 1;
+                if !vote_result.peer_ids.is_empty() && is_majority(succeed, required) {
+                    debug!("send_vote_requests receives majority.");
                     return Ok(());
                 } else {
                     debug!("failed to receive majority votes.");
-                    return Err(Error::ElectionFailed("failed to receive majority votes.".to_string()));
+                    return Err(ElectionError::QuorumFailure { required, succeed }.into());
                 }
             }
             Err(e) => {
-                error!("RPC request encountered an error: {:?}", e);
+                error!("broadcast_vote_requests encountered an error: {:?}", e);
                 return Err(e);
             }
         }
@@ -170,7 +217,7 @@ impl<T> ElectionHandler<T>
 where
     T: TypeConfig,
 {
-    pub fn new(
+    pub(crate) fn new(
         my_id: u32,
         event_tx: mpsc::Sender<RaftEvent>,
     ) -> Self {
