@@ -1,3 +1,6 @@
+use tokio::sync::oneshot;
+use tonic::Status;
+
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::proto::AppendEntriesRequest;
@@ -22,8 +25,6 @@ use crate::SystemError;
 use crate::Transport;
 use crate::CANDIDATE;
 use crate::FOLLOWER;
-use tokio::sync::oneshot;
-use tonic::Status;
 
 async fn simulate_append_entries_mock_server(
     port: u64,
@@ -878,11 +879,11 @@ async fn test_send_vote_requests_case5() {
 //         last_log_index: 1,
 //         last_log_term: 1,
 //     };
-//     let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 27, peer1_response, rx1)
-//         .await
+//     let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 27,
+// peer1_response, rx1)         .await
 //         .expect("should succeed");
-//     let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 28, peer2_response, rx2)
-//         .await
+//     let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 28,
+// peer2_response, rx2)         .await
 //         .expect("should succeed");
 //     let requests_with_peer_address = vec![
 //         ChannelWithAddressAndRole {

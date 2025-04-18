@@ -1,3 +1,9 @@
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+
 use crate::learner_state::LearnerState;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -19,10 +25,6 @@ use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::RaftOneshot;
 use crate::RoleEvent;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
@@ -231,10 +233,9 @@ async fn test_handle_raft_event_case4_1() {
     // Validation criterias
     // 2. I should not receive BecomeFollower event
     // 4. I should send out new commit signal
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::NotifyNewCommitIndex { new_commit_index: _ }
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::NotifyNewCommitIndex {
+        new_commit_index: _
+    }));
 
     // Validation criterias
     // 3. I should update term

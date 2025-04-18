@@ -1,3 +1,12 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tokio::sync::watch;
+use tokio::time;
+use tonic::Code;
+use tonic::Request;
+
 use crate::convert::kv;
 use crate::proto::rpc_service_server::RpcService;
 use crate::proto::AppendEntriesRequest;
@@ -21,13 +30,6 @@ use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::RaftNodeConfig;
 use crate::StateUpdate;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::Duration;
-use tokio::sync::watch;
-use tokio::time;
-use tonic::Code;
-use tonic::Request;
 
 /// # Case: Test RPC services timeout
 #[tokio::test]

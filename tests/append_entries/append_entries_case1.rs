@@ -15,6 +15,12 @@
 //! - last_commit_index is 10
 //! - Node A and B's log-3's term is 2
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine::storage::StateMachine;
+use d_engine::ClientApiError;
+
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::init_state_storage;
@@ -29,10 +35,6 @@ use crate::common::ITERATIONS;
 use crate::common::LATENCY_IN_MS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
-use d_engine::storage::StateMachine;
-use d_engine::ClientApiError;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[tracing::instrument]
 #[tokio::test]

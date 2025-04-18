@@ -1,5 +1,19 @@
 //! It works as KV storage for client business CRUDs.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use autometrics::autometrics;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use prost::Message;
+use sled::Batch;
+use tonic::async_trait;
+
 use crate::convert::vk;
 use crate::proto::client_command::Command;
 use crate::proto::client_command::Insert;
@@ -13,18 +27,6 @@ use crate::StateMachineIter;
 use crate::StorageError;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
-use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use prost::Message;
-use sled::Batch;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use tonic::async_trait;
 
 pub struct RaftStateMachine {
     node_id: u32,

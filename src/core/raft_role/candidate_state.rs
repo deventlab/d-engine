@@ -1,3 +1,16 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
 use super::RaftRole;
@@ -25,17 +38,6 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
 
 #[derive(Clone)]
 pub struct CandidateState<T: TypeConfig> {

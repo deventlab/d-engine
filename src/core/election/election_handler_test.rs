@@ -1,3 +1,10 @@
+use std::sync::Arc;
+
+use log::debug;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+
 use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::proto::VoteRequest;
@@ -17,11 +24,6 @@ use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::VoteResult;
 use crate::FOLLOWER;
-use log::debug;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::sync::watch;
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,
@@ -189,7 +191,6 @@ async fn test_broadcast_vote_requests_case3() {
 }
 
 /// # Case 4: Test if vote response returns higher last_log_term
-///
 // ## Setup:
 // 1. prepare one peers, which returns failed response
 // 2. Peer1 returns higher term of last log index,
@@ -252,11 +253,10 @@ async fn test_broadcast_vote_requests_case4() {
 }
 
 /// # Case 5: Test if vote response returns higher last_log_index
-///
 // ## Setup:
 // 1. prepare one peers, which returns failed response
-// 2. Peer1 returns last log term is the same as candidate one, but last log index is higher than
-//    candidate last log index,
+// 2. Peer1 returns last log term is the same as candidate one, but last log index is higher than candidate last log
+//    index,
 //
 // ## Criterias:
 // 1. return Err(ElectionError::LogConflict)
@@ -270,8 +270,8 @@ async fn test_broadcast_vote_requests_case5() {
     let peer1_id = 2;
     let my_last_log_index = 1;
     let my_last_log_term = 3;
-    // Prepare response which last log term is the same as candidate one, but last log index is higher than
-    //    candidate last log index
+    // Prepare response which last log term is the same as candidate one, but last log index is higher
+    // than    candidate last log index
     let vote_response = VoteResponse {
         term: 1,
         vote_granted: false,

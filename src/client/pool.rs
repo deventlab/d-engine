@@ -1,15 +1,16 @@
-use super::ClientApiError;
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::ErrorCode;
-use crate::proto::MetadataRequest;
-use crate::proto::NodeMeta;
-use crate::ClientConfig;
 use log::debug;
 use log::error;
 use log::info;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+
+use super::ClientApiError;
+use crate::proto::rpc_service_client::RpcServiceClient;
+use crate::proto::ErrorCode;
+use crate::proto::MetadataRequest;
+use crate::proto::NodeMeta;
+use crate::ClientConfig;
 
 /// Manages connections to cluster nodes
 ///
@@ -53,7 +54,6 @@ impl ConnectionPool {
     /// 1. Discovers fresh cluster metadata from provided endpoints
     /// 2. Re-establishes leader connection using latest config
     /// 3. Rebuilds follower connections pool
-    ///
     pub(crate) async fn refresh(
         &mut self,
         new_endpoints: Option<Vec<String>>,

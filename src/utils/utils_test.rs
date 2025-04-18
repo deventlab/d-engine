@@ -11,7 +11,6 @@ use crate::convert::kv;
 use crate::convert::vk;
 use crate::utils::cluster::is_majority;
 use crate::BackoffPolicy;
-use crate::Error;
 use crate::NetworkError;
 use crate::Result;
 
@@ -93,13 +92,13 @@ async fn test_task_with_exponential_backoff() {
         base_delay_ms: 1000,
         max_delay_ms: 3000,
     };
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy.clone()).await {
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy).await {
         assert!(true);
     } else {
         assert!(false);
     }
     // Case 2: when err task return error
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_err, policy.clone()).await {
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_err, policy).await {
         assert!(false);
     } else {
         assert!(true);
@@ -112,7 +111,7 @@ async fn test_task_with_exponential_backoff() {
         base_delay_ms: 1,
         max_delay_ms: 3,
     };
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy.clone()).await {
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy).await {
         assert!(false);
     } else {
         assert!(true);

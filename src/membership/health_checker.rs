@@ -1,8 +1,10 @@
-use crate::NetworkConfig;
-use crate::NetworkError;
-use crate::Result;
-use log::error;
 use std::time::Duration;
+
+use log::error;
+#[cfg(test)]
+use mockall::automock;
+#[cfg(test)]
+use mockall::predicate::*;
 use tonic::async_trait;
 use tonic::transport::Channel;
 use tonic_health::pb::health_check_response::ServingStatus;
@@ -10,10 +12,9 @@ use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::HealthCheckResponse;
 
-#[cfg(test)]
-use mockall::automock;
-#[cfg(test)]
-use mockall::predicate::*;
+use crate::NetworkConfig;
+use crate::NetworkError;
+use crate::Result;
 
 #[cfg_attr(test, automock)]
 #[async_trait]

@@ -1,3 +1,12 @@
+use std::sync::Arc;
+use std::vec;
+
+use futures::stream::FuturesUnordered;
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::task;
+
 use super::ChannelWithAddress;
 use crate::proto::NodeMeta;
 use crate::test_utils::enable_logger;
@@ -9,13 +18,6 @@ use crate::PeerChannels;
 use crate::PeerChannelsFactory;
 use crate::RpcPeerChannels;
 use crate::FOLLOWER;
-use futures::stream::FuturesUnordered;
-use std::sync::Arc;
-use std::vec;
-use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::task;
 
 // Test helper for creating mock peer configurations
 async fn mock_peer(

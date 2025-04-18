@@ -1,16 +1,16 @@
 use std::time::Duration;
 
-use crate::common::check_cluster_is_ready;
-use crate::common::reset;
-use crate::common::ITERATIONS;
-use crate::common::LATENCY_IN_MS;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use d_engine::ClientApiError;
 use log::error;
 
 use crate::client_manager::ClientManager;
+use crate::common::check_cluster_is_ready;
+use crate::common::reset;
 use crate::common::start_node;
 use crate::common::ClientCommands;
+use crate::common::ITERATIONS;
+use crate::common::LATENCY_IN_MS;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster

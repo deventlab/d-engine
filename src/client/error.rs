@@ -1,8 +1,12 @@
-use crate::proto::ErrorCode;
-use serde::{Deserialize, Serialize};
 use std::error::Error;
+
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::task::JoinError;
-use tonic::{Code, Status};
+use tonic::Code;
+use tonic::Status;
+
+use crate::proto::ErrorCode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientApiError {

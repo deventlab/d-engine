@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use log::error;
+use log::info;
+
 use super::STATE_STORAGE_NAMESPACE;
 use crate::convert::skv;
 use crate::HardState;
@@ -5,9 +10,6 @@ use crate::Result;
 use crate::StateStorage;
 use crate::StorageError;
 use crate::HARD_STATE_KEY;
-use log::error;
-use log::info;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SledStateStorage {

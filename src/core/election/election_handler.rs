@@ -1,3 +1,14 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use autometrics::autometrics;
+use log::debug;
+use log::error;
+use log::warn;
+use tokio::sync::mpsc;
+use tonic::async_trait;
+
 use super::ElectionCore;
 use crate::alias::ROF;
 use crate::alias::TROF;
@@ -16,15 +27,6 @@ use crate::StateUpdate;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
-use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::warn;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tonic::async_trait;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
@@ -35,8 +37,7 @@ pub struct ElectionHandler<T: TypeConfig> {
 
 #[async_trait]
 impl<T> ElectionCore<T> for ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
@@ -214,8 +215,7 @@ where
     }
 }
 impl<T> ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         my_id: u32,

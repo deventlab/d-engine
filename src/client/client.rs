@@ -6,14 +6,16 @@
 //!
 //! Manages connection pooling and request routing to cluster nodes.
 
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+
 use super::ClientApiError;
 use super::ClientBuilder;
 use super::ClientConfig;
 use super::ClusterClient;
 use super::ConnectionPool;
 use super::KvClient;
-use arc_swap::ArcSwap;
-use std::sync::Arc;
 
 /// Main entry point for interacting with the d_engine cluster
 ///

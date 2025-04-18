@@ -1,3 +1,8 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use arc_swap::ArcSwap;
+
 use super::Client;
 use super::ClientApiError;
 use super::ClientConfig;
@@ -5,9 +10,6 @@ use super::ClientInner;
 use super::ClusterClient;
 use super::ConnectionPool;
 use super::KvClient;
-use arc_swap::ArcSwap;
-use std::sync::Arc;
-use std::time::Duration;
 
 /// Configurable builder for [`Client`] instances
 ///

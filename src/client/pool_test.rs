@@ -1,3 +1,10 @@
+use std::time::Duration;
+use std::vec;
+
+use log::error;
+use tokio::sync::oneshot;
+use tonic::transport::Channel;
+
 use crate::proto::ClusterMembership;
 use crate::proto::ErrorCode;
 use crate::proto::NodeMeta;
@@ -10,11 +17,6 @@ use crate::ClientConfig;
 use crate::ConnectionPool;
 use crate::FOLLOWER;
 use crate::LEADER;
-use log::error;
-use std::time::Duration;
-use std::vec;
-use tokio::sync::oneshot;
-use tonic::transport::Channel;
 
 async fn mock_listener(
     port: u64,

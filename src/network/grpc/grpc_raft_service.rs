@@ -37,8 +37,7 @@ use crate::API_SLO;
 
 #[tonic::async_trait]
 impl<T> RpcService for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Handles RequestVote RPC calls from candidate nodes during leader elections
     /// # Raft Protocol Logic

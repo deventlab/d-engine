@@ -1,9 +1,11 @@
-use crate::Error;
-use crate::Result;
+use std::fmt::Debug;
+
 use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
-use std::fmt::Debug;
+
+use crate::Error;
+use crate::Result;
 
 /// Configuration parameters for the Raft consensus algorithm implementation
 #[derive(Serialize, Deserialize, Clone)]

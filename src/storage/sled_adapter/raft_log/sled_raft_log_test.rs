@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::vec;
 
@@ -15,7 +14,6 @@ use crate::test_utils::reset_dbs;
 use crate::test_utils::{self};
 use crate::RaftLog;
 use crate::RaftTypeConfig;
-use crate::SledStateStorage;
 
 struct TestContext {
     // s: Arc<RaftState>,
@@ -793,14 +791,11 @@ async fn test_insert_batch_logs_case2() {
     // }
 
     // 7. Validate final log state
-    validate_log_continuity(
-        &old_leader,
-        &[
-            (7, 1),  // Original term 1 entry
-            (8, 2),  // Overwritten entry
-            (10, 2), // New highest entry
-        ],
-    )
+    validate_log_continuity(&old_leader, &[
+        (7, 1),  // Original term 1 entry
+        (8, 2),  // Overwritten entry
+        (10, 2), // New highest entry
+    ])
     .await;
 }
 

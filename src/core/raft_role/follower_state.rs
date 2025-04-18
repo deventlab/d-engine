@@ -1,3 +1,16 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
 use super::candidate_state::CandidateState;
 use super::leader_state::LeaderState;
 use super::learner_state::LearnerState;
@@ -13,7 +26,6 @@ use crate::proto::VoteResponse;
 use crate::utils::cluster::error;
 use crate::ElectionCore;
 use crate::ElectionTimer;
-use crate::Error;
 use crate::Membership;
 use crate::NetworkError;
 use crate::RaftContext;
@@ -25,17 +37,6 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
 
 pub struct FollowerState<T: TypeConfig> {
     pub shared_state: SharedState,

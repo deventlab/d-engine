@@ -14,6 +14,7 @@ pub mod grpc;
 
 #[cfg(test)]
 use mockall::automock;
+use tonic::async_trait;
 
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -27,7 +28,6 @@ use crate::ChannelWithAddressAndRole;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
-use tonic::async_trait;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
@@ -66,9 +66,11 @@ pub struct ClusterUpdateResult {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
-    /// Propagates cluster membership changes to all voting peers using Raft's joint consensus mechanism.
+    /// Propagates cluster membership changes to all voting peers using Raft's joint consensus
+    /// mechanism.
     ///
-    /// Implements the membership change protocol from Raft §6. This must only be called by the leader.
+    /// Implements the membership change protocol from Raft §6. This must only be called by the
+    /// leader.
     ///
     /// # Arguments
     /// * `peers` - List of cluster peers (excluding self) to receive configuration updates
@@ -76,9 +78,12 @@ pub trait Transport: Send + Sync + 'static {
     /// * `retry` - Backoff policy for transient network failures
     ///
     /// # Errors
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is empty
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background task failures
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC transport errors
+    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is
+    ///   empty
+    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background
+    ///   task failures
+    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC
+    ///   transport errors
     /// - Returns [`Error::Consensus(ConsensusError::NotLeader)`] if local node isn't leader
     ///
     /// # Behavior
@@ -102,11 +107,13 @@ pub trait Transport: Send + Sync + 'static {
     /// 4. Response collection and aggregation
     ///
     /// # Parameters
-    /// - `requests_with_peer_address`: A list of tuples containing the peer ID, communication channel, and the specific AppendEntries request
+    /// - `requests_with_peer_address`: A list of tuples containing the peer ID, communication
+    ///   channel, and the specific AppendEntries request
     /// to be sent to each peer. Each tuple consists of:
     ///     - `peer_id`: The unique identifier of the peer.
     ///     - `channel`: The communication channel (e.g., network connection) to the peer.
-    ///     - `request`: The AppendEntries request tailored for the specific peer, as the log entries to be synced
+    ///     - `request`: The AppendEntries request tailored for the specific peer, as the log
+    ///       entries to be synced
     ///   may differ for each peer based on their current log state.
     ///
     /// - `retry`: Retry configuration parameters
@@ -129,10 +136,14 @@ pub trait Transport: Send + Sync + 'static {
     /// * `retry` - Election-specific retry strategy
     ///
     /// # Errors
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is empty
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background task failures
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC transport errors
-    /// - Returns [`Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm))`] via response parsing
+    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is
+    ///   empty
+    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background
+    ///   task failures
+    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC
+    ///   transport errors
+    /// - Returns [`Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm))`] via
+    ///   response parsing
     ///
     /// # Protocol Behavior
     /// - Filters out self-references and duplicates
@@ -149,15 +160,17 @@ pub trait Transport: Send + Sync + 'static {
 
 // Module level utils
 // -----------------------------------------------------------------------------
-use crate::Error;
-use log::debug;
-use log::warn;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
+
+use log::debug;
+use log::warn;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tonic::Code;
+
+use crate::Error;
 
 /// As soon as task has return we should return from this function
 pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, U>(
@@ -254,13 +267,13 @@ mod tests {
         };
 
         assert!(
-            task_with_timeout_and_exponential_backoff(|| async { async_ok(3).await }, policy.clone(),)
+            task_with_timeout_and_exponential_backoff(|| async { async_ok(3).await }, policy,)
                 .await
                 .is_ok()
         );
 
         // Case 2: when err task return error
-        assert!(task_with_timeout_and_exponential_backoff(async_err, policy.clone())
+        assert!(task_with_timeout_and_exponential_backoff(async_err, policy)
             .await
             .is_err());
 

@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use prost::Message;
+use sled::Batch;
+
 use super::*;
 use crate::convert::kv;
 use crate::init_sled_storages;
@@ -9,9 +14,6 @@ use crate::test_utils::setup_raft_components;
 use crate::test_utils::{self};
 use crate::StateMachine;
 use crate::COMMITTED_LOG_METRIC;
-use prost::Message;
-use sled::Batch;
-use std::sync::Arc;
 
 #[test]
 fn test_start_stop() {

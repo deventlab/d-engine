@@ -1,3 +1,11 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::alias::POF;
@@ -39,12 +47,6 @@ use crate::RaftOneshot;
 use crate::ReplicationConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
 
 struct TestContext {
     state: LeaderState<MockTypeConfig>,
@@ -93,22 +95,16 @@ async fn setup_test_case(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -825,22 +821,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 3,
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 4,
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 3,
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 4,
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -897,12 +887,9 @@ async fn test_handle_raft_event_case6_2() {
 
     // Validation criteria 3: resp_rx receives Ok()
     match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(
-            event,
-            RoleEvent::NotifyNewCommitIndex {
-                new_commit_index: expect_new_commit_index
-            }
-        )),
+        Ok(event) => assert!(matches!(event, RoleEvent::NotifyNewCommitIndex {
+            new_commit_index: expect_new_commit_index
+        })),
         Err(_) => assert!(false),
     };
 }

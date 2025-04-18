@@ -1,3 +1,16 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -10,7 +23,6 @@ use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::ElectionTimer;
-use crate::Error;
 use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -20,17 +32,6 @@ use crate::Result;
 use crate::RoleEvent;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tokio::sync::mpsc::{self};
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
 
 pub struct LearnerState<T: TypeConfig> {
     pub shared_state: SharedState,

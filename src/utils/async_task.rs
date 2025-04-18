@@ -1,12 +1,14 @@
-use crate::BackoffPolicy;
-use crate::NetworkError;
-use crate::Result;
+use std::time::Duration;
+
 use log::debug;
 use log::error;
 use log::warn;
-use std::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;
+
+use crate::BackoffPolicy;
+use crate::NetworkError;
+use crate::Result;
 
 /// General one
 pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, P>(

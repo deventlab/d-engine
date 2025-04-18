@@ -1,12 +1,14 @@
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use config::ConfigError;
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::proto::NodeMeta;
 use crate::Error;
 use crate::Result;
 use crate::FOLLOWER;
-use config::ConfigError;
-use serde::Deserialize;
-use serde::Serialize;
-use std::net::SocketAddr;
-use std::path::PathBuf;
 
 /// Cluster node configuration parameters
 ///

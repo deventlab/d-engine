@@ -1,6 +1,20 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
+use std::collections::HashSet;
+
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::task;
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
+
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::ClusteMembershipChangeRequest;
@@ -17,18 +31,6 @@ use crate::RetryPolicies;
 use crate::Transport;
 use crate::VoteResult;
 use crate::API_SLO;
-use autometrics::autometrics;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use std::collections::HashSet;
-use tokio::task;
-use tonic::async_trait;
-use tonic::codec::CompressionEncoding;
 
 #[derive(Debug)]
 pub struct GrpcTransport {

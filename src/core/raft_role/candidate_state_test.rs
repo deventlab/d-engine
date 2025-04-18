@@ -1,3 +1,10 @@
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+
 use super::candidate_state::CandidateState;
 use crate::alias::POF;
 use crate::proto::AppendEntriesRequest;
@@ -29,11 +36,6 @@ use crate::MockStateMachineHandler;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
 
 /// # Case 1: Can vote myself
 #[tokio::test]

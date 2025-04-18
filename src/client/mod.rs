@@ -60,6 +60,8 @@ pub use pool::*;
 #[cfg(test)]
 mod pool_test;
 
+use log::error;
+
 use crate::proto::client_command;
 use crate::proto::client_response::SuccessResult;
 use crate::proto::ClientCommand;
@@ -67,7 +69,6 @@ use crate::proto::ClientResponse;
 use crate::proto::ClientResult;
 use crate::proto::ErrorCode;
 use crate::proto::ReadResults;
-use log::error;
 
 impl ClientCommand {
     /// Create read command for specified key

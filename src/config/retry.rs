@@ -1,9 +1,11 @@
-use crate::Error;
-use crate::Result;
+use std::fmt::Debug;
+
 use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
-use std::fmt::Debug;
+
+use crate::Error;
+use crate::Result;
 
 /// Configuration for exponential backoff retry strategy
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]

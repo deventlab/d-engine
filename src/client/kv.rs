@@ -1,4 +1,14 @@
-use super::BusinessErrorType;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use log::debug;
+use log::error;
+use rand::rngs::StdRng;
+use rand::Rng;
+use rand::SeedableRng;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+
 use super::ClientInner;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::ClientCommand;
@@ -7,15 +17,6 @@ use crate::proto::ClientReadRequest;
 use crate::proto::ClientResult;
 use crate::proto::ErrorCode;
 use crate::ClientApiError;
-use arc_swap::ArcSwap;
-use log::debug;
-use log::error;
-use rand::rngs::StdRng;
-use rand::Rng;
-use rand::SeedableRng;
-use std::sync::Arc;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
 
 /// Key-value store client interface
 ///
@@ -59,11 +60,11 @@ impl KvClient {
             Ok(response) => {
                 debug!("[:KvClient:write] response: {:?}", response);
                 let client_response = response.get_ref();
-                return client_response.validate_error();
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:KvClient:write] status: {:?}", status);
-                return Err(status.into());
+                Err(status.into())
             }
         }
     }
@@ -101,11 +102,11 @@ impl KvClient {
             Ok(response) => {
                 debug!("[:KvClient:delete] response: {:?}", response);
                 let client_response = response.get_ref();
-                return client_response.validate_error();
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:KvClient:delete] status: {:?}", status);
-                return Err(status.into());
+                Err(status.into())
             }
         }
     }

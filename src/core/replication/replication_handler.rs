@@ -1,3 +1,18 @@
+use std::cmp;
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use autometrics::autometrics;
+use dashmap::DashMap;
+use log::debug;
+use log::error;
+use log::trace;
+use log::warn;
+use prost::Message;
+use tonic::async_trait;
+
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::ROF;
@@ -25,24 +40,10 @@ use crate::StateSnapshot;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
-use autometrics::autometrics;
-use dashmap::DashMap;
-use log::debug;
-use log::error;
-use log::trace;
-use log::warn;
-use prost::Message;
-use std::cmp;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tonic::async_trait;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub my_id: u32,
     _phantom: PhantomData<T>,
@@ -50,8 +51,7 @@ where
 
 #[async_trait]
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn handle_client_proposal_in_batch(
         &self,
@@ -433,8 +433,7 @@ pub(super) struct ReplicationData {
 }
 
 impl<T> ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(my_id: u32) -> Self {
         Self {
@@ -516,24 +515,19 @@ where
             entries.len()
         );
 
-        (
-            peer_id,
-            peer.channel_with_address.clone(),
-            AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
-            },
-        )
+        (peer_id, peer.channel_with_address.clone(), AppendEntriesRequest {
+            term: data.current_term,
+            leader_id: self.my_id,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit_index: data.commit_index,
+        })
     }
 }
 
 impl<T> Debug for ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn fmt(
         &self,

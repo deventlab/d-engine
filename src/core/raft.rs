@@ -1,3 +1,14 @@
+use std::sync::Arc;
+
+use log::debug;
+use log::error;
+use log::info;
+use log::trace;
+use log::warn;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
+
 use super::follower_state::FollowerState;
 use super::RaftContext;
 use super::RaftEvent;
@@ -12,7 +23,6 @@ use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
-use crate::Error;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
@@ -22,19 +32,9 @@ use crate::Result;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep_until;
 
 pub struct Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub node_id: u32,
     pub role: RaftRole<T>,
@@ -68,8 +68,7 @@ where
 }
 
 impl<T> Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         node_id: u32,
@@ -395,8 +394,7 @@ where
 }
 
 impl<T> Drop for Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn drop(&mut self) {
         info!("Raft been dropped.");

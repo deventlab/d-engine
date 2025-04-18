@@ -15,6 +15,10 @@
 //! fewer entries than Node A.
 //! - Nodes A and C recognize B as the leader.
 
+use std::time::Duration;
+
+use d_engine::ClientApiError;
+
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::init_state_storage;
@@ -25,9 +29,6 @@ use crate::common::reset;
 use crate::common::start_node;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
-use d_engine::proto::ErrorCode;
-use d_engine::ClientApiError;
-use std::time::Duration;
 
 #[tokio::test]
 async fn test_leader_election_based_on_log_term_and_index() -> std::result::Result<(), ClientApiError> {

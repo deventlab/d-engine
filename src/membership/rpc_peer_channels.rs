@@ -10,7 +10,23 @@
 //! initial configuration and must be properly initialized before
 //! `raft_membership` can operate. This layer abstracts network implementation
 //! details from the consensus algorithm.
-//!
+
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
+
+use dashmap::DashMap;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use tokio::task;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
 
 use super::ChannelWithAddress;
 use super::PeerChannels;
@@ -26,21 +42,6 @@ use crate::NetworkError;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RetryPolicies;
-use dashmap::DashMap;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::task;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
 
 #[derive(Clone)]
 pub struct RpcPeerChannels {

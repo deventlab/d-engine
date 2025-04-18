@@ -1,3 +1,23 @@
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+
+use autometrics::autometrics;
+use log::debug;
+use log::error;
+use log::info;
+use log::trace;
+use log::warn;
+use nanoid::nanoid;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
 use super::LeaderStateSnapshot;
@@ -49,24 +69,6 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::API_SLO;
-use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
-use nanoid::nanoid;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
 
 pub struct LeaderState<T: TypeConfig> {
     // Leader State

@@ -3,8 +3,10 @@
 //! Defines comprehensive error types for a Raft-based distributed system,
 //! categorized by protocol layer and operational concerns.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use config::ConfigError;
-use std::{sync::Arc, time::Duration};
 use tokio::task::JoinError;
 
 #[doc(hidden)]
