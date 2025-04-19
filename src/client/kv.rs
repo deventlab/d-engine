@@ -1,24 +1,22 @@
+use std::sync::Arc;
+
 use arc_swap::ArcSwap;
-use log::debug;
-use log::error;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
-use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-use tonic::Code;
+use tracing::debug;
+use tracing::error;
 
 use super::ClientInner;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
-use crate::proto::ClientResponse;
 use crate::proto::ClientResult;
-use crate::Error;
-use crate::Result;
+use crate::proto::ErrorCode;
+use crate::ClientApiError;
 
 /// Key-value store client interface
 ///
@@ -43,7 +41,7 @@ impl KvClient {
         &self,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), ClientApiError> {
         let client_inner = self.client_inner.load();
 
         // Build request
@@ -61,24 +59,14 @@ impl KvClient {
         match client.handle_client_propose(request).await {
             Ok(response) => {
                 debug!("[:KvClient:write] response: {:?}", response);
-                match response.get_ref() {
-                    ClientResponse { error_code, result: _ } => {
-                        if matches!(
-                            ClientRequestError::try_from(*error_code).unwrap_or(ClientRequestError::NoError),
-                            ClientRequestError::NoError
-                        ) {
-                            return Ok(());
-                        } else {
-                            error!("handle_client_propose error_code:{:?}", error_code);
-                        }
-                    }
-                }
+                let client_response = response.get_ref();
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:KvClient:write] status: {:?}", status);
+                Err(status.into())
             }
         }
-        Err(Error::FailedToSendWriteRequestError)
     }
 
     /// Deletes a key with strong consistency guarantees
@@ -95,7 +83,7 @@ impl KvClient {
     pub async fn delete(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), ClientApiError> {
         let client_inner = self.client_inner.load();
         // Build request
         let mut commands = Vec::new();
@@ -113,14 +101,14 @@ impl KvClient {
         match client.handle_client_propose(request).await {
             Ok(response) => {
                 debug!("[:KvClient:delete] response: {:?}", response);
-
-                return Ok(());
+                let client_response = response.get_ref();
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:KvClient:delete] status: {:?}", status);
+                Err(status.into())
             }
         }
-        Err(Error::FailedToSendWriteRequestError)
     }
 
     /// Retrieves a single key's value from the cluster
@@ -137,15 +125,12 @@ impl KvClient {
         &self,
         key: impl AsRef<[u8]>,
         linear: bool,
-    ) -> Result<Option<ClientResult>> {
+    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
         // Delegate to multi-get implementation
         let mut results = self.get_multi(std::iter::once(key), linear).await?;
 
         // Extract single result (safe due to single-key input)
-        results.pop().ok_or_else(|| {
-            error!("Internal error: empty results from single-key read");
-            Error::InvalidResponse
-        })
+        Ok(results.pop().unwrap_or(None))
     }
     /// Fetches values for multiple keys from the cluster
     ///
@@ -163,14 +148,14 @@ impl KvClient {
         &self,
         keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
         linear: bool,
-    ) -> Result<Vec<Option<ClientResult>>> {
+    ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         let client_inner = self.client_inner.load();
         // Convert keys to commands
         let commands: Vec<ClientCommand> = keys.into_iter().map(|k| ClientCommand::get(k.as_ref())).collect();
 
         // Validate at least one key
         if commands.is_empty() {
-            return Err(Error::EmptyKeys);
+            return Err(ErrorCode::InvalidRequest.into());
         }
 
         // Select client based on consistency level
@@ -195,16 +180,12 @@ impl KvClient {
             }
             Err(status) => {
                 error!("Read request failed: {:?}", status);
-                match status.code() {
-                    Code::PermissionDenied => Err(Error::NodeIsNotLeaderError),
-                    Code::Cancelled => Err(Error::ClientRequestCanceledError),
-                    _ => Err(Error::FailedToSendReadRequestError),
-                }
+                Err(status.into())
             }
         }
     }
 
-    async fn make_leader_client(&self) -> Result<RpcServiceClient<Channel>> {
+    async fn make_leader_client(&self) -> std::result::Result<RpcServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         let channel = client_inner.pool.get_leader();
@@ -218,7 +199,7 @@ impl KvClient {
         Ok(client)
     }
 
-    async fn make_client(&self) -> Result<RpcServiceClient<Channel>> {
+    async fn make_client(&self) -> std::result::Result<RpcServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         // Balance from read clients

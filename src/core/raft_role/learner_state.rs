@@ -2,14 +2,14 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::async_trait;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
@@ -19,16 +19,18 @@ use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
+use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::ElectionTimer;
-use crate::Error;
+use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RoleEvent;
+use crate::StateTransitionError;
 use crate::TypeConfig;
 
 pub struct LearnerState<T: TypeConfig> {
@@ -62,11 +64,13 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
         error!("become_leader Illegal. I am Learner");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         warn!("become_candidate Illegal. I am Learner");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
@@ -91,13 +95,15 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     }
     fn become_learner(&self) -> Result<RaftRole<T>> {
         warn!("I am Learner already");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     /// As Leader should not vote any more
     fn voted_for(&self) -> Result<Option<VotedFor>> {
         warn!("voted_for - As Learner should not vote any more.");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     //--- None state behaviors
     fn is_timer_expired(&self) -> bool {
@@ -163,7 +169,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
 
@@ -176,7 +182,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
@@ -187,7 +193,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -204,11 +210,11 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
                 sender
-                    .send(Ok(ClientResponse::write_error(Error::AppendEntriesNotLeader)))
+                    .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
@@ -219,7 +225,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
         }

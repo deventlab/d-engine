@@ -39,8 +39,7 @@ pub struct StateUpdate {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ElectionCore<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Sends vote requests to all voting members. Returns Ok() if majority
     /// votes are received, otherwise returns Err. Initiates RPC calls via

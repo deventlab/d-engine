@@ -2,14 +2,14 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::async_trait;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -19,12 +19,16 @@ use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
+use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
+use crate::ConsensusError;
 use crate::ElectionCore;
+use crate::ElectionError;
 use crate::ElectionTimer;
 use crate::Error;
 use crate::Membership;
+use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -32,6 +36,7 @@ use crate::RaftNodeConfig;
 use crate::ReplicationCore;
 use crate::RoleEvent;
 use crate::StateMachineHandler;
+use crate::StateTransitionError;
 use crate::TypeConfig;
 
 #[derive(Clone)]
@@ -85,7 +90,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         warn!("I am candidate already");
-        Err(Error::Illegal)
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn become_follower(&self) -> Result<RaftRole<T>> {
@@ -183,7 +188,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     );
                 }
             }
-            Err(Error::HigherTermFoundError(higher_term)) => {
+            Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term)))) => {
                 // Immediately update the Term and become a Follower.
                 self.update_current_term(higher_term);
                 self.send_become_follower_event(role_tx)?;
@@ -232,7 +237,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 }
             }
@@ -244,7 +249,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 sender.send(Ok(cluster_conf)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
             RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
@@ -255,7 +260,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -282,7 +287,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                     return Ok(());
                 } else {
@@ -303,11 +308,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
                 sender
-                    .send(Ok(ClientResponse::write_error(Error::AppendEntriesNotLeader)))
+                    .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
@@ -320,7 +325,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         .map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
+                            NetworkError::SingalSendFailed(error_str)
                         })?;
                 } else {
                     // Otherwise
@@ -336,7 +341,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 }
             }
@@ -385,7 +390,7 @@ impl<T: TypeConfig> CandidateState<T> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str).into()
         })
     }
 
@@ -398,7 +403,7 @@ impl<T: TypeConfig> CandidateState<T> {
         role_tx.send(RoleEvent::ReprocessEvent(raft_event)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str).into()
         })
     }
 

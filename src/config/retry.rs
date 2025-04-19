@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -103,32 +104,35 @@ impl BackoffPolicy {
     ) -> Result<()> {
         // Validate retry limits
         if self.max_retries == 0 {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "{}: max_retries=0 means infinite retries - dangerous for {} operations",
                 policy_name, policy_name
-            )));
+            ))));
         }
 
         // Validate timeout constraints
         if self.timeout_ms == 0 {
-            return Err(Error::InvalidConfig(format!("{}: timeout_ms cannot be 0", policy_name)));
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{}: timeout_ms cannot be 0",
+                policy_name
+            ))));
         }
 
         // Validate delay progression
         if self.base_delay_ms >= self.max_delay_ms {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "{}: base_delay_ms({}) must be less than max_delay_ms({})",
                 policy_name, self.base_delay_ms, self.max_delay_ms
-            )));
+            ))));
         }
 
         // Ensure reasonable maximums
         if self.max_delay_ms > 120_000 {
             // 2 minutes
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "{}: max_delay_ms({}) exceeds 2min limit",
                 policy_name, self.max_delay_ms
-            )));
+            ))));
         }
 
         Ok(())

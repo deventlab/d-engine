@@ -1,11 +1,12 @@
 use std::time::Duration;
 use std::vec;
 
-use log::error;
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
+use tracing::error;
 
 use crate::proto::ClusterMembership;
+use crate::proto::ErrorCode;
 use crate::proto::NodeMeta;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
@@ -14,7 +15,6 @@ use crate::test_utils::MOCK_CLIENT_PORT_BASE;
 use crate::time::get_now_as_u32;
 use crate::ClientConfig;
 use crate::ConnectionPool;
-use crate::Error;
 use crate::FOLLOWER;
 use crate::LEADER;
 
@@ -69,7 +69,11 @@ async fn test_parse_cluster_metadata_no_leader() {
     }];
 
     let result = ConnectionPool::parse_cluster_metadata(&nodes);
-    assert!(matches!(result.err(), Some(Error::NoLeaderFound)));
+    if let Some(e) = result.err() {
+        assert_eq!(e.code(), ErrorCode::NotLeader as u32);
+    } else {
+        assert!(false);
+    }
 }
 
 #[tokio::test]

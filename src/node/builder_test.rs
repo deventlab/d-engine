@@ -18,6 +18,7 @@ use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
+use crate::SystemError;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
@@ -94,7 +95,7 @@ fn test_ready_fails_without_build() {
     let builder = NodeBuilder::new_from_db_path("/tmp/test_ready_fails_without_build", shutdown_rx);
 
     let result = builder.ready();
-    assert!(matches!(result, Err(Error::NodeFailedToStartError)));
+    assert!(matches!(result, Err(Error::System(SystemError::NodeStartFailed(_)))));
 }
 
 #[tokio::test]
@@ -162,7 +163,7 @@ fn test_config_override_invalid_path() {
     let result = base_config.with_override_config("non_existent.toml");
 
     assert!(
-        matches!(result, Err(Error::ConfigError(_))),
+        matches!(result, Err(Error::Config(_))),
         "Should return ConfigError for invalid path"
     );
 }
@@ -182,7 +183,7 @@ fn test_config_override_invalid_format() {
     let result = base_config.with_override_config(&config_path);
 
     assert!(
-        matches!(result, Err(Error::ConfigError(_))),
+        matches!(result, Err(Error::Config(_))),
         "Should return ConfigError for invalid format"
     );
 }

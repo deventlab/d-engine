@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
+use super::ClientApiError;
 use super::ClientBuilder;
 use super::ClientConfig;
 use super::ClusterClient;
 use super::ConnectionPool;
 use super::KvClient;
-use crate::Result;
 
 /// Main entry point for interacting with the d_engine cluster
 ///
@@ -83,7 +83,7 @@ impl Client {
     pub async fn refresh(
         &mut self,
         new_endpoints: Option<Vec<String>>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), ClientApiError> {
         // Get a writable lock
         let old_inner = self.inner.load();
         let config = old_inner.config.clone();

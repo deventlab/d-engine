@@ -14,3 +14,6 @@ prometheus_enabled = false
 
 [raft]
 general_raft_timeout_duration_in_ms = 10000
+
+[raft.replication]
+rpc_append_entries_in_batch_threshold = 1

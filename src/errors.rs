@@ -1,263 +1,56 @@
-use std::net::AddrParseError;
+//! Raft Consensus Protocol Error Hierarchy
+//!
+//! Defines comprehensive error types for a Raft-based distributed system,
+//! categorized by protocol layer and operational concerns.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use config::ConfigError;
-use thiserror::Error;
 use tokio::task::JoinError;
-
-use crate::proto::ClientRequestError;
 
 #[doc(hidden)]
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! define_error_mapping {
-    ($proto:ident, $app:ident; $($app_pattern:path => $proto_variant:path),+) => {
-        impl From<$app> for $proto {
-            fn from(e: $app) -> Self {
-                match e {
-                    $(
-                        $app_pattern => $proto_variant,
-                    )+
-                    _ => Self::Unknown,
-                }
-            }
-        }
-
-        impl From<$proto> for $app {
-            fn from(e: $proto) -> Self {
-                match e {
-                    $(
-                        $proto_variant => $app_pattern,
-                    )+
-                    _ => Self::ServerError,
-                }
-            }
-        }
-    };
-}
-
-/// Custom errors definition
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// General file IO error
+    /// Infrastructure-level failures (network, storage, serialization)
     #[error(transparent)]
-    IoError(#[from] std::io::Error),
+    System(#[from] SystemError),
 
-    /// Sled DB related error
+    /// Cluster configuration validation failures
     #[error(transparent)]
-    SledError(#[from] sled::Error),
+    Config(#[from] ConfigError),
 
-    /// RPC framework tonic related error
+    /// Raft consensus protocol violations and failures
     #[error(transparent)]
-    TonicError(#[from] tonic::transport::Error),
+    Consensus(#[from] ConsensusError),
 
-    /// General server error
-    #[error("General server error: {0}")]
-    GeneralServerError(String),
-
-    /// General server error without message
-    #[error("Server error")]
-    ServerError,
-
-    /// Bincode related error
-    #[error(transparent)]
-    BincodeError(#[from] bincode::Error),
-
-    /// Node start failed error
-    #[error("Node failed to start error")]
-    NodeFailedToStartError,
-
-    /// RPC connection error
-    #[error("Socket connect failed error")]
-    ConnectError,
-
-    /// Async task retry timeout error
-    #[error("Retry Timeout error")]
-    RetryTimeoutError,
-
-    /// State machine related error
-    #[error("State Machine error: {0}")]
-    StateMachinneError(String),
-
-    /// The request was sent to a follower or non-leader node; the client should retry with the
-    /// leader.
-    #[error("Dispatch client request leader error")]
-    NodeIsNotLeaderError,
-
-    /// The request was canceled by client
-    #[error("Client canceled the request error")]
-    ClientRequestCanceledError,
-
-    /// The cluster has no known membership configuration; it may be unavailable or uninitialized.
-    #[error("Cluster is unavailable")]
-    ClusterMembershipNotFound,
-
-    /// Returned when the cluster has no elected leader or the leader is unknown.
-    /// This typically occurs during elections or network partitions.
-    #[error("No leader found")]
-    NoLeaderFound,
-
-    /// Returned when client `get_multi` is called without any keys.
-    #[error("No keys provided")]
-    EmptyKeys,
-
-    /// The response from the client response is invalid or missing expected data.
-    #[error("Invalid response")]
-    InvalidResponse,
-
-    /// Returned when the server response type does not match the expected variant for the
-    /// operation. Typically indicates a protocol mismatch or internal bug.
-    #[error("Invalid response type")]
-    InvalidResponseType,
-
-    /// Indicates failure to fetch or apply the latest cluster membership from the leader.
-    /// Additional context is included in the error message.
-    #[error("Failed to update cluster membership from leader, {0}")]
-    ClusterMembershipUpdateFailed(String),
-
-    /// Indicates that the Raft metadata for the given node ID was not found.
-    /// This usually occurs when the client or leader lacks an up-to-date cluster view,
-    /// or the node has not been properly registered in cluster membership.
-    ///
-    /// The `u32` parameter represents the node ID being queried.
-    #[error("Raft Metadata not found: {0}")]
-    ClusterMetadataNodeMetaNotFound(u32),
-
-    /// The follower could not confirm commitment of the log entry.
-    /// This may happen if the follower's log is not sufficiently up-to-date or quorum was not
-    /// reached.
-    #[error("AppendEntriesCommitNotConfirmed")]
-    AppendEntriesCommitNotConfirmed,
-
-    /// The current node rejected the AppendEntries request because it is not the leader.
-    /// Clients should redirect requests to the current cluster leader.
-    #[error("NotLeader")]
-    AppendEntriesNotLeader,
-
-    /// The target peer specified in the AppendEntries request was not found in the current cluster
-    /// view. This can occur if the membership view is outdated or the peer was removed.
-    #[error("No peer found")]
-    AppendEntriesNoPeerFound,
-
-    // The target peer failed to respond to the AppendEntries request within the expected timeout period.
-    /// Typically caused by network partitions, slow nodes, or overloaded peers.
-    #[error("ServerTimeoutResponding")]
-    AppendEntriesServerTimeoutResponding,
-
-    /// The node failed to win the election.
-    /// This could happen due to split vote, quorum not reached, or other election logic failure.
-    /// The error message may contain additional context such as vote count or term mismatch.
-    #[error("ElectionFailed: {0}")]
-    ElectionFailed(String),
-
-    /// Error occurred during a Raft state transition (e.g., follower → candidate, candidate →
-    /// leader). Propagates the underlying StateTransitionError.
-    #[error(transparent)]
-    StateTransitionError(#[from] StateTransitionError),
-
-    /// A message was received with a higher term than the local node's current term.
-    /// The node should step down and update its term accordingly.
-    #[error("Higher term found error: higher term = {0}")]
-    HigherTermFoundError(u64),
-
-    /// Receive Exist Signals
-    #[error("Exit")]
-    Exit,
-
-    /// Indicated RPC service stops serving
-    #[error("RPC server dies")]
-    RPCServerDies,
-
-    /// Indicate node is not ready to server request
-    #[error("Node is not ready error")]
-    ServerIsNotReadyError,
-
-    /// Receive status error from RPC service
-    #[error("Node status error: {0}")]
-    RPCServerStatusError(String),
-
-    /// The error is returned when the provided URI is invalid.
-    /// The error message will include the invalid URI for context.
-    #[error("invalid uri {0}")]
-    InvalidURI(String),
-
-    /// Indicates a failure to send a read request.
-    #[error("Failed to send read request error")]
-    FailedToSendReadRequestError,
-
-    /// Indicates a failure to send a write request.
-    #[error("Failed to send write request error")]
-    FailedToSendWriteRequestError,
-
-    /// A task retry failed, often due to reaching the maximum retry limit or encountering
-    /// persistent errors.
-    #[error("Task retry failed: {0}")]
-    RetryTaskFailed(String),
-
-    /// Address parsing error when invalid network address is encountered.
-    #[error(transparent)]
-    AddrParseError(#[from] AddrParseError),
-
-    /// Failed to set up a peer connection, possibly due to network or configuration issues.
-    /// The error message may contain more details about the failure.
-    #[error("Set peer connection failed: {0}")]
-    FailedSetPeerConnection(String),
-
-    /// General error indicating a configuration issue.
-    /// The error message will provide details about the specific configuration problem.
-    #[error(transparent)]
-    ConfigError(#[from] ConfigError),
-
-    /// Error encountered when sending a Tonic status via tokio.
-    /// The error message will include details about the status failure.
-    #[error("tokio send Tonic Status error: {0}")]
-    TokioSendStatusError(String),
-
-    //===== Role responbilitiies errors ====
-    /// The operation failed because the current node is not a leader.
-    #[error("Not Leader")]
-    NotLeader,
-
-    /// The operation failed because the node is a learner and cannot perform this action.
-    #[error("Learner can not handle")]
-    LearnerCanNot,
-
-    /// A generic error indicating an illegal state or operation.
-    #[error("Illegal")]
-    Illegal,
-
-    /// The error indicates that a state transition has failed.
-    #[error("Transition failed")]
-    TransitionFailed,
-
-    /// Error encountered when a tokio task join fails.
-    #[error(transparent)]
-    JoinError(#[from] JoinError),
-
-    //===== Client errors =====
-    //
-    /// General client request error
-    #[error("Client error: {0}")]
-    GeneralClientError(String),
-
-    //===== Config errors =====
-    //
-    /// Configuration is invalid. The error message will contain details about what is wrong with
-    /// the config.
-    #[error("Invalid config: {0}")]
-    InvalidConfig(String),
+    /// Unrecoverable failures requiring process termination
+    #[error("Fatal error: {0}")]
+    Fatal(String),
 }
 
-#[doc(hidden)]
-define_error_mapping!(
-    ClientRequestError, Error;
-    Error::AppendEntriesCommitNotConfirmed => ClientRequestError::CommitNotConfirmed,
-    Error::AppendEntriesNotLeader => ClientRequestError::NotLeader,
-    Error::AppendEntriesServerTimeoutResponding => ClientRequestError::ServerTimeout
-);
+#[derive(Debug, thiserror::Error)]
+pub enum ConsensusError {
+    /// Illegal Raft node state transitions
+    #[error(transparent)]
+    StateTransition(#[from] StateTransitionError),
 
-#[derive(Debug, Error)]
+    /// Leader election failures (Section 5.2 Raft paper)
+    #[error(transparent)]
+    Election(#[from] ElectionError),
+
+    /// Log replication failures (Section 5.3 Raft paper)
+    #[error(transparent)]
+    Replication(#[from] ReplicationError),
+
+    /// Cluster membership change failures (Section 6 Raft paper)
+    #[error(transparent)]
+    Membership(#[from] MembershipError),
+}
+
+#[derive(Debug, thiserror::Error)]
 #[doc(hidden)]
 pub enum StateTransitionError {
     #[error("Not enough votes to transition to leader.")]
@@ -268,4 +61,346 @@ pub enum StateTransitionError {
 
     #[error("Lock error.")]
     LockError,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum NetworkError {
+    /// Endpoint unavailable (HTTP 503 equivalent)
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
+    /// Peer communication timeout
+    #[error("Connection timeout to {node_id} after {duration:?}")]
+    Timeout { node_id: u64, duration: Duration },
+
+    /// Unreachable node with source context
+    #[error("Network unreachable: {source}")]
+    Unreachable {
+        source: Arc<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Persistent connection failures
+    #[error("Socket connect failed error")]
+    ConnectError,
+
+    /// Retry policy exhaustion
+    #[error("Retry timeout after {0:?}")]
+    RetryTimeoutError(Duration),
+
+    /// TLS negotiation failures
+    #[error("TLS handshake failed")]
+    TlsHandshakeFailure,
+
+    /// Missing peer list for RPC
+    #[error("Request list for {request_type} contains no peers")]
+    EmptyPeerList { request_type: &'static str },
+
+    /// Malformed node addresses
+    #[error("Invalid URI format: {0}")]
+    InvalidURI(String),
+
+    /// RPC transmission failures with context
+    #[error("Failed to send {request_type} request")]
+    RequestSendFailure {
+        request_type: &'static str,
+        #[source]
+        source: tonic::transport::Error,
+    },
+
+    /// Low-level TCP configuration errors
+    #[error("TCP keepalive configuration error")]
+    TcpKeepaliveError,
+
+    /// HTTP/2 protocol configuration errors
+    #[error("HTTP/2 keepalive configuration error")]
+    Http2KeepaliveError,
+
+    /// gRPC transport layer errors
+    #[error(transparent)]
+    TonicError(#[from] tonic::transport::Error),
+
+    /// gRPC status code errors
+    #[error(transparent)]
+    TonicStatusError(#[from] tonic::Status),
+
+    #[error("Failed to send read request: {0}")]
+    ReadSend(#[from] ReadSendError),
+
+    #[error("Failed to send write request: {0}")]
+    WriteSend(#[from] WriteSendError),
+
+    #[error("Background task failed: {0}")]
+    TaskFailed(#[from] JoinError),
+
+    #[error("{0}")]
+    TaskBackoffFailed(String),
+
+    #[error("{0}")]
+    SingalSendFailed(String),
+
+    #[error("{0}")]
+    SingalReceiveFailed(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    /// Disk I/O failures during log/snapshot operations
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+
+    /// Serialization failures for persisted data
+    #[error(transparent)]
+    BincodeError(#[from] bincode::Error),
+
+    /// State machine application errors
+    #[error("State Machine error: {0}")]
+    StateMachineError(String),
+
+    /// Log storage subsystem failures
+    #[error("Log storage failure: {0}")]
+    LogStorage(String),
+
+    /// Snapshot creation/restoration failures
+    #[error("Snapshot operation failed: {0}")]
+    Snapshot(String),
+
+    /// Checksum validation failures
+    #[error("Data corruption detected at {location}")]
+    DataCorruption { location: String },
+
+    /// Configuration storage failures
+    #[error("Configuration storage error: {0}")]
+    ConfigStorage(String),
+
+    /// Embedded database errors
+    #[error(transparent)]
+    SledError(#[from] sled::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReadSendError {
+    #[error("Network timeout")]
+    Timeout(#[from] tokio::time::error::Elapsed),
+
+    #[error("Connection failed")]
+    Connection(#[from] tonic::transport::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WriteSendError {
+    #[error("Not cluster leader")]
+    NotLeader,
+
+    #[error("Network unreachable")]
+    Unreachable,
+
+    #[error("Payload too large")]
+    PayloadExceeded,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SystemError {
+    // Network layer
+    #[error("Network error: {0}")]
+    Network(#[from] NetworkError),
+
+    // Storage layer
+    #[error("Storage operation failed")]
+    Storage(#[from] StorageError),
+
+    //Serialization
+    #[error("Serialization error")]
+    Serialization(#[from] SerializationError),
+
+    // Basic node operations
+    #[error("Node failed to start: {0}")]
+    NodeStartFailed(String),
+
+    #[error("General server error: {0}")]
+    GeneralServer(String),
+
+    #[error("Internal server error")]
+    ServerUnavailable,
+}
+
+// Serialization is classified separately (across protocol layers and system layers)
+#[derive(Debug, thiserror::Error)]
+pub enum SerializationError {
+    #[error("Bincode serialization failed: {0}")]
+    Bincode(#[from] bincode::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ElectionError {
+    /// General election process failure
+    #[error("Election failed: {0}")]
+    Failed(String),
+
+    /// Stale term detection (Section 5.1 Raft paper)
+    #[error("Found higher term(={0}) during election process")]
+    HigherTerm(u64),
+
+    /// Term number inconsistency
+    #[error("Term conflict (current: {current}, received: {received})")]
+    TermConflict { current: u64, received: u64 },
+
+    /// Log inconsistency during vote requests (Section 5.4.1 Raft paper)
+    #[error("Log conflict at index {index} (expected: {expected_term}, actual: {actual_term})")]
+    LogConflict {
+        index: u64,
+        expected_term: u64,
+        actual_term: u64,
+    },
+
+    /// Quorum not achieved (Section 5.2 Raft paper)
+    #[error("Quorum not reached (required: {required}, succeed: {succeed})")]
+    QuorumFailure { required: usize, succeed: usize },
+
+    /// Leadership handoff failures
+    #[error("Leadership consensus error: {0}")]
+    LeadershipConsensus(String),
+
+    /// Isolated node scenario
+    #[error("No voting member found for candidate {candidate_id}")]
+    NoVotingMemberFound { candidate_id: u32 },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReplicationError {
+    /// Stale leader detected during AppendEntries RPC
+    #[error("Found higher term(={0}) during replication process")]
+    HigherTerm(u64),
+
+    /// Failed to achieve majority acknowledgment
+    #[error("Quorum not reached for log replication")]
+    QuorumNotReached,
+
+    /// Target follower node unreachable
+    #[error("Node {node_id} unreachable for replication")]
+    NodeUnreachable { node_id: u32 },
+
+    /// Network timeout during replication RPC
+    #[error("RPC timeout after {duration}ms")]
+    RpcTimeout { duration: u64 },
+
+    /// Missing peer configuration in leader state
+    #[error("No peer mapping for leader {leader_id}")]
+    NoPeerFound { leader_id: u32 },
+
+    /// Log inconsistency detected during replication (§5.3)
+    #[error("Log conflict at index {index} (expected term {expected_term}, actual {actual_term})")]
+    LogConflict {
+        index: u64,
+        expected_term: u64,
+        actual_term: u64,
+    },
+
+    /// Node not in leader state for replication requests
+    #[error("Replication requires leader role (known leader: {leader_id:?})")]
+    NotLeader { leader_id: Option<u32> },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MembershipError {
+    /// Failed to reach consensus on configuration change
+    #[error("Membership update consensus failure: {0}")]
+    UpdateFailed(String),
+
+    /// Non-leader node attempted membership change
+    #[error("Membership changes require leader role")]
+    NotLeader,
+
+    /// Cluster not in operational state
+    #[error("Cluster bootstrap not completed")]
+    ClusterIsNotReady,
+
+    /// Connection establishment failure during join
+    #[error("Cluster connection setup failed: {0}")]
+    SetupClusterConnectionFailed(String),
+
+    /// Missing node metadata in configuration
+    #[error("Metadata missing for node {node_id} in cluster config")]
+    NoMetadataFoundForNode { node_id: u32 },
+}
+
+// ============== Conversion Implementations ============== //
+impl From<NetworkError> for Error {
+    fn from(e: NetworkError) -> Self {
+        Error::System(SystemError::Network(e))
+    }
+}
+
+impl From<StorageError> for Error {
+    fn from(e: StorageError) -> Self {
+        Error::System(SystemError::Storage(e))
+    }
+}
+
+impl From<SerializationError> for Error {
+    fn from(e: SerializationError) -> Self {
+        Error::System(SystemError::Serialization(e))
+    }
+}
+
+// ===== Consensus Error conversions =====
+
+impl From<StateTransitionError> for Error {
+    fn from(e: StateTransitionError) -> Self {
+        Error::Consensus(ConsensusError::StateTransition(e))
+    }
+}
+
+impl From<ElectionError> for Error {
+    fn from(e: ElectionError) -> Self {
+        Error::Consensus(ConsensusError::Election(e))
+    }
+}
+
+impl From<ReplicationError> for Error {
+    fn from(e: ReplicationError) -> Self {
+        Error::Consensus(ConsensusError::Replication(e))
+    }
+}
+
+impl From<MembershipError> for Error {
+    fn from(e: MembershipError) -> Self {
+        Error::Consensus(ConsensusError::Membership(e))
+    }
+}
+
+// ===== Network sub-error conversions =====
+impl From<ReadSendError> for Error {
+    fn from(e: ReadSendError) -> Self {
+        Error::System(SystemError::Network(NetworkError::ReadSend(e)))
+    }
+}
+
+impl From<WriteSendError> for Error {
+    fn from(e: WriteSendError) -> Self {
+        Error::System(SystemError::Network(NetworkError::WriteSend(e)))
+    }
+}
+
+impl From<tonic::transport::Error> for Error {
+    fn from(err: tonic::transport::Error) -> Self {
+        NetworkError::TonicError(err).into()
+    }
+}
+
+impl From<sled::Error> for Error {
+    fn from(err: sled::Error) -> Self {
+        StorageError::SledError(err).into()
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        StorageError::IoError(err).into()
+    }
+}
+
+impl From<JoinError> for Error {
+    fn from(err: JoinError) -> Self {
+        NetworkError::TaskFailed(err).into()
+    }
 }

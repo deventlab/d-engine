@@ -10,6 +10,7 @@
 //! initial configuration and must be properly initialized before
 //! `raft_membership` can operate. This layer abstracts network implementation
 //! details from the consensus algorithm.
+
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,14 +19,14 @@ use dashmap::DashMap;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
 use tokio::task;
 use tonic::async_trait;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use super::ChannelWithAddress;
 use super::PeerChannels;
@@ -35,8 +36,9 @@ use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::proto::NodeMeta;
 use crate::utils::net::address_str;
-use crate::Error;
+use crate::MembershipError;
 use crate::NetworkConfig;
+use crate::NetworkError;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RetryPolicies;
@@ -124,9 +126,7 @@ impl PeerChannels for RpcPeerChannels {
                             cluster_healthcheck_probe_service_name.clone(),
                         )
                     },
-                    retry.membership.max_retries,
-                    Duration::from_millis(retry.membership.base_delay_ms),
-                    Duration::from_millis(retry.membership.timeout_ms),
+                    retry.membership,
                 )
                 .await
                 {
@@ -182,7 +182,7 @@ impl PeerChannels for RpcPeerChannels {
 
             "
             );
-            return Err(Error::ServerIsNotReadyError);
+            return Err(MembershipError::ClusterIsNotReady.into());
         }
     }
 
@@ -256,7 +256,7 @@ impl RpcPeerChannels {
                 "Failed to connect to all peers: success_count({}) != expected_count({})",
                 success_count, expected_count
             );
-            Err(Error::ConnectError)
+            Err(NetworkError::ConnectError.into())
         } else {
             Ok(channels)
         }
@@ -270,9 +270,7 @@ impl RpcPeerChannels {
     ) -> Result<Channel> {
         task_with_timeout_and_exponential_backoff(
             || Self::connect(node_meta.clone(), rpc_settings.clone()),
-            retry.membership.max_retries,
-            Duration::from_millis(retry.membership.base_delay_ms),
-            Duration::from_millis(retry.membership.timeout_ms),
+            retry.membership,
         )
         .await
     }
@@ -295,7 +293,7 @@ impl RpcPeerChannels {
             .map_err(|err| {
                 error!("connect to {} failed: {}", &addr, err);
                 eprintln!("{:?}", err);
-                Error::ConnectError
+                NetworkError::ConnectError.into()
             })
     }
     #[cfg(test)]

@@ -10,21 +10,26 @@ use tonic::Request;
 use crate::convert::kv;
 use crate::proto::rpc_service_server::RpcService;
 use crate::proto::AppendEntriesRequest;
+use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
+use crate::proto::LogId;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_node;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
+use crate::AppendResponseWithUpdates;
 use crate::AppendResults;
+use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::RaftNodeConfig;
+use crate::StateUpdate;
 
 /// # Case: Test RPC services timeout
 #[tokio::test]
@@ -169,9 +174,11 @@ async fn test_server_is_not_ready() {
 /// # Case: Test handle rpc services successful
 #[tokio::test]
 async fn test_handle_rpc_services_successfully() {
+    tokio::time::pause();
     enable_logger();
     let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.raft.general_raft_timeout_duration_in_ms = 200;
+    settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;
     settings.cluster.db_root_dir = PathBuf::from(
         "/tmp/
     test_handle_rpc_services_successfully",
@@ -189,6 +196,14 @@ async fn test_handle_rpc_services_successfully() {
         .returning(|| ClusterMembership { nodes: vec![] });
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
+        .expect_handle_append_entries()
+        .returning(move |_, _, _| {
+            Ok(AppendResponseWithUpdates {
+                response: AppendEntriesResponse::success(1, 1, Some(LogId { term: 1, index: 1 })),
+                commit_index_update: Some(1),
+            })
+        });
+    replication_handler
         .expect_handle_client_proposal_in_batch()
         .returning(|_, _, _, _, _, _, _, _| {
             Ok(AppendResults {
@@ -196,12 +211,28 @@ async fn test_handle_rpc_services_successfully() {
                 peer_updates: HashMap::new(),
             })
         });
-
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(|_, _, _, _| {
+            Ok(StateUpdate {
+                new_voted_for: None,
+                term_update: None,
+            })
+        });
+    election_handler
+        .expect_broadcast_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
+    election_handler
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| true);
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = MockBuilder::new(graceful_rx)
         .with_membership(membership)
         .with_replication_handler(replication_handler)
+        .with_election_handler(election_handler)
         .with_settings(settings)
         .build_node();
     node.set_ready(true);
@@ -210,10 +241,11 @@ async fn test_handle_rpc_services_successfully() {
     let raft_lock = node.raft_core.clone();
     let raft_handle = tokio::spawn(async move {
         let mut raft = raft_lock.lock().await;
-        let _ = time::timeout(Duration::from_millis(500), raft.run()).await;
+        let _ = time::timeout(Duration::from_millis(100), raft.run()).await;
     });
 
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
 
     let service_handler = tokio::spawn(async move {
         assert!(node
@@ -246,7 +278,7 @@ async fn test_handle_rpc_services_successfully() {
                 cluster_membership: Some(ClusterMembership { nodes: vec![] }),
             }))
             .await
-            .is_ok());
+            .is_err());
 
         assert!(node
             .handle_client_propose(Request::new(ClientProposeRequest {

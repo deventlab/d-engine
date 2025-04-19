@@ -49,9 +49,9 @@ pub trait RaftLog: Send + Sync + 'static {
 
     /// Deprecated: Use `last_log_id()` instead.
     ///
-    /// Get the metadata of the last log (term, index)
+    /// Get the metadata of the last log (index, term)
     /// if no last log found, returning (0,0)
-    /// Return tuple format: (last_log_term, last_log_index)
+    /// Return tuple format: (last_log_index, last_log_term)
     fn get_last_entry_metadata(&self) -> (u64, u64);
 
     /// Upcomging feature in v0.2.0

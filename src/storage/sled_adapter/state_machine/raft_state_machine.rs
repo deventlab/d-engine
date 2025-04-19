@@ -1,17 +1,18 @@
 //! It works as KV storage for client business CRUDs.
+
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
 use prost::Message;
 use sled::Batch;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use crate::convert::vk;
 use crate::proto::client_command::Command;
@@ -20,10 +21,10 @@ use crate::proto::ClientCommand;
 use crate::proto::Entry;
 use crate::proto::SnapshotEntry;
 use crate::storage::sled_adapter::STATE_MACHINE_NAMESPACE;
-use crate::Error;
 use crate::Result;
 use crate::StateMachine;
 use crate::StateMachineIter;
+use crate::StorageError;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
 
@@ -82,7 +83,7 @@ impl StateMachine for RaftStateMachine {
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
-                Err(Error::SledError(e))
+                Err(StorageError::SledError(e).into())
             }
         }
     }
@@ -93,14 +94,15 @@ impl StateMachine for RaftStateMachine {
         entry: SnapshotEntry,
     ) -> Result<()> {
         if self.is_running() {
-            return Err(Error::StateMachinneError(
+            return Err(StorageError::StateMachineError(
                 "state machine is still running while applying snapshot".to_string(),
-            ));
+            )
+            .into());
         }
         let key = entry.key;
         if let Err(e) = self.tree.insert(key.clone(), entry.value) {
             error!("apply_snapshot insert error: {}", e);
-            return Err(Error::SledError(e));
+            return Err(StorageError::SledError(e).into());
         } else {
             debug!("state machine insert snapshot entry (index: {:?}) successfully!", key);
         }
@@ -141,7 +143,6 @@ impl StateMachine for RaftStateMachine {
         Ok(())
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         self.tree.len()
     }
@@ -190,8 +191,8 @@ impl StateMachine for RaftStateMachine {
                     batch.remove(key);
                 }
                 Some(Command::NoOp(true)) => {
-                    // Handle DELETE command
-                    debug!("Handling NOOP command. Do Nothing.");
+                    // Handle NOOP command
+                    info!("Handling NOOP command. Do Nothing.");
                 }
                 _ => {
                     // Handle the case where no command is set
@@ -254,7 +255,7 @@ impl RaftStateMachine {
     ) -> Result<()> {
         if let Err(e) = self.tree.apply_batch(batch) {
             error!("state_machine apply_batch failed: {}", e);
-            return Err(Error::SledError(e));
+            return Err(StorageError::SledError(e).into());
         }
         Ok(())
     }

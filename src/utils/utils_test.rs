@@ -10,7 +10,8 @@ use crate::convert::abs_ceil;
 use crate::convert::kv;
 use crate::convert::vk;
 use crate::utils::cluster::is_majority;
-use crate::Error;
+use crate::BackoffPolicy;
+use crate::NetworkError;
 use crate::Result;
 
 #[test]
@@ -79,34 +80,38 @@ async fn async_ok() -> Result<()> {
 }
 async fn async_err() -> Result<()> {
     sleep(Duration::from_millis(100)).await;
-    Err(Error::RPCServerDies)
+    Err(NetworkError::ServiceUnavailable("".to_string()).into())
 }
 
 #[tokio::test]
 async fn test_task_with_exponential_backoff() {
     // Case 1: when ok task return ok
-    if let Ok(_) =
-        task_with_timeout_and_exponential_backoff(async_ok, 3, Duration::from_millis(100), Duration::from_secs(1)).await
-    {
+    let policy = BackoffPolicy {
+        max_retries: 3,
+        timeout_ms: 100,
+        base_delay_ms: 1000,
+        max_delay_ms: 3000,
+    };
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy).await {
         assert!(true);
     } else {
         assert!(false);
     }
     // Case 2: when err task return error
-    if let Ok(_) =
-        task_with_timeout_and_exponential_backoff(async_err, 3, Duration::from_millis(100), Duration::from_secs(1))
-            .await
-    {
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_err, policy).await {
         assert!(false);
     } else {
         assert!(true);
     }
 
     // Case 3: when ok task always failed on timeout error
-    if let Ok(_) =
-        task_with_timeout_and_exponential_backoff(async_ok, 3, Duration::from_millis(100), Duration::from_millis(1))
-            .await
-    {
+    let policy = BackoffPolicy {
+        max_retries: 3,
+        timeout_ms: 1,
+        base_delay_ms: 1,
+        max_delay_ms: 3,
+    };
+    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy).await {
         assert!(false);
     } else {
         assert!(true);

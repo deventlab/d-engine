@@ -3,10 +3,14 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use dashmap::DashSet;
-use log::error;
+use tracing::error;
 
 use crate::proto::Entry;
+use crate::CANDIDATE;
 use crate::CLUSTER_FATAL_ERROR;
+use crate::FOLLOWER;
+use crate::LEADER;
+use crate::LEARNER;
 
 pub(crate) fn collect_ids(entries: &Vec<Entry>) -> Vec<u64> {
     entries.iter().map(|e| e.index).collect()
@@ -47,4 +51,24 @@ pub fn error(
     e: &dyn std::fmt::Debug,
 ) {
     error!("{}::{} failed: {:?}", module_path!(), func_name, e);
+}
+
+#[inline]
+pub fn is_follower(role_i32: i32) -> bool {
+    role_i32 == FOLLOWER
+}
+
+#[inline]
+pub fn is_candidate(role_i32: i32) -> bool {
+    role_i32 == CANDIDATE
+}
+
+#[inline]
+pub fn is_leader(role_i32: i32) -> bool {
+    role_i32 == LEADER
+}
+
+#[inline]
+pub fn is_learner(role_i32: i32) -> bool {
+    role_i32 == LEARNER
 }

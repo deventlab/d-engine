@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 use super::follower_state::FollowerState;
 use super::RaftContext;
@@ -23,8 +23,9 @@ use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
-use crate::Error;
 use crate::Membership;
+use crate::MembershipError;
+use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -33,8 +34,7 @@ use crate::StateStorage;
 use crate::TypeConfig;
 
 pub struct Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub node_id: u32,
     pub role: RaftRole<T>,
@@ -68,8 +68,7 @@ where
 }
 
 impl<T> Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         node_id: u32,
@@ -252,7 +251,7 @@ where
         // All inbound and outbound raft event
 
         match role_event {
-            RoleEvent::BecomeFollower(leader_id_option) => {
+            RoleEvent::BecomeFollower(_leader_id_option) => {
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
 
@@ -278,7 +277,19 @@ where
                     .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
 
                 //async action
-                self.role.verify_leadership_in_new_term(self.event_tx.clone()).await?;
+                if self
+                    .role
+                    .verify_leadership_in_new_term(self.peer_channels()?, &self.ctx, self.role_tx.clone())
+                    .await
+                    .is_err()
+                {
+                    info!("Verify leadership in new term failed. Now the node is going to step back to Follower...");
+                    self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+                }
 
                 #[cfg(test)]
                 self.notify_role_transition();
@@ -303,7 +314,7 @@ where
                 self.event_tx.send(raft_event).await.map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
         };
@@ -314,7 +325,7 @@ where
     pub fn peer_channels(&self) -> Result<Arc<POF<T>>> {
         self.peer_channels
             .clone()
-            .ok_or_else(|| Error::FailedSetPeerConnection("handle_raft_event".to_string()))
+            .ok_or_else(|| MembershipError::SetupClusterConnectionFailed("handle_raft_event".to_string()).into())
     }
 
     pub fn register_new_commit_listener(
@@ -383,8 +394,7 @@ where
 }
 
 impl<T> Drop for Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn drop(&mut self) {
         info!("Raft been dropped.");

@@ -3,6 +3,7 @@
 //! For the get operation, we should check it from memory cache firslty.
 //! the reason, we could catch the entry in memory is because:
 //!     no entry could be deleted or modified in RAFT.
+
 use std::mem;
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicU64;
@@ -11,27 +12,27 @@ use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
 use prost::Message;
 use sled::Batch;
 use sled::IVec;
 use sled::Subscriber;
 use tokio::time::Instant;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 use crate::convert::kv;
 use crate::convert::vki;
 use crate::proto::Entry;
 use crate::proto::LogId;
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
-use crate::Error;
 use crate::LocalLogBatch;
 use crate::RaftLog;
 use crate::Result;
+use crate::StorageError;
 use crate::API_SLO;
 use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
 
@@ -396,7 +397,7 @@ impl RaftLog for SledRaftLog {
         }
         if let Err(e) = self.apply(&batch) {
             error!("apply batch error: {:?}", e);
-            return Err(Error::SledError(e));
+            return Err(StorageError::SledError(e).into());
         }
         Ok(())
     }
@@ -463,7 +464,7 @@ impl RaftLog for SledRaftLog {
     fn reset(&self) -> Result<()> {
         if let Err(e) = self.tree.clear() {
             error!("error: {:?}", e);
-            Err(Error::SledError(e))
+            Err(StorageError::SledError(e).into())
         } else {
             Ok(())
         }
@@ -491,7 +492,7 @@ impl RaftLog for SledRaftLog {
 
         if let Err(e) = self.apply(&batch) {
             error!("delete_entries_before error: {}", e);
-            return Err(Error::SledError(e));
+            return Err(StorageError::SledError(e).into());
         }
 
         // Bugfix: #55: Flushing can take quite a lot of time,
@@ -668,7 +669,7 @@ impl RaftLog for SledRaftLog {
 
         if let Err(e) = self.apply(&batch) {
             error!("delete_entries error: {}", e);
-            return Err(Error::SledError(e));
+            return Err(StorageError::SledError(e).into());
         }
 
         Ok(())
@@ -700,7 +701,7 @@ impl SledRaftLog {
             Ok(size) => Ok(size),
             Err(e) => {
                 error!("db.size_on_disk failed: {:?}", e);
-                Err(Error::SledError(e))
+                Err(StorageError::SledError(e).into())
             }
         }
     }

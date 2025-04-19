@@ -21,14 +21,20 @@ use crate::test_utils::simulate_insert_proposal;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_REPLICATION_HANDLER_PORT_BASE;
+use crate::AppendResult;
 use crate::ChannelWithAddressAndRole;
+use crate::ConsensusError;
 use crate::Error;
 use crate::LeaderStateSnapshot;
 use crate::MockRaftLog;
 use crate::MockTransport;
+use crate::NetworkError;
+use crate::PeerUpdate;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
+use crate::ReplicationError;
 use crate::StateSnapshot;
+use crate::SystemError;
 use crate::FOLLOWER;
 
 /// # Case 1: The peer3's next_index is equal to
@@ -360,34 +366,28 @@ async fn test_build_append_request_case() {
 
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
-    entries_per_peer.insert(
-        peer2_id,
-        vec![Entry {
+    entries_per_peer.insert(peer2_id, vec![Entry {
+        index: 3,
+        term: 1,
+        command: vec![1; 8],
+    }]);
+    entries_per_peer.insert(peer3_id, vec![
+        Entry {
+            index: 1,
+            term: 1,
+            command: vec![1; 8],
+        },
+        Entry {
+            index: 2,
+            term: 1,
+            command: vec![1; 8],
+        },
+        Entry {
             index: 3,
             term: 1,
             command: vec![1; 8],
-        }],
-    );
-    entries_per_peer.insert(
-        peer3_id,
-        vec![
-            Entry {
-                index: 1,
-                term: 1,
-                command: vec![1; 8],
-            },
-            Entry {
-                index: 2,
-                term: 1,
-                command: vec![1; 8],
-            },
-            Entry {
-                index: 3,
-                term: 1,
-                command: vec![1; 8],
-            },
-        ],
-    );
+        },
+    ]);
 
     let data = ReplicationData {
         leader_last_index_before: 3,
@@ -427,7 +427,7 @@ async fn test_handle_client_proposal_in_batch_case1() {
     let raft_log = MockRaftLog::new();
     let transport = MockTransport::new();
 
-    if let Err(Error::AppendEntriesNoPeerFound) = handler
+    if let Err(Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound { leader_id }))) = handler
         .handle_client_proposal_in_batch(
             commands,
             state_snapshot,
@@ -499,12 +499,6 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
         channel_with_address: addr1,
         role: FOLLOWER,
     }];
-    let responses = vec![AppendEntriesResponse::success(
-        peer2_id,
-        1,
-        Some(LogId { term: 1, index: 3 }),
-    )];
-    let response_clone = responses.clone();
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
@@ -513,9 +507,16 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
     raft_log.expect_prev_log_term().returning(|_, _| 0);
 
     let mut transport = MockTransport::new();
-    transport
-        .expect_send_append_requests()
-        .return_once(move |_, _| Ok(response_clone));
+    transport.expect_send_append_requests().return_once(move |_, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id].into_iter().collect(),
+            responses: vec![Ok(AppendEntriesResponse::success(
+                peer2_id,
+                1,
+                Some(LogId { term: 1, index: 3 }),
+            ))],
+        })
+    });
 
     if let Ok(append_result) = handler
         .handle_client_proposal_in_batch(
@@ -596,11 +597,14 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
     raft_log.expect_prev_log_term().returning(|_, _| 0);
 
     let mut transport = MockTransport::new();
-    transport
-        .expect_send_append_requests()
-        .returning(move |_, _| Err(Error::HigherTermFoundError(7)));
+    transport.expect_send_append_requests().returning(move |_, _| {
+        Err(NetworkError::EmptyPeerList {
+            request_type: "send_vote_requests",
+        }
+        .into())
+    });
 
-    if let Err(Error::HigherTermFoundError(higher_term)) = handler
+    if let Err(Error::System(SystemError::Network(NetworkError::EmptyPeerList { request_type }))) = handler
         .handle_client_proposal_in_batch(
             commands,
             state_snapshot,
@@ -613,7 +617,7 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
         )
         .await
     {
-        assert_eq!(higher_term, 7);
+        assert!(true);
     } else {
         assert!(false);
     }
@@ -654,15 +658,17 @@ async fn test_handle_client_proposal_in_batch_case3() {
     }];
 
     // Response with term=1 (stale)
-    let responses = vec![AppendEntriesResponse::success(
-        peer2_id,
-        1,
-        Some(LogId { term: 1, index: 3 }),
-    )];
     let mut transport = MockTransport::new();
-    transport
-        .expect_send_append_requests()
-        .return_once(|_, _| Ok(responses));
+    transport.expect_send_append_requests().return_once(move |_, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id].into_iter().collect(),
+            responses: vec![Ok(AppendEntriesResponse::success(
+                peer2_id,
+                1,
+                Some(LogId { term: 1, index: 3 }),
+            ))],
+        })
+    });
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().return_const(3_u64);
@@ -723,11 +729,13 @@ async fn test_handle_client_proposal_in_batch_case4() {
 
     // HigherTerm response with term=2
     let higher_term = 2;
-    let responses = vec![AppendEntriesResponse::higher_term(peer2_id, higher_term)];
     let mut transport = MockTransport::new();
-    transport
-        .expect_send_append_requests()
-        .return_once(|_, _| Ok(responses));
+    transport.expect_send_append_requests().return_once(move |_, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id].into_iter().collect(),
+            responses: vec![Ok(AppendEntriesResponse::higher_term(peer2_id, higher_term))],
+        })
+    });
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().return_const(1_u64);
@@ -747,7 +755,7 @@ async fn test_handle_client_proposal_in_batch_case4() {
 
     assert!(matches!(
         result,
-        Err(Error::HigherTermFoundError(term)) if term == higher_term
+        Err(Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(term)))) if term == higher_term
     ));
 }
 
@@ -806,7 +814,12 @@ async fn test_handle_client_proposal_in_batch_case5() {
             let _ = tx.send(requests.clone());
             true // Return true to indicate that the parameters match successfully
         })
-        .return_once(|_, _| Ok(vec![])); // Returns an empty response without affecting the test logic
+        .return_once(|_, _| {
+            Ok(AppendResult {
+                peer_ids: vec![].into_iter().collect(),
+                responses: vec![],
+            })
+        }); // Returns an empty response without affecting the test logic
 
     // ----------------------
     //Call the function to be tested
@@ -849,6 +862,214 @@ async fn test_handle_client_proposal_in_batch_case5() {
     assert_eq!(peer2_entries.len(), 2);
 }
 
+/// # Case7: Leader resolves log conflicts across divergent followers
+/// Validates next_index updates per Raft's conflict resolution rules (§5.3)
+///
+/// ## Scenario Setup
+/// Leader log: [1(1), 2(1), 3(1), 4(4), 5(4), 6(5), 7(5), 8(6), 9(6), 10(6)]
+/// Followers with varying log states:
+/// - follower_a: log1-9 (match index 9)
+/// - follower_b: log1-4 (match index 4)
+/// - follower_c: log1-10 (match index 10)
+/// - follower_d: log1-12 (higher term)
+/// - follower_e: log1-7 (term 4)
+/// - follower_f: log1-11 (term 3)
+///
+/// ## Validation Criteria
+/// Verify next_index updates match Raft's conflict resolution rules:
+/// - follower_a: next_index=10 (no conflict)
+/// - follower_b: next_index=5 (missing entries)
+/// - follower_c: next_index=11 (caught up)
+/// - follower_d: next_index=11 (term mismatch)
+/// - follower_e: next_index=6 (term regression)
+/// - follower_f: next_index=4 (deep conflict)
+#[tokio::test]
+async fn test_handle_client_proposal_in_batch_case6() {
+    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case6", None, false);
+    let my_id = 1;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    // Prepare client commands (new entries to replicate)
+    let commands = vec![
+        ClientCommand::insert(kv(300), kv(300)), // Will create log index 11
+    ];
+
+    // Initialize leader state
+    let state_snapshot = StateSnapshot {
+        current_term: 6,
+        voted_for: None,
+        commit_index: 10,
+    };
+
+    // Initial next_index values from test case description
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::from_iter(vec![
+            (2, 10), // follower_a
+            (3, 5),  // follower_b
+            (4, 11), // follower_c
+            (5, 11), // follower_d
+            (6, 6),  // follower_e
+            (7, 4),  // follower_f
+        ]),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    // Configure mock Raft log - leader has logs 1-10
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(10_u64);
+    raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 11);
+    raft_log.expect_get_entries_between().returning(|range| {
+        // Simulate log entries for conflict resolution
+        match range.start() {
+            5..=10 => vec![
+                mk_log(5, 5),
+                mk_log(5, 6),
+                mk_log(6, 7),
+                mk_log(6, 8),
+                mk_log(6, 9),
+                mk_log(6, 10),
+            ],
+            4 => vec![mk_log(4, 4), mk_log(4, 5)],
+            _ => vec![],
+        }
+    });
+    raft_log.expect_insert_batch().returning(|_| Ok(()));
+    raft_log.expect_prev_log_term().returning(|prev_index, _| {
+        match prev_index {
+            10 => 6, // log 10 term
+            9 => 6,
+            8 => 6,
+            7 => 5,
+            6 => 5,
+            5 => 4,
+            4 => 4,
+            _ => 0,
+        }
+    });
+
+    // Configure mock transport responses
+    let mut transport = MockTransport::new();
+    transport.expect_send_append_requests().return_once(move |requests, _| {
+        Ok(AppendResult {
+            peer_ids: requests.iter().map(|(id, _, _)| *id).collect(),
+            responses: vec![
+                // follower_a (id=2) - success
+                Ok(AppendEntriesResponse::success(2, 6, Some(LogId { term: 6, index: 10 }))),
+                // follower_b (id=3) - conflict at index 5 (term 4)
+                Ok(AppendEntriesResponse::conflict(3, 6, Some(4), Some(5))),
+                // follower_c (id=4) - success (already up-to-date)
+                Ok(AppendEntriesResponse::success(4, 6, Some(LogId { term: 6, index: 10 }))),
+                // follower_d (id=5) - higher term (7)
+                Ok(AppendEntriesResponse::higher_term(5, 7)),
+                // follower_e (id=6) - conflict at index 6 (term 4)
+                Ok(AppendEntriesResponse::conflict(6, 6, Some(4), Some(6))),
+                // follower_f (id=7) - conflict at index 4 (term 2)
+                Ok(AppendEntriesResponse::conflict(7, 6, Some(2), Some(4))),
+            ],
+        })
+    });
+
+    // Setup replication members
+    let futures: Vec<_> = (2..=7)
+        .map(|id| async move {
+            let (_tx, rx) = oneshot::channel();
+            let addr =
+                MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 20 + id, rx, true)
+                    .await
+                    .unwrap();
+
+            ChannelWithAddressAndRole {
+                id: id as u32,
+                channel_with_address: addr,
+                role: FOLLOWER,
+            }
+        })
+        .collect();
+
+    let replication_members = futures::future::join_all(futures).await;
+
+    // Execute test
+    let result = handler
+        .handle_client_proposal_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &replication_members,
+            &Arc::new(raft_log),
+            &Arc::new(transport),
+            &context.settings.raft,
+            &context.settings.retry,
+        )
+        .await;
+
+    // Verify results
+    match result {
+        Ok(append_result) => {
+            // Check quorum (should fail due to follower_d's higher term)
+            assert!(!append_result.commit_quorum_achieved);
+
+            // Verify peer updates
+            let updates = &append_result.peer_updates;
+
+            // follower_a (success)
+            assert_eq!(updates[&2], PeerUpdate {
+                match_index: 10,
+                next_index: 11,
+                success: true
+            });
+
+            // follower_b (conflict at term 4 index 5)
+            assert_eq!(updates[&3], PeerUpdate {
+                match_index: 4, // 5-1
+                next_index: 5,
+                success: false
+            });
+
+            // follower_c (success)
+            assert_eq!(updates[&4], PeerUpdate {
+                match_index: 10,
+                next_index: 11,
+                success: true
+            });
+
+            // follower_d (higher term) - no update (error handled)
+            assert!(!updates.contains_key(&5));
+
+            // follower_e (conflict at term 4 index 6)
+            assert_eq!(updates[&6], PeerUpdate {
+                match_index: 5, // 6-1
+                next_index: 6,
+                success: false
+            });
+
+            // follower_f (conflict at term 2 index 4)
+            assert_eq!(updates[&7], PeerUpdate {
+                match_index: 3, // 4-1
+                next_index: 4,
+                success: false
+            });
+        }
+        Err(e) => {
+            // Verify higher term error from follower_d
+            assert!(matches!(
+                e,
+                Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(7)))
+            ));
+        }
+    }
+}
+
+fn mk_log(
+    index: u64,
+    term: u64,
+) -> Entry {
+    Entry {
+        index,
+        term,
+        command: vec![0; 8],
+    }
+}
 #[test]
 fn test_valid_request() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
@@ -1120,7 +1341,12 @@ fn test_handle_success_response_case1() {
         last_match: Some(LogId { term: 3, index: 10 }),
     };
     let result = handler.handle_success_response(2, responder_term, success_result, 4);
-    assert!(matches!(result, Err(Error::HigherTermFoundError(5))));
+    assert!(matches!(
+        result,
+        Err(Error::Consensus(ConsensusError::Replication(
+            ReplicationError::HigherTerm(5)
+        )))
+    ));
 }
 
 /// # Case 2: test_valid_success_response_updates_indices

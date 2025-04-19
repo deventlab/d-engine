@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -66,15 +67,15 @@ impl RaftConfig {
     /// Validates all Raft subsystem configurations
     pub fn validate(&self) -> Result<()> {
         if self.learner_raft_log_gap == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "learner_raft_log_gap must be greater than 0".into(),
-            ));
+            )));
         }
 
         if self.general_raft_timeout_duration_in_ms < 1 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "general_raft_timeout_duration_in_ms must be at least 1ms".into(),
-            ));
+            )));
         }
 
         self.replication.validate()?;
@@ -122,28 +123,28 @@ impl Default for ReplicationConfig {
 impl ReplicationConfig {
     fn validate(&self) -> Result<()> {
         if self.rpc_append_entries_clock_in_ms == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "rpc_append_entries_clock_in_ms cannot be 0".into(),
-            ));
+            )));
         }
 
         if self.rpc_append_entries_in_batch_threshold == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "rpc_append_entries_in_batch_threshold must be > 0".into(),
-            ));
+            )));
         }
 
         if self.append_entries_max_entries_per_replication == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "append_entries_max_entries_per_replication must be > 0".into(),
-            ));
+            )));
         }
 
         if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "batch_delay {}ms should be less than append_interval {}ms",
                 self.rpc_append_entries_batch_process_delay_in_ms, self.rpc_append_entries_clock_in_ms
-            )));
+            ))));
         }
 
         Ok(())
@@ -189,16 +190,16 @@ impl Default for ElectionConfig {
 impl ElectionConfig {
     fn validate(&self) -> Result<()> {
         if self.election_timeout_min >= self.election_timeout_max {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "election_timeout_min {}ms must be less than election_timeout_max {}ms",
                 self.election_timeout_min, self.election_timeout_max
-            )));
+            ))));
         }
 
         if self.rpc_peer_connectinon_monitor_interval_in_sec == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "rpc_peer_connectinon_monitor_interval_in_sec cannot be 0".into(),
-            ));
+            )));
         }
 
         Ok(())
@@ -236,9 +237,9 @@ fn default_probe_service() -> String {
 impl MembershipConfig {
     fn validate(&self) -> Result<()> {
         if self.cluster_healthcheck_probe_service_name.is_empty() {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "cluster_healthcheck_probe_service_name cannot be empty".into(),
-            ));
+            )));
         }
         Ok(())
     }
@@ -268,15 +269,19 @@ impl Default for CommitHandlerConfig {
 impl CommitHandlerConfig {
     fn validate(&self) -> Result<()> {
         if self.batch_size == 0 {
-            return Err(Error::InvalidConfig("batch_size must be > 0".into()));
+            return Err(Error::Config(ConfigError::Message("batch_size must be > 0".into())));
         }
 
         if self.process_interval_ms == 0 {
-            return Err(Error::InvalidConfig("process_interval_ms must be > 0".into()));
+            return Err(Error::Config(ConfigError::Message(
+                "process_interval_ms must be > 0".into(),
+            )));
         }
 
         if self.max_entries_per_chunk == 0 {
-            return Err(Error::InvalidConfig("max_entries_per_chunk must be > 0".into()));
+            return Err(Error::Config(ConfigError::Message(
+                "max_entries_per_chunk must be > 0".into(),
+            )));
         }
 
         Ok(())

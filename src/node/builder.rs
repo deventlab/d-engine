@@ -17,7 +17,7 @@
 //!
 //! ## Example
 //! ```ignore
-//!
+//! 
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
@@ -35,12 +35,12 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::info;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
 
 use super::RaftTypeConfig;
 use crate::alias::COF;
@@ -61,7 +61,6 @@ use crate::CommitHandler;
 use crate::DefaultCommitHandler;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
-use crate::Error;
 use crate::Node;
 use crate::Raft;
 use crate::RaftMembership;
@@ -72,6 +71,7 @@ use crate::Result;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
+use crate::SystemError;
 
 /// Builder pattern implementation for constructing a Raft node with configurable components.
 /// Provides a fluent interface to set up node configuration, storage, transport, and other
@@ -309,12 +309,8 @@ impl NodeBuilder {
                 Ok(_) => {
                     info!("commit_handler exit program");
                 }
-                Err(Error::Exit) => {
-                    info!("commit_handler exit program");
-                    println!("commit_handler exit program");
-                }
                 Err(e) => {
-                    error!("commit_handler exit program with error: {:?}", e);
+                    error!("commit_handler exit program with unpexected error: {:?}", e);
                     println!("commit_handler exit program");
                 }
             }
@@ -376,7 +372,8 @@ impl NodeBuilder {
     /// # Errors
     /// Returns Error::NodeFailedToStartError if build hasn't completed
     pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig>>> {
-        self.node.ok_or_else(|| Error::NodeFailedToStartError)
+        self.node
+            .ok_or_else(|| SystemError::NodeStartFailed("check node ready failed".to_string()).into())
     }
 
     /// Test constructor with custom database path
