@@ -108,7 +108,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     client_manager.verify_read(11, 100, ITERATIONS).await;
 
     // 4.1 Verify global state
-    assert_eq!(sm1.last_applied(), 11 + 1); //should consider no_op log
+    assert_eq!(sm1.len(), 11);
 
     println!("put 12 200");
     assert!(
@@ -122,7 +122,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     client_manager.verify_read(12, 200, ITERATIONS).await;
 
     // 4.2 Verify global state
-    assert_eq!(sm1.last_applied(), 12 + 1); //should consider no_op log
+    assert_eq!(sm1.len(), 12);
 
     graceful_tx3
         .send(())

@@ -50,6 +50,7 @@ pub trait StateMachine: Send + Sync + 'static {
 
     #[cfg(test)]
     fn clean(&self) -> Result<()>;
-    #[cfg(test)]
+
+    /// NOTE: This method may degrade system performance. Use with caution.
     fn len(&self) -> usize;
 }

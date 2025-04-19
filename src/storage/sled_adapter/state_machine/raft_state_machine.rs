@@ -143,7 +143,6 @@ impl StateMachine for RaftStateMachine {
         Ok(())
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         self.tree.len()
     }
@@ -192,8 +191,8 @@ impl StateMachine for RaftStateMachine {
                     batch.remove(key);
                 }
                 Some(Command::NoOp(true)) => {
-                    // Handle DELETE command
-                    debug!("Handling NOOP command. Do Nothing.");
+                    // Handle NOOP command
+                    info!("Handling NOOP command. Do Nothing.");
                 }
                 _ => {
                     // Handle the case where no command is set
