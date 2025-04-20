@@ -27,7 +27,7 @@ Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = "0.1.1"
+d-engine = "0.1.2"
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -112,6 +112,30 @@ sequenceDiagram
     - `grpc_transport.rs`: Network primitives
     - `grpc_raft_service.rs`: RPC service definitions
 - `rpc_peer_channels.rs`: Peer-to-peer communication channels
+
+## Performance Benchmarks 
+
+d-engine is designed for low-latency consensus operations while maintaining strong consistency. Below are key metrics compared to etcd 3.5:
+
+**Test Setup**: d-engine v0.1.2 vs etcd 3.5， 10k ops, 8B keys, 256B values, Apple M2
+
+| Operation          | Consistency  | Metric       | d-engine | etcd    | Advantage           |
+|--------------------|--------------|--------------|----------|---------|---------------------|
+| **Write**          |              |              |          |         |                     |
+| - Basic (1C/1W)    | Strong       | Throughput   | 370/s    | 158/s   | 2.3× (d-engine wins)|
+|                    |              | p99 Latency  | 5.3ms    | 16.7ms  | 68% ↓ (d-engine wins)|
+| - High (10C/100W)  | Strong       | Throughput   | 4,070/s  | 5,439/s | 0.75× (etcd wins)   |
+|                    |              | p99 Latency  | 4.2ms    | 32.4ms  | 7.7× (d-engine wins)|
+| **Read**           |              |              |          |         |                     |
+| - Linear           | Strong       | Throughput   | 6,359/s  | 85k/s   | 13.4× (etcd wins)   |
+|                    |              | p99 Latency  | 6.5ms    | 3.2ms   | 2× ↑ (etcd wins)    |
+| - Sequential       | Eventual     | Throughput   | 19.8k/s  | 124k/s  | 6.3× (etcd wins)    |
+|                    |              | p99 Latency  | 1.3ms    | 2.8ms   | 54% ↓ (d-engine wins)|
+
+### View Benchmarks Detailed Reports
+```bash
+open benches/reports/
+```
 
 ## Contribution Guide
 
