@@ -1,4 +1,4 @@
-# d-engine Benchmark Guide
+# Benchmark Guide
 
 ## Background
 This benchmark suite is designed to evaluate d-engine's performance against etcd's official benchmarks. Refer to [etcd's performance documentation](https://etcd.io/docs/v3.5/op-guide/performance/) for comparison methodology and baseline metrics.
@@ -37,10 +37,11 @@ cargo build --release  # Optimized build for accurate measurements
     --endpoints http://127.0.0.1:9081 --endpoints  http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 1 \
     --clients 1 \
+    --sequential-keys \
     --total 10000 \
     --key-size 8 \
     --value-size 256 \
-    put
+    put --prefix ''
 
 ```
 **High-concurrency test (10 connections, 100 clients):**
@@ -49,10 +50,11 @@ cargo build --release  # Optimized build for accurate measurements
     --endpoints http://127.0.0.1:9081 --endpoints  http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 10 \
     --clients 100 \
+    --sequential-keys \
     --total 10000 \
     --key-size 8 \
     --value-size 256 \
-    put
+    put --prefix foo
 ```
 
 ### Read Tests
@@ -62,10 +64,13 @@ cargo build --release  # Optimized build for accurate measurements
     --endpoints http://127.0.0.1:9081 \
     --endpoints http://127.0.0.1:9082 \
     --endpoints http://127.0.0.1:9083 \
-    --clients 100 \
     --conns 10 \
+    --clients 100 \
+    --sequential-keys \
     --total 10000 \
-    range --key foo --consistency l
+    --key-size 8 \
+    --value-size 256 \
+    range --consistency l
 ```
 
 **Sequential Read (Eventual consistency):**

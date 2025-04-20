@@ -46,9 +46,6 @@ struct Cli {
 enum Commands {
     Put,
     Range {
-        #[arg(long)]
-        key: String,
-
         #[arg(long, default_value = "l")]
         consistency: String,
     },
@@ -108,6 +105,24 @@ fn generate_key(
             .map(|()| rng.sample(Alphanumeric))
             .map(char::from)
             .take(size)
+            .collect()
+    }
+}
+
+fn generate_prefixed_key(
+    sequential: bool,
+    key_size: usize,
+    index: u64,
+) -> String {
+    if sequential {
+        let max_value = 10u64.pow(key_size as u32) - 1;
+        let value = max_value.saturating_sub(index);
+        format!("{:0width$}", value, width = key_size)
+    } else {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(index);
+        (0..key_size)
+            .map(|_| rng.sample(Alphanumeric))
+            .map(char::from)
             .collect()
     }
 }
@@ -212,17 +227,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 match &cli.command {
                     Commands::Put => {
-                        let key = generate_key(cli.sequential_keys, cli.key_size, counter);
+                        let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
                         let value = generate_value(cli.value_size);
                         if let Err(e) = client.kv().put(&key, &value).await {
                             eprintln!("Put error: {:?}", e);
                             continue;
                         }
                     }
-                    Commands::Range { key, consistency } => {
-                        if let Err(e) = client.kv().get(key, *consistency == "l").await {
-                            eprintln!("Get error: {:?}", e);
-                            continue;
+                    Commands::Range { consistency } => {
+                        let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
+                        match client.kv().get(key, *consistency == "l").await {
+                            Err(e) => {
+                                eprintln!("Get error: {:?}", e);
+                                continue;
+                            }
+                            Ok(v) => {
+                                println!("Get: {:?}", v);
+                            }
                         }
                     }
                 }
@@ -240,4 +261,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Output statistics
     stats.summary(start_time.elapsed());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sequential_keys() {
+        // Test the order keys from high to low
+        assert_eq!(generate_key(true, 6, 0), "999999");
+        assert_eq!(generate_key(true, 6, 1), "999998");
+        assert_eq!(generate_key(true, 3, 0), "999");
+        assert_eq!(generate_key(true, 3, 1), "998");
+    }
+
+    #[test]
+    fn test_fixed_length() {
+        // Ensure that all generated keys maintain a fixed length
+        assert_eq!(generate_key(true, 5, 123).len(), 5);
+        assert_eq!(generate_key(true, 10, 456).len(), 10);
+        assert_eq!(generate_key(false, 8, 42).len(), 8);
+    }
+
+    #[test]
+    fn test_large_index() {
+        // Test large index values ​​(will saturate to minimum value)
+        assert_eq!(generate_key(true, 3, 9999), "000"); // Saturate to minimum value
+    }
+
+    #[test]
+    fn test_random_keys() {
+        // Test the determinism and randomness of the random key
+        let key1 = generate_key(false, 8, 42);
+        let key2 = generate_key(false, 8, 42);
+        assert_eq!(key1, key2);
+
+        let key3 = generate_key(false, 8, 43);
+        assert_ne!(key1, key3);
+    }
 }
