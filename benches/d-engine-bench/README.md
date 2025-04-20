@@ -20,6 +20,7 @@ Start cluster from `/examples/three-nodes-cluster/`
 
 ```bash
 # Start 3-node cluster (required for accurate benchmarking)
+cd /examples/three-nodes-cluster/
 make start-cluster
 ```
 
