@@ -2,16 +2,6 @@
 All notable changes to this project will be documented in this file.
 
 ---
-## [v0.1.0] - 2025-04-11 [✅ Released]
-### Added
-- Initial implementation of core Raft consensus algorithm
-  - Leader election
-  - Log replication
-  - State machine persistence
-- Basic cluster communication layer using gRPC
-  - Node-to-node heartbeat mechanism
-  - AppendEntries RPC implementation
-- Minimal working example demonstrating 3-node cluster setup
 
 ## [v0.1.2] - 2025-04-20 [✅ Released]
 
@@ -26,6 +16,18 @@ All notable changes to this project will be documented in this file.
 
 ### Refactors
 - **Error Handling**: Separated protocol errors from system-level errors (#66)  
+
+--- 
+## [v0.1.0] - 2025-04-11 [✅ Released]
+### Added
+- Initial implementation of core Raft consensus algorithm
+  - Leader election
+  - Log replication
+  - State machine persistence
+- Basic cluster communication layer using gRPC
+  - Node-to-node heartbeat mechanism
+  - AppendEntries RPC implementation
+- Minimal working example demonstrating 3-node cluster setup
 
 ---
 # Release Roadmap
@@ -49,3 +51,4 @@ All notable changes to this project will be documented in this file.
 ---
 [//]: # (Version Links)
 [v0.1.0]: https://github.com/deventlab/d-engine/releases/tag/v0.1.0
+[v0.1.2]: https://github.com/deventlab/d-engine/releases/tag/v0.1.2
