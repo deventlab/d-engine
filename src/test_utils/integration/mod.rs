@@ -145,8 +145,6 @@ pub fn setup_raft_components(
 
     let grpc_transport = GrpcTransport { my_id: id };
 
-    let address = "127.0.0.1:8080".to_string();
-
     let peers_meta;
     if peers_meta_option.is_none() {
         let follower_role = RaftRole::<MockTypeConfig>::follower_role_i32();
@@ -167,14 +165,14 @@ pub fn setup_raft_components(
     } else {
         peers_meta = peers_meta_option.expect("should succeed");
     }
-    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
     let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.cluster.db_root_dir = PathBuf::from(db_path);
     settings.cluster.initial_cluster = peers_meta.clone();
 
-    let (event_tx, event_rx) = mpsc::channel(1024);
+    let (event_tx, _event_rx) = mpsc::channel(1024);
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
