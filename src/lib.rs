@@ -17,8 +17,8 @@
 //! ```no_run
 //! use d_engine::NodeBuilder;
 //! use tokio::sync::watch;
-//! use log::error;
-//! use log::info;
+//! use tracing::error;
+//! use tracing::info;
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {

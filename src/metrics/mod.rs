@@ -66,7 +66,7 @@ lazy_static! {
     pub static ref CUSTOM_REGISTRY: Registry = Registry::new_custom(Some("d_engine".to_string()), None).unwrap();
 }
 
-fn register_custom_metrics(registry: &Registry) {
+pub(crate) fn register_custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(SLOW_RESPONSE_DURATION_METRIC.clone()))
         .expect("collector can be registered");

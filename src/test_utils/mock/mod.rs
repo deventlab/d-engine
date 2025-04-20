@@ -49,6 +49,7 @@ pub use mock_rpc::*;
 pub use mock_rpc_service::*;
 use tokio::sync::watch;
 
+use super::settings;
 //------------------------------------------------------
 use super::{enable_logger, MockTypeConfig};
 use crate::proto::NodeMeta;
@@ -81,8 +82,9 @@ pub fn mock_raft(
 ) -> Raft<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-    settings.cluster.db_root_dir = PathBuf::from(db_path);
+    let mut settings = settings(db_path);
+    // Set batch_threshold=0, means the replication will be triggered immediatelly.
+    settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }

@@ -6,17 +6,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use autometrics::autometrics;
-use log::debug;
-use log::error;
-use log::info;
-use log::trace;
-use log::warn;
 use nanoid::nanoid;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio::time::Instant;
 use tonic::async_trait;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
@@ -29,12 +29,13 @@ use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
+use crate::constants::INTERNAL_CLIENT_ID;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClientResponse;
 use crate::proto::ClusterConfUpdateResponse;
+use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::utils::cluster::error;
@@ -42,10 +43,14 @@ use crate::AppendResults;
 use crate::BatchBuffer;
 use crate::ChannelWithAddressAndRole;
 use crate::ClientRequestWithSignal;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
+use crate::NetworkError;
+use crate::QuorumStatus;
 use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -54,12 +59,14 @@ use crate::RaftNodeConfig;
 use crate::RaftOneshot;
 use crate::ReplicationConfig;
 use crate::ReplicationCore;
+use crate::ReplicationError;
 use crate::ReplicationTimer;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::RoleEvent;
 use crate::StateMachine;
 use crate::StateMachineHandler;
+use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::API_SLO;
 
@@ -198,28 +205,37 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(self.noop_log_id)
     }
 
-    // TODO: to be implemenmted in ticket #43(v0.2.0)
     async fn verify_leadership_in_new_term(
-        &self,
-        event_tx: mpsc::Sender<RaftEvent>,
+        &mut self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        // debug!("verify_leadership_in_new_term...");
-        // let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        debug!("verify_leadership_in_new_term...");
+        let command = ClientCommand::no_op();
 
-        // let command = ClientCommand::no_op();
+        let client_propose_request = ClientProposeRequest {
+            client_id: INTERNAL_CLIENT_ID,
+            commands: vec![command],
+        };
 
-        // let req = ClientProposeRequest {
-        //     client_id: INTERNAL_CLIENT_ID,
-        //     commands: vec![command],
-        // };
-        // event_tx
-        //     .send(RaftEvent::ClientPropose(req, resp_tx))
-        //     .await
-        //     .map_err(|e| {
-        //         let error_str = format!("{:?}", e);
-        //         error!("Failed to send: {}", error_str);
-        //         Error::TokioSendStatusError(error_str)
-        //     })
+        let settings = ctx.settings();
+
+        let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+
+        self.process_client_propose(
+            client_propose_request,
+            resp_tx,
+            ctx.replication_handler(),
+            &ctx.voting_members(peer_channels),
+            ctx.raft_log(),
+            ctx.transport(),
+            &settings.raft,
+            &settings.retry,
+            false,
+            &role_tx,
+        )
+        .await?;
         Ok(())
     }
     /// Decrease next id for node(node_id) by 1
@@ -242,12 +258,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
         warn!("I am leader already");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         error!("Leader can not become Candidate");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn become_follower(&self) -> Result<RaftRole<T>> {
@@ -274,7 +292,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     fn become_learner(&self) -> Result<RaftRole<T>> {
         error!("Leader can not become Learner");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn is_timer_expired(&self) -> bool {
@@ -400,7 +419,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 }
             }
@@ -412,7 +431,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender.send(Ok(cluster_conf)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
 
@@ -441,7 +460,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
 
@@ -458,7 +477,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
-                        Error::TokioSendStatusError(error_str)
+                        NetworkError::SingalSendFailed(error_str)
                     })?;
                 } else {
                     // Step down as Follower as new Leader found
@@ -469,7 +488,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         .map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
-                            Error::TokioSendStatusError(error_str)
+                            NetworkError::SingalSendFailed(error_str)
                         })?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
@@ -517,7 +536,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                     if client_read_request.linear {
                         let voting_members = ctx.voting_members(peer_channels);
-                        if !self
+                        let quorum_result = self
                             .enforce_quorum_consensus(
                                 ctx.replication_handler(),
                                 &voting_members,
@@ -527,8 +546,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 &settings.retry,
                                 &role_tx,
                             )
-                            .await
-                        {
+                            .await;
+
+                        let quorum_succeeded = matches!(quorum_result, Ok(true));
+
+                        if !quorum_succeeded {
                             warn!("enforce_quorum_consensus failed for linear read request");
 
                             Err(tonic::Status::failed_precondition(
@@ -554,7 +576,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender.send(response).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
         }
@@ -589,7 +611,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str).into()
         })
     }
 
@@ -601,12 +623,12 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx.send(RoleEvent::ReprocessEvent(raft_event)).map_err(|e| {
             let error_str = format!("{:?}", e);
             error!("Failed to send: {}", error_str);
-            Error::TokioSendStatusError(error_str)
+            NetworkError::SingalSendFailed(error_str).into()
         })
     }
 
     /// # Params
-    /// - `exexute_now`: should this propose been executed immediatelly. e.g.
+    /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
     pub(crate) async fn process_client_propose(
         &mut self,
@@ -618,7 +640,7 @@ impl<T: TypeConfig> LeaderState<T> {
         transport: &Arc<TROF<T>>,
         raft_config: &RaftConfig,
         retry_policies: &RetryPolicies,
-        exexute_now: bool,
+        execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         debug!(
@@ -633,7 +655,7 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // only buffer exceeds the max, the size will return
-        if exexute_now || push_result.is_some() {
+        if execute_now || push_result.is_some() {
             let batch = self.batch_buffer.take();
 
             trace!(
@@ -670,7 +692,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         let commands: Vec<ClientCommand> = batch.iter().flat_map(|req| &req.commands).cloned().collect();
 
-        debug!("process_batch.., commands:{:?}", &commands);
+        trace!("process_batch.., commands:{:?}", &commands);
 
         let append_result = replication_handler
             .handle_client_proposal_in_batch(
@@ -779,7 +801,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         debug!("notify client that replication failed.");
                         if let Err(e) = r
                             .sender
-                            .send(Ok(ClientResponse::write_error(Error::AppendEntriesCommitNotConfirmed)))
+                            .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
                         {
                             error!("r.sender.send response failed: {:?}", e);
                         }
@@ -789,7 +811,7 @@ impl<T: TypeConfig> LeaderState<T> {
             Err(e) => {
                 error!("Execute the client command failed with error: {:?}", e);
                 match e {
-                    Error::HigherTermFoundError(higher_term) => {
+                    Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(higher_term))) => {
                         warn!("found higher term");
                         self.update_current_term(higher_term);
 
@@ -804,7 +826,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 for r in batch {
                     if let Err(e) = r
                         .sender
-                        .send(Ok(ClientResponse::write_error(Error::AppendEntriesCommitNotConfirmed)))
+                        .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
                     {
                         error!("r.sender.send response failed: {:?}", e);
                     }
@@ -843,50 +865,29 @@ impl<T: TypeConfig> LeaderState<T> {
         raft_config: &RaftConfig,
         retry_policies: &RetryPolicies,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> bool {
+    ) -> Result<bool> {
         let client_propose_request = ClientProposeRequest {
             client_id: self.settings.raft.election.internal_rpc_client_request_id,
             commands: vec![],
         };
 
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        if let Err(e) = self
-            .process_client_propose(
+        let status = self
+            .check_leadership_quorum_immediate(
                 client_propose_request,
-                resp_tx,
                 replication_handler,
                 voting_members,
                 raft_log,
                 transport,
                 raft_config,
                 retry_policies,
-                true,
                 role_tx,
             )
-            .await
-        {
-            error("Leader::process_client_propose", &e);
-            false
-        } else {
-            match timeout(
-                Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
-                resp_rx,
-            )
-            .await
-            {
-                Ok(Ok(Ok(ClientResponse { error_code, result }))) => {
-                    debug!(
-                        "process_client_propose error_code:{:?}, result: {:?}",
-                        error_code, &result
-                    );
-                    error_code == ClientRequestError::NoError as i32
-                }
-                _ => {
-                    warn!("process_client_propose failed");
-                    false
-                }
-            }
+            .await?;
+        debug!("enforce_quorum_consensus:status = {:?}", status);
+        match status {
+            QuorumStatus::Confirmed => Ok(true),
+            QuorumStatus::LostQuorum => Ok(false),
+            QuorumStatus::NetworkError => Ok(false),
         }
     }
 
@@ -941,6 +942,87 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 }
 
 impl<T: TypeConfig> LeaderState<T> {
+    /// Check leadership quorum verification Immidiatelly
+    ///
+    /// - Bypasses all queues with direct RPC transmission
+    /// - Enforces synchronous quorum validation
+    /// - Guarantees real-time network visibility
+    ///
+    /// # Returns
+    /// - `Ok(true)`: Real-time majority quorum confirmed
+    /// - `Ok(false)`: Failed to verify immediate quorum
+    /// - `Err(_)`: Network or processing failure during real-time verification
+    async fn check_leadership_quorum_immediate(
+        &mut self,
+        request: ClientProposeRequest,
+        replication_handler: &REPOF<T>,
+        voting_members: &Vec<ChannelWithAddressAndRole>,
+        raft_log: &Arc<ROF<T>>,
+        transport: &Arc<TROF<T>>,
+        raft_config: &RaftConfig,
+        retry_policies: &RetryPolicies,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<QuorumStatus> {
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.process_client_propose(
+            request,
+            resp_tx,
+            replication_handler,
+            voting_members,
+            raft_log,
+            transport,
+            raft_config,
+            retry_policies,
+            true,
+            role_tx,
+        )
+        .await?;
+
+        self.wait_quorum_response(
+            resp_rx,
+            Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
+        )
+        .await
+    }
+
+    async fn wait_quorum_response(
+        &self,
+        receiver: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>,
+        timeout_duration: Duration,
+    ) -> Result<QuorumStatus> {
+        // Wait for response with timeout
+        match timeout(timeout_duration, receiver).await {
+            // Case 1: Response received successfully and verification passed
+            Ok(Ok(Ok(response))) => {
+                debug!("Leadership check response: {:?}", response);
+                Ok(if response.validate_error().is_ok() {
+                    QuorumStatus::Confirmed
+                } else {
+                    QuorumStatus::LostQuorum
+                })
+            }
+
+            // Case 2: Received explicit rejection status
+            Ok(Ok(Err(status))) => {
+                warn!("Leadership check failed with status: {:?}", status);
+                Ok(QuorumStatus::LostQuorum)
+            }
+
+            // Case 3: Channel communication failure (unrecoverable error)
+            Ok(Err(e)) => {
+                error!("Channel error during leadership check: {:?}", e);
+                Err(NetworkError::SingalReceiveFailed(e.to_string()).into())
+            }
+
+            // Case 4: Waiting for response timeout
+            Err(_) => {
+                warn!("Leadership check timed out after {:?}", timeout_duration);
+                Ok(QuorumStatus::NetworkError)
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         node_id: u32,

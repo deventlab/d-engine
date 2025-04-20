@@ -15,10 +15,10 @@ use crate::proto::AppendEntriesRequest;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClientResponse;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
+use crate::proto::ErrorCode;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
@@ -29,10 +29,12 @@ use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResults;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
+use crate::MembershipError;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -43,6 +45,7 @@ use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::RaftOneshot;
 use crate::ReplicationConfig;
+use crate::ReplicationError;
 use crate::RoleEvent;
 
 struct TestContext {
@@ -92,22 +95,16 @@ async fn setup_test_case(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -128,10 +125,7 @@ async fn setup_test_case(
 /// Verify client response
 pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>) {
     match rx.recv().await {
-        Ok(Ok(response)) => assert_eq!(
-            ClientRequestError::try_from(response.error_code).unwrap(),
-            ClientRequestError::NoError
-        ),
+        Ok(Ok(response)) => assert_eq!(ErrorCode::try_from(response.error).unwrap(), ErrorCode::Success),
         Ok(Err(e)) => panic!("Unexpected error response: {:?}", e),
         Err(_) => panic!("Response channel closed unexpectedly"),
     }
@@ -304,7 +298,7 @@ async fn test_process_client_propose_case1_2() {
 /// # Case 2: Test process_client_propose by client propose request
 ///
 /// ## Setup
-/// - exexute_now = false
+/// - execute_now = false
 /// - batch is not full yet(rpc_append_entries_in_batch_threshold = 100)
 ///
 /// ## Criterias
@@ -586,7 +580,11 @@ async fn test_handle_raft_event_case3_2() {
     membership
         .expect_update_cluster_conf_from_leader()
         .times(1)
-        .returning(|_, _| Err(Error::ClusterMembershipUpdateFailed("".to_string())));
+        .returning(|_, _| {
+            Err(Error::Consensus(ConsensusError::Membership(
+                MembershipError::UpdateFailed("".to_string()),
+            )))
+        });
     membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
     context.membership = Arc::new(membership);
 
@@ -725,7 +723,7 @@ async fn test_handle_raft_event_case5_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Handle raft event
-    let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientPropose(
         ClientProposeRequest {
             client_id: 1,
@@ -757,10 +755,10 @@ async fn test_handle_raft_event_case6_1() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _, _, _, _| Err(Error::AppendEntriesCommitNotConfirmed));
+        .returning(|_, _, _, _, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     // Initializing Shutdown Signal
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_1")
         .with_replication_handler(replication_handler)
@@ -823,22 +821,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 3,
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 4,
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 3,
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 4,
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -895,12 +887,9 @@ async fn test_handle_raft_event_case6_2() {
 
     // Validation criteria 3: resp_rx receives Ok()
     match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(
-            event,
-            RoleEvent::NotifyNewCommitIndex {
-                new_commit_index: expect_new_commit_index
-            }
-        )),
+        Ok(event) => assert!(matches!(event, RoleEvent::NotifyNewCommitIndex {
+            new_commit_index: expect_new_commit_index
+        })),
         Err(_) => assert!(false),
     };
 }
@@ -921,12 +910,15 @@ async fn test_handle_raft_event_case6_2() {
 async fn test_handle_raft_event_case6_3() {
     enable_logger();
     // Prepare Leader State
-    let new_leader_id = 7;
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _, _, _, _| Err(Error::HigherTermFoundError(1)));
+        .returning(move |_, _, _, _, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Replication(
+                ReplicationError::HigherTerm(1),
+            )))
+        });
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();

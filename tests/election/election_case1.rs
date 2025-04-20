@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use d_engine::Error;
+use d_engine::ClientApiError;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
@@ -31,7 +31,7 @@ use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
 
 #[tokio::test]
-async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Error> {
+async fn test_leader_election_based_on_log_term_and_index() -> std::result::Result<(), ClientApiError> {
     crate::enable_logger();
     reset("election/case1").await?;
 
@@ -71,11 +71,17 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Error>
     ];
 
     let client_manager = ClientManager::new(&bootstrap_urls).await?;
-    assert_eq!(client_manager.list_leader_id(&bootstrap_urls).await.unwrap(), 2);
+    assert_eq!(client_manager.list_leader_id().await.unwrap(), 2);
 
-    graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx1.send(()).map_err(|_| Error::ServerError)?;
+    graceful_tx3
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx2
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx1
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     node_n3.await??;
     node_n2.await??;
     node_n1.await??;

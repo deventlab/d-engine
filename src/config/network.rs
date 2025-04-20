@@ -1,3 +1,4 @@
+use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -102,68 +103,72 @@ impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
         // 1. Validate timeouts
         if self.connect_timeout_in_ms == 0 {
-            return Err(Error::InvalidConfig("Connection timeout must be greater than 0".into()));
+            return Err(Error::Config(ConfigError::Message(
+                "Connection timeout must be greater than 0".into(),
+            )));
         }
 
         if self.request_timeout_in_ms <= self.connect_timeout_in_ms {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "Request timeout {}ms must exceed connection timeout {}ms",
                 self.request_timeout_in_ms, self.connect_timeout_in_ms
-            )));
+            ))));
         }
 
         // 2. Validate HTTP2 keepalive relationship
         if self.http2_keep_alive_timeout_in_secs >= self.http2_keep_alive_interval_in_secs {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "HTTP2 keepalive timeout {}s must be shorter than interval {}s",
                 self.http2_keep_alive_timeout_in_secs, self.http2_keep_alive_interval_in_secs
-            )));
+            ))));
         }
 
         // 3. Validate concurrency limits
         if self.concurrency_limit_per_connection == 0 {
-            return Err(Error::InvalidConfig(
+            return Err(Error::Config(ConfigError::Message(
                 "Concurrency limit per connection must be > 0".into(),
-            ));
+            )));
         }
 
         if self.max_concurrent_streams == 0 {
-            return Err(Error::InvalidConfig("Max concurrent streams must be > 0".into()));
+            return Err(Error::Config(ConfigError::Message(
+                "Max concurrent streams must be > 0".into(),
+            )));
         }
 
         // 4. Validate HTTP2 frame size limits
         const MAX_FRAME_SIZE_LIMIT: u32 = 16_777_215; // 2^24-1 per spec
         if self.max_frame_size > MAX_FRAME_SIZE_LIMIT {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "Max frame size {} exceeds protocol limit {}",
                 self.max_frame_size, MAX_FRAME_SIZE_LIMIT
-            )));
+            ))));
         }
 
         // 5. Validate window sizes when adaptive window is disabled
         if !self.http2_adaptive_window {
             const MIN_INITIAL_WINDOW: u32 = 65_535; // HTTP2 minimum
             if self.initial_stream_window_size < MIN_INITIAL_WINDOW {
-                return Err(Error::InvalidConfig(format!(
+                return Err(Error::Config(ConfigError::Message(format!(
                     "Initial stream window size {} below minimum {}",
                     self.initial_stream_window_size, MIN_INITIAL_WINDOW
-                )));
+                ))));
             }
 
             if self.initial_connection_window_size < self.initial_stream_window_size {
-                return Err(Error::InvalidConfig(format!(
+                return Err(Error::Config(ConfigError::Message(format!(
                     "Connection window {} smaller than stream window {}",
                     self.initial_connection_window_size, self.initial_stream_window_size
-                )));
+                ))));
             }
         }
 
         // 6. Validate buffer sizing
         if self.buffer_size < 1024 {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Config(ConfigError::Message(format!(
                 "Buffer size {} too small, minimum 1024 bytes",
                 self.buffer_size
-            )));
+            ))));
         }
 
         Ok(())

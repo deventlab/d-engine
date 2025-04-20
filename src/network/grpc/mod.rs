@@ -18,17 +18,12 @@ mod grpc_transport_test;
 
 //-------------------------------------------------------------------------------
 // Start RPC Server
-
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::FutureExt;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
 use rcgen::generate_simple_self_signed;
 use rcgen::CertifiedKey;
 use tokio::sync::watch;
@@ -37,12 +32,16 @@ use tonic::transport::Certificate;
 use tonic::transport::Identity;
 use tonic::transport::ServerTlsConfig;
 use tonic_health::server::health_reporter;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use crate::proto::rpc_service_server::RpcServiceServer;
-use crate::Error;
 use crate::Node;
 use crate::RaftNodeConfig;
 use crate::Result;
+use crate::SystemError;
 use crate::TlsConfig;
 use crate::TypeConfig;
 
@@ -126,7 +125,7 @@ where
         .await
     {
         error!("error to start internal rpc server :{:?}.", e);
-        return Err(Error::RPCServerDies);
+        return Err(SystemError::ServerUnavailable.into());
     }
     debug!("rpc service finished!");
     Ok(())

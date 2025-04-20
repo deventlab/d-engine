@@ -11,6 +11,7 @@
 //! The membership data is completely separate from network connections (managed
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
+
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -18,23 +19,25 @@ use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::debug;
-use log::error;
-use log::trace;
-use log::warn;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::trace;
+use tracing::warn;
 
 use super::ChannelWithAddress;
 use super::Membership;
 use super::PeerChannels;
 use crate::alias::POF;
-use crate::is_candidate;
-use crate::is_follower;
+use crate::cluster::is_candidate;
+use crate::cluster::is_follower;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
 use crate::proto::NodeMeta;
 use crate::ChannelWithAddressAndRole;
+use crate::ConsensusError;
 use crate::Error;
+use crate::MembershipError;
 use crate::Result;
 use crate::TypeConfig;
 use crate::API_SLO;
@@ -42,8 +45,7 @@ use crate::FOLLOWER;
 use crate::LEADER;
 
 pub struct RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
@@ -53,8 +55,7 @@ where
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn get_followers_candidates_channel_and_role(
         &self,
@@ -137,7 +138,7 @@ where
                 "update_node_role(in cluster membership meta): id({}) not found. update to role({}) failed.",
                 node_id, new_role
             );
-            Err(Error::ClusterMetadataNodeMetaNotFound(node_id))
+            Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
         }
     }
 
@@ -182,9 +183,11 @@ where
                 "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
                 my_current_term, cluster_conf_change_req.term
             );
-            return Err(Error::ClusterMembershipUpdateFailed(format!(
-                "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
-                my_current_term, cluster_conf_change_req.term
+            return Err(Error::Consensus(ConsensusError::Membership(
+                MembershipError::UpdateFailed(format!(
+                    "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
+                    my_current_term, cluster_conf_change_req.term
+                )),
             )));
         }
 
@@ -195,9 +198,11 @@ where
                 cluster_conf_change_req.version
             );
 
-            return Err(Error::ClusterMembershipUpdateFailed(format!(
-                "[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}",
-                cluster_conf_change_req.version
+            return Err(Error::Consensus(ConsensusError::Membership(
+                MembershipError::UpdateFailed(format!(
+                    "[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}",
+                    cluster_conf_change_req.version
+                )),
             )));
         }
 
@@ -236,8 +241,7 @@ where
 }
 
 impl<T> RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Creates a new `RaftMembership` instance.
     pub fn new(

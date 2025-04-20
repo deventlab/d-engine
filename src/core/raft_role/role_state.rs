@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::warn;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::async_trait;
 use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 
 use super::RaftRole;
 use super::SharedState;
@@ -17,15 +17,17 @@ use crate::proto::AppendEntriesResponse;
 use crate::proto::VotedFor;
 use crate::utils::cluster::error;
 use crate::AppendResponseWithUpdates;
-use crate::Error;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
+use crate::MembershipError;
+use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
 use crate::RoleEvent;
+use crate::StateTransitionError;
 use crate::TypeConfig;
 
 #[async_trait]
@@ -54,7 +56,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         new_next_id: u64,
     ) -> Result<()> {
         warn!("update_next_index NotLeader error");
-        Err(Error::NotLeader)
+        Err(MembershipError::NotLeader.into())
     }
 
     fn prev_log_index(
@@ -78,7 +80,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         new_match_id: u64,
     ) -> Result<()> {
         warn!("update_match_index NotLeader error");
-        Err(Error::NotLeader)
+        Err(MembershipError::NotLeader.into())
     }
     fn init_peers_next_index_and_match_index(
         &mut self,
@@ -86,18 +88,21 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         _peer_ids: Vec<u32>,
     ) -> Result<()> {
         warn!("init_peers_next_index_and_match_index NotLeader error");
-        Err(Error::NotLeader)
+        Err(MembershipError::NotLeader.into())
     }
     fn noop_log_id(&self) -> Result<Option<u64>> {
         warn!("noop_log_id NotLeader error");
-        Err(Error::NotLeader)
+        Err(MembershipError::NotLeader.into())
     }
 
     async fn verify_leadership_in_new_term(
-        &self,
-        _event_tx: mpsc::Sender<RaftEvent>,
+        &mut self,
+        _peer_channels: Arc<POF<Self::T>>,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        Err(Error::NotLeader)
+        warn!("verify_leadership_in_new_term NotLeader error");
+        Err(MembershipError::NotLeader.into())
     }
     fn is_follower(&self) -> bool {
         false
@@ -114,24 +119,29 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
     fn become_leader(&self) -> Result<RaftRole<Self::T>> {
         warn!("become_leader Illegal");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_candidate(&self) -> Result<RaftRole<Self::T>> {
         warn!("become_candidate Illegal");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_follower(&self) -> Result<RaftRole<Self::T>> {
         warn!("become_follower Illegal");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
     fn become_learner(&self) -> Result<RaftRole<Self::T>> {
         warn!("become_learner Illegal");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     fn step_down(&self) -> Result<RaftRole<Self::T>> {
         warn!("step_down failed");
-        Err(Error::Illegal)
+
+        Err(StateTransitionError::InvalidTransition.into())
     }
 
     #[cfg(test)]
@@ -140,7 +150,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         node_id: u32,
     ) -> Result<()> {
         warn!("decr_next_index NotLeader error");
-        Err(Error::NotLeader)
+        Err(MembershipError::NotLeader.into())
     }
 
     //--- Shared States
@@ -186,7 +196,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             .map_err(|e| {
                 let error_str = format!("{:?}", e);
                 error!("Failed to send: {}", error_str);
-                Error::TokioSendStatusError(error_str)
+                NetworkError::SingalSendFailed(error_str)
             })?;
 
         Ok(())
@@ -260,7 +270,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             sender.send(Ok(response)).map_err(|e| {
                 let error_str = format!("{:?}", e);
                 error!("Failed to send: {}", error_str);
-                Error::TokioSendStatusError(error_str)
+                NetworkError::SingalSendFailed(error_str)
             })?;
             return Ok(());
         }
@@ -297,7 +307,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
             }
             Err(e) => {
@@ -311,7 +321,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
-                    Error::TokioSendStatusError(error_str)
+                    NetworkError::SingalSendFailed(error_str)
                 })?;
                 error("handle_raft_event", &e);
                 return Err(e);

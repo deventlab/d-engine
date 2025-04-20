@@ -40,9 +40,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use log::error;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tracing::error;
 
 use super::generate_insert_commands;
 use crate::alias::MOF;
@@ -75,8 +75,7 @@ use crate::TypeConfig;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub id: u32,
 

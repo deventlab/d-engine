@@ -14,11 +14,12 @@
 //! - Node C becomes the leader
 //! - last_commit_index is 10
 //! - Node A and B's log-3's term is 2
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine::storage::StateMachine;
-use d_engine::Error;
+use d_engine::ClientApiError;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
@@ -37,7 +38,7 @@ use crate::APPEND_ENNTRIES_PORT_BASE;
 
 #[tracing::instrument]
 #[tokio::test]
-async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
+async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     crate::enable_logger();
     reset("append_entries/case1").await?;
 
@@ -92,7 +93,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
 
     let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
     // Node C becomes Leader
-    assert_eq!(client_manager.list_leader_id(&bootstrap_urls).await.unwrap(), 3);
+    assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
 
     // Trigger client request
     println!("put 11 100");
@@ -107,7 +108,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
     client_manager.verify_read(11, 100, ITERATIONS).await;
 
     // 4.1 Verify global state
-    assert_eq!(sm1.last_applied(), 11);
+    assert_eq!(sm1.len(), 11);
 
     println!("put 12 200");
     assert!(
@@ -121,11 +122,17 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), Error> {
     client_manager.verify_read(12, 200, ITERATIONS).await;
 
     // 4.2 Verify global state
-    assert_eq!(sm1.last_applied(), 12);
+    assert_eq!(sm1.len(), 12);
 
-    graceful_tx3.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx2.send(()).map_err(|_| Error::ServerError)?;
-    graceful_tx1.send(()).map_err(|_| Error::ServerError)?;
+    graceful_tx3
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx2
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+    graceful_tx1
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     node_n3.await??;
     node_n2.await??;
     node_n1.await??;

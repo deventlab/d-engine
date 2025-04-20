@@ -47,7 +47,7 @@ pub(crate) fn if_higher_term_found(
 ) -> bool {
     //means I am fake leader or we should ignore learner's response
     if !is_learner && my_current_term < term {
-        log::error!("my_current_term: {} < term: {} ?", my_current_term, term);
+        tracing::error!("my_current_term: {} < term: {} ?", my_current_term, term);
         return true;
     }
 
@@ -68,4 +68,11 @@ pub(crate) fn is_target_log_more_recent(
 ) -> bool {
     (target_last_log_term > my_last_log_term)
         || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum QuorumStatus {
+    Confirmed,    // Confirmed by the majority of nodes
+    LostQuorum,   // Unable to obtain majority
+    NetworkError, // Network problem (can be retried)
 }

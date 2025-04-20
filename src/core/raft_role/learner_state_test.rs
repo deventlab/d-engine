@@ -9,8 +9,8 @@ use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::ErrorCode;
 use crate::proto::LogId;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
@@ -233,10 +233,9 @@ async fn test_handle_raft_event_case4_1() {
     // Validation criterias
     // 2. I should not receive BecomeFollower event
     // 4. I should send out new commit signal
-    assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::NotifyNewCommitIndex { new_commit_index: _ }
-    ));
+    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::NotifyNewCommitIndex {
+        new_commit_index: _
+    }));
 
     // Validation criterias
     // 3. I should update term
@@ -344,7 +343,7 @@ async fn test_handle_raft_event_case4_3() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .returning(|_, _, _| Err(Error::GeneralServerError("test".to_string())));
+        .returning(|_, _, _| Err(Error::Fatal("test".to_string())));
 
     let mut membership = MockMembership::new();
 
@@ -427,7 +426,7 @@ async fn test_handle_raft_event_case5() {
         .is_ok());
 
     match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error_code, ClientRequestError::NotLeader as i32),
+        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
         _ => assert!(false),
     }
 }

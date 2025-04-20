@@ -1,17 +1,17 @@
 use std::cmp;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use autometrics::autometrics;
 use dashmap::DashMap;
-use log::debug;
-use log::error;
-use log::warn;
 use prost::Message;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::trace;
+use tracing::warn;
 
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
@@ -29,11 +29,11 @@ use crate::utils::cluster::is_majority;
 use crate::AppendResults;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
-use crate::Error;
 use crate::LeaderStateSnapshot;
 use crate::PeerUpdate;
 use crate::RaftConfig;
 use crate::RaftLog;
+use crate::ReplicationError;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::StateSnapshot;
@@ -43,8 +43,7 @@ use crate::API_SLO;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub my_id: u32,
     _phantom: PhantomData<T>,
@@ -52,8 +51,7 @@ where
 
 #[async_trait]
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn handle_client_proposal_in_batch(
         &self,
@@ -67,14 +65,14 @@ where
         retry: &RetryPolicies,
     ) -> Result<AppendResults> {
         debug!("-------- handle_client_proposal_in_batch --------");
-        debug!("commands: {:?}", &commands);
+        trace!("commands: {:?}", &commands);
 
         // ----------------------
         // Phase 1: Pre-Checks
         // ----------------------
         if replication_members.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
-            return Err(Error::AppendEntriesNoPeerFound);
+            return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());
         }
 
         // ----------------------
@@ -106,13 +104,9 @@ where
         // ----------------------
         // Phase 4: Build Requests
         // ----------------------
-        let mut peer_ids = HashSet::new();
         let requests = replication_members
             .iter()
-            .map(|peer| {
-                peer_ids.insert(peer.id);
-                self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data)
-            })
+            .map(|peer| self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data))
             .collect();
 
         // ----------------------
@@ -122,56 +116,69 @@ where
         let mut successes = 1; // Include leader itself
         let mut peer_updates = HashMap::new();
         match transport.send_append_requests(requests, retry).await {
-            Ok(responses) => {
-                for response in responses {
-                    // Skip responses from stale terms
-                    if response.term < leader_current_term {
-                        continue;
-                    }
+            Ok(append_result) => {
+                for response in append_result.responses {
+                    match response {
+                        Ok(append_response) => {
+                            // Skip responses from stale terms
+                            if append_response.term < leader_current_term {
+                                continue;
+                            }
 
-                    match response.result {
-                        Some(append_entries_response::Result::Success(success_result)) => {
-                            successes += 1;
-                            let update = self.handle_success_response(
-                                response.node_id,
-                                response.term,
-                                success_result,
-                                leader_current_term,
-                            )?;
-                            peer_updates.insert(response.node_id, update);
-                        }
+                            match append_response.result {
+                                Some(append_entries_response::Result::Success(success_result)) => {
+                                    successes += 1;
+                                    let update = self.handle_success_response(
+                                        append_response.node_id,
+                                        append_response.term,
+                                        success_result,
+                                        leader_current_term,
+                                    )?;
+                                    peer_updates.insert(append_response.node_id, update);
+                                }
 
-                        Some(append_entries_response::Result::Conflict(conflict_result)) => {
-                            let update = self.handle_conflict_response(response.node_id, conflict_result, raft_log)?;
+                                Some(append_entries_response::Result::Conflict(conflict_result)) => {
+                                    let update = self.handle_conflict_response(
+                                        append_response.node_id,
+                                        conflict_result,
+                                        raft_log,
+                                    )?;
 
-                            peer_updates.insert(response.node_id, update);
-                        }
+                                    peer_updates.insert(append_response.node_id, update);
+                                }
 
-                        Some(append_entries_response::Result::HigherTerm(higher_term)) => {
-                            // Only handle higher term if it's greater than current term
-                            if higher_term > leader_current_term {
-                                return Err(Error::HigherTermFoundError(higher_term));
+                                Some(append_entries_response::Result::HigherTerm(higher_term)) => {
+                                    // Only handle higher term if it's greater than current term
+                                    if higher_term > leader_current_term {
+                                        return Err(ReplicationError::HigherTerm(higher_term).into());
+                                    }
+                                }
+
+                                None => {
+                                    error!("TODO: need to figure out the reason of this cluase");
+                                    unreachable!();
+                                }
                             }
                         }
-
-                        None => {
-                            error!("TODO: need to figure out the reason of this cluase");
+                        Err(e) => {
+                            error!("send_append_requests error: {:?}", e);
                         }
                     }
                 }
+                let peer_ids = append_result.peer_ids;
+                debug!(
+                    "send_append_requests to: {:?} with succeed number = {}",
+                    &peer_ids, successes
+                );
+
+                let commit_quorum_achieved = is_majority(successes, peer_ids.len() + 1);
+                Ok(AppendResults {
+                    commit_quorum_achieved,
+                    peer_updates,
+                })
             }
             Err(e) => return Err(e),
         }
-        debug!(
-            "send_append_requests to: {:?} with succeed number = {}",
-            &peer_ids, successes
-        );
-
-        let commit_quorum_achieved = is_majority(successes, peer_ids.len() + 1);
-        Ok(AppendResults {
-            commit_quorum_achieved,
-            peer_updates,
-        })
     }
 
     fn handle_success_response(
@@ -187,7 +194,7 @@ where
 
         // Verify Term consistency
         if peer_term > leader_term {
-            return Err(Error::HigherTermFoundError(peer_term));
+            return Err(ReplicationError::HigherTerm(peer_term).into());
         }
 
         let peer_match_index = match_log.index;
@@ -426,8 +433,7 @@ pub(super) struct ReplicationData {
 }
 
 impl<T> ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(my_id: u32) -> Self {
         Self {
@@ -509,24 +515,19 @@ where
             entries.len()
         );
 
-        (
-            peer_id,
-            peer.channel_with_address.clone(),
-            AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
-            },
-        )
+        (peer_id, peer.channel_with_address.clone(), AppendEntriesRequest {
+            term: data.current_term,
+            leader_id: self.my_id,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit_index: data.commit_index,
+        })
     }
 }
 
 impl<T> Debug for ReplicationHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn fmt(
         &self,

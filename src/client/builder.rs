@@ -4,12 +4,12 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 
 use super::Client;
+use super::ClientApiError;
 use super::ClientConfig;
 use super::ClientInner;
 use super::ClusterClient;
 use super::ConnectionPool;
 use super::KvClient;
-use crate::Result;
 
 /// Configurable builder for [`Client`] instances
 ///
@@ -101,7 +101,7 @@ impl ClientBuilder {
     }
 
     /// Build the client with current configuration
-    pub async fn build(self) -> Result<Client> {
+    pub async fn build(self) -> std::result::Result<Client, ClientApiError> {
         let pool = ConnectionPool::create(self.endpoints.clone(), self.config.clone()).await?;
         let inner = Arc::new(ArcSwap::from_pointee(ClientInner {
             pool,

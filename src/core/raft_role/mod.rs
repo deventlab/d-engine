@@ -26,8 +26,6 @@ use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
 use learner_state::LearnerState;
-use log::debug;
-use log::trace;
 use role_state::RaftRoleState;
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
@@ -36,6 +34,8 @@ use serde::Serialize;
 use serde::Serializer;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use tracing::debug;
+use tracing::trace;
 
 use super::RaftContext;
 use super::RaftEvent;
@@ -324,32 +324,41 @@ impl<T: TypeConfig> RaftRole<T> {
         0
     }
 
+    /// Verifies leadership validity in the new term by attempting to replicate a no-op entry.
+    ///
+    /// This critical safety check ensures the new leader can actually communicate with a quorum of
+    /// cluster nodes before accepting client requests. The verification is done by replicating
+    /// a special no-op log entry and confirming its commitment.
+    ///
+    /// # Key Behaviors
+    /// - **Non-blocking verification**: Operates asynchronously without stalling main Raft loop
+    /// - **Term-aware retries**: Automatically aborts if higher term is detected
+    ///
+    /// # Error Semantics
+    /// Returned errors indicate **technical failures in the verification process**, not quorum
+    /// rejection:
+    /// - Network errors (gRPC failures, unreachable nodes)
+    /// - Storage I/O errors (failed to persist no-op entry)
+    /// - Internal channel errors (message queue overflows)
+    ///
+    /// # Success Conditions
+    /// A successful `Ok(())` return only means:
+    /// The noop request has been successfully enqueued into the leader’s replication batch queue.
+    ///
+    /// # Arguments
+    /// - `peer_channels`: Network channels to cluster peers
+    /// - `ctx`: Shared Raft state context
+    /// - `role_tx`: Role transition event channel
     pub(crate) async fn verify_leadership_in_new_term(
-        &self,
-        event_tx: mpsc::Sender<RaftEvent>,
+        &mut self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        self.state().verify_leadership_in_new_term(event_tx).await
+        self.state_mut()
+            .verify_leadership_in_new_term(peer_channels, ctx, role_tx)
+            .await
     }
-}
-
-#[inline]
-pub(crate) fn is_follower(role_i32: i32) -> bool {
-    role_i32 == FOLLOWER
-}
-
-#[inline]
-pub(crate) fn is_candidate(role_i32: i32) -> bool {
-    role_i32 == CANDIDATE
-}
-
-#[inline]
-pub(crate) fn is_leader(role_i32: i32) -> bool {
-    role_i32 == LEADER
-}
-
-#[inline]
-pub(crate) fn is_learner(role_i32: i32) -> bool {
-    role_i32 == LEARNER
 }
 
 impl Serialize for HardState {
@@ -369,9 +378,7 @@ impl Serialize for HardState {
 
 impl<'de> Deserialize<'de> for HardState {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         #[derive(Deserialize)]
         struct HardStateDe {
             current_term: u64,

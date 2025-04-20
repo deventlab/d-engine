@@ -13,7 +13,7 @@ use crate::test_utils::enable_logger;
 use crate::test_utils::settings;
 use crate::test_utils::MockNode;
 use crate::test_utils::MOCK_PEER_CHANNEL_PORT_BASE;
-use crate::Error;
+use crate::NetworkError;
 use crate::PeerChannels;
 use crate::PeerChannelsFactory;
 use crate::RpcPeerChannels;
@@ -220,7 +220,7 @@ async fn test_connection_collection() {
     tasks.push(task::spawn(async move {
         Ok((2_u32, mock_peer(MOCK_PEER_CHANNEL_PORT_BASE + 11, rx1).await))
     }));
-    tasks.push(task::spawn(async { Err(Error::ConnectError) }));
+    tasks.push(task::spawn(async { Err(NetworkError::ConnectError.into()) }));
 
     let result = peer_channels.collect_connections(tasks, 2).await;
     assert!(result.is_err(), "Should fail with partial success");

@@ -2,9 +2,9 @@ use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 
-use log::error;
 use prost::Message;
 use sled::IVec;
+use tracing::error;
 
 pub fn str_to_u64(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();

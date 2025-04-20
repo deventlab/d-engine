@@ -11,9 +11,9 @@ use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientProposeRequest;
 use crate::proto::ClientReadRequest;
-use crate::proto::ClientRequestError;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
+use crate::proto::ErrorCode;
 use crate::proto::MetadataRequest;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
@@ -24,6 +24,8 @@ use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockTypeConfig;
+use crate::ConsensusError;
+use crate::ElectionError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
@@ -106,7 +108,11 @@ async fn test_tick_case2() {
     election_handler
         .expect_broadcast_vote_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::HigherTermFoundError(100)));
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
+                100,
+            ))))
+        });
     context.election_handler = election_handler;
 
     // New state
@@ -544,7 +550,7 @@ async fn test_handle_raft_event_case5() {
         .is_ok());
 
     match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error_code, ClientRequestError::NotLeader as i32),
+        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
         _ => assert!(false),
     }
 }
@@ -611,7 +617,7 @@ async fn test_handle_raft_event_case6_2() {
 
     match resp_rx.recv().await {
         Ok(r) => match r {
-            Ok(r) => assert_eq!(r.error_code, ClientRequestError::NoError as i32),
+            Ok(r) => assert_eq!(r.error, ErrorCode::Success as i32),
             Err(_) => assert!(false),
         },
         Err(_) => assert!(false),

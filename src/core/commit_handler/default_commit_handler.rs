@@ -1,26 +1,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::debug;
-use log::trace;
-use log::warn;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
+use tracing::debug;
+use tracing::trace;
+use tracing::warn;
 
 use super::CommitHandler;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::utils::cluster::error;
-use crate::Error;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     applier: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
@@ -34,8 +32,7 @@ where
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn run(&mut self) -> Result<()> {
         let mut batch_counter = 0;
@@ -52,8 +49,7 @@ where
                     // P0: shutdown received;
                     _ = shutdown_signal.changed() => {
                         warn!("[CommitHandler] shutdown signal received.");
-
-                        return Err(Error::Exit);
+                        return Ok(());
                     }
 
                     // Scheduled batch processing
@@ -79,8 +75,7 @@ where
 }
 
 impl<T> DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         applier: Arc<SMHOF<T>>,

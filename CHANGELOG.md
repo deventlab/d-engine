@@ -2,6 +2,22 @@
 All notable changes to this project will be documented in this file.
 
 ---
+
+## [v0.1.2] - 2025-04-20 [✅ Released]
+
+### Features
+- **Benchmarking**: Added etcd v3.5 benchmarking on Mac Mini M2 (#59)  
+- **Client Example**: Created new crate client usage example (#71)  
+- **Raft Protocol**: Leader now sends empty log entry after election (#43)  
+
+### Fixes
+- **Logging**: Replaced `log` crate with `tracing` implementation (#68)  
+- **Node Shutdown**: Fixed unexpected node termination after stress tests (#70)  
+
+### Refactors
+- **Error Handling**: Separated protocol errors from system-level errors (#66)  
+
+--- 
 ## [v0.1.0] - 2025-04-11 [✅ Released]
 ### Added
 - Initial implementation of core Raft consensus algorithm
@@ -35,3 +51,4 @@ All notable changes to this project will be documented in this file.
 ---
 [//]: # (Version Links)
 [v0.1.0]: https://github.com/deventlab/d-engine/releases/tag/v0.1.0
+[v0.1.2]: https://github.com/deventlab/d-engine/releases/tag/v0.1.2

@@ -2,6 +2,7 @@
 //!
 //! This module defines configuration parameters related to system monitoring,
 //! particularly for Prometheus metrics collection.
+use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -39,15 +40,17 @@ impl MonitoringConfig {
         if self.prometheus_enabled {
             // Validate port range
             if self.prometheus_port == 0 {
-                return Err(Error::InvalidConfig("prometheus_port cannot be 0 when enabled".into()));
+                return Err(Error::Config(ConfigError::Message(
+                    "prometheus_port cannot be 0 when enabled".into(),
+                )));
             }
 
             // Check privileged ports (requires root)
             if self.prometheus_port < 1024 {
-                return Err(Error::InvalidConfig(format!(
+                return Err(Error::Config(ConfigError::Message(format!(
                     "prometheus_port {} is a privileged port (requires root)",
                     self.prometheus_port
-                )));
+                ))));
             }
 
             // Verify port availability (runtime check)
@@ -55,17 +58,17 @@ impl MonitoringConfig {
             {
                 use std::net::TcpListener;
                 if let Err(e) = TcpListener::bind(("0.0.0.0", self.prometheus_port)) {
-                    return Err(Error::InvalidConfig(format!(
+                    return Err(Error::Config(ConfigError::Message(format!(
                         "prometheus_port {} unavailable: {}",
                         self.prometheus_port, e
-                    )));
+                    ))));
                 }
             }
         } else {
             // Warn about unused port configuration
             #[cfg(debug_assertions)]
             if self.prometheus_port != default_prometheus_port() {
-                log::warn!(
+                tracing::warn!(
                     "prometheus_port configured to {} but monitoring is disabled",
                     self.prometheus_port
                 );

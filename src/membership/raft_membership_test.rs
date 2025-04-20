@@ -2,7 +2,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 use super::RaftMembership;
-use crate::is_follower;
+use crate::cluster::is_follower;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterMembership;
 use crate::proto::NodeMeta;
