@@ -232,7 +232,9 @@ where T: TypeConfig
                     #[cfg(test)]
                     let event = raft_event.clone();
 
-                    self.role.handle_raft_event(raft_event, self.peer_channels()?, &self.ctx, self.role_tx.clone()).await?;
+                    if let Err(e) = self.role.handle_raft_event(raft_event, self.peer_channels()?, &self.ctx, self.role_tx.clone()).await {
+                        error!("handle_raft_event: {:?}", e);
+                    }
 
                     #[cfg(test)]
                     self.notify_raft_event(event);

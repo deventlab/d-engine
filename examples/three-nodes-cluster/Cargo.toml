@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # d-engine = "0.1.1"
-d-engine = { path = "../../../dengine" }
+d-engine = { path = "../../../d-engine" }
 
 tokio = { version = "1.4", features = ["signal", "rt-multi-thread"] }
 tracing = { version = "0.1" }

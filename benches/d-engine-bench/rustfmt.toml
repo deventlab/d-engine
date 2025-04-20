@@ -1,0 +1,29 @@
+# Base Formatting Rules
+max_width = 120  # Maximum line width (default: 100)
+tab_spaces = 4   # Indentation with 4 spaces
+edition = "2021" # Rust edition (align with Cargo.toml)
+
+# Comment Styling
+wrap_comments = true # Wrap long comments
+comment_width = 100  # Max width for comments
+
+# Function and Expression Formatting
+fn_params_layout = "Vertical"  # Align function arguments vertically
+where_single_line = true       # Keep short `where` clauses on one line
+overflow_delimited_expr = true # Allow line breaks within delimited expressions
+
+# Import Organization
+reorder_imports = true             # Alphabetically sort imports
+imports_granularity = "Item"       # Each crate is imported on a separate line
+group_imports = "StdExternalCrate" # Group imports: std > external > local
+
+# Struct and Enum Formatting
+struct_lit_single_line = true    # Single-line struct literals for single fields
+enum_discrim_align_threshold = 4 # Align enum discriminators
+
+# Miscellaneous
+merge_derives = false           # Keeps each #[derive] attribute on a separate line
+trailing_comma = "Vertical"     # Add trailing commas in multi-line blocks
+use_field_init_shorthand = true # Use shorthand field initialization syntax
+
+inline_attribute_width = 0
