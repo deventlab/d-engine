@@ -9,9 +9,8 @@ initial_cluster = [
 db_root_dir = "./db"
 log_dir = "./logs"
 
-[monitoring]
-prometheus_enabled = true
-prometheus_port = 8082
-
 [raft.commit_handler]
-batch_size = 100
+batch_size = 5000
+
+[raft.replication]
+rpc_append_entries_in_batch_threshold = 5000

@@ -13,6 +13,7 @@ clean:
 
 build:
 	@echo "Building release binary..."
+	@cargo update
 	@cargo build --release --jobs 4
 
 # Basic Write Test (1 connection, 1 client)
