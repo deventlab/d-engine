@@ -24,19 +24,10 @@ cd /examples/three-nodes-cluster/
 make start-cluster
 ```
 
-### 2. Build Benchmark Tool
+### 2. Run Test
 
 ```bash
-cargo build --release --bin d-engine-bench
-```
-
-### 3. Run Basic Test
-
-```bash
-./target/release/d-engine-bench \
-    --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
-    --conns 1 --clients 1 --sequential-keys  --total 10000 --key-size 8 --value-size 256 \
-    put
+make
 ```
 
 ## Test Scenarios
