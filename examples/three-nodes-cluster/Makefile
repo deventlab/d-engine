@@ -9,7 +9,7 @@ build:
 	cargo build --release --jobs 4
 
 # Cluster management
-start-node1: build
+start-node1: 
 	@echo "Starting Node 1..."
 	CONFIG_PATH=config/n1 \
 	LOG_DIR="./logs/1" \
@@ -17,21 +17,21 @@ start-node1: build
 	RUST_BACKTRACE=1 \
 	./target/release/demo
 
-start-node2: build
+start-node2: 
 	@echo "Starting Node 2..."
 	CONFIG_PATH=config/n2 \
 	LOG_DIR="./logs/2" \
 	RUST_LOG=demo=warn,d_engine=warn \
 	./target/release/demo
 
-start-node3: build
+start-node3: 
 	@echo "Starting Node 3..."
 	CONFIG_PATH=config/n3 \
 	LOG_DIR="./logs/3" \
 	RUST_LOG=demo=warn,d_engine=warn \
 	./target/release/demo
 
-start-cluster: build
+start-cluster: clean build
 	@echo "Starting 3-node cluster in parallel..."
 	$(MAKE) -j3 start-node1 start-node2 start-node3
 

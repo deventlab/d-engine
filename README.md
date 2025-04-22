@@ -5,7 +5,7 @@
 ![Static Badge](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 
-**d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
+**d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that maximizes single CPU core performance while minimizing resource overhead. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
 
 ---
 
@@ -27,7 +27,7 @@ Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = "0.1.1"
+d-engine = "0.1.2"
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -112,6 +112,38 @@ sequenceDiagram
     - `grpc_transport.rs`: Network primitives
     - `grpc_raft_service.rs`: RPC service definitions
 - `rpc_peer_channels.rs`: Peer-to-peer communication channels
+
+## Performance Benchmarks 
+
+d-engine is designed for low-latency consensus operations while maintaining strong consistency. Below are key metrics compared to etcd 3.5:
+
+**Test Setup**: d-engine v0.1.2 vs etcd 3.5， 10k ops, 8B keys, 256B values, Apple M2
+
+| **Test Case** | **Metric** | **d-engine** | **etcd** | **Advantage** |
+| --- | --- | --- | --- | --- |
+| **Basic Write** | Throughput | 385.31 ops/s | 157.85 ops/s | ✅ 2.44× d-engine |
+| (1 connection, 1 client) | Avg Latency | 2,594 μs | 6,300 μs | ✅ 59% lower |
+|  | p99 Latency | 4,527 μs | 16,700 μs | ✅ 73% lower |
+| **High Concurrency** | Throughput | 3,972 ops/s | 5,439 ops/s | ❌ 1.37× etcd |
+| (10 conns, 100 clients) | Avg Latency | 2,516 μs | 18,300 μs | ✅ 86% lower |
+|  | p99 Latency | 4,359 μs | 32,400 μs | ✅ 87% lower |
+| **Linear Read** | Throughput | 8,230 ops/s | 85,904 ops/s | ❌ 10.43× etcd |
+| (Strong consistency) | Avg Latency | 1,212 μs | 1,100 μs | ❌ 10% higher |
+|  | p99 Latency | 1,467 μs | 3,200 μs | ✅ 54% lower |
+| **Sequential Read** | Throughput | 40,860 ops/s | 124,631 ops/s | ❌ 3.05× etcd |
+| (Eventual consistency) | Avg Latency | 243 μs | 700 μs | ✅ 65% lower |
+|  | p99 Latency | 529 μs | 2,800 μs | ✅ 81% lower |
+
+**Important Notes**  
+1. d-engine architecture uses **single-threaded** event-driven design
+2. Tested on d-engine v0.1.2 (without snapshot functionality)
+3. etcd 3.5 benchmark using official tools
+4. All services co-located on same hardware (M2/16GB)
+
+### View Benchmarks Detailed Reports
+```bash
+open benches/reports/
+```
 
 ## Contribution Guide
 

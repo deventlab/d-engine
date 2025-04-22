@@ -12,6 +12,8 @@ use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
 use tokio::time::sleep;
+use tracing::error;
+use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -44,41 +46,11 @@ async fn main() {
     let (_server_result, _shutdown_result) = tokio::join!(server_handler, shutdown_handler);
 }
 
-/// Code to show you how to make a request to d_engine cluster
-async fn simulate_client() {
-    sleep(Duration::from_secs(10)).await;
-
-    // Initialization (automatically discover clusters)
-    if let Ok(client) = ClientBuilder::new(vec![
-        "http://127.0.0.1:9081".into(),
-        "http://127.0.0.1:9082".into(),
-        "http://127.0.0.1:9083".into(),
-    ])
-    .connect_timeout(Duration::from_secs(10))
-    .request_timeout(Duration::from_secs(10))
-    .enable_compression(true)
-    .build()
-    .await
-    {
-        // Key-value operations
-        client.kv().put("user:1001", "Alice").await.unwrap();
-        let value = client.kv().get("user:1001", true).await.unwrap();
-        info!("User data: {:?}", value);
-
-        // Cluster management
-        let members = client
-            .cluster()
-            .list_members()
-            .await
-            .expect("List cluster members successfully.");
-        info!("Cluster members: {:?}", members);
-    }
-}
 async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .build()
-        .start_metrics_server(graceful_rx.clone()) //default: prometheus metrics server starts
+        // .start_metrics_server(graceful_rx.clone()) //default: prometheus metrics server starts
         .start_rpc_server()
         .await
         .ready()
