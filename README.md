@@ -156,7 +156,7 @@ open benches/reports/
 ```bash
 # Build and test
 cargo test --all-features
-cargo clippy --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 ## Code Style

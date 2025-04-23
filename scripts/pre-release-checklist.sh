@@ -55,7 +55,7 @@ echo -e "${GREEN}All checks passed! Ready for release.${NC}"
 # 2. Code quality checks
 # --------------------------
 header "Running code quality checks"
-cargo clippy --all-targets --all-features || error "Clippy found issues"
+cargo clippy --all-targets --all-features -- -D warnings || error "Clippy found issues"
 cargo fmt --all -- --check || error "Code formatting issues found"
 
 
