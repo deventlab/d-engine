@@ -189,23 +189,19 @@ pub fn manipulate_log(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
-        eprintln!("manipulate_log error: {:?}", e);
-        assert!(false);
-    }
+    assert!(raft_log.insert_batch(entries).is_ok());
 }
 pub fn init_state_storage(
     state_storage: &dyn StateStorage,
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
-    if let Err(e) = state_storage.save_hard_state(HardState {
-        current_term,
-        voted_for,
-    }) {
-        eprintln!("init_state_storage error: {:?}", e);
-        assert!(false);
-    }
+    assert!(state_storage
+        .save_hard_state(HardState {
+            current_term,
+            voted_for,
+        })
+        .is_ok());
 }
 
 pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {

@@ -9,7 +9,7 @@ use crate::Result;
 ///
 /// Provides fine-grained control over low-level network parameters
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct NetworkConfig {
     /// Timeout for establishing TCP connections in milliseconds
     /// Default: 20ms (suitable for LAN environments)

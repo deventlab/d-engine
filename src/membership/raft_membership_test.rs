@@ -295,11 +295,7 @@ fn test_retrieve_cluster_membership_config() {
 
     let r = membership.retrieve_cluster_membership_config();
     assert_eq!(r.nodes.len(), 5);
-    for node_meta in r.nodes {
-        if node_meta.role == LEADER {
-            assert!(false);
-        }
-    }
+    assert!(!r.nodes.iter().any(|n| n.role == LEADER));
 }
 
 /// # Case 1: Test cluster conf update from Leader

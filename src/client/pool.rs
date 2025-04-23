@@ -54,6 +54,7 @@ impl ConnectionPool {
     /// 1. Discovers fresh cluster metadata from provided endpoints
     /// 2. Re-establishes leader connection using latest config
     /// 3. Rebuilds follower connections pool
+    #[allow(dead_code)]
     pub(crate) async fn refresh(
         &mut self,
         new_endpoints: Option<Vec<String>>,
@@ -167,7 +168,7 @@ impl ConnectionPool {
 
     /// Extract leader address from metadata
     pub(super) fn parse_cluster_metadata(
-        nodes: &Vec<NodeMeta>
+        nodes: &[NodeMeta]
     ) -> std::result::Result<(String, Vec<String>), ClientApiError> {
         let mut leader_addr = None;
         let mut followers = Vec::new();

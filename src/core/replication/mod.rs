@@ -29,7 +29,6 @@ use tonic::Status;
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
-use crate::alias::TROF;
 use crate::proto::append_entries_response;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -40,11 +39,8 @@ use crate::proto::Entry;
 use crate::proto::LogId;
 use crate::proto::SuccessResult;
 use crate::AppendResults;
-use crate::ChannelWithAddressAndRole;
 use crate::MaybeCloneOneshotSender;
-use crate::RaftConfig;
 use crate::Result;
-use crate::RetryPolicies;
 use crate::TypeConfig;
 
 /// Client request with response channel
@@ -53,15 +49,6 @@ pub struct ClientRequestWithSignal {
     pub id: String,
     pub commands: Vec<ClientCommand>,
     pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-}
-
-/// Replication state updates from Leader perspective
-#[derive(Debug)]
-pub struct LeaderStateUpdate {
-    /// (peer_id -> (next_index, match_index))
-    pub peer_index_updates: HashMap<u32, (u64, u64)>,
-    // New commit index, if thre is
-    pub new_commit_index: Option<u64>,
 }
 
 /// AppendEntries response with possible state changes
@@ -94,11 +81,13 @@ where T: TypeConfig
         commands: Vec<ClientCommand>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
-        replication_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft: &RaftConfig,
-        retry: &RetryPolicies,
+        ctx: &crate::RaftContext<T>,
+        peer_channels: Arc<crate::alias::POF<T>>,
+        // replication_members: &[ChannelWithAddressAndRole],
+        // raft_log: &Arc<ROF<T>>,
+        // transport: &Arc<TROF<T>>,
+        // raft: &RaftConfig,
+        // retry: &RetryPolicies,
     ) -> Result<AppendResults>;
 
     /// Handles successful AppendEntries responses
@@ -253,18 +242,12 @@ impl AppendEntriesResponse {
 
     /// Check if it is a success response
     pub fn is_success(&self) -> bool {
-        match &self.result {
-            Some(append_entries_response::Result::Success(_)) => true,
-            _ => false,
-        }
+        matches!(&self.result, Some(append_entries_response::Result::Success(_)))
     }
 
     /// Check if it is a conflict response
     pub fn is_conflict(&self) -> bool {
-        match &self.result {
-            Some(append_entries_response::Result::Conflict(_conflict)) => true,
-            _ => false,
-        }
+        matches!(&self.result, Some(append_entries_response::Result::Conflict(_conflict)))
     }
 
     /// Check if it is a response of a higher Term

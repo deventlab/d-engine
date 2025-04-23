@@ -95,16 +95,3 @@ async fn test_metrics_endpoint_format() {
     // Check custom indicator characteristics
     assert!(body.contains("d_engine_committed_log")); // Verify prefix
 }
-
-// Test timestamp indicator logic
-#[test]
-fn test_timestamp_metric_calculation() {
-    let before = get_current_ms();
-    let metric_time = get_current_ms();
-    let after = get_current_ms();
-
-    assert!(
-        metric_time >= before && metric_time <= after,
-        "Timestamp should be in valid range"
-    );
-}

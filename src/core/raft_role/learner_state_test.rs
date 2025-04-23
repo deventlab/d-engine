@@ -58,7 +58,7 @@ async fn test_handle_raft_event_case1() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let requet_term = state.current_term() + 10;
 
-    let (role_tx, role_rx) = mpsc::unbounded_channel();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term: requet_term,
@@ -80,10 +80,7 @@ async fn test_handle_raft_event_case1() {
     assert_eq!(state.current_term(), requet_term);
 
     // Receive response with vote_granted = false
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(!r.vote_granted),
-        _ => assert!(false),
-    }
+    assert!(!resp_rx.recv().await.unwrap().unwrap().vote_granted);
 }
 
 /// # Case 2: Receive ClusterConf Event
@@ -105,13 +102,8 @@ async fn test_handle_raft_event_case2() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
-        },
-        Err(_) => assert!(false),
-    }
+    let s = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(s.code(), Code::PermissionDenied);
 }
 
 /// # Case 3: Receive ClusterConfUpdate Event
@@ -141,13 +133,8 @@ async fn test_handle_raft_event_case3() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
-        },
-        Err(_) => assert!(false),
-    }
+    let s = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(s.code(), Code::PermissionDenied);
 }
 
 /// # Case 4.1: As learner, if I receive append request from Leader,
@@ -203,7 +190,7 @@ async fn test_handle_raft_event_case4_1() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
@@ -243,10 +230,7 @@ async fn test_handle_raft_event_case4_1() {
     assert_eq!(state.commit_index(), expect_new_commit);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_success()),
-        Err(_) => assert!(false),
-    }
+    assert!(resp_rx.recv().await.unwrap().unwrap().is_success());
 }
 
 /// # Case 4.2: As learner, if I receive append request from Leader,
@@ -314,10 +298,7 @@ async fn test_handle_raft_event_case4_2() {
     assert_eq!(state.current_term(), term);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_higher_term()),
-        Err(_) => assert!(false),
-    }
+    assert!(resp_rx.recv().await.expect("should succeed").unwrap().is_higher_term());
 }
 /// # Case 4.3: As learner, if I receive append request from Leader,
 ///     and replication_handler::handle_append_entries failed with Error
@@ -358,7 +339,7 @@ async fn test_handle_raft_event_case4_3() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
@@ -394,10 +375,7 @@ async fn test_handle_raft_event_case4_3() {
     assert_eq!(state.current_term(), new_leader_term);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.is_success()),
-        Err(_) => assert!(false),
-    }
+    assert!(!resp_rx.recv().await.unwrap().unwrap().is_success());
 }
 
 /// # Case 5: Test handle client propose request
@@ -425,10 +403,10 @@ async fn test_handle_raft_event_case5() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
-        _ => assert!(false),
-    }
+    assert_eq!(
+        resp_rx.recv().await.unwrap().unwrap().error,
+        ErrorCode::NotLeader as i32
+    );
 }
 
 /// # Case 6: test ClientReadRequest with linear request
@@ -453,11 +431,8 @@ async fn test_handle_raft_event_case6() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
-        },
-        Err(_) => assert!(false),
-    }
+    assert_eq!(
+        resp_rx.recv().await.unwrap().unwrap_err().code(),
+        Code::PermissionDenied
+    );
 }

@@ -47,8 +47,8 @@ async fn test_tick_priority_over_role_event() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_tick_priority_over_role_event", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
     // 2. Add state listeners
     let role_tx = raft.role_tx.clone();
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -90,8 +90,8 @@ async fn test_role_event_priority_over_event_rx() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_role_event_priority_over_event_rx", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     // 2. Add state listeners
     let raft_tx = raft.event_tx.clone();
@@ -155,10 +155,10 @@ async fn test_election_timeout_case1() {
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_election_timeout_case1", graceful_rx, None);
-    raft.ctx.election_handler = election_handler_mock;
+    raft.ctx.handlers.election_handler = election_handler_mock;
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.replication_handler = replication_core;
-    raft.ctx.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
 
     // 3. Add state listeners
     let (role_monitor_tx, mut role_monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -181,10 +181,8 @@ async fn test_election_timeout_case1() {
         is_candidate(first_state),
         "Follower should be elected itself as Candidate"
     );
-    match timeout(Duration::from_millis(5), event_monitor_rx.recv()).await {
-        Ok(Some(_)) => assert!(false, "No event change event should happen"),
-        Ok(None) => assert!(true, "Raft stops so event channel should be closed. "),
-        Err(_) => assert!(true,),
+    if let Ok(Some(_)) = timeout(Duration::from_millis(5), event_monitor_rx.recv()).await {
+        panic!("No event change event should happen");
     }
 
     // 7. Wait for thread finishes
@@ -214,12 +212,15 @@ async fn test_election_timeout_case2_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_election_timeout_case2_1", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
-    raft.ctx.election_handler = election_handler_mock;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+    raft.ctx.handlers.election_handler = election_handler_mock;
 
     // 3. Prepare the node as Candidate
-    raft.set_role(RaftRole::Candidate(CandidateState::new(1, raft.settings.clone())));
+    raft.set_role(RaftRole::Candidate(Box::new(CandidateState::new(
+        1,
+        raft.settings.clone(),
+    ))));
 
     // 4. Add state listeners
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -271,10 +272,13 @@ async fn test_election_timeout_case2_2() {
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_election_timeout_case2_2", graceful_rx, None);
-    raft.ctx.election_handler = election_handler_mock;
+    raft.ctx.handlers.election_handler = election_handler_mock;
 
     // 3. Prepare the node as Candidate
-    raft.set_role(RaftRole::Candidate(CandidateState::new(1, raft.settings.clone())));
+    raft.set_role(RaftRole::Candidate(Box::new(CandidateState::new(
+        1,
+        raft.settings.clone(),
+    ))));
 
     // 4. Add state listeners
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -290,10 +294,8 @@ async fn test_election_timeout_case2_2() {
     tokio::time::sleep(Duration::from_millis(1)).await; // **key of test**  Ensure Tick is processed
 
     // 7. Wait for Tick to trigger and process
-    match timeout(Duration::from_millis(5), monitor_rx.recv()).await {
-        Ok(Some(_)) => assert!(false, "No event change event should happen"),
-        Ok(None) => assert!(true, "Raft stops so event channel should be closed. "),
-        Err(_) => assert!(true,),
+    if let Ok(Some(_)) = timeout(Duration::from_millis(5), monitor_rx.recv()).await {
+        panic!("No event change event should happen");
     }
 
     // 8. Wait for thread finishes
@@ -322,10 +324,10 @@ async fn test_election_timeout_case3() {
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_election_timeout_case2", graceful_rx, None);
-    raft.ctx.election_handler = election_handler_mock;
+    raft.ctx.handlers.election_handler = election_handler_mock;
 
     // 3. Prepare the node as Candidate
-    raft.set_role(RaftRole::Leader(LeaderState::new(1, raft.settings.clone())));
+    raft.set_role(RaftRole::Leader(Box::new(LeaderState::new(1, raft.settings.clone()))));
 
     // 4. Add state listeners
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -341,10 +343,8 @@ async fn test_election_timeout_case3() {
     tokio::time::sleep(Duration::from_millis(1)).await; // **key of test**  Ensure Tick is processed
 
     // 7. Wait for Tick to trigger and process
-    match timeout(Duration::from_millis(5), monitor_rx.recv()).await {
-        Ok(Some(_)) => assert!(false, "No role change event should happen"),
-        Ok(None) => assert!(true, "Raft stops so role event channel should be closed. "),
-        Err(_) => assert!(true,),
+    if let Ok(Some(_)) = timeout(Duration::from_millis(5), monitor_rx.recv()).await {
+        panic!("No role change event should happen");
     }
 
     // 8. Wait for thread finishes
@@ -374,9 +374,9 @@ async fn test_election_timeout_case4() {
     // 2. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_election_timeout_case4", graceful_rx, None);
-    raft.ctx.election_handler = election_handler_mock;
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.handlers.election_handler = election_handler_mock;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
     let peer1_id = 2;
     let peer2_id = 3;
 
@@ -463,8 +463,8 @@ async fn test_handle_role_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
     assert!(raft.handle_role_event(RoleEvent::BecomeFollower(None)).await.is_err());
     assert!(is_follower(raft.role.as_i32()));
 
@@ -488,8 +488,8 @@ async fn test_handle_role_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_2", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
         .await
@@ -511,8 +511,8 @@ async fn test_handle_role_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_3", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
         .await
@@ -534,8 +534,8 @@ async fn test_handle_role_event_case1_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_4", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
         .await
@@ -557,8 +557,8 @@ async fn test_handle_role_event_case2_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_1", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
         .await
@@ -636,7 +636,6 @@ async fn test_handle_role_event_case3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_2", graceful_rx, None);
     assert!(is_follower(raft.role.as_i32()));
-    let old_term = raft.role.current_term();
 
     raft.handle_role_event(RoleEvent::BecomeCandidate)
         .await
@@ -776,8 +775,8 @@ async fn test_handle_role_event_state_update_case1_3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_state_update1_3_1", graceful_rx, None);
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     // Prepare node as Leader
     raft.handle_role_event(RoleEvent::BecomeCandidate)
@@ -839,7 +838,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
     //Configure mock behavior
     replication_handler
         .expect_handle_client_proposal_in_batch()
-        .returning(move |_, _, _, _, _, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -865,8 +864,8 @@ async fn test_handle_role_event_state_update_case1_3_2() {
         .expect_calculate_majority_matched_index()
         .returning(|_, _, _| Some(11));
     raft.ctx.membership = Arc::new(membership);
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_handler;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_handler;
 
     // Prepare node as Leader
     raft.handle_role_event(RoleEvent::BecomeCandidate)
@@ -915,7 +914,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
     //Configure mock behavior
     replication_handler
         .expect_handle_client_proposal_in_batch()
-        .returning(move |_, _, _, _, _, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -928,41 +927,6 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                         match_index: 5,
                         next_index: 6,
                         success: true,
-                    }),
-                ]),
-            })
-        });
-
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
-    raft_log.expect_last_entry_id().return_const(1_u64);
-    raft_log.expect_flush().return_once(|| Ok(()));
-
-    (raft_log, replication_handler)
-}
-
-fn prepare_failed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<MockTypeConfig>) {
-    // Initialize the mock object
-    let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-    let mut raft_log = MockRaftLog::new();
-
-    //Configure mock behavior
-    replication_handler
-        .expect_handle_client_proposal_in_batch()
-        .returning(move |_, _, _, _, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: false,
-                peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: false,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: false,
                     }),
                 ]),
             })
@@ -992,7 +956,7 @@ async fn test_handle_role_event_state_update_case1_5_1() {
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_client_proposal_in_batch()
-        .returning(move |_, _, _, _, _, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(move |_, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     let mut raft_log = MockRaftLog::new();
     raft_log
@@ -1000,8 +964,8 @@ async fn test_handle_role_event_state_update_case1_5_1() {
         .returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);
     raft_log.expect_flush().return_once(|| Ok(()));
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_handler;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_handler;
 
     // 2. Add state listeners
     let role_tx = raft.role_tx.clone();
@@ -1051,8 +1015,8 @@ async fn test_handle_role_event_state_update_case1_5_2() {
     let mut raft = mock_raft("/tmp/test_handle_role_event_state_update_case1_5_2", graceful_rx, None);
 
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.replication_handler = replication_core;
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
 
     // 2. Add state listeners
     let role_tx = raft.role_tx.clone();
@@ -1105,9 +1069,9 @@ async fn test_raft_shutdown() {
     state_storage.expect_save_hard_state().times(1).returning(|_| Ok(()));
     raft_log.expect_flush().times(1).returning(|| Ok(()));
     state_machine.expect_flush().times(1).returning(|| Ok(()));
-    raft.ctx.raft_log = Arc::new(raft_log);
-    raft.ctx.state_machine = Arc::new(state_machine);
-    raft.ctx.state_storage = Box::new(state_storage);
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.storage.state_machine = Arc::new(state_machine);
+    raft.ctx.storage.state_storage = Box::new(state_storage);
 
     // 2. Start the Raft main loop
     let raft_handle = tokio::spawn(async move { raft.run().await });
@@ -1117,9 +1081,11 @@ async fn test_raft_shutdown() {
     // 4. Time advancement control (step-by-step trigger Tick)
     tokio::time::advance(Duration::from_millis(2)).await;
     tokio::time::sleep(Duration::from_millis(2)).await;
-    if let Ok(Ok(())) = raft_handle.await {
-        assert!(true);
-    } else {
-        assert!(false);
-    }
+
+    let result = raft_handle.await;
+    assert!(
+        matches!(result, Ok(Ok(()))),
+        "Expected Ok(Ok(())), but got {:?}",
+        result
+    );
 }

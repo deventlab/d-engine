@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::Path;
 use std::path::PathBuf;
 
 use config::ConfigError;
@@ -122,7 +123,7 @@ impl ClusterConfig {
     /// Ensures directory path is valid and writable
     fn validate_directory(
         &self,
-        path: &PathBuf,
+        path: &Path,
         name: &str,
     ) -> Result<()> {
         if path.as_os_str().is_empty() {

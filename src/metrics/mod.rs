@@ -1,12 +1,6 @@
 #[cfg(test)]
 mod metrics_test;
 
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
-
-///----------------------------
-use autometrics::prometheus_exporter::PrometheusResponse;
-///----------------------------
 use autometrics::prometheus_exporter::{self};
 use lazy_static::lazy_static;
 use prometheus::exponential_buckets;
@@ -154,15 +148,4 @@ async fn metrics_handler(registry: Registry) -> Result<impl Reply, Rejection> {
 pub fn get_metrics_body() -> String {
     let autometrics_response = prometheus_exporter::encode_http_response();
     autometrics_response.into_body()
-}
-/// Export metrics for Prometheus to scrape
-pub fn get_metrics() -> PrometheusResponse {
-    prometheus_exporter::encode_http_response()
-}
-
-pub fn get_current_ms() -> f64 {
-    let start_time = SystemTime::now();
-    let since_epoch = start_time.duration_since(UNIX_EPOCH).expect("Time went backwards");
-    let current_time_ms = (since_epoch.as_secs() * 1000) as f64 + since_epoch.subsec_nanos() as f64 / 1_000_000.0;
-    current_time_ms.round() / 1.0
 }

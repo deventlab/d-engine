@@ -141,10 +141,8 @@ async fn test_tick() {
     let peer_channels = Arc::new(mock_peer_channels());
 
     assert!(state.tick(&role_tx, &event_tx, peer_channels, &context).await.is_ok());
-    match role_rx.recv().await {
-        Some(RoleEvent::BecomeCandidate) => assert!(true),
-        _ => assert!(false),
-    }
+    let r = role_rx.recv().await.unwrap();
+    assert!(matches!(r, RoleEvent::BecomeCandidate));
 }
 
 fn setup_handle_raft_event_case1_params(
@@ -185,7 +183,7 @@ async fn test_handle_raft_event_case1_1() {
                 term_update: None,
             })
         });
-    context.election_handler = election_handler;
+    context.handlers.election_handler = election_handler;
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
     let term_before = state.current_term();
@@ -201,10 +199,8 @@ async fn test_handle_raft_event_case1_1() {
         .is_ok());
 
     // Receive response with vote_granted = false
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(!r.vote_granted),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!r.vote_granted);
 
     // No role event receives
     assert!(role_rx.try_recv().is_err());
@@ -242,7 +238,7 @@ async fn test_handle_raft_event_case1_2() {
                 term_update: Some(updated_term),
             })
         });
-    context.election_handler = election_handler;
+    context.handlers.election_handler = election_handler;
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
 
@@ -257,10 +253,8 @@ async fn test_handle_raft_event_case1_2() {
         .is_ok());
 
     // Receive response with vote_granted = true
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(r.vote_granted),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert!(r.vote_granted);
     // Follower should not step to Follower again
     assert!(role_rx.try_recv().is_err());
 
@@ -291,14 +285,14 @@ async fn test_handle_raft_event_case1_3() {
                 "".to_string(),
             ))))
         });
-    context.election_handler = election_handler;
+    context.handlers.election_handler = election_handler;
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
     let term_before = state.current_term();
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, role_rx) = mpsc::unbounded_channel();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
 
     assert!(state
@@ -306,10 +300,8 @@ async fn test_handle_raft_event_case1_3() {
         .await
         .is_err());
 
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(!r.vote_granted),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!r.vote_granted);
 
     // Term should not be updated
     assert_eq!(state.current_term(), term_before);
@@ -340,11 +332,8 @@ async fn test_handle_raft_event_case2() {
         .await
         .is_ok());
 
-    if let Ok(Ok(m)) = resp_rx.recv().await {
-        assert_eq!(m.nodes, vec![]);
-    } else {
-        assert!(false);
-    }
+    let m = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(m.nodes, vec![]);
 }
 
 /// # Case 3: Receive ClusterConfUpdate Event
@@ -374,13 +363,8 @@ async fn test_handle_raft_event_case3() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
-        },
-        Err(_) => assert!(false),
-    }
+    let s = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(s.code(), Code::PermissionDenied);
 }
 
 /// # Case 4.1: As follower, if I receive append request from Leader,
@@ -436,7 +420,7 @@ async fn test_handle_raft_event_case4_1() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
@@ -476,10 +460,8 @@ async fn test_handle_raft_event_case4_1() {
     assert_eq!(state.commit_index(), expect_new_commit);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_success()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.expect("should succeed").unwrap();
+    assert!(response.is_success());
 }
 
 /// # Case 4.2: As follower, if I receive append request from Leader,
@@ -517,7 +499,7 @@ async fn test_handle_raft_event_case4_2() {
         .times(0);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
@@ -553,10 +535,8 @@ async fn test_handle_raft_event_case4_2() {
     assert_eq!(state.current_term(), follower_term);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_higher_term()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.expect("should succeed").unwrap();
+    assert!(response.is_higher_term());
 }
 
 /// # Case 4.3: As follower, if I receive append request from Leader,
@@ -598,7 +578,7 @@ async fn test_handle_raft_event_case4_3() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
@@ -634,10 +614,8 @@ async fn test_handle_raft_event_case4_3() {
     assert_eq!(state.current_term(), new_leader_term);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.is_success()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.expect("should succeed").unwrap();
+    assert!(!response.is_success());
 }
 
 /// # Case 5: Test handle client propose request
@@ -665,10 +643,8 @@ async fn test_handle_raft_event_case5() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(r.error, ErrorCode::NotLeader as i32);
 }
 
 /// # Case 6.1: test ClientReadRequest with linear request
@@ -693,13 +669,8 @@ async fn test_handle_raft_event_case6_1() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
-        },
-        Err(_) => assert!(false),
-    }
+    let s = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(s.code(), Code::PermissionDenied);
 }
 
 /// # Case 6.2: test ClientReadRequest with request(linear=false)
@@ -712,7 +683,7 @@ async fn test_handle_raft_event_case6_2() {
         .expect_read_from_state_machine()
         .times(1)
         .returning(|_| Some(vec![]));
-    context.state_machine_handler = Arc::new(state_machine_handler);
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // New state
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
@@ -731,11 +702,6 @@ async fn test_handle_raft_event_case6_2() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(r) => assert_eq!(r.error, ErrorCode::Success as i32),
-            Err(_) => assert!(false),
-        },
-        Err(_) => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(r.error, ErrorCode::Success as i32);
 }

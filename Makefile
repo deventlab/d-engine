@@ -50,3 +50,14 @@ doc: ## Generate documentation
 # Format Verification
 fmt-check: ## Check formatting
 	@cargo fmt --all -- --check
+
+# Run Clippy
+clippy: ## Run Clippy
+	@cargo clippy --all-targets --all-features -- -D warnings
+
+# Test suite 
+test: ## Run test suite
+	@cargo test --lib -- --nocapture
+	@cargo test --tests -- --nocapture
+	@cargo test --doc
+	@cargo bench -- --nocapture

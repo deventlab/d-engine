@@ -35,4 +35,9 @@ pub trait StateStorage: Send + Sync + 'static {
 
     #[cfg(test)]
     fn len(&self) -> usize;
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }

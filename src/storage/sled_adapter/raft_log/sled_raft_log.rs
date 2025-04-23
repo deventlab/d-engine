@@ -16,7 +16,6 @@ use prost::Message;
 use sled::Batch;
 use sled::IVec;
 use sled::Subscriber;
-use tokio::time::Instant;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -35,14 +34,6 @@ use crate::Result;
 use crate::StorageError;
 use crate::API_SLO;
 use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
-
-///To check DB size is costy operation.
-/// We need to cache it
-#[derive(Debug)]
-struct CachedDbSize {
-    size: AtomicU64,
-    last_activity: DashMap<u64, Instant>, //<node_id, ms>
-}
 
 pub struct SledRaftLog {
     db: Arc<sled::Db>,
@@ -193,14 +184,14 @@ impl RaftLog for SledRaftLog {
 
     fn first_index_for_term(
         &self,
-        term: u64,
+        _term: u64,
     ) -> Option<u64> {
         None
     }
 
     fn last_index_for_term(
         &self,
-        term: u64,
+        _term: u64,
     ) -> Option<u64> {
         None
     }
@@ -294,70 +285,12 @@ impl RaftLog for SledRaftLog {
         Ok(self.last_log_id())
     }
 
-    /// TODO: process duplicated `new_ones`
-    ///
-    /// If an existing entry conflicts with a new one (same index
-    ///     but different terms), delete the existing entry and all that
-    ///     follow it (§5.3)
-    ///
-    /// @return: last_matched_id
-    #[autometrics(objective = API_SLO)]
-    fn filter_out_conflicts_and_append2(
-        &self,
-        prev_log_index: u64,
-        prev_log_term: u64,
-        mut new_ones: Vec<Entry>,
-    ) -> u64 {
-        debug!("Start filter_out_conflicts_and_append");
-
-        let mut update = false;
-        let mut batch = LocalLogBatch::default();
-        let last_raft_log_entry_id = self.last_entry_id();
-        debug!(
-            "filter_out_conflicts_and_append/local log length: {:?}",
-            last_raft_log_entry_id
-        );
-
-        while !new_ones.is_empty() {
-            let new = new_ones.remove(0);
-            let new_index = new.index;
-            if new_index < last_raft_log_entry_id {
-                if let Some(entry) = self.get_entry_by_index(new_index) {
-                    if entry.term != new.term {
-                        debug!("entry.term({}) != new.term({})", entry.term, new.term);
-                        for key_to_remove in new_index - 1..(last_raft_log_entry_id + 1) {
-                            batch.remove(kv(key_to_remove));
-                        }
-                    }
-                } else {
-                    continue;
-                }
-            }
-
-            batch.insert(kv(new.index), new);
-            update = true;
-        }
-
-        if update {
-            if let Err(e) = self.apply(&batch) {
-                error!("local insert commit entry into kv store failed: {:?}", e);
-            }
-        }
-
-        if let Some(last) = self.last_entry() {
-            last.0
-        } else {
-            0
-        }
-    }
-
     #[autometrics(objective = API_SLO)]
     fn prev_log_term(
         &self,
         _follower_id: u32,
         prev_log_index: u64,
     ) -> u64 {
-        // let id = self.prev_log_index(follower_id).await;
         self.get_entry_term_by_index(prev_log_index).unwrap_or_default()
     }
 
@@ -365,7 +298,7 @@ impl RaftLog for SledRaftLog {
     #[autometrics(objective = API_SLO)]
     fn retrieve_one_entry_for_this_follower(
         &self,
-        follower_id: u32,
+        _follower_id: u32,
         next_id: u64,
     ) -> Vec<u8> {
         if let Some(log) = self.get_entry_by_index(next_id) {
@@ -397,7 +330,7 @@ impl RaftLog for SledRaftLog {
         }
         if let Err(e) = self.apply(&batch) {
             error!("apply batch error: {:?}", e);
-            return Err(StorageError::SledError(e).into());
+            return Err(StorageError::DbError(e.to_string()).into());
         }
         Ok(())
     }
@@ -407,7 +340,7 @@ impl RaftLog for SledRaftLog {
         &self,
         req_prev_log_index: u64,
         req_prev_log_term: u64,
-        last_applied: u64,
+        _last_applied: u64,
     ) -> bool {
         debug!(
             "start checking if prev_log_ok: req_prev_log_index: {:?}, req_prev_log_term: {:?}",
@@ -464,7 +397,7 @@ impl RaftLog for SledRaftLog {
     fn reset(&self) -> Result<()> {
         if let Err(e) = self.tree.clear() {
             error!("error: {:?}", e);
-            Err(StorageError::SledError(e).into())
+            Err(StorageError::DbError(e.to_string()).into())
         } else {
             Ok(())
         }
@@ -473,7 +406,7 @@ impl RaftLog for SledRaftLog {
     #[autometrics(objective = API_SLO)]
     fn retrieve_subscriber(
         &self,
-        watch_key: &Vec<u8>,
+        watch_key: &[u8],
     ) -> Subscriber {
         self.tree.watch_prefix(watch_key)
     }
@@ -492,7 +425,7 @@ impl RaftLog for SledRaftLog {
 
         if let Err(e) = self.apply(&batch) {
             error!("delete_entries_before error: {}", e);
-            return Err(StorageError::SledError(e).into());
+            return Err(StorageError::DbError(e.to_string()).into());
         }
 
         // Bugfix: #55: Flushing can take quite a lot of time,
@@ -522,7 +455,7 @@ impl RaftLog for SledRaftLog {
     #[autometrics(objective = API_SLO)]
     fn get_from_cache(
         &self,
-        key: &Vec<u8>,
+        key: &[u8],
     ) -> Option<Entry> {
         self.cache.mapped_entries.get(key).map(|v| v.clone())
     }
@@ -598,10 +531,9 @@ impl RaftLog for SledRaftLog {
     #[autometrics(objective = API_SLO)]
     fn db_size(
         &self,
-        node_id: u32,
-        db_size_cache_window: u128,
+        _node_id: u32,
+        _db_size_cache_window: u128,
     ) -> Result<u64> {
-        let now = Instant::now();
         // let db_size_cache = self.db_size_cache.clone();
         // if let Some(last_activity) = db_size_cache.last_activity.get(&node_id) {
         //     let diff_in_mil = now.duration_since(*last_activity).as_millis();
@@ -669,7 +601,7 @@ impl RaftLog for SledRaftLog {
 
         if let Err(e) = self.apply(&batch) {
             error!("delete_entries error: {}", e);
-            return Err(StorageError::SledError(e).into());
+            return Err(StorageError::DbError(e.to_string()).into());
         }
 
         Ok(())
@@ -701,7 +633,7 @@ impl SledRaftLog {
             Ok(size) => Ok(size),
             Err(e) => {
                 error!("db.size_on_disk failed: {:?}", e);
-                Err(StorageError::SledError(e).into())
+                Err(StorageError::DbError(e.to_string()).into())
             }
         }
     }

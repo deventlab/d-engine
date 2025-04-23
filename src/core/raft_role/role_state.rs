@@ -43,41 +43,34 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     // fn role(&self) -> i32;
 
     // Leader states
+    #[allow(dead_code)]
     fn next_index(
         &self,
-        node_id: u32,
+        _node_id: u32,
     ) -> Option<u64> {
         warn!("next_index NotLeader error");
         None
     }
     fn update_next_index(
         &mut self,
-        node_id: u32,
-        new_next_id: u64,
+        _node_id: u32,
+        _new_next_id: u64,
     ) -> Result<()> {
         warn!("update_next_index NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
 
-    fn prev_log_index(
-        &self,
-        follower_id: u32,
-    ) -> Option<u64> {
-        warn!("update_next_index NotLeader error");
-        None
-    }
-
     fn match_index(
         &self,
-        node_id: u32,
+        _node_id: u32,
     ) -> Option<u64> {
         warn!("match_index NotLeader error");
         None
     }
     fn update_match_index(
         &mut self,
-        node_id: u32,
-        new_match_id: u64,
+        _node_id: u32,
+        _new_match_id: u64,
     ) -> Result<()> {
         warn!("update_match_index NotLeader error");
         Err(MembershipError::NotLeader.into())
@@ -90,6 +83,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         warn!("init_peers_next_index_and_match_index NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
+    #[allow(dead_code)]
     fn noop_log_id(&self) -> Result<Option<u64>> {
         warn!("noop_log_id NotLeader error");
         Err(MembershipError::NotLeader.into())
@@ -104,15 +98,19 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         warn!("verify_leadership_in_new_term NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
+    #[allow(dead_code)]
     fn is_follower(&self) -> bool {
         false
     }
+    #[allow(dead_code)]
     fn is_candidate(&self) -> bool {
         false
     }
+    #[allow(dead_code)]
     fn is_leader(&self) -> bool {
         false
     }
+
     fn is_learner(&self) -> bool {
         false
     }
@@ -136,21 +134,6 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         warn!("become_learner Illegal");
 
         Err(StateTransitionError::InvalidTransition.into())
-    }
-
-    fn step_down(&self) -> Result<RaftRole<Self::T>> {
-        warn!("step_down failed");
-
-        Err(StateTransitionError::InvalidTransition.into())
-    }
-
-    #[cfg(test)]
-    fn decr_next_index(
-        &mut self,
-        node_id: u32,
-    ) -> Result<()> {
-        warn!("decr_next_index NotLeader error");
-        Err(MembershipError::NotLeader.into())
     }
 
     //--- Shared States
@@ -260,7 +243,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         self.reset_timer();
 
         // Init response with success is false
-        let raft_log_last_index = ctx.raft_log.last_entry_id();
+        let raft_log_last_index = ctx.storage.raft_log.last_entry_id();
 
         let my_term = self.current_term();
         if my_term > append_entries_request.term {

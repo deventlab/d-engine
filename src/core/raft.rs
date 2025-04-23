@@ -11,17 +11,13 @@ use tracing::warn;
 
 use super::follower_state::FollowerState;
 use super::RaftContext;
+use super::RaftCoreHandlers;
 use super::RaftEvent;
 use super::RaftRole;
+use super::RaftStorageHandles;
 use super::RoleEvent;
-use crate::alias::EOF;
 use crate::alias::MOF;
 use crate::alias::POF;
-use crate::alias::REPOF;
-use crate::alias::ROF;
-use crate::alias::SMHOF;
-use crate::alias::SMOF;
-use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::Membership;
 use crate::MembershipError;
@@ -38,7 +34,8 @@ where T: TypeConfig
 {
     pub node_id: u32,
     pub role: RaftRole<T>,
-    pub ctx: RaftContext<T>,
+    pub(crate) ctx: RaftContext<T>,
+    #[allow(dead_code)]
     pub settings: Arc<RaftNodeConfig>,
 
     // Channels with peers
@@ -67,49 +64,38 @@ where T: TypeConfig
     test_raft_event_listener: Vec<mpsc::UnboundedSender<RaftEvent>>,
 }
 
+pub(crate) struct SignalParams {
+    pub(crate) role_tx: mpsc::UnboundedSender<RoleEvent>,
+    pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
+    pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
+    pub(crate) shutdown_signal: watch::Receiver<()>,
+}
+
 impl<T> Raft<T>
 where T: TypeConfig
 {
     pub(crate) fn new(
         node_id: u32,
-        raft_log: ROF<T>,
-        state_machine: Arc<SMOF<T>>,
-        state_storage: SSOF<T>,
+        storage: RaftStorageHandles<T>,
         transport: TROF<T>,
-        election_handler: EOF<T>,
-        replication_handler: REPOF<T>,
-        state_machine_handler: Arc<SMHOF<T>>,
+        handlers: RaftCoreHandlers<T>,
         membership: Arc<MOF<T>>,
+        signal_params: SignalParams,
         settings: Arc<RaftNodeConfig>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-        role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-        event_tx: mpsc::Sender<RaftEvent>,
-        event_rx: mpsc::Receiver<RaftEvent>,
-        shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         // Load last applied index from state machine
-        let last_applied_index = state_machine.last_entry_index();
+        let last_applied_index = storage.state_machine.last_entry_index();
 
-        let ctx = Self::build_context(
-            node_id,
-            raft_log,
-            state_machine,
-            state_storage,
-            transport,
-            election_handler,
-            replication_handler,
-            state_machine_handler,
-            membership,
-            settings.clone(),
-        );
+        let ctx = Self::build_context(node_id, storage, transport, membership, handlers, settings.clone());
 
         // let ctx = Box::new(ctx);
-        let role = RaftRole::Follower(FollowerState::new(
+        let role = RaftRole::Follower(Box::new(FollowerState::new(
             node_id,
             settings.clone(),
-            ctx.state_storage.load_hard_state(),
+            ctx.storage.state_storage.load_hard_state(),
             last_applied_index,
-        ));
+        )));
         Raft {
             node_id,
             ctx,
@@ -118,15 +104,15 @@ where T: TypeConfig
 
             peer_channels: None,
 
-            event_tx,
-            event_rx,
+            event_tx: signal_params.event_tx,
+            event_rx: signal_params.event_rx,
 
-            role_tx,
-            role_rx,
+            role_tx: signal_params.role_tx,
+            role_rx: signal_params.role_rx,
 
             new_commit_listener: Vec::new(),
 
-            shutdown_signal,
+            shutdown_signal: signal_params.shutdown_signal,
 
             #[cfg(test)]
             test_role_transition_listener: Vec::new(),
@@ -138,37 +124,32 @@ where T: TypeConfig
 
     fn build_context(
         id: u32,
-        raft_log: ROF<T>,
-        state_machine: Arc<SMOF<T>>,
-        state_storage: SSOF<T>,
+        storage: RaftStorageHandles<T>,
         transport: TROF<T>,
-
-        election_handler: EOF<T>,
-
-        replication_handler: REPOF<T>,
-
-        state_machine_handler: Arc<SMHOF<T>>,
-
         membership: Arc<MOF<T>>,
-
+        handlers: RaftCoreHandlers<T>,
         settings: Arc<RaftNodeConfig>,
     ) -> RaftContext<T> {
         RaftContext {
             node_id: id,
 
-            raft_log: Arc::new(raft_log),
-            state_machine,
-            state_storage: Box::new(state_storage),
+            // storage: RaftStorageHandles {
+            //     raft_log: Arc::new(raft_log),
+            //     state_machine,
+            //     state_storage: Box::new(state_storage),
+            // },
+            storage,
 
             transport: Arc::new(transport),
 
             membership,
 
-            election_handler,
-
-            replication_handler,
-
-            state_machine_handler,
+            // handlers: RaftCoreHandlers {
+            //     election_handler,
+            //     replication_handler,
+            //     state_machine_handler,
+            // },
+            handlers,
 
             settings,
         }
@@ -410,12 +391,12 @@ where T: TypeConfig
         }
 
         info!("raft_log:: flush...");
-        if let Err(e) = self.ctx.raft_log.flush() {
+        if let Err(e) = self.ctx.storage.raft_log.flush() {
             error!("Flush raft log failed: {:?}", e);
         }
 
         info!("state_machine:: before_shutdown...");
-        if let Err(e) = self.ctx.state_machine.flush() {
+        if let Err(e) = self.ctx.storage.state_machine.flush() {
             error!("Flush raft log failed: {:?}", e);
         }
 

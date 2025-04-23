@@ -167,12 +167,7 @@ async fn test_check_cluster_is_ready_case2() {
     peer_channels.set_peer_channel(peer2_id, addr1);
 
     // Test health status
-    if let Err(e) = peer_channels.check_cluster_is_ready().await {
-        eprintln!("peer_channels.check_cluster_is_ready failed with: {:?}", e);
-        assert!(false);
-    } else {
-        assert!(true);
-    }
+    assert!(peer_channels.check_cluster_is_ready().await.is_ok());
 }
 
 /// Tests connection task spawning logic

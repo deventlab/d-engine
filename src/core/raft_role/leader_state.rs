@@ -25,10 +25,8 @@ use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
-use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
-use crate::alias::TROF;
 use crate::constants::INTERNAL_CLIENT_ID;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClientCommand;
@@ -41,7 +39,6 @@ use crate::proto::VotedFor;
 use crate::utils::cluster::error;
 use crate::AppendResults;
 use crate::BatchBuffer;
-use crate::ChannelWithAddressAndRole;
 use crate::ClientRequestWithSignal;
 use crate::ConsensusError;
 use crate::Error;
@@ -51,7 +48,6 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::NetworkError;
 use crate::QuorumStatus;
-use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -62,7 +58,6 @@ use crate::ReplicationCore;
 use crate::ReplicationError;
 use crate::ReplicationTimer;
 use crate::Result;
-use crate::RetryPolicies;
 use crate::RoleEvent;
 use crate::StateMachine;
 use crate::StateMachineHandler;
@@ -148,17 +143,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             1
         })
     }
-    fn prev_log_index(
-        &self,
-        follower_id: u32,
-    ) -> Option<u64> {
-        if let Some(next_id) = self.next_index(follower_id) {
-            debug!("follower({})s next_id is: {}", follower_id, next_id);
-            Some(if next_id > 0 { next_id - 1 } else { 0 })
-        } else {
-            None
-        }
-    }
 
     fn update_next_index(
         &mut self,
@@ -219,36 +203,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             commands: vec![command],
         };
 
-        let settings = ctx.settings();
-
         let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
 
-        self.process_client_propose(
-            client_propose_request,
-            resp_tx,
-            ctx.replication_handler(),
-            &ctx.voting_members(peer_channels),
-            ctx.raft_log(),
-            ctx.transport(),
-            &settings.raft,
-            &settings.retry,
-            false,
-            &role_tx,
-        )
-        .await?;
-        Ok(())
-    }
-    /// Decrease next id for node(node_id) by 1
-    #[cfg(test)]
-    fn decr_next_index(
-        &mut self,
-        node_id: u32,
-    ) -> Result<()> {
-        self.next_index.entry(node_id).and_modify(|v| {
-            if *v > 1 {
-                *v -= 1;
-            }
-        });
+        self.process_client_propose(client_propose_request, resp_tx, ctx, peer_channels, false, &role_tx)
+            .await?;
         Ok(())
     }
 
@@ -287,7 +245,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.node_id(),
             self.current_term(),
         );
-        Ok(RaftRole::Follower(self.into()))
+        Ok(RaftRole::Follower(Box::new(self.into())))
     }
 
     fn become_learner(&self) -> Result<RaftRole<T>> {
@@ -319,10 +277,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         let now = Instant::now();
-        let voting_members = ctx.voting_members(peer_channels);
-        let raft_log = ctx.raft_log();
-        let transport = ctx.transport();
-        let replication_handler = ctx.replication_handler();
         // Keep syncing leader_id
         ctx.membership_ref().mark_leader_id(self.node_id())?;
 
@@ -337,17 +291,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 // Take out the batched messages and send them immediately
                 // Do not move batch out of this block
                 let batch = self.batch_buffer.take();
-                self.process_batch(
-                    replication_handler,
-                    batch,
-                    role_tx,
-                    &voting_members,
-                    raft_log,
-                    transport,
-                    &ctx.settings.raft,
-                    &ctx.settings.retry,
-                )
-                .await?;
+                self.process_batch(batch, role_tx, ctx, peer_channels.clone()).await?;
             }
         }
 
@@ -359,17 +303,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             // Do not move batch out of this block
             let batch = self.batch_buffer.take();
-            self.process_batch(
-                replication_handler,
-                batch,
-                role_tx,
-                &voting_members,
-                raft_log,
-                transport,
-                &ctx.settings.raft,
-                &ctx.settings.retry,
-            )
-            .await?;
+            self.process_batch(batch, role_tx, ctx, peer_channels).await?;
         }
 
         Ok(())
@@ -382,9 +316,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let raft_log = ctx.raft_log();
-        let transport = ctx.transport();
-        let settings = ctx.settings();
         let state_machine = ctx.state_machine();
         let last_applied = state_machine.last_applied();
         let my_id = self.shared_state.node_id;
@@ -497,20 +428,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClientPropose(client_propose_request, sender) => {
-                let voting_members = ctx.voting_members(peer_channels);
                 if let Err(e) = self
-                    .process_client_propose(
-                        client_propose_request,
-                        sender,
-                        ctx.replication_handler(),
-                        &voting_members,
-                        raft_log,
-                        transport,
-                        &settings.raft,
-                        &settings.retry,
-                        false,
-                        &role_tx,
-                    )
+                    .process_client_propose(client_propose_request, sender, ctx, peer_channels, false, &role_tx)
                     .await
                 {
                     error("Leader::process_client_propose", &e);
@@ -527,6 +446,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 let response: std::result::Result<ClientResponse, tonic::Status> = {
                     let read_operation = || -> std::result::Result<ClientResponse, tonic::Status> {
                         let results = ctx
+                            .handlers
                             .state_machine_handler
                             .read_from_state_machine(client_read_request.commands)
                             .unwrap_or_default();
@@ -535,18 +455,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     };
 
                     if client_read_request.linear {
-                        let voting_members = ctx.voting_members(peer_channels);
-                        let quorum_result = self
-                            .enforce_quorum_consensus(
-                                ctx.replication_handler(),
-                                &voting_members,
-                                raft_log,
-                                transport,
-                                &settings.raft,
-                                &settings.retry,
-                                &role_tx,
-                            )
-                            .await;
+                        let quorum_result = self.enforce_quorum_consensus(ctx, peer_channels, &role_tx).await;
 
                         let quorum_succeeded = matches!(quorum_result, Ok(true));
 
@@ -556,8 +465,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             Err(tonic::Status::failed_precondition(
                                 "enforce_quorum_consensus failed".to_string(),
                             ))
-                        } else if let Err(e) =
-                            self.ensure_state_machine_upto_commit_index(&ctx.state_machine_handler, last_applied)
+                        } else if let Err(e) = self
+                            .ensure_state_machine_upto_commit_index(&ctx.handlers.state_machine_handler, last_applied)
                         {
                             warn!("ensure_state_machine_upto_commit_index failed for linear read request");
                             Err(tonic::Status::failed_precondition(format!(
@@ -634,12 +543,8 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         client_propose_request: ClientProposeRequest,
         sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-        replication_handler: &REPOF<T>,
-        voting_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft_config: &RaftConfig,
-        retry_policies: &RetryPolicies,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
         execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -664,14 +569,16 @@ impl<T: TypeConfig> LeaderState<T> {
             );
 
             self.process_batch(
-                replication_handler,
                 batch,
                 role_tx,
-                voting_members,
-                raft_log,
-                transport,
-                raft_config,
-                retry_policies,
+                ctx,
+                peer_channels,
+                // replication_handler,
+                // voting_members,
+                // raft_log,
+                // transport,
+                // raft_config,
+                // retry_policies,
             )
             .await?;
         }
@@ -681,35 +588,34 @@ impl<T: TypeConfig> LeaderState<T> {
 
     async fn process_batch(
         &mut self,
-        replication_handler: &REPOF<T>,
         batch: VecDeque<ClientRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
-        voting_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft_config: &RaftConfig,
-        retry_policies: &RetryPolicies,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
     ) -> Result<()> {
         let commands: Vec<ClientCommand> = batch.iter().flat_map(|req| &req.commands).cloned().collect();
 
         trace!("process_batch.., commands:{:?}", &commands);
 
-        let append_result = replication_handler
+        let append_result = ctx
+            .replication_handler()
             .handle_client_proposal_in_batch(
                 commands,
                 self.state_snapshot(),
                 self.leader_state_snapshot(),
-                voting_members,
-                raft_log,
-                transport,
-                raft_config,
-                retry_policies,
+                ctx,
+                peer_channels,
+                // voting_members,
+                // raft_log,
+                // transport,
+                // raft_config,
+                // retry_policies,
             )
             .await;
 
         debug!("process_client_proposal_in_batch_result: {:?}", &append_result);
 
-        self.process_client_proposal_in_batch_result(batch, append_result, raft_log, role_tx)?;
+        self.process_client_proposal_in_batch_result(batch, append_result, ctx.raft_log(), role_tx)?;
 
         Ok(())
     }
@@ -858,12 +764,8 @@ impl<T: TypeConfig> LeaderState<T> {
     #[tracing::instrument]
     pub async fn enforce_quorum_consensus(
         &mut self,
-        replication_handler: &REPOF<T>,
-        voting_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft_config: &RaftConfig,
-        retry_policies: &RetryPolicies,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
         let client_propose_request = ClientProposeRequest {
@@ -872,16 +774,7 @@ impl<T: TypeConfig> LeaderState<T> {
         };
 
         let status = self
-            .check_leadership_quorum_immediate(
-                client_propose_request,
-                replication_handler,
-                voting_members,
-                raft_log,
-                transport,
-                raft_config,
-                retry_policies,
-                role_tx,
-            )
+            .check_leadership_quorum_immediate(client_propose_request, ctx, peer_channels, role_tx)
             .await?;
         debug!("enforce_quorum_consensus:status = {:?}", status);
         match status {
@@ -955,29 +848,14 @@ impl<T: TypeConfig> LeaderState<T> {
     async fn check_leadership_quorum_immediate(
         &mut self,
         request: ClientProposeRequest,
-        replication_handler: &REPOF<T>,
-        voting_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft_config: &RaftConfig,
-        retry_policies: &RetryPolicies,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumStatus> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
-        self.process_client_propose(
-            request,
-            resp_tx,
-            replication_handler,
-            voting_members,
-            raft_log,
-            transport,
-            raft_config,
-            retry_policies,
-            true,
-            role_tx,
-        )
-        .await?;
+        self.process_client_propose(request, resp_tx, ctx, peer_channels, true, role_tx)
+            .await?;
 
         self.wait_quorum_response(
             resp_rx,

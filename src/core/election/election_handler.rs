@@ -3,7 +3,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use autometrics::autometrics;
-use tokio::sync::mpsc;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -19,7 +18,6 @@ use crate::proto::VoteRequest;
 use crate::proto::VotedFor;
 use crate::ChannelWithAddressAndRole;
 use crate::ElectionError;
-use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -31,7 +29,6 @@ use crate::API_SLO;
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
     pub(crate) my_id: u32,
-    pub(crate) event_tx: mpsc::Sender<RaftEvent>, //cloned from Raft
     _phantom: PhantomData<T>,
 }
 
@@ -217,13 +214,9 @@ where T: TypeConfig
 impl<T> ElectionHandler<T>
 where T: TypeConfig
 {
-    pub(crate) fn new(
-        my_id: u32,
-        event_tx: mpsc::Sender<RaftEvent>,
-    ) -> Self {
+    pub(crate) fn new(my_id: u32) -> Self {
         Self {
             my_id,
-            event_tx,
             _phantom: PhantomData,
         }
     }

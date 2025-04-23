@@ -33,6 +33,8 @@ impl LocalLogBatch {
     pub(crate) fn is_empty(&self) -> bool {
         self.writes.len() < 1
     }
+
+    #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.writes.clear();
     }

@@ -38,6 +38,7 @@ pub struct ChannelWithAddress {
     pub(crate) address: String,
     pub(crate) channel: Channel,
 }
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ChannelWithAddressAndRole {
     pub(crate) id: u32,
@@ -53,7 +54,6 @@ pub trait PeerChannelsFactory {
     ) -> Self;
 }
 
-// #[allow(unused)]
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait PeerChannels: Sync + Send + 'static {
@@ -67,7 +67,6 @@ pub trait PeerChannels: Sync + Send + 'static {
     fn voting_members(&self) -> DashMap<u32, ChannelWithAddress>;
 }
 
-// #[allow(unused)]
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
@@ -95,6 +94,7 @@ where T: TypeConfig
         leader_id: u32,
     ) -> Result<()>;
 
+    #[allow(dead_code)]
     fn current_leader(&self) -> Option<u32>;
 
     /// Reset old leader to follower

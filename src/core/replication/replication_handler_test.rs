@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 use super::ReplicationCore;
 use super::ReplicationData;
@@ -16,6 +17,8 @@ use crate::proto::ConflictResult;
 use crate::proto::Entry;
 use crate::proto::LogId;
 use crate::proto::SuccessResult;
+use crate::test_utils::mock_peer_channels;
+use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::simulate_insert_proposal;
 use crate::test_utils::MockNode;
@@ -26,6 +29,7 @@ use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
 use crate::LeaderStateSnapshot;
+use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::NetworkError;
@@ -65,11 +69,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case1() {
         &peer_next_indices,
         &context.raft_log,
     );
-    if let Some(entries) = r.get(&peer3_id) {
-        assert_eq!(*entries, new_entries, "Entries do not match expected value");
-    } else {
-        assert!(false);
-    };
+    assert!(r.get(&peer3_id).is_some_and(|entries| *entries == new_entries));
 }
 
 /// # Case 2: Peer3 needs old log + new log
@@ -112,11 +112,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case2() {
     let last_log_entry = raft_log.last().unwrap();
     let mut merged_entries = vec![last_log_entry];
     merged_entries.extend(new_entries);
-    if let Some(entries) = r.get(&peer3_id) {
-        assert_eq!(*entries, merged_entries, "Entries do not match expected value");
-    } else {
-        assert!(false);
-    };
+    assert!(r.get(&peer3_id).is_some_and(|entries| *entries == merged_entries));
 }
 
 /// # Case 3: new_entries is empty and Peer3 has latencies
@@ -152,11 +148,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case3() {
         &raft_log,
     );
     let last_log_entry = raft_log.last().unwrap();
-    if let Some(entries) = r.get(&peer3_id) {
-        assert_eq!(*entries, vec![last_log_entry], "Entries do not match expected value");
-    } else {
-        assert!(false);
-    };
+    assert!(r.get(&peer3_id).is_some_and(|entries| *entries == vec![last_log_entry]));
 }
 
 /// # Case 4.1: Peer3 needs old log + new log - max_legacy_entries_per_peer = 2
@@ -205,11 +197,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
     let mut lagency_entries =
         raft_log.get_entries_between(peer3_next_id..=(peer3_next_id + max_legacy_entries_per_peer - 1));
     lagency_entries.extend(new_entries);
-    if let Some(entries) = r.get(&peer3_id) {
-        assert_eq!(*entries, lagency_entries, "Entries do not match expected value");
-    } else {
-        assert!(false);
-    };
+    assert!(r.get(&peer3_id).is_some_and(|entries| *entries == lagency_entries));
 }
 
 /// # Case 4.2: Peer3 needs old log + new log - max_legacy_entries_per_peer = 0
@@ -256,11 +244,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
         &raft_log,
     );
 
-    if let Some(entries) = r.get(&peer3_id) {
-        assert_eq!(*entries, new_entries, "Entries do not match expected value");
-    } else {
-        assert!(false);
-    };
+    assert!(r.get(&peer3_id).is_some_and(|entries| *entries == new_entries));
 }
 
 /// # Case 5: returned entries should not has leader ones
@@ -289,11 +273,9 @@ fn test_retrieve_to_be_synced_logs_for_peers_case5() {
         &peer_next_indices,
         &context.raft_log,
     );
-    if let Some(entries) = r.get(&peer3_id) {
-        assert_eq!(*entries, new_entries, "Entries do not match expected value");
-    } else {
-        assert!(false);
-    };
+
+    assert!(r.get(&peer3_id).is_some_and(|entries| *entries == new_entries));
+
     assert!(r.get(&my_id).is_none());
 }
 
@@ -328,11 +310,14 @@ fn test_generate_new_entries_case2() {
     let last_id = context.raft_log.last_entry_id();
     let commands = vec![ClientCommand::get(kv(1))];
     let current_term = 1;
-    if let Ok(r) = handler.generate_new_entries(commands, current_term, &context.raft_log) {
-        assert_eq!(r.len(), 1);
-    } else {
-        assert!(false);
-    }
+    assert_eq!(
+        handler
+            .generate_new_entries(commands, current_term, &context.raft_log)
+            .unwrap()
+            .len(),
+        1
+    );
+
     assert_eq!(context.raft_log.last_entry_id(), last_id + 1);
 }
 
@@ -406,7 +391,8 @@ async fn test_build_append_request_case() {
 /// 1. Return Error::AppendEntriesNoPeerFound
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case1() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case1", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case1", graceful_rx, None);
     let my_id = 1;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -422,28 +408,18 @@ async fn test_handle_client_proposal_in_batch_case1() {
         match_index: HashMap::new(),
         noop_log_id: None,
     };
-    let replication_members: Vec<ChannelWithAddressAndRole> = vec![];
 
-    let raft_log = MockRaftLog::new();
-    let transport = MockTransport::new();
-
-    if let Err(Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound { leader_id }))) = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
+    let peer_channels = Arc::new(mock_peer_channels());
+    let e = handler
+        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await
-    {
-        assert!(true);
-    } else {
-        assert!(false);
-    }
+        .unwrap_err();
+    assert!(matches!(
+        e,
+        Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound {
+            leader_id: _
+        }))
+    ));
 }
 
 /// # Case 2.1: Successful Client Proposal Replication
@@ -469,7 +445,9 @@ async fn test_handle_client_proposal_in_batch_case1() {
 /// - function returns Ok
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case2_1() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case2_1", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case2_1", graceful_rx, None);
+
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -494,11 +472,14 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
         .expect("should succeed");
 
     // Prepare AppendResults
-    let replication_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {
-        id: peer2_id,
-        channel_with_address: addr1,
-        role: FOLLOWER,
-    }];
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
@@ -518,23 +499,18 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
         })
     });
 
-    if let Ok(append_result) = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
-        .await
-    {
-        assert!(append_result.commit_quorum_achieved);
-    } else {
-        assert!(false);
-    }
+    context.membership = Arc::new(membership);
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(
+        handler
+            .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+            .await
+            .unwrap()
+            .commit_quorum_achieved
+    );
 }
 
 /// # Case 2.2: Successful Client Proposal Replication
@@ -560,7 +536,8 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
 /// - function returns Error
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case2_2() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case2_2", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case2_2", graceful_rx, None);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -585,11 +562,14 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
         .expect("should succeed");
 
     // Prepare AppendResults
-    let replication_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {
-        id: peer2_id,
-        channel_with_address: addr1,
-        role: FOLLOWER,
-    }];
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
@@ -603,24 +583,20 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
         }
         .into())
     });
+    context.membership = Arc::new(membership);
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+    let peer_channels = Arc::new(mock_peer_channels());
 
-    if let Err(Error::System(SystemError::Network(NetworkError::EmptyPeerList { request_type }))) = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
+    let e = handler
+        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await
-    {
-        assert!(true);
-    } else {
-        assert!(false);
-    }
+        .unwrap_err();
+
+    assert!(matches!(
+        e,
+        Error::System(SystemError::Network(NetworkError::EmptyPeerList { request_type: _ }))
+    ));
 }
 
 /// # Case3: Ignore success responses from stale terms
@@ -629,7 +605,9 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
 /// - Success counter remains unchanged, no peer updates
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case3() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case3", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case3", graceful_rx, None);
+
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -651,11 +629,14 @@ async fn test_handle_client_proposal_in_batch_case3() {
         .await
         .unwrap();
 
-    let replication_members = vec![ChannelWithAddressAndRole {
-        id: peer2_id,
-        channel_with_address: addr,
-        role: FOLLOWER,
-    }];
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        }]
+    });
 
     // Response with term=1 (stale)
     let mut transport = MockTransport::new();
@@ -675,17 +656,13 @@ async fn test_handle_client_proposal_in_batch_case3() {
     raft_log.expect_prev_log_term().return_const(1_u64);
     raft_log.expect_get_entries_between().returning(|_| vec![]);
 
+    context.membership = Arc::new(membership);
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+    let peer_channels = Arc::new(mock_peer_channels());
+
     let result = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
+        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await;
 
     assert!(result.is_ok());
@@ -699,7 +676,8 @@ async fn test_handle_client_proposal_in_batch_case3() {
 /// - HigherTerm response with term > leader's term returns error
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case4() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case4", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case4", graceful_rx, None);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -721,11 +699,14 @@ async fn test_handle_client_proposal_in_batch_case4() {
         .await
         .unwrap();
 
-    let replication_members = vec![ChannelWithAddressAndRole {
-        id: peer2_id,
-        channel_with_address: addr,
-        role: FOLLOWER,
-    }];
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        }]
+    });
 
     // HigherTerm response with term=2
     let higher_term = 2;
@@ -740,17 +721,13 @@ async fn test_handle_client_proposal_in_batch_case4() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().return_const(1_u64);
 
+    context.membership = Arc::new(membership);
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+    let peer_channels = Arc::new(mock_peer_channels());
+
     let result = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
+        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await;
 
     assert!(matches!(
@@ -766,7 +743,8 @@ async fn test_handle_client_proposal_in_batch_case4() {
 /// - New commands are only included in the first replication attempt.
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case5() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case5", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case5", graceful_rx, None);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -829,23 +807,22 @@ async fn test_handle_client_proposal_in_batch_case5() {
         .await
         .unwrap();
 
-    let replication_members = vec![ChannelWithAddressAndRole {
-        id: peer2_id,
-        channel_with_address: addr,
-        role: FOLLOWER,
-    }];
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        }]
+    });
+
+    context.membership = Arc::new(membership);
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+    let peer_channels = Arc::new(mock_peer_channels());
 
     let _ = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
+        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await;
 
     // ----------------------
@@ -885,7 +862,8 @@ async fn test_handle_client_proposal_in_batch_case5() {
 /// - follower_f: next_index=4 (deep conflict)
 #[tokio::test]
 async fn test_handle_client_proposal_in_batch_case6() {
-    let context = setup_raft_components("/tmp/test_handle_client_proposal_in_batch_case6", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case6", graceful_rx, None);
     let my_id = 1;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -988,19 +966,19 @@ async fn test_handle_client_proposal_in_batch_case6() {
         .collect();
 
     let replication_members = futures::future::join_all(futures).await;
+    let mut membership = MockMembership::new();
+    membership
+        .expect_voting_members()
+        .returning(move |_| replication_members.clone());
+
+    context.membership = Arc::new(membership);
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+    let peer_channels = Arc::new(mock_peer_channels());
 
     // Execute test
     let result = handler
-        .handle_client_proposal_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
-            &replication_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &context.settings.raft,
-            &context.settings.retry,
-        )
+        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await;
 
     // Verify results
@@ -1098,16 +1076,13 @@ fn test_valid_request() {
 
     let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     assert!(response.is_success());
-    match response.result {
-        Some(append_entries_response::Result::Success(SuccessResult {
-            last_match: Some(last_match),
-        })) => {
-            assert_eq!(last_match.index, prev_log_index);
-            assert_eq!(last_match.term, prev_log_term);
-        }
-        _ => {
-            assert!(false);
-        }
+
+    if let append_entries_response::Result::Success(SuccessResult {
+        last_match: Some(last_match),
+    }) = response.result.unwrap()
+    {
+        assert_eq!(last_match.index, prev_log_index);
+        assert_eq!(last_match.term, prev_log_term);
     }
 }
 
@@ -1162,17 +1137,13 @@ fn test_mismatched_prev_term_case1() {
 
     let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     assert!(response.is_conflict());
-    match response.result {
-        Some(append_entries_response::Result::Conflict(ConflictResult {
-            conflict_term,
-            conflict_index,
-        })) => {
-            assert_eq!(conflict_term.unwrap(), entry_term);
-            assert_eq!(conflict_index.unwrap(), prev_log_index.saturating_sub(1));
-        }
-        _ => {
-            assert!(false);
-        }
+    if let append_entries_response::Result::Conflict(ConflictResult {
+        conflict_term,
+        conflict_index,
+    }) = response.result.unwrap()
+    {
+        assert_eq!(conflict_term.unwrap(), entry_term);
+        assert_eq!(conflict_index.unwrap(), prev_log_index.saturating_sub(1));
     }
 }
 
@@ -1205,17 +1176,13 @@ fn test_mismatched_prev_term_case2() {
 
     let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     assert!(response.is_conflict());
-    match response.result {
-        Some(append_entries_response::Result::Conflict(ConflictResult {
-            conflict_term,
-            conflict_index,
-        })) => {
-            assert_eq!(conflict_term.unwrap(), entry_term);
-            assert_eq!(conflict_index.unwrap(), local_last_log_id + 1);
-        }
-        _ => {
-            assert!(false);
-        }
+    if let append_entries_response::Result::Conflict(ConflictResult {
+        conflict_term,
+        conflict_index,
+    }) = response.result.unwrap()
+    {
+        assert_eq!(conflict_term.unwrap(), entry_term);
+        assert_eq!(conflict_index.unwrap(), local_last_log_id + 1);
     }
 }
 

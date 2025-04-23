@@ -3,7 +3,6 @@ use std::vec;
 
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
-use tracing::error;
 
 use crate::proto::ClusterMembership;
 use crate::proto::ErrorCode;
@@ -23,17 +22,19 @@ async fn mock_listener(
     rx: oneshot::Receiver<()>,
     expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
 ) {
-    let mut mock_service = MockRpcService::default();
-    mock_service.expected_metadata_response = Some(expected_metadata_response.unwrap_or_else(|| {
-        Ok(ClusterMembership {
-            nodes: vec![NodeMeta {
-                id: 1,
-                role: LEADER,
-                ip: "127.0.0.1".to_string(),
-                port: port as u32,
-            }],
-        })
-    }));
+    let mock_service = MockRpcService {
+        expected_metadata_response: Some(expected_metadata_response.unwrap_or_else(|| {
+            Ok(ClusterMembership {
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: LEADER,
+                    ip: "127.0.0.1".to_string(),
+                    port: port as u32,
+                }],
+            })
+        })),
+        ..Default::default()
+    };
     let r = MockNode::mock_listener(mock_service, port, rx, true).await;
     assert!(r.is_ok());
 }
@@ -69,11 +70,8 @@ async fn test_parse_cluster_metadata_no_leader() {
     }];
 
     let result = ConnectionPool::parse_cluster_metadata(&nodes);
-    if let Some(e) = result.err() {
-        assert_eq!(e.code(), ErrorCode::NotLeader as u32);
-    } else {
-        assert!(false);
-    }
+    let e = result.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::NotLeader as u32);
 }
 
 #[tokio::test]
@@ -122,9 +120,7 @@ async fn test_connection_pool_creation() {
     let pool = match ConnectionPool::create(endpoints, config).await {
         Ok(p) => p,
         Err(e) => {
-            error!("{:?}", e);
-            assert!(false);
-            panic!("f");
+            panic!("error: {:?}", e);
         }
     };
     // assert!(pool.is_ok());
@@ -181,9 +177,7 @@ async fn test_refresh_successful_leader_change() {
     let mut pool = match ConnectionPool::create(endpoints, config).await {
         Ok(p) => p,
         Err(e) => {
-            error!("{:?}", e);
-            assert!(false);
-            panic!("f");
+            panic!("error: {:?}", e);
         }
     };
     // Verify we have at least the leader connection

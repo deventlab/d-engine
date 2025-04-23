@@ -99,7 +99,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     println!("put 11 100");
     assert!(
         client_manager
-            .execute_command(ClientCommands::PUT, 11, Some(100))
+            .execute_command(ClientCommands::Put, 11, Some(100))
             .await
             .is_ok(),
         "Put command failed!"
@@ -113,7 +113,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     println!("put 12 200");
     assert!(
         client_manager
-            .execute_command(ClientCommands::PUT, 12, Some(200))
+            .execute_command(ClientCommands::Put, 12, Some(200))
             .await
             .is_ok(),
         "Put command failed!"

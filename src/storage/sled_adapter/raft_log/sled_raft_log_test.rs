@@ -30,7 +30,7 @@ impl Drop for TestContext {
 
 fn setup(path: &str) -> TestContext {
     println!("Test setup ...");
-    let (raft_log_db, _, state_storage_db, _) = reset_dbs(path);
+    let (raft_log_db, _, _state_storage_db, _) = reset_dbs(path);
     let arc_raft_log_db = Arc::new(raft_log_db);
 
     let sled_raft_log = Arc::new(SledRaftLog::new(arc_raft_log_db, None));
@@ -61,11 +61,8 @@ fn test_get_as_vec() {
 
     c.raft_log.insert_batch(vec![value.clone()]).expect("should succeed");
 
-    if let Some(entry) = c.raft_log.get_entry_by_index(1) {
-        assert_eq!(value, entry);
-    } else {
-        assert!(false);
-    }
+    let entry = c.raft_log.get_entry_by_index(1).unwrap();
+    assert_eq!(value, entry);
 }
 
 fn insert(
@@ -124,20 +121,22 @@ fn test_get_range2() {
 /// # Case 1: test follower f delete conflicts (Figure 7 in raft paper)
 ///
 /// ## Setup:
-/// 1.
-///     leader:     log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
-/// log10(6)     follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3),
-/// log9(3), log10(3), log11(3)
+/// 1. leader:log1(1), log2(1), log3(1), log4(4), log5(4), log6(5), log7(5), log8(6), log9(6),
+///    log10(6)
+///
+/// follower_f: log1(1), log2(1), log3(1), log4(2), log5(2), log6(2), log7(3), log8(3),
+///    log9(3), log10(3), log11(3)
 ///
 /// ## Criterias:
 /// 1. next_id been updated to:
-/// Follower	lastIndex	nextIndex
-/// follower_a	    9	    10
-/// follower_b	    4	    5
-/// follower_c	    10	    11
-/// follower_d	    12	    11
-/// follower_e	    7	    6
-/// follower_f	    11  	4
+///
+///   Follower    lastIndex    nextIndex
+///   follower_a      9      10
+///   follower_b      4      5
+///   follower_c      10      11
+///   follower_d      12      11
+///   follower_e      7      6
+///   follower_f      11    4
 #[test]
 fn test_filter_out_conflicts_and_append_case1() {
     let context = setup("/tmp/test_filter_out_conflicts_and_append_case1");
@@ -167,11 +166,8 @@ fn test_filter_out_conflicts_and_append_case1() {
         .unwrap();
     assert_eq!(last_applied.index, 3);
 
-    if let Some(e) = context.raft_log.get_entry_by_index(3) {
-        assert_eq!(e.term, 3);
-    } else {
-        assert!(false);
-    }
+    let e = context.raft_log.get_entry_by_index(3).unwrap();
+    assert_eq!(e.term, 3);
 }
 #[test]
 fn test_filter_out_conflicts_and_append() {
@@ -203,11 +199,8 @@ fn test_filter_out_conflicts_and_append() {
         .unwrap();
     assert_eq!(last_applied.index, 3);
 
-    if let Some(e) = context.raft_log.get_entry_by_index(3) {
-        assert_eq!(e.term, 3);
-    } else {
-        assert!(false);
-    }
+    let e = context.raft_log.get_entry_by_index(3).unwrap();
+    assert_eq!(e.term, 3);
 
     //case 2
     let l3 = Entry {
@@ -224,11 +217,8 @@ fn test_filter_out_conflicts_and_append() {
         .unwrap()
         .unwrap();
     assert_eq!(last_applied.index, 4);
-    if let Some(e) = context.raft_log.get_entry_by_index(4) {
-        assert_eq!(e.term, 2);
-    } else {
-        assert!(false);
-    }
+    let e = context.raft_log.get_entry_by_index(4).unwrap();
+    assert_eq!(e.term, 2);
 }
 
 #[test]
@@ -285,23 +275,12 @@ fn test_sled_last() {
     let context = setup("/tmp/test_sled_last");
 
     test_utils::simulate_insert_proposal(&context.raft_log, (1..=300).collect(), 1);
-    // for i in 1..300 {
-    //     debug!("key:{:?}, buffer:{:?}", i, kv(i));
-    //     if let Err(e) = context.raft_log.db.insert(kv(i), kv(i)) {
-    //         eprint!("error: {:?}", e);
-    //         assert!(false);
-    //     }
-    // }
-    // context.raft_log.db.flush().expect("flush failed!");
 
-    if let Some(l) = context.raft_log.last() {
-        let last = l.index;
-        let len = context.raft_log.len();
-        debug!("last: {:?}, while len: {:?}", last, len);
-        assert_eq!(last, len as u64);
-    } else {
-        assert!(false);
-    }
+    let l = context.raft_log.last().unwrap();
+    let last = l.index;
+    let len = context.raft_log.len();
+    debug!("last: {:?}, while len: {:?}", last, len);
+    assert_eq!(last, len as u64);
 }
 #[test]
 fn test_sled_last_max() {
@@ -309,20 +288,9 @@ fn test_sled_last_max() {
 
     let max = u64::MAX; //max of u64
     test_utils::simulate_insert_proposal(&context.raft_log, ((max - 1)..max).collect(), 1);
-    // for i in max - 1..max {
-    //     debug!("key:{:?}, buffer:{:?}", i, kv(i));
-    //     if let Err(e) = context.raft_log.db.insert(kv(i), kv(i)) {
-    //         eprint!("error: {:?}", e);
-    //         assert!(false);
-    //     }
-    // }
-    // context.raft_log.db.flush().expect("flush failed!");
 
-    if let Some(l) = context.raft_log.last() {
-        assert_eq!(l.index, 1);
-    } else {
-        assert!(false);
-    }
+    let l = context.raft_log.last().unwrap();
+    assert_eq!(l.index, 1);
 }
 
 ///3 nodes, leader append 1000 logs, the other two logs can not get 1000
@@ -407,11 +375,8 @@ fn test_insert_one_client_command_dup_case() {
     test_utils::simulate_insert_proposal(&context.raft_log, v, 2);
 
     assert_eq!(context.raft_log.last_entry_id(), 18);
-    if let Some(last) = context.raft_log.last() {
-        assert_eq!(last.index, 18);
-    } else {
-        assert!(false);
-    }
+    let last = context.raft_log.last().unwrap();
+    assert_eq!(last.index, 18);
 }
 
 /// # Test client propose commands which contains insert and delete
@@ -456,9 +421,7 @@ fn test_load_uncommitted_from_db_to_cache() {
     let len = context.raft_log.last_entry_id();
     context.raft_log.load_uncommitted_from_db_to_cache(8, len);
     for j in 8..len + 1 {
-        if context.raft_log.get_from_cache(&kv(j)).is_none() {
-            assert!(false);
-        }
+        assert!(context.raft_log.get_from_cache(&kv(j)).is_some());
     }
 }
 

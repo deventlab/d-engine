@@ -76,14 +76,14 @@ impl StateMachine for RaftStateMachine {
 
     fn get(
         &self,
-        key_buffer: &Vec<u8>,
+        key_buffer: &[u8],
     ) -> Result<Option<Vec<u8>>> {
         match self.tree.get(key_buffer) {
             Ok(Some(v)) => Ok(Some(v.to_vec())),
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
-                Err(StorageError::SledError(e).into())
+                Err(StorageError::DbError(e.to_string()).into())
             }
         }
     }
@@ -102,7 +102,7 @@ impl StateMachine for RaftStateMachine {
         let key = entry.key;
         if let Err(e) = self.tree.insert(key.clone(), entry.value) {
             error!("apply_snapshot insert error: {}", e);
-            return Err(StorageError::SledError(e).into());
+            return Err(StorageError::DbError(e.to_string()).into());
         } else {
             debug!("state machine insert snapshot entry (index: {:?}) successfully!", key);
         }
@@ -114,7 +114,7 @@ impl StateMachine for RaftStateMachine {
     fn last_entry_index(&self) -> Option<u64> {
         debug!("getting last entry from state machine");
         if let Ok(Some(v)) = self.tree.last() {
-            let key: u64 = vk(&v.0.to_vec());
+            let key: u64 = vk(&v.0);
             debug!("last entry, key: {:?}.", key);
 
             Some(key)
@@ -211,8 +211,8 @@ impl StateMachine for RaftStateMachine {
             Err(e)
         } else {
             debug!("[ConverterEngine] convert bath successfully! ");
-            if highest_index.is_some() {
-                self.update_last_applied(highest_index.unwrap());
+            if let Some(index) = highest_index {
+                self.update_last_applied(index);
             }
             Ok(())
         }
@@ -255,7 +255,7 @@ impl RaftStateMachine {
     ) -> Result<()> {
         if let Err(e) = self.tree.apply_batch(batch) {
             error!("state_machine apply_batch failed: {}", e);
-            return Err(StorageError::SledError(e).into());
+            return Err(StorageError::DbError(e.to_string()).into());
         }
         Ok(())
     }

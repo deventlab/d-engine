@@ -38,7 +38,6 @@ mod raft_test;
 /// e.g. Append Entries RPC
 /// e.g. Election: receive VoteResponse
 /// e.g. Sync cluster membership configure
-
 /// @return: true - found higher term;
 pub(crate) fn if_higher_term_found(
     my_current_term: u64,

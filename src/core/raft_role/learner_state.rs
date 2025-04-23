@@ -91,7 +91,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             self.node_id(),
             self.current_term(),
         );
-        Ok(RaftRole::Follower(self.into()))
+        Ok(RaftRole::Follower(Box::new(self.into())))
     }
     fn become_learner(&self) -> Result<RaftRole<T>> {
         warn!("I am Learner already");

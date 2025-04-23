@@ -63,11 +63,14 @@ use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::Node;
 use crate::Raft;
+use crate::RaftCoreHandlers;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftStateMachine;
+use crate::RaftStorageHandles;
 use crate::ReplicationHandler;
 use crate::Result;
+use crate::SignalParams;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
@@ -276,20 +279,26 @@ impl NodeBuilder {
         let shutdown_signal = self.shutdown_signal.clone();
         let mut raft_core = Raft::<RaftTypeConfig>::new(
             node_id,
-            raft_log,
-            state_machine.clone(),
-            state_storage,
+            RaftStorageHandles::<RaftTypeConfig> {
+                raft_log: Arc::new(raft_log),
+                state_machine: state_machine.clone(),
+                state_storage: Box::new(state_storage),
+            },
             transport,
-            ElectionHandler::new(node_id, event_tx.clone()),
-            ReplicationHandler::new(node_id),
-            state_machine_handler.clone(),
+            RaftCoreHandlers::<RaftTypeConfig> {
+                election_handler: ElectionHandler::new(node_id),
+                replication_handler: ReplicationHandler::new(node_id),
+                state_machine_handler: state_machine_handler.clone(),
+            },
             Arc::new(membership),
+            SignalParams {
+                role_tx,
+                role_rx,
+                event_tx,
+                event_rx,
+                shutdown_signal: shutdown_signal.clone(),
+            },
             settings_arc.clone(),
-            role_tx,
-            role_rx,
-            event_tx,
-            event_rx,
-            shutdown_signal.clone(),
         );
 
         // Register commit event listener
@@ -298,7 +307,7 @@ impl NodeBuilder {
         // Start CommitHandler in a single thread
         let mut commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
             state_machine_handler,
-            raft_core.ctx.raft_log.clone(),
+            raft_core.ctx.storage.raft_log.clone(),
             new_commit_event_rx,
             settings_arc.raft.commit_handler.batch_size,
             settings_arc.raft.commit_handler.process_interval_ms,

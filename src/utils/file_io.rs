@@ -1,6 +1,7 @@
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::path::PathBuf;
 
 use tokio::io::AsyncWriteExt;
@@ -11,7 +12,7 @@ use tracing::error;
 use crate::Result;
 use crate::StorageError;
 
-pub fn crate_parent_dir_if_not_exist(path: &PathBuf) -> Result<()> {
+pub fn crate_parent_dir_if_not_exist(path: &Path) -> Result<()> {
     if let Some(parent_dir) = path.parent() {
         if !parent_dir.exists() {
             if let Err(e) = create_dir_all(parent_dir) {

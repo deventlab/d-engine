@@ -62,7 +62,7 @@ impl ClientManager {
         loop {
             // Handle subcommands
             match command {
-                ClientCommands::PUT => {
+                ClientCommands::Put => {
                     let value = value.unwrap();
 
                     info!("put {}:{}", key, value);
@@ -84,12 +84,12 @@ impl ClientManager {
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
                         Err(e) => {
-                            error!("ClientCommands::PUT, ErrorCode = {:?}", e.code());
+                            error!("ClientCommands::Put, ErrorCode = {:?}", e.code());
                             return Err(e);
                         }
                     }
                 }
-                ClientCommands::DELETE => match self.client.kv().delete(kv(key)).await {
+                ClientCommands::Delete => match self.client.kv().delete(kv(key)).await {
                     Ok(res) => {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
@@ -110,7 +110,7 @@ impl ClientManager {
                         return Err(e);
                     }
                 },
-                ClientCommands::READ => match self.client.kv().get(kv(key), false).await? {
+                ClientCommands::Read => match self.client.kv().get(kv(key), false).await? {
                     Some(r) => {
                         let v = vk(&r.value);
                         debug!("Success: {:?}", v);
@@ -121,7 +121,7 @@ impl ClientManager {
                         return Err(ErrorCode::KeyNotExist.into());
                     }
                 },
-                ClientCommands::LREAD => match self.client.kv().get(kv(key), true).await {
+                ClientCommands::Lread => match self.client.kv().get(kv(key), true).await {
                     Ok(result) => match result {
                         Some(r) => {
                             let v = vk(&r.value);
@@ -149,10 +149,6 @@ impl ClientManager {
                         return Err(e);
                     }
                 },
-                _ => {
-                    error!("Invalid subcommand");
-                    unreachable!()
-                }
             }
         }
     }
@@ -166,13 +162,12 @@ impl ClientManager {
     ) {
         println!("read: {}", key);
         for _ in 0..iterations {
-            match self.execute_command(ClientCommands::LREAD, key, None).await {
-                Ok(v) => assert_eq!(v, expected_value, "Linearizable read failed for key {}!", key),
-                Err(status) => {
-                    error!("verify_read::status: {:?}", status);
-                    assert!(false);
-                }
-            }
+            assert_eq!(
+                self.execute_command(ClientCommands::Lread, key, None).await.unwrap(),
+                expected_value,
+                "Linearizable read failed for key {}!",
+                key
+            );
         }
     }
 

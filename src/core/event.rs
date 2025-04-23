@@ -14,6 +14,7 @@ use crate::proto::VoteResponse;
 use crate::MaybeCloneOneshotSender;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum RoleEvent {
     BecomeFollower(Option<u32>), // BecomeFollower(Option<leader_id>)
     BecomeCandidate,

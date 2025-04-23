@@ -45,7 +45,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     println!("put 2 202");
     assert!(
         client_manager
-            .execute_command(ClientCommands::PUT, 2, Some(202))
+            .execute_command(ClientCommands::Put, 2, Some(202))
             .await
             .is_ok(),
         "Put command failed!"
@@ -142,7 +142,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
     println!("put 1 1");
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 1, Some(1))
+        .execute_command(ClientCommands::Put, 1, Some(1))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
@@ -151,7 +151,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     println!("put 1 2");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 1, Some(2))
+        .execute_command(ClientCommands::Put, 1, Some(2))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
@@ -171,7 +171,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
 
     println!("put 1 3");
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 1, Some(3))
+        .execute_command(ClientCommands::Put, 1, Some(3))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
@@ -186,7 +186,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
 
     println!("put 1 4");
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 1, Some(4))
+        .execute_command(ClientCommands::Put, 1, Some(4))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
@@ -194,12 +194,12 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
 
     println!("put 2 20");
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 2, Some(20))
+        .execute_command(ClientCommands::Put, 2, Some(20))
         .await
         .is_ok());
     println!("put 2 21");
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 2, Some(21))
+        .execute_command(ClientCommands::Put, 2, Some(21))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
@@ -234,7 +234,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     client_manager.verify_read(2, 21, ITERATIONS).await;
     println!("put 1 5");
     assert!(client_manager
-        .execute_command(ClientCommands::PUT, 1, Some(5))
+        .execute_command(ClientCommands::Put, 1, Some(5))
         .await
         .is_ok());
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;

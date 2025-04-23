@@ -70,7 +70,7 @@ fn test_find_nearest_lower_number() {
 
     match find_nearest_lower_number(a, pool.clone()) {
         Some(nearest) => assert_eq!(nearest, 1637),
-        None => assert!(false),
+        None => panic!(),
     }
 }
 
@@ -92,17 +92,14 @@ async fn test_task_with_exponential_backoff() {
         base_delay_ms: 1000,
         max_delay_ms: 3000,
     };
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy).await {
-        assert!(true);
-    } else {
-        assert!(false);
-    }
+    assert!(task_with_timeout_and_exponential_backoff(async_ok, policy)
+        .await
+        .is_ok());
+
     // Case 2: when err task return error
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_err, policy).await {
-        assert!(false);
-    } else {
-        assert!(true);
-    }
+    assert!(task_with_timeout_and_exponential_backoff(async_err, policy)
+        .await
+        .is_err());
 
     // Case 3: when ok task always failed on timeout error
     let policy = BackoffPolicy {
@@ -111,9 +108,7 @@ async fn test_task_with_exponential_backoff() {
         base_delay_ms: 1,
         max_delay_ms: 3,
     };
-    if let Ok(_) = task_with_timeout_and_exponential_backoff(async_ok, policy).await {
-        assert!(false);
-    } else {
-        assert!(true);
-    }
+    assert!(task_with_timeout_and_exponential_backoff(async_ok, policy)
+        .await
+        .is_err());
 }

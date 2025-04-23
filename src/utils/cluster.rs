@@ -12,7 +12,7 @@ use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
 
-pub(crate) fn collect_ids(entries: &Vec<Entry>) -> Vec<u64> {
+pub(crate) fn collect_ids(entries: &[Entry]) -> Vec<u64> {
     entries.iter().map(|e| e.index).collect()
 }
 

@@ -3,7 +3,6 @@
 //! Defines comprehensive error types for a Raft-based distributed system,
 //! categorized by protocol layer and operational concerns.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use config::ConfigError;
@@ -76,7 +75,7 @@ pub enum NetworkError {
     /// Unreachable node with source context
     #[error("Network unreachable: {source}")]
     Unreachable {
-        source: Arc<dyn std::error::Error + Send + Sync>,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// Persistent connection failures
@@ -104,7 +103,7 @@ pub enum NetworkError {
     RequestSendFailure {
         request_type: &'static str,
         #[source]
-        source: tonic::transport::Error,
+        source: Box<tonic::transport::Error>,
     },
 
     /// Low-level TCP configuration errors
@@ -117,11 +116,11 @@ pub enum NetworkError {
 
     /// gRPC transport layer errors
     #[error(transparent)]
-    TonicError(#[from] tonic::transport::Error),
+    TonicError(#[from] Box<tonic::transport::Error>),
 
     /// gRPC status code errors
     #[error(transparent)]
-    TonicStatusError(#[from] tonic::Status),
+    TonicStatusError(#[from] Box<tonic::Status>),
 
     #[error("Failed to send read request: {0}")]
     ReadSend(#[from] ReadSendError),
@@ -173,8 +172,8 @@ pub enum StorageError {
     ConfigStorage(String),
 
     /// Embedded database errors
-    #[error(transparent)]
-    SledError(#[from] sled::Error),
+    #[error("Embedded database error: {0}")]
+    DbError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -383,13 +382,13 @@ impl From<WriteSendError> for Error {
 
 impl From<tonic::transport::Error> for Error {
     fn from(err: tonic::transport::Error) -> Self {
-        NetworkError::TonicError(err).into()
+        NetworkError::TonicError(Box::new(err)).into()
     }
 }
 
 impl From<sled::Error> for Error {
     fn from(err: sled::Error) -> Self {
-        StorageError::SledError(err).into()
+        StorageError::DbError(err.to_string()).into()
     }
 }
 

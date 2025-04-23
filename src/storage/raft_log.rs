@@ -106,16 +106,6 @@ pub trait RaftLog: Send + Sync + 'static {
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>>;
 
-    /// If an existing entry conflicts with a new one (same index
-    ///     but different terms), delete the existing entry and all that
-    ///     follow it (§5.3)
-    fn filter_out_conflicts_and_append2(
-        &self,
-        prev_log_index: u64,
-        prev_log_term: u64,
-        new_ones: Vec<Entry>,
-    ) -> u64;
-
     fn insert_batch(
         &self,
         logs: Vec<Entry>,
@@ -130,7 +120,7 @@ pub trait RaftLog: Send + Sync + 'static {
 
     fn retrieve_subscriber(
         &self,
-        watch_key: &Vec<u8>,
+        watch_key: &[u8],
     ) -> Subscriber;
 
     // fn load_from_db(&self, commit_index: u64);
@@ -149,7 +139,7 @@ pub trait RaftLog: Send + Sync + 'static {
 
     fn get_from_cache(
         &self,
-        key: &Vec<u8>,
+        key: &[u8],
     ) -> Option<Entry>;
 
     fn calculate_majority_matched_index(

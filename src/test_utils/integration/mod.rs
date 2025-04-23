@@ -40,9 +40,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tracing::error;
 
 use super::generate_insert_commands;
 use crate::alias::MOF;
@@ -60,11 +58,13 @@ use crate::test_utils::MockTypeConfig;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::RaftContext;
+use crate::RaftCoreHandlers;
 use crate::RaftLog;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStateMachine;
+use crate::RaftStorageHandles;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
 use crate::SledRaftLog;
@@ -100,7 +100,8 @@ where T: TypeConfig
 }
 
 // If param `restart` is true, we will not reset dbs
-pub fn setup_context(
+#[allow(dead_code)]
+pub(crate) fn setup_context(
     db_path: &str,
     peers_meta_option: Option<Vec<NodeMeta>>,
     restart: bool,
@@ -108,13 +109,20 @@ pub fn setup_context(
     let components = setup_raft_components(db_path, peers_meta_option, restart);
     RaftContext::<RaftTypeConfig> {
         node_id: components.id,
-        raft_log: components.raft_log,
-        state_machine: components.state_machine,
-        state_storage: components.state_storage,
+        storage: RaftStorageHandles {
+            raft_log: components.raft_log,
+            state_machine: components.state_machine,
+            state_storage: components.state_storage,
+        },
+
         transport: components.transport,
-        election_handler: components.election_handler,
-        replication_handler: components.replication_handler,
-        state_machine_handler: Arc::new(components.state_machine_handler),
+
+        handlers: RaftCoreHandlers {
+            election_handler: components.election_handler,
+            replication_handler: components.replication_handler,
+            state_machine_handler: Arc::new(components.state_machine_handler),
+        },
+
         membership: components.membership,
         settings: components.arc_settings,
     }
@@ -145,10 +153,11 @@ pub fn setup_raft_components(
 
     let grpc_transport = GrpcTransport { my_id: id };
 
-    let peers_meta;
-    if peers_meta_option.is_none() {
+    let peers_meta = if let Some(meta) = peers_meta_option {
+        meta
+    } else {
         let follower_role = RaftRole::<MockTypeConfig>::follower_role_i32();
-        peers_meta = vec![
+        vec![
             NodeMeta {
                 id: 2,
                 ip: "127.0.0.1".to_string(),
@@ -161,18 +170,15 @@ pub fn setup_raft_components(
                 port: 8080,
                 role: follower_role,
             },
-        ];
-    } else {
-        peers_meta = peers_meta_option.expect("should succeed");
-    }
+        ]
+    };
+
     let (_graceful_tx, _graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
     let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.cluster.db_root_dir = PathBuf::from(db_path);
     settings.cluster.initial_cluster = peers_meta.clone();
-
-    let (event_tx, _event_rx) = mpsc::channel(1024);
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
@@ -191,7 +197,7 @@ pub fn setup_raft_components(
         state_storage: Box::new(sled_state_storage),
         transport: Arc::new(grpc_transport),
         membership: Arc::new(RaftMembership::new(id, arc_settings.cluster.initial_cluster.clone())),
-        election_handler: ElectionHandler::new(id, event_tx),
+        election_handler: ElectionHandler::new(id),
         replication_handler: ReplicationHandler::new(id),
         settings: settings_clone,
         arc_settings,
@@ -236,8 +242,7 @@ pub(crate) fn insert_raft_log(
         entries.push(log);
     }
     if let Err(e) = raft_log.insert_batch(entries) {
-        error!("error: {:?}", e);
-        assert!(false);
+        panic!("error:{:?}", e);
     }
 }
 pub(crate) fn insert_state_storage(
@@ -246,8 +251,7 @@ pub(crate) fn insert_state_storage(
 ) {
     for i in ids {
         if let Err(e) = state_storage.insert(kv(i), kv(i)) {
-            error!("error: {:?}", e);
-            assert!(false);
+            panic!("error:{:?}", e);
         }
     }
 }
@@ -267,8 +271,7 @@ pub(crate) fn insert_state_machine(
         entries.push(log);
     }
     if let Err(e) = state_machine.apply_chunk(entries) {
-        error!("error: {:?}", e);
-        assert!(false);
+        panic!("error: {:?}", e);
     }
 }
 

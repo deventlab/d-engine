@@ -33,7 +33,7 @@ impl ClusterClient {
     }
 
     /// [Unimplemented] Adds new node to cluster
-    #[allow(unused)]
+    #[allow(dead_code)]
     async fn add_member(
         &self,
         _node: NodeMeta,

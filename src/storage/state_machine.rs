@@ -25,7 +25,7 @@ pub trait StateMachine: Send + Sync + 'static {
     fn last_applied(&self) -> u64;
     fn get(
         &self,
-        key_buffer: &Vec<u8>,
+        key_buffer: &[u8],
     ) -> Result<Option<Vec<u8>>>;
     fn iter(&self) -> StateMachineIter;
 
@@ -36,12 +36,8 @@ pub trait StateMachine: Send + Sync + 'static {
     ) -> Result<()>;
 
     fn last_entry_index(&self) -> Option<u64>;
-    fn flush(&self) -> Result<()>;
 
-    // fn apply_to_state_machine_up_to_commit_index(
-    //     &self,
-    //     range: RangeInclusive<u64>,
-    // ) -> Result<Vector<u64>>;
+    fn flush(&self) -> Result<()>;
 
     fn apply_snapshot(
         &self,
@@ -53,4 +49,8 @@ pub trait StateMachine: Send + Sync + 'static {
 
     /// NOTE: This method may degrade system performance. Use with caution.
     fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }

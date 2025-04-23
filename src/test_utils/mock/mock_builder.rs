@@ -23,9 +23,12 @@ use crate::Node;
 use crate::Raft;
 use crate::RaftConfig;
 use crate::RaftContext;
+use crate::RaftCoreHandlers;
 use crate::RaftEvent;
 use crate::RaftNodeConfig;
+use crate::RaftStorageHandles;
 use crate::RoleEvent;
+use crate::SignalParams;
 
 pub struct MockBuilder {
     pub id: Option<u32>,
@@ -71,7 +74,7 @@ impl MockBuilder {
         }
     }
 
-    pub fn build_context(self) -> RaftContext<MockTypeConfig> {
+    pub(crate) fn build_context(self) -> RaftContext<MockTypeConfig> {
         let (
             raft_log,
             state_machine,
@@ -96,18 +99,17 @@ impl MockBuilder {
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
         );
 
-        mock_raft_context_internal(
-            1,
+        let storage = RaftStorageHandles {
             raft_log,
             state_machine,
             state_storage,
-            transport,
-            membership,
+        };
+        let handlers = RaftCoreHandlers {
             election_handler,
             replication_handler,
             state_machine_handler,
-            settings,
-        )
+        };
+        mock_raft_context_internal(1, storage, transport, membership, handlers, settings)
     }
 
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
@@ -151,14 +153,25 @@ impl MockBuilder {
 
         let mut raft = Raft::new(
             id,
-            raft_log,
-            state_machine,
-            state_storage,
+            RaftStorageHandles::<MockTypeConfig> {
+                raft_log: Arc::new(raft_log),
+                state_machine,
+                state_storage: Box::new(state_storage),
+            },
             transport,
-            election_handler,
-            replication_handler,
-            state_machine_handler,
+            RaftCoreHandlers::<MockTypeConfig> {
+                election_handler,
+                replication_handler,
+                state_machine_handler,
+            },
             membership,
+            SignalParams {
+                role_tx,
+                role_rx,
+                event_tx,
+                event_rx,
+                shutdown_signal: self.shutdown_signal,
+            },
             Arc::new(RaftNodeConfig {
                 raft: RaftConfig {
                     election: ElectionConfig {
@@ -170,11 +183,6 @@ impl MockBuilder {
                 },
                 ..settings
             }),
-            role_tx,
-            role_rx,
-            event_tx,
-            event_rx,
-            self.shutdown_signal,
         );
 
         raft.join_cluster(Arc::new(peer_channels)).expect("join failed");
@@ -347,26 +355,21 @@ pub fn mock_peer_channels() -> MockPeerChannels {
 
 fn mock_raft_context_internal(
     id: u32,
-    raft_log: Arc<MockRaftLog>,
-    state_machine: Arc<MockStateMachine>,
-    state_storage: Box<MockStateStorage>,
+    storage: RaftStorageHandles<MockTypeConfig>,
     transport: Arc<MockTransport>,
     membership: Arc<MockMembership<MockTypeConfig>>,
-    election_handler: MockElectionCore<MockTypeConfig>,
-    replication_handler: MockReplicationCore<MockTypeConfig>,
-    state_machine_handler: Arc<MockStateMachineHandler<MockTypeConfig>>,
+    handlers: RaftCoreHandlers<MockTypeConfig>,
     settings: RaftNodeConfig,
 ) -> RaftContext<MockTypeConfig> {
     RaftContext {
         node_id: id,
-        raft_log,
-        state_machine,
-        state_storage,
+        storage,
+
         transport,
         membership,
-        election_handler,
-        replication_handler,
-        state_machine_handler,
+
+        handlers,
+
         settings: Arc::new(settings),
     }
 }

@@ -210,19 +210,10 @@ mod tests {
                     .map(|v| v.to_vec())
             );
 
-            if let Ok(Some(v)) = state_storage_db.get(kv(11)) {
-                let v = v.to_vec();
-                match ClusterMembership::decode(&v[..]) {
-                    Err(_e) => {
-                        assert!(false);
-                    }
-                    Ok(m) => {
-                        assert_eq!(4, m.nodes.len());
-                    }
-                }
-            } else {
-                assert!(false);
-            }
+            let v = state_storage_db.get(kv(11)).unwrap().unwrap();
+            let v = v.to_vec();
+            let m = ClusterMembership::decode(&v[..]).unwrap();
+            assert_eq!(4, m.nodes.len());
         }
     }
 }

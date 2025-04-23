@@ -42,31 +42,27 @@ mod mock_builder;
 mod mock_rpc;
 mod mock_rpc_service;
 
-use std::path::PathBuf;
-
 pub use mock_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
 use tokio::sync::watch;
 
+use super::enable_logger;
 use super::settings;
-//------------------------------------------------------
-use super::{enable_logger, MockTypeConfig};
+use super::MockTypeConfig;
 use crate::proto::NodeMeta;
 use crate::Node;
 use crate::Raft;
 use crate::RaftContext;
-use crate::RaftNodeConfig;
 
-pub fn mock_node(
+pub(crate) fn mock_node(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Node<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-    settings.cluster.db_root_dir = PathBuf::from(db_path);
+    let mut settings = settings(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }
@@ -75,7 +71,7 @@ pub fn mock_node(
     MockBuilder::new(shutdown_signal).with_settings(settings).build_node()
 }
 
-pub fn mock_raft(
+pub(crate) fn mock_raft(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
@@ -92,15 +88,14 @@ pub fn mock_raft(
     MockBuilder::new(shutdown_signal).with_settings(settings).build_raft()
 }
 
-pub fn mock_raft_context(
+pub(crate) fn mock_raft_context(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> RaftContext<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-    settings.cluster.db_root_dir = PathBuf::from(db_path);
+    let mut settings = settings(db_path);
     if peers_meta_option.is_some() {
         settings.cluster.initial_cluster = peers_meta_option.unwrap();
     }

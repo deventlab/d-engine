@@ -12,7 +12,7 @@
 //! Expected Result:
 //!
 //! - Node B becomes the leader because its logs have the highest Term (Term=3), even though it has
-//! fewer entries than Node A.
+//!   fewer entries than Node A.
 //! - Nodes A and C recognize B as the leader.
 
 use std::time::Duration;

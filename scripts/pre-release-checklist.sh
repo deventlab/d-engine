@@ -21,34 +21,34 @@ function error() {
     exit 1
 }
 
-# # --------------------------
-# # 1. Test Suite Verification
-# # --------------------------
-# header "Running test suite"
+# --------------------------
+# 1. Test Suite Verification
+# --------------------------
+header "Running test suite"
 
-# TEST_TYPES=(
-#     "Unit Tests: cargo test --lib -- --nocapture"
-#     "Integration Tests: cargo test --tests -- --nocapture"
-#     "Documentation Tests: cargo test --doc"
-#     "Benchmark Tests: cargo bench -- --nocapture"
-# )
+TEST_TYPES=(
+    "Unit Tests: cargo test --lib -- --nocapture"
+    "Integration Tests: cargo test --tests -- --nocapture"
+    "Documentation Tests: cargo test --doc"
+    "Benchmark Tests: cargo bench -- --nocapture"
+)
 
-# for test_case in "${TEST_TYPES[@]}"; do
-#     IFS=':' read -r test_name test_cmd <<< "$test_case"
-#     echo -e "\n${YELLOW}▶ Running $test_name${NC}"
+for test_case in "${TEST_TYPES[@]}"; do
+    IFS=':' read -r test_name test_cmd <<< "$test_case"
+    echo -e "\n${YELLOW}▶ Running $test_name${NC}"
     
-#     if eval "$test_cmd"; then
-#         success "$test_name passed"
-#     else
-#         error "$test_name failed"
-#     fi
-# done
+    if eval "$test_cmd"; then
+        success "$test_name passed"
+    else
+        error "$test_name failed"
+    fi
+done
 
-# # --------------------------
-# # Final Report
-# # --------------------------
-# header "Test Summary"
-# echo -e "${GREEN}All checks passed! Ready for release.${NC}"
+# --------------------------
+# Final Report
+# --------------------------
+header "Test Summary"
+echo -e "${GREEN}All checks passed! Ready for release.${NC}"
 
 
 # --------------------------

@@ -15,8 +15,8 @@ use tracing::warn;
 
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
+use crate::alias::POF;
 use crate::alias::ROF;
-use crate::alias::TROF;
 use crate::proto::append_entries_response;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -31,11 +31,10 @@ use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::LeaderStateSnapshot;
 use crate::PeerUpdate;
-use crate::RaftConfig;
+use crate::RaftContext;
 use crate::RaftLog;
 use crate::ReplicationError;
 use crate::Result;
-use crate::RetryPolicies;
 use crate::StateSnapshot;
 use crate::Transport;
 use crate::TypeConfig;
@@ -58,11 +57,8 @@ where T: TypeConfig
         commands: Vec<ClientCommand>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
-        replication_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft: &RaftConfig,
-        retry: &RetryPolicies,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
     ) -> Result<AppendResults> {
         debug!("-------- handle_client_proposal_in_batch --------");
         trace!("commands: {:?}", &commands);
@@ -70,6 +66,7 @@ where T: TypeConfig
         // ----------------------
         // Phase 1: Pre-Checks
         // ----------------------
+        let replication_members = ctx.voting_members(peer_channels);
         if replication_members.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
             return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());
@@ -80,6 +77,7 @@ where T: TypeConfig
         // ----------------------
 
         // Record down the last index before new inserts, to avoid duplicated entries, bugfix#48
+        let raft_log = ctx.raft_log();
         let leader_last_index_before = raft_log.last_entry_id();
 
         let new_entries = self.generate_new_entries(commands, state_snapshot.current_term, raft_log)?;
@@ -97,7 +95,7 @@ where T: TypeConfig
         let entries_per_peer = self.prepare_peer_entries(
             &new_entries,
             &replication_data,
-            raft.replication.append_entries_max_entries_per_replication,
+            ctx.settings.raft.replication.append_entries_max_entries_per_replication,
             raft_log,
         );
 
@@ -115,7 +113,11 @@ where T: TypeConfig
         let leader_current_term = state_snapshot.current_term;
         let mut successes = 1; // Include leader itself
         let mut peer_updates = HashMap::new();
-        match transport.send_append_requests(requests, retry).await {
+        match ctx
+            .transport()
+            .send_append_requests(requests, &ctx.settings.retry)
+            .await
+        {
             Ok(append_result) => {
                 for response in append_result.responses {
                     match response {

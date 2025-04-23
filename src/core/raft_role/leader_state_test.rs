@@ -9,7 +9,6 @@ use tonic::Status;
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::alias::POF;
-use crate::config::RaftConfig;
 use crate::convert::kv;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::ClientCommand;
@@ -25,6 +24,7 @@ use crate::proto::VoteResponse;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
+use crate::test_utils::settings;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
@@ -39,21 +39,21 @@ use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
-use crate::MockTransport;
 use crate::PeerUpdate;
+use crate::RaftContext;
 use crate::RaftEvent;
-use crate::RaftNodeConfig;
 use crate::RaftOneshot;
-use crate::ReplicationConfig;
+use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
 
 struct TestContext {
     state: LeaderState<MockTypeConfig>,
-    replication_handler: MockReplicationCore<MockTypeConfig>,
-    raft_log: Arc<MockRaftLog>,
-    transport: Arc<MockTransport>,
-    arc_settings: Arc<RaftNodeConfig>,
+    raft_context: RaftContext<MockTypeConfig>,
+    // replication_handler: MockReplicationCore<MockTypeConfig>,
+    // raft_log: Arc<MockRaftLog>,
+    // transport: Arc<MockTransport>,
+    // arc_settings: Arc<RaftNodeConfig>,
 }
 
 /// Initialize the test environment and return the core components
@@ -61,24 +61,28 @@ async fn setup_test_case(
     test_name: &str,
     batch_threshold: usize,
     handle_client_proposal_in_batch_expect_times: usize,
+    shutdown_signal: watch::Receiver<()>,
 ) -> TestContext {
-    let context = setup_raft_components(&format!("/tmp/{}", test_name), None, false);
+    let mut settings = settings(&format!("/tmp/{}", test_name));
+    settings.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
+    let mut raft_context = MockBuilder::new(shutdown_signal)
+        .with_settings(settings)
+        .build_context();
 
-    // Configure raft settings
-    let raft = RaftConfig {
-        replication: ReplicationConfig {
-            rpc_append_entries_in_batch_threshold: batch_threshold,
-            ..context.settings.raft.replication.clone()
-        },
-        ..context.settings.raft.clone()
-    };
+    // let raft = RaftConfig {
+    //     replication: ReplicationConfig {
+    //         rpc_append_entries_in_batch_threshold: batch_threshold,
+    //         ..context.settings.raft.replication.clone()
+    //     },
+    //     ..context.settings.raft.clone()
+    // };
 
     // Create Leader state
-    let settings = Arc::new(RaftNodeConfig {
-        raft: raft.clone(),
-        ..context.settings.clone()
-    });
-    let mut state = LeaderState::new(1, settings.clone());
+    // let settings = Arc::new(RaftNodeConfig {
+    //     raft: raft.clone(),
+    //     ..context.settings.clone()
+    // });
+    let mut state = LeaderState::new(1, raft_context.settings());
     state
         .update_commit_index(4)
         .expect("Should succeed to update commit index");
@@ -91,7 +95,7 @@ async fn setup_test_case(
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(handle_client_proposal_in_batch_expect_times)
-        .returning(move |_, _, _, _, _, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -113,12 +117,16 @@ async fn setup_test_case(
         .expect_calculate_majority_matched_index()
         .returning(|_, _, _| Some(5));
 
+    raft_context.handlers.replication_handler = replication_handler;
+    raft_context.storage.raft_log = Arc::new(raft_log);
+
     TestContext {
         state,
-        replication_handler,
-        raft_log: Arc::new(raft_log),
-        transport: Arc::new(MockTransport::new()),
-        arc_settings: settings,
+        raft_context,
+        // replication_handler,
+        // raft_log: Arc::new(raft_log),
+        // transport: Arc::new(MockTransport::new()),
+        // arc_settings: settings,
     }
 }
 
@@ -161,7 +169,9 @@ pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::resul
 #[tokio::test]
 async fn test_process_client_propose_case1_1() {
     // Initialize the test environment (threshold = 0 means immediate execution)
-    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_1", 0, 1).await;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_1", 0, 1, graceful_rx).await;
 
     // Prepare test request
     let request = ClientProposeRequest {
@@ -170,32 +180,16 @@ async fn test_process_client_propose_case1_1() {
     };
     let (tx, rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
+    let peer_channels = Arc::new(mock_peer_channels());
     // Execute test operation
     let result = test_context
         .state
-        .process_client_propose(
-            request,
-            tx,
-            &test_context.replication_handler,
-            &vec![],
-            &test_context.raft_log,
-            &test_context.transport,
-            &test_context.arc_settings.raft,
-            &test_context.arc_settings.retry,
-            false,
-            &role_tx,
-        )
+        .process_client_propose(request, tx, &test_context.raft_context, peer_channels, false, &role_tx)
         .await;
 
     // Verify the result
-    match role_rx.recv().await {
-        Some(RoleEvent::NotifyNewCommitIndex { new_commit_index }) => {
-            assert_eq!(new_commit_index, 5);
-        }
-        _ => {
-            assert!(false);
-        }
+    if let Some(RoleEvent::NotifyNewCommitIndex { new_commit_index }) = role_rx.recv().await {
+        assert_eq!(new_commit_index, 5);
     }
     assert!(result.is_ok(), "Operation should succeed");
     assert_eq!(test_context.state.commit_index(), 5);
@@ -233,7 +227,8 @@ async fn test_process_client_propose_case1_1() {
 #[tokio::test]
 async fn test_process_client_propose_case1_2() {
     // Initialize the test environment (threshold = 0 means immediate execution)
-    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_2", 0, 2).await;
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_2", 0, 2, graceful_rx).await;
 
     // Prepare test request
     let request = ClientProposeRequest {
@@ -244,18 +239,15 @@ async fn test_process_client_propose_case1_2() {
     let (tx2, rx2) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
+    let peer_channels = Arc::new(mock_peer_channels());
     // Execute test operation
     let result1 = test_context
         .state
         .process_client_propose(
             request.clone(),
             tx1,
-            &test_context.replication_handler,
-            &vec![],
-            &test_context.raft_log,
-            &test_context.transport,
-            &test_context.arc_settings.raft,
-            &test_context.arc_settings.retry,
+            &test_context.raft_context,
+            peer_channels.clone(),
             true,
             &role_tx,
         )
@@ -263,29 +255,14 @@ async fn test_process_client_propose_case1_2() {
 
     let result2 = test_context
         .state
-        .process_client_propose(
-            request,
-            tx2,
-            &test_context.replication_handler,
-            &vec![],
-            &test_context.raft_log,
-            &test_context.transport,
-            &test_context.arc_settings.raft,
-            &test_context.arc_settings.retry,
-            true,
-            &role_tx,
-        )
+        .process_client_propose(request, tx2, &test_context.raft_context, peer_channels, true, &role_tx)
         .await;
 
     // Verify the result
-    match role_rx.recv().await {
-        Some(RoleEvent::NotifyNewCommitIndex { new_commit_index }) => {
-            assert_eq!(new_commit_index, 5);
-        }
-        _ => {
-            assert!(false);
-        }
+    if let Some(RoleEvent::NotifyNewCommitIndex { new_commit_index }) = role_rx.recv().await {
+        assert_eq!(new_commit_index, 5);
     }
+
     assert!(result1.is_ok(), "Operation should succeed");
     assert!(result2.is_ok(), "Operation should succeed");
     assert_eq!(test_context.state.commit_index(), 5);
@@ -305,26 +282,11 @@ async fn test_process_client_propose_case1_2() {
 /// - return Ok()
 #[tokio::test]
 async fn test_process_client_propose_case2() {
-    let context = setup_raft_components("/tmp/test_process_client_propose_case2", None, false);
-
-    let raft = RaftConfig {
-        replication: ReplicationConfig {
-            rpc_append_entries_in_batch_threshold: 100,
-            ..context.settings.raft.replication.clone()
-        },
-        ..context.settings.raft.clone()
-    };
-    let settings = RaftNodeConfig {
-        raft: raft.clone(),
-        ..context.settings.clone()
-    };
-    let mut state = LeaderState::<MockTypeConfig>::new(1, Arc::new(settings));
+    // let context = setup_raft_components("/tmp/test_process_client_propose_case2", None, false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case2", 100, 0, graceful_rx).await;
 
     // 1. Prepare mocks
-    let replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-
-    let raft_log = MockRaftLog::new();
-    let transport = MockTransport::new();
     let client_propose_request = ClientProposeRequest {
         client_id: 0,
         commands: vec![],
@@ -333,17 +295,15 @@ async fn test_process_client_propose_case2() {
     // 2. Prepare voting members
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let voting_members = Vec::new();
-    assert!(state
+
+    let peer_channels = Arc::new(mock_peer_channels());
+    assert!(test_context
+        .state
         .process_client_propose(
             client_propose_request,
             resp_tx,
-            &replication_handler,
-            &voting_members,
-            &Arc::new(raft_log),
-            &Arc::new(transport),
-            &raft,
-            &context.settings.retry,
+            &test_context.raft_context,
+            peer_channels,
             false,
             &role_tx
         )
@@ -441,10 +401,7 @@ async fn test_handle_raft_event_case1_1() {
         .is_ok());
 
     // Receive response with vote_granted = false
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(!r.vote_granted),
-        _ => assert!(false),
-    }
+    assert!(!resp_rx.recv().await.unwrap().unwrap().vote_granted);
 
     // No role event receives
     assert!(role_rx.try_recv().is_err());
@@ -519,11 +476,8 @@ async fn test_handle_raft_event_case2() {
         .await
         .is_ok());
 
-    if let Ok(Ok(m)) = resp_rx.recv().await {
-        assert_eq!(m.nodes, vec![]);
-    } else {
-        assert!(false);
-    }
+    let m = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(m.nodes, vec![]);
 }
 
 /// # Case 3.1: Receive ClusterConfUpdate Event
@@ -561,13 +515,7 @@ async fn test_handle_raft_event_case3_1() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(response) => assert!(response.success),
-            Err(_) => assert!(false),
-        },
-        Err(_) => assert!(false),
-    }
+    assert!(resp_rx.recv().await.unwrap().unwrap().success);
 }
 
 /// # Case 3.2: Receive ClusterConfUpdate Event
@@ -609,13 +557,7 @@ async fn test_handle_raft_event_case3_2() {
         .await
         .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(response) => assert!(!response.success),
-            Err(_) => assert!(false),
-        },
-        Err(_) => assert!(false),
-    }
+    assert!(!resp_rx.recv().await.unwrap().unwrap().success);
 }
 
 /// # Case 4.1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request
@@ -652,10 +594,8 @@ async fn test_handle_raft_event_case4_1() {
         .expect("should succeed");
 
     // Validate request should receive AppendEntriesResponse with success = false
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_higher_term()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(response.is_higher_term());
 }
 
 /// # Case 4.2: As Leader, if I receive append request with (my_term < append_entries_request.term)
@@ -755,7 +695,7 @@ async fn test_handle_raft_event_case6_1() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -767,8 +707,8 @@ async fn test_handle_raft_event_case6_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Prepare request
-    let mut commands = Vec::new();
-    commands.push(ClientCommand::get(kv(1)));
+    let commands = vec![ClientCommand::get(kv(1))];
+
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -783,17 +723,8 @@ async fn test_handle_raft_event_case6_1() {
         .await
         .expect("should succeed");
 
-    match resp_rx.recv().await {
-        Ok(Ok(_)) => {
-            assert!(false);
-        }
-        Ok(Err(e)) => {
-            assert_eq!(e.code(), Code::FailedPrecondition);
-        }
-        Err(_e) => {
-            assert!(false)
-        }
-    }
+    let e = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(e.code(), Code::FailedPrecondition);
 }
 
 /// # Case 6.2: Test ClientReadRequest event
@@ -817,7 +748,7 @@ async fn test_handle_raft_event_case6_2() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -841,7 +772,7 @@ async fn test_handle_raft_event_case6_2() {
         .returning(move |_, _, _| Some(expect_new_commit_index));
 
     // Initializing Shutdown Signal
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_2")
         .with_raft_log(raft_log)
@@ -851,8 +782,7 @@ async fn test_handle_raft_event_case6_2() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
 
     // Prepare request
-    let mut commands = Vec::new();
-    commands.push(ClientCommand::get(kv(1)));
+    let commands = vec![ClientCommand::get(kv(1))];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -873,25 +803,13 @@ async fn test_handle_raft_event_case6_2() {
 
     // Validation criteria 2: event "RoleEvent::NotifyNewCommitIndex" should be
     // received
-    match resp_rx.recv().await {
-        Ok(Ok(_)) => {
-            assert!(true);
-        }
-        Ok(Err(_)) => {
-            assert!(false);
-        }
-        Err(_e) => {
-            assert!(false)
-        }
-    }
+    assert!(resp_rx.recv().await.unwrap().is_ok());
 
     // Validation criteria 3: resp_rx receives Ok()
-    match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(event, RoleEvent::NotifyNewCommitIndex {
-            new_commit_index: expect_new_commit_index
-        })),
-        Err(_) => assert!(false),
-    };
+    let event = role_rx.try_recv().unwrap();
+    assert!(matches!(event, RoleEvent::NotifyNewCommitIndex {
+        new_commit_index: _expect_new_commit_index
+    }));
 }
 
 /// # Case 6.3: Test ClientReadRequest event
@@ -914,7 +832,7 @@ async fn test_handle_raft_event_case6_3() {
     replication_handler
         .expect_handle_client_proposal_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(1),
             )))
@@ -937,8 +855,7 @@ async fn test_handle_raft_event_case6_3() {
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
-    let mut commands = Vec::new();
-    commands.push(ClientCommand::get(kv(1)));
+    let commands = vec![ClientCommand::get(kv(1))];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -958,18 +875,14 @@ async fn test_handle_raft_event_case6_3() {
     assert_eq!(state.commit_index(), 1);
 
     // Validation criteria 2: event "RoleEvent::BecomeFollower" should be received
-    match role_rx.try_recv() {
-        Ok(event) => assert!(matches!(event, RoleEvent::BecomeFollower(None))),
-        Err(_) => assert!(false),
-    };
+    let event = role_rx.try_recv().unwrap();
+    assert!(matches!(event, RoleEvent::BecomeFollower(None)));
 
     // Validation criteria 3: resp_rx receives Err(e)
-    match resp_rx.recv().await {
-        Ok(Err(_)) => {
-            assert!(true)
-        }
-        _ => {
-            assert!(false);
-        }
-    }
+    assert!(resp_rx.recv().await.unwrap().is_err());
+}
+
+#[test]
+fn test_state_size() {
+    assert!(size_of::<LeaderState<RaftTypeConfig>>() < 312);
 }

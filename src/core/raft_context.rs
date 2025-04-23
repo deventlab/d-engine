@@ -15,55 +15,62 @@ use crate::Membership;
 use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
-pub struct RaftContext<T>
+pub(crate) struct RaftStorageHandles<T: TypeConfig> {
+    pub(crate) raft_log: Arc<ROF<T>>,
+    pub(crate) state_machine: Arc<SMOF<T>>,
+    pub(crate) state_storage: Box<SSOF<T>>,
+}
+
+pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
+    pub(crate) election_handler: EOF<T>,
+    pub(crate) replication_handler: REPOF<T>,
+    pub(crate) state_machine_handler: Arc<SMHOF<T>>,
+}
+
+pub(crate) struct RaftContext<T>
 where T: TypeConfig
 {
-    pub node_id: u32,
+    pub(crate) node_id: u32,
 
     // Storages
-    pub raft_log: Arc<ROF<T>>,
-    pub state_machine: Arc<SMOF<T>>,
-    pub state_storage: Box<SSOF<T>>,
+    pub(crate) storage: RaftStorageHandles<T>,
 
     // Network
-    pub transport: Arc<TROF<T>>,
+    pub(crate) transport: Arc<TROF<T>>,
 
     // Cluster Membership
-    pub membership: Arc<MOF<T>>,
+    pub(crate) membership: Arc<MOF<T>>,
 
     // Handlers
-    pub election_handler: EOF<T>,
-    pub replication_handler: REPOF<T>,
-    pub state_machine_handler: Arc<SMHOF<T>>, /* it was used in both commit_handlers and other
-                                               * places */
+    pub(crate) handlers: RaftCoreHandlers<T>,
 
     // RaftNodeConfig
-    pub settings: Arc<RaftNodeConfig>,
+    pub(crate) settings: Arc<RaftNodeConfig>,
 }
 
 impl<T> RaftContext<T>
 where T: TypeConfig
 {
     pub fn raft_log(&self) -> &Arc<ROF<T>> {
-        &self.raft_log
+        &self.storage.raft_log
     }
 
     pub fn state_machine(&self) -> &SMOF<T> {
-        &self.state_machine
+        &self.storage.state_machine
     }
 
     pub fn state_storage(&self) -> &SSOF<T> {
-        &self.state_storage
+        &self.storage.state_storage
     }
 
     pub fn transport(&self) -> &Arc<TROF<T>> {
         &self.transport
     }
     pub fn replication_handler(&self) -> &REPOF<T> {
-        &self.replication_handler
+        &self.handlers.replication_handler
     }
     pub fn election_handler(&self) -> &EOF<T> {
-        &self.election_handler
+        &self.handlers.election_handler
     }
     pub fn settings(&self) -> Arc<RaftNodeConfig> {
         self.settings.clone()

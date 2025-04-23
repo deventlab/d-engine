@@ -32,13 +32,14 @@ async fn simulate_append_entries_mock_server(
     rx: oneshot::Receiver<()>,
 ) -> Result<ChannelWithAddress> {
     //prepare learner's channel address inside membership config
-    let mut mock_service = MockRpcService::default();
-    mock_service.expected_append_entries_response = Some(response);
+    let mock_service = MockRpcService {
+        expected_append_entries_response: Some(response),
+        ..Default::default()
+    };
     let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, true).await {
         Ok(a) => a,
         Err(e) => {
-            assert!(false);
-            unreachable!();
+            panic!("error: {:?}", e);
         }
     };
     Ok(test_utils::MockNode::mock_channel_with_address(addr.to_string(), port).await)
@@ -64,13 +65,12 @@ async fn test_send_cluster_update_case1() {
     };
 
     let client = GrpcTransport { my_id };
-    match client.send_cluster_update(vec![], request, &settings.retry).await {
-        Ok(_) => assert!(false),
-        Err(e) => assert!(matches!(
-            e,
-            Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
-        )),
-    }
+    let result = client.send_cluster_update(vec![], request, &settings.retry).await;
+    let err = result.unwrap_err();
+    assert!(matches!(
+        err,
+        Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
+    ));
 }
 
 // # Case 2: passed peers only include the node itself
@@ -114,7 +114,7 @@ async fn test_send_cluster_update_case2() {
             assert!(res.responses.is_empty());
             assert!(res.peer_ids.is_empty())
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -177,7 +177,7 @@ async fn test_send_cluster_update_case3() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -236,7 +236,7 @@ async fn test_send_cluster_update_case4() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -248,7 +248,7 @@ async fn test_send_append_requests_case1() {
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client.send_append_requests(vec![], &RetryPolicies::default()).await {
-        Ok(_) => assert!(false),
+        Ok(_) => panic!(),
         Err(e) => assert!(matches!(
             e,
             Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
@@ -305,7 +305,7 @@ async fn test_send_append_requests_case2() {
             assert!(res.responses.is_empty());
             assert!(res.peer_ids.is_empty())
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -378,7 +378,7 @@ async fn test_send_append_requests_case3_1() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -450,7 +450,7 @@ async fn test_send_append_requests_case3_2() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -473,7 +473,7 @@ async fn test_send_vote_requests_case1() {
     };
     let client = GrpcTransport { my_id };
     match client.send_vote_requests(vec![], request, &settings.retry).await {
-        Ok(_) => assert!(false),
+        Ok(_) => panic!(),
         Err(e) => assert!(matches!(
             e,
             Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
@@ -526,7 +526,7 @@ async fn test_send_vote_requests_case2() {
             assert!(res.responses.is_empty());
             assert!(res.peer_ids.is_empty())
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -591,7 +591,7 @@ async fn test_send_vote_requests_case3() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -651,7 +651,7 @@ async fn test_send_vote_requests_case4_1() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -704,13 +704,10 @@ async fn test_send_vote_requests_case4_2() {
         },
     ];
     let client = GrpcTransport { my_id };
-    match client
+    assert!(client
         .send_vote_requests(requests_with_peer_address, request, &settings.retry)
         .await
-    {
-        Ok(_) => assert!(true),
-        Err(e) => assert!(false),
-    }
+        .is_ok());
 }
 
 // # Case 4.3: vote response returns higher last_log_index
@@ -764,13 +761,10 @@ async fn test_send_vote_requests_case4_3() {
         },
     ];
     let client = GrpcTransport { my_id };
-    match client
+    assert!(client
         .send_vote_requests(requests_with_peer_address, request, &settings.retry)
         .await
-    {
-        Ok(_) => assert!(true),
-        Err(e) => assert!(false),
-    }
+        .is_ok());
 }
 // # Case 5: two peers passed
 //
@@ -837,7 +831,7 @@ async fn test_send_vote_requests_case5() {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2);
         }
-        Err(_) => assert!(false),
+        Err(_) => panic!(),
     }
 }
 
@@ -902,7 +896,7 @@ async fn test_send_vote_requests_case5() {
 //         .send_vote_requests(requests_with_peer_address, request, &settings.retry)
 //         .await
 //     {
-//         Ok(_) => assert!(false),
+//         Ok(_) => panic!(),
 //         Err(e) => assert!(matches!(e, Error::HigherTermFoundError(_higher_term))),
 //     }
 // }

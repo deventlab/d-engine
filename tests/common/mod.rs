@@ -38,14 +38,15 @@ pub const LATENCY_IN_MS: u64 = 50;
 // to make sure the result is consistent
 pub const ITERATIONS: u64 = 10;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ClientCommands {
-    PUT,
-    READ,
-    LREAD,
-    DELETE,
+    Put,
+    Read,
+    Lread,
+    Delete,
 }
-
+#[allow(dead_code)]
 pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result<(), ClientApiError> {
     // Start all nodes
     let mut controllers = vec![];
@@ -195,23 +196,19 @@ pub fn manipulate_log(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
-        eprintln!("manipulate_log error: {:?}", e);
-        assert!(false);
-    }
+    assert!(raft_log.insert_batch(entries).is_ok());
 }
 pub fn init_state_storage(
     state_storage: &dyn StateStorage,
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
-    if let Err(e) = state_storage.save_hard_state(HardState {
-        current_term,
-        voted_for,
-    }) {
-        eprintln!("init_state_storage error: {:?}", e);
-        assert!(false);
-    }
+    assert!(state_storage
+        .save_hard_state(HardState {
+            current_term,
+            voted_for,
+        })
+        .is_ok());
 }
 
 pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {

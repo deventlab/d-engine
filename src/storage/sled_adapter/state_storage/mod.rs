@@ -11,6 +11,7 @@ use crate::StateStorage;
 use crate::StorageError;
 use crate::HARD_STATE_KEY;
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct SledStateStorage {
     db: Arc<sled::Db>,
@@ -51,7 +52,9 @@ impl StateStorage for SledStateStorage {
     }
 
     fn flush(&self) -> crate::Result<usize> {
-        self.tree.flush().map_err(|e| StorageError::SledError(e).into())
+        self.tree
+            .flush()
+            .map_err(|e| StorageError::DbError(e.to_string()).into())
     }
 
     fn load_hard_state(&self) -> Option<crate::HardState> {

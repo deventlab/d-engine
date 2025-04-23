@@ -10,7 +10,7 @@ use crate::Error;
 use crate::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct TlsConfig {
     /// Enables TLS encryption for network communication
     /// Default: false (disabled)

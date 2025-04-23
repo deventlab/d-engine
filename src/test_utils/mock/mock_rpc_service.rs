@@ -10,11 +10,9 @@ use tracing::info;
 
 use super::MockRpcService;
 use crate::proto::rpc_service_server::RpcServiceServer;
-use crate::proto::AppendEntriesResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::VoteResponse;
 use crate::ChannelWithAddress;
-use crate::Error;
 use crate::Result;
 
 pub(crate) const MOCK_RAFT_PORT_BASE: u64 = 60100;
@@ -73,15 +71,11 @@ impl MockNode {
             Ok(c) => match c.connect().await {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {:?}", e);
-                    assert!(false);
-                    panic!("failed");
+                    panic!("error: {:?}", e);
                 }
             },
             Err(e) => {
-                eprintln!("error: {:?}", e);
-                assert!(false);
-                panic!("failed");
+                panic!("error: {:?}", e);
             }
         };
 
@@ -102,32 +96,7 @@ impl MockNode {
         let addr = match Self::mock_listener(mock_service, port, rx, server_is_ready).await {
             Ok(a) => a,
             Err(e) => {
-                assert!(false);
-                return Err(Error::Fatal(format!(
-                    "test_utils::MockNode::mock_listener failed: {:?}",
-                    e
-                )));
-            }
-        };
-        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
-    }
-
-    pub(crate) async fn simulate_mock_service_with_append_reps(
-        port: u64,
-        response: AppendEntriesResponse,
-        rx: oneshot::Receiver<()>,
-    ) -> Result<ChannelWithAddress> {
-        //prepare learner's channel address inside membership config
-        let mut mock_service = MockRpcService::default();
-        mock_service.expected_append_entries_response = Some(Ok(response));
-        let addr = match Self::mock_listener(mock_service, port, rx, true).await {
-            Ok(a) => a,
-            Err(e) => {
-                assert!(false);
-                return Err(Error::Fatal(format!(
-                    "simulate_mock_service_with_append_reps failed: {:?}",
-                    e
-                )));
+                panic!("error: {:?}", e);
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
@@ -139,13 +108,14 @@ impl MockNode {
         rx: oneshot::Receiver<()>,
     ) -> Result<ChannelWithAddress> {
         //prepare learner's channel address inside membership config
-        let mut mock_service = MockRpcService::default();
-        mock_service.expected_vote_response = Some(Ok(response));
+        let mock_service = MockRpcService {
+            expected_vote_response: Some(Ok(response)),
+            ..Default::default()
+        };
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {
             Ok(a) => a,
             Err(e) => {
-                assert!(false);
-                return Err(Error::Fatal(format!("simulate_send_votes_mock_server failed: {:?}", e)));
+                panic!("error: {:?}", e);
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
@@ -157,16 +127,14 @@ impl MockNode {
         rx: oneshot::Receiver<()>,
     ) -> Result<ChannelWithAddress> {
         //prepare learner's channel address inside membership config
-        let mut mock_service = MockRpcService::default();
-        mock_service.expected_metadata_response = Some(response);
+        let mock_service = MockRpcService {
+            expected_metadata_response: Some(response),
+            ..Default::default()
+        };
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {
             Ok(a) => a,
             Err(e) => {
-                assert!(false);
-                return Err(Error::Fatal(format!(
-                    "simulate_mock_service_with_cluster_conf_reps failed: {:?}",
-                    e
-                )));
+                panic!("error: {:?}", e);
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)

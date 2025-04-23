@@ -57,6 +57,8 @@ pub struct VoteResult {
     pub peer_ids: HashSet<u32>,
     pub responses: Vec<Result<VoteResponse>>,
 }
+
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ClusterUpdateResult {
     pub peer_ids: HashSet<u32>,
@@ -91,6 +93,7 @@ pub trait Transport: Send + Sync + 'static {
     /// - Deduplicates peer list entries
     /// - Uses compressed gRPC streams for efficient large config updates
     /// - Maintains response order matching input peer list
+    #[allow(dead_code)]
     async fn send_cluster_update(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
@@ -203,7 +206,7 @@ where
                     }
                     _ => {
                         warn!("RPC error: {}", status);
-                        NetworkError::TonicStatusError(status)
+                        NetworkError::TonicStatusError(Box::new(status))
                     }
                 };
             }

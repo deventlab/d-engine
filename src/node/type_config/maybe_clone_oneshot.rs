@@ -18,6 +18,7 @@ pub trait RaftOneshot<T: Send> {
 #[derive(Clone)]
 pub(crate) struct MaybeCloneOneshot;
 
+#[allow(dead_code)]
 pub(crate) struct MaybeCloneOneshotSender<T: Send + Clone> {
     inner: oneshot::Sender<T>,
 
@@ -32,6 +33,8 @@ impl<T: Send + Clone> Debug for MaybeCloneOneshotSender<T> {
         f.debug_struct("MaybeCloneOneshotSender").finish()
     }
 }
+
+#[allow(dead_code)]
 pub(crate) struct MaybeCloneOneshotReceiver<T: Send + Clone> {
     inner: oneshot::Receiver<T>,
 

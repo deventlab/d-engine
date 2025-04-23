@@ -33,11 +33,11 @@ where
                 return Ok(r); // Exit on success
             }
             Ok(Err(error)) => {
-                warn!("failed with error: {:?}", &error);
+                warn!(?error, "failed with error.");
                 last_error = NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
             }
             Err(error) => {
-                warn!("Task timed out after {:?}", timeout_duration);
+                warn!(?timeout_duration, ?error, "Task timed out");
                 last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };

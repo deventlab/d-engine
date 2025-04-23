@@ -87,7 +87,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             self.node_id(),
             self.current_term(),
         );
-        Ok(RaftRole::Candidate(self.into()))
+        Ok(RaftRole::Candidate(Box::new(self.into())))
     }
     fn become_follower(&self) -> Result<RaftRole<T>> {
         warn!("I am follower already");
@@ -113,7 +113,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             self.node_id(),
             self.current_term(),
         );
-        Ok(RaftRole::Learner(self.into()))
+        Ok(RaftRole::Learner(Box::new(self.into())))
     }
 
     //--- Timer releated ---
@@ -279,6 +279,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     // Otherwise
                     let mut results = vec![];
                     if let Some(v) = ctx
+                        .handlers
                         .state_machine_handler
                         .read_from_state_machine(client_read_request.commands)
                     {

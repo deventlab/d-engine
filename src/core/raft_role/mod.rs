@@ -40,25 +40,19 @@ use tracing::trace;
 use super::RaftContext;
 use super::RaftEvent;
 use super::RoleEvent;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
 use crate::alias::POF;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
 use crate::proto::VotedFor;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
 use crate::Result;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
 use crate::TypeConfig;
 
+/// The role state focuses solely on its own logic
+/// and does not directly manipulate the underlying storage or network.
 #[repr(i32)]
 pub enum RaftRole<T: TypeConfig> {
-    Follower(FollowerState<T>),
-    Candidate(CandidateState<T>),
-    Leader(LeaderState<T>),
-    Learner(LearnerState<T>),
+    Follower(Box<FollowerState<T>>),
+    Candidate(Box<CandidateState<T>>),
+    Leader(Box<LeaderState<T>>),
+    Learner(Box<LearnerState<T>>),
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -108,13 +102,13 @@ impl SharedState {
         hard_state_from_db: Option<HardState>,
         last_applied_index_option: Option<u64>,
     ) -> Self {
-        let hard_state = if hard_state_from_db.is_none() {
+        let hard_state = if let Some(s) = hard_state_from_db {
+            s
+        } else {
             HardState {
                 current_term: 1,
                 voted_for: None,
             }
-        } else {
-            hard_state_from_db.unwrap()
         };
         debug!(
             "New Shared State wtih, hard_state_from_db:{:?}, last_applied_index_option:{:?} ",
@@ -160,19 +154,19 @@ impl SharedState {
 impl<T: TypeConfig> RaftRole<T> {
     pub(crate) fn state(&self) -> &dyn RaftRoleState<T = T> {
         match self {
-            RaftRole::Follower(state) => state,
-            RaftRole::Candidate(state) => state,
-            RaftRole::Leader(state) => state,
-            RaftRole::Learner(state) => state,
+            RaftRole::Follower(state) => state.as_ref(),
+            RaftRole::Candidate(state) => state.as_ref(),
+            RaftRole::Leader(state) => state.as_ref(),
+            RaftRole::Learner(state) => state.as_ref(),
         }
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut dyn RaftRoleState<T = T> {
         match self {
-            RaftRole::Follower(state) => state,
-            RaftRole::Candidate(state) => state,
-            RaftRole::Leader(state) => state,
-            RaftRole::Learner(state) => state,
+            RaftRole::Follower(state) => state.as_mut(),
+            RaftRole::Candidate(state) => state.as_mut(),
+            RaftRole::Leader(state) => state.as_mut(),
+            RaftRole::Learner(state) => state.as_mut(),
         }
     }
 
@@ -188,6 +182,7 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().next_deadline()
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn as_i32(&self) -> i32 {
         match self {
@@ -210,28 +205,35 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) fn become_learner(&self) -> Result<RaftRole<T>> {
         self.state().become_learner()
     }
-
+    #[allow(dead_code)]
     pub(crate) fn is_follower(&self) -> bool {
         self.state().is_follower()
     }
+    #[allow(dead_code)]
     pub(crate) fn is_candidate(&self) -> bool {
         self.state().is_candidate()
     }
+    #[allow(dead_code)]
     pub(crate) fn is_leader(&self) -> bool {
         self.state().is_leader()
     }
+    #[allow(dead_code)]
     pub(crate) fn is_learner(&self) -> bool {
         self.state().is_learner()
     }
 
+    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn current_term(&self) -> u64 {
         self.state().current_term()
     }
 
+    #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.state().voted_for()
     }
+    #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) fn commit_index(&self) -> u64 {
         self.state().commit_index()
@@ -249,36 +251,6 @@ impl<T: TypeConfig> RaftRole<T> {
         node_id: u32,
     ) -> Option<u64> {
         self.state().next_index(node_id)
-    }
-
-    pub(crate) fn update_term(
-        &mut self,
-        new_term: u64,
-    ) {
-        self.state_mut().update_current_term(new_term);
-    }
-
-    pub(crate) fn update_voted_for(
-        &mut self,
-        voted_for: VotedFor,
-    ) -> Result<()> {
-        self.state_mut().update_voted_for(voted_for)
-    }
-
-    pub(crate) fn update_match_index(
-        &mut self,
-        node_id: u32,
-        new_match_id: u64,
-    ) -> Result<()> {
-        self.state_mut().update_match_index(node_id, new_match_id)
-    }
-
-    pub(crate) fn update_next_index(
-        &mut self,
-        node_id: u32,
-        new_next_id: u64,
-    ) -> Result<()> {
-        self.state_mut().update_next_index(node_id, new_next_id)
     }
 
     pub(crate) fn init_peers_next_index_and_match_index(

@@ -205,7 +205,7 @@ async fn test_handle_rpc_services_successfully() {
         });
     replication_handler
         .expect_handle_client_proposal_in_batch()
-        .returning(|_, _, _, _, _, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::new(),

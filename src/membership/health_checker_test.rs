@@ -17,9 +17,8 @@ async fn test_check_peer_is_ready_case1() {
     let mock_service = MockRpcService::default();
     let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, is_ready).await {
         Ok(a) => a,
-        Err(_) => {
-            assert!(false);
-            return;
+        Err(e) => {
+            panic!("error: {:?}", e);
         }
     };
 
@@ -34,17 +33,19 @@ async fn test_check_peer_is_ready_case1() {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    let mut settings = NetworkConfig::default();
-    settings.connect_timeout_in_ms = 100;
-    settings.request_timeout_in_ms = 100;
-    settings.concurrency_limit_per_connection = 8192;
-    settings.tcp_keepalive_in_secs = 3600;
-    settings.http2_keep_alive_interval_in_secs = 300;
-    settings.http2_keep_alive_timeout_in_secs = 20;
-    settings.max_frame_size = 12582912;
-    settings.initial_connection_window_size = 12582912;
-    settings.initial_stream_window_size = 12582912;
-    settings.buffer_size = 65536;
+    let settings = NetworkConfig {
+        connect_timeout_in_ms: 100,
+        request_timeout_in_ms: 100,
+        concurrency_limit_per_connection: 8192,
+        tcp_keepalive_in_secs: 3600,
+        http2_keep_alive_interval_in_secs: 300,
+        http2_keep_alive_timeout_in_secs: 20,
+        max_frame_size: 12582912,
+        initial_connection_window_size: 12582912,
+        initial_stream_window_size: 12582912,
+        buffer_size: 65536,
+        ..Default::default()
+    };
 
     let r = HealthChecker::check_peer_is_ready(
         MockNode::tcp_addr_to_http_addr(peer_addr.to_string()),
@@ -65,9 +66,8 @@ async fn test_check_peer_is_ready_case2() {
     let mock_service = MockRpcService::default();
     let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, is_ready).await {
         Ok(a) => a,
-        Err(_) => {
-            assert!(false);
-            return;
+        Err(e) => {
+            panic!("error: {:?}", e);
         }
     };
     let peer_addr = addr.to_string();
@@ -80,17 +80,19 @@ async fn test_check_peer_is_ready_case2() {
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
-    let mut settings = NetworkConfig::default();
-    settings.connect_timeout_in_ms = 100;
-    settings.request_timeout_in_ms = 100;
-    settings.concurrency_limit_per_connection = 8192;
-    settings.tcp_keepalive_in_secs = 3600;
-    settings.http2_keep_alive_interval_in_secs = 300;
-    settings.http2_keep_alive_timeout_in_secs = 20;
-    settings.max_frame_size = 12582912;
-    settings.initial_connection_window_size = 12582912;
-    settings.initial_stream_window_size = 12582912;
-    settings.buffer_size = 65536;
+    let settings = NetworkConfig {
+        connect_timeout_in_ms: 100,
+        request_timeout_in_ms: 100,
+        concurrency_limit_per_connection: 8192,
+        tcp_keepalive_in_secs: 3600,
+        http2_keep_alive_interval_in_secs: 300,
+        http2_keep_alive_timeout_in_secs: 20,
+        max_frame_size: 12582912,
+        initial_connection_window_size: 12582912,
+        initial_stream_window_size: 12582912,
+        buffer_size: 65536,
+        ..Default::default()
+    };
 
     let r = HealthChecker::check_peer_is_ready(
         MockNode::tcp_addr_to_http_addr(peer_addr.to_string()),

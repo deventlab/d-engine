@@ -29,7 +29,7 @@ pub fn kv(i: u64) -> Vec<u8> {
     k.to_vec()
 }
 
-pub fn vk(v: &Vec<u8>) -> u64 {
+pub fn vk(v: &[u8]) -> u64 {
     if v.is_empty() {
         error!("v is empty");
     }

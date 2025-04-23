@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::debug;
@@ -31,8 +30,7 @@ struct TestConext {
     raft_log_mock: ROF<MockTypeConfig>,
 }
 async fn setup(port: u64) -> TestConext {
-    let (event_tx, _event_rx) = mpsc::channel(1);
-    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, event_tx);
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
     // 2. Prepare Peers fake address
     //  Simulate ChannelWithAddress: prepare rpc service for getting peer address
@@ -65,8 +63,7 @@ async fn test_broadcast_vote_requests_case1() {
     // 1. Create a ElectionHandler instance
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case1", None, false);
-    let (event_tx, _event_rx) = mpsc::channel(1);
-    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, event_tx);
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
     // 2.
     let term = 1;
@@ -74,15 +71,16 @@ async fn test_broadcast_vote_requests_case1() {
     let raft_log_mock: Arc<ROF<MockTypeConfig>> = Arc::new(MockRaftLog::new());
     let transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::NoVotingMemberFound { candidate_id }))) =
-        election_handler
-            .broadcast_vote_requests(term, voting_members, &raft_log_mock, &transport_mock, &ctx.arc_settings)
-            .await
-    {
-        assert!(true);
-    } else {
-        assert!(false);
-    }
+    let err = election_handler
+        .broadcast_vote_requests(term, voting_members, &raft_log_mock, &transport_mock, &ctx.arc_settings)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Consensus(ConsensusError::Election(ElectionError::NoVotingMemberFound {
+            candidate_id: _
+        }))
+    ));
 }
 
 /// # Case 2: Test failed to receive majority peers' failed vote
@@ -118,7 +116,7 @@ async fn test_broadcast_vote_requests_case2() {
         });
     let term = 1;
 
-    let r = test_context
+    let e = test_context
         .election_handler
         .broadcast_vote_requests(
             term,
@@ -127,20 +125,18 @@ async fn test_broadcast_vote_requests_case2() {
             &Arc::new(transport_mock),
             &ctx.arc_settings,
         )
-        .await;
+        .await
+        .unwrap_err();
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
+    if let Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
         index,
         expected_term,
         actual_term,
-    }))) = r
+    })) = e
     {
         assert_eq!(index, 1);
         assert_eq!(actual_term, 1);
         assert_eq!(expected_term, 1);
-        assert!(true);
-    } else {
-        assert!(false);
     }
 }
 /// # Case 3: Test after receiving majority peers' success vote
@@ -231,7 +227,7 @@ async fn test_broadcast_vote_requests_case4() {
             })
         });
 
-    let r = test_context
+    let e = test_context
         .election_handler
         .broadcast_vote_requests(
             my_last_log_term,
@@ -240,15 +236,13 @@ async fn test_broadcast_vote_requests_case4() {
             &Arc::new(transport_mock),
             &ctx.arc_settings,
         )
-        .await;
+        .await
+        .unwrap_err();
 
-    debug!("test_broadcast_vote_requests_case4: {:?}", &r);
+    debug!("test_broadcast_vote_requests_case4: {:?}", &e);
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term)))) = r {
+    if let Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term))) = e {
         assert_eq!(higher_term, my_last_log_term + 1);
-        assert!(true);
-    } else {
-        assert!(false);
     }
 }
 
@@ -297,11 +291,7 @@ async fn test_broadcast_vote_requests_case5() {
             })
         });
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
-        index,
-        expected_term,
-        actual_term,
-    }))) = test_context
+    let e = test_context
         .election_handler
         .broadcast_vote_requests(
             my_last_log_term,
@@ -311,13 +301,17 @@ async fn test_broadcast_vote_requests_case5() {
             &ctx.arc_settings,
         )
         .await
+        .unwrap_err();
+
+    if let Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
+        index,
+        expected_term,
+        actual_term,
+    })) = e
     {
         assert_eq!(index, my_last_log_index);
         assert_eq!(expected_term, my_last_log_term);
         assert_eq!(actual_term, my_last_log_term);
-        assert!(true);
-    } else {
-        assert!(false);
     }
 }
 
@@ -352,7 +346,7 @@ async fn test_handle_vote_request_case1() {
         last_log_term,
     };
     let voted_for_option = None;
-    match test_context
+    assert!(test_context
         .election_handler
         .handle_vote_request(
             vote_request,
@@ -361,13 +355,8 @@ async fn test_handle_vote_request_case1() {
             &Arc::new(test_context.raft_log_mock),
         )
         .await
-    {
-        Ok(state_update) => {
-            assert!(state_update.new_voted_for.is_some());
-            assert_eq!(state_update.term_update.unwrap(), request_term);
-        }
-        Err(_) => assert!(false),
-    }
+        .is_ok_and(move |state_update| state_update.new_voted_for.is_some()
+            && state_update.term_update.unwrap() == request_term));
 }
 
 /// # Case 2: Test if vote request is illegal
@@ -399,7 +388,7 @@ async fn test_handle_vote_request_case2() {
     };
     let voted_for_option = None;
 
-    match test_context
+    let state_update = test_context
         .election_handler
         .handle_vote_request(
             vote_request,
@@ -408,12 +397,8 @@ async fn test_handle_vote_request_case2() {
             &Arc::new(test_context.raft_log_mock),
         )
         .await
-    {
-        Ok(state_update) => {
-            assert!(state_update.new_voted_for.is_none());
-        }
-        Err(_) => assert!(false),
-    }
+        .unwrap();
+    assert!(state_update.new_voted_for.is_none());
 }
 
 /// Case 1.1: Term and local log index compare
