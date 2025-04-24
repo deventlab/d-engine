@@ -132,23 +132,9 @@ where T: TypeConfig
     ) -> RaftContext<T> {
         RaftContext {
             node_id: id,
-
-            // storage: RaftStorageHandles {
-            //     raft_log: Arc::new(raft_log),
-            //     state_machine,
-            //     state_storage: Box::new(state_storage),
-            // },
             storage,
-
             transport: Arc::new(transport),
-
             membership,
-
-            // handlers: RaftCoreHandlers {
-            //     election_handler,
-            //     replication_handler,
-            //     state_machine_handler,
-            // },
             handlers,
 
             settings,

@@ -1,3 +1,5 @@
+#![doc = include_str!("docs/overview.md")]
+
 //! # d_engine
 //!
 //! [![codecov](https://codecov.io/gh/deventlab/d-engine/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/d-engine)
@@ -47,8 +49,10 @@
 
 pub mod client;
 pub mod config;
+mod docs;
 pub mod node;
 pub mod proto;
+pub mod snapshot;
 #[doc(hidden)]
 pub mod storage;
 
