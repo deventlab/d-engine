@@ -24,7 +24,8 @@ impl SnapshotAssembler {
             .create(true)
             .append(true)
             .open(&file_path)
-            .await?;
+            .await
+            .map_err(|e| StorageError::IoError(e))?;
 
         Ok(SnapshotAssembler {
             temp_file: file,
@@ -52,7 +53,10 @@ impl SnapshotAssembler {
         self.received_chunks.fetch_add(1, Ordering::SeqCst);
 
         // Write temp file
-        self.temp_file.write_all(&data).await?;
+        self.temp_file
+            .write_all(&data)
+            .await
+            .map_err(|e| StorageError::IoError(e))?;
         self.total_size += data.len();
         self.expected_index += 1;
 
@@ -60,7 +64,7 @@ impl SnapshotAssembler {
     }
 
     pub(crate) async fn flush_to_disk(&mut self) -> Result<()> {
-        self.temp_file.flush().await?;
+        self.temp_file.flush().await.map_err(|e| StorageError::IoError(e))?;
         Ok(())
     }
 

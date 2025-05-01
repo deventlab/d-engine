@@ -3,6 +3,7 @@
 //! Defines comprehensive error types for a Raft-based distributed system,
 //! categorized by protocol layer and operational concerns.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use config::ConfigError;
@@ -146,6 +147,13 @@ pub enum StorageError {
     /// Disk I/O failures during log/snapshot operations
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    /// Custom error with a path as a string slice (`&str`)
+    #[error("Error occurred at path: {path}")]
+    PathError {
+        path: PathBuf, // Use &str for lightweight references
+        source: std::io::Error,
+    },
 
     /// Serialization failures for persisted data
     #[error(transparent)]
@@ -443,12 +451,6 @@ impl From<tonic::transport::Error> for Error {
 impl From<sled::Error> for Error {
     fn from(err: sled::Error) -> Self {
         StorageError::DbError(err.to_string()).into()
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        StorageError::IoError(err).into()
     }
 }
 

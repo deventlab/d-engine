@@ -4,7 +4,13 @@ use prost::Message;
 use sled::Batch;
 
 use super::*;
-use crate::convert::kv;
+use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
+use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
+use crate::constants::STATE_MACHINE_TREE;
+use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
+use crate::convert::safe_kv;
+use crate::convert::safe_vk;
+use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
 use crate::proto::ClientCommand;
 use crate::proto::Entry;
@@ -66,8 +72,8 @@ fn test_state_machine_flush() {
         let state_machine_db = init(p);
         let state_machine = Arc::new(RaftStateMachine::new(1, state_machine_db).expect("success"));
         let mut batch = Batch::default();
-        batch.insert(kv(1), kv(1));
-        batch.insert(kv(2), kv(2));
+        batch.insert(&safe_kv(1), &safe_kv(1));
+        batch.insert(&safe_kv(2), &safe_kv(2));
         state_machine.apply_batch(batch).expect("should succeed");
         state_machine.flush().expect("should succeed");
         println!(">>state_machine disk length: {:?}", state_machine.len());
@@ -77,7 +83,7 @@ fn test_state_machine_flush() {
         let state_machine_db = init(p);
         let state_machine = RaftStateMachine::new(1, state_machine_db).expect("success");
         assert_eq!(state_machine.len(), 2);
-        assert_eq!(state_machine.get(&kv(2)).unwrap_or(Some(kv(0))), Some(kv(2)));
+        assert_eq!(state_machine.get(&safe_kv(2)).unwrap(), Some(safe_kv(2).to_vec()));
     }
 }
 
@@ -88,11 +94,11 @@ async fn test_basic_kv_operations() {
     let sm = context.state_machine.clone();
 
     let test_key = 42u64;
-    let test_value = kv(test_key);
+    let test_value = safe_kv(test_key);
 
     // Test insert and read
     let mut batch = Batch::default();
-    batch.insert(test_value.clone(), test_value.clone());
+    batch.insert(&test_value.clone(), &test_value.clone());
     sm.apply_batch(batch).unwrap();
 
     match sm.get(&test_value) {
@@ -102,7 +108,7 @@ async fn test_basic_kv_operations() {
 
     // Test delete
     let mut batch = Batch::default();
-    batch.remove(test_value.clone());
+    batch.remove(&test_value.clone());
     sm.apply_batch(batch).unwrap();
 
     assert_eq!(sm.get(&test_value).unwrap(), None);
@@ -154,8 +160,8 @@ fn test_iter_functionality() {
     // Insert test data
     let mut batch = Batch::default();
     for i in 1..=3 {
-        let key = kv(i);
-        batch.insert(key.clone(), key);
+        let key = safe_kv(i);
+        batch.insert(&key, &key);
     }
     sm.apply_batch(batch).unwrap();
 
@@ -177,12 +183,12 @@ async fn test_apply_chunk_functionality() {
     let test_entries = vec![
         Entry {
             index: 1,
-            command: ClientCommand::insert(kv(1), kv(2)).encode_to_vec(),
+            command: ClientCommand::insert(&safe_kv(1), &safe_kv(2)).encode_to_vec(),
             term: 1,
         },
         Entry {
             index: 2,
-            command: ClientCommand::delete(kv(1)).encode_to_vec(),
+            command: ClientCommand::delete(&safe_kv(1)).encode_to_vec(),
             term: 1,
         },
     ];
@@ -191,7 +197,7 @@ async fn test_apply_chunk_functionality() {
     sm.apply_chunk(test_entries).unwrap();
 
     // Verify results
-    assert_eq!(sm.get(&kv(1)).unwrap(), None);
+    assert_eq!(sm.get(&safe_kv(1)).unwrap(), None);
     assert_eq!(sm.last_applied(), (2, 1));
 }
 
@@ -202,7 +208,7 @@ fn test_metrics_integration() {
     let sm = context.state_machine.clone();
     let test_entry = Entry {
         index: 1,
-        command: ClientCommand::insert(kv(1), kv(2)).encode_to_vec(),
+        command: ClientCommand::insert(&safe_kv(1), &safe_kv(2)).encode_to_vec(),
         term: 1,
     };
 
@@ -217,5 +223,154 @@ fn test_metrics_integration() {
     assert_eq!(post - initial, 1);
 }
 
-#[test]
-fn test_create_snapshot() {}
+/// # Case 1: test basic functionality
+#[tokio::test]
+async fn test_generate_snapshot_data_case1() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case1", None, false);
+    let sm = context.state_machine.clone();
+
+    // Insert 3 test entries
+    let mut batch = Batch::default();
+    for i in 1..=3 {
+        let key = safe_kv(i);
+        batch.insert(&key, &key);
+    }
+    sm.apply_batch(batch).unwrap();
+
+    // Generate snapshot with last included index=3
+    let temp_path = root.path().join("snapshot1");
+    sm.generate_snapshot_data(&temp_path, 3, 1).await.unwrap();
+
+    // Verify snapshot contents
+    let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+    let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
+    let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
+
+    // Check data entries
+    for i in 1..=3 {
+        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+    }
+
+    // Check metadata (stored in same tree due to code limitation)
+    assert_eq!(
+        safe_vk(
+            &metadata_tree
+                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        3u64
+    );
+    assert_eq!(
+        safe_vk(
+            &metadata_tree
+                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        1u64
+    );
+}
+
+/// # Case 2: Exclude upper entries
+#[tokio::test]
+async fn test_generate_snapshot_data_case2() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case2", None, false);
+    let sm = context.state_machine.clone();
+
+    // Insert 5 test entries
+    let mut batch = Batch::default();
+    for i in 1..=5 {
+        let key = safe_kv(i);
+        batch.insert(&key, &key);
+    }
+    sm.apply_batch(batch).unwrap();
+
+    // Generate snapshot with last included index=3
+    let temp_path = root.path().join("snapshot2");
+    sm.generate_snapshot_data(&temp_path, 3, 1).await.unwrap();
+
+    // Verify snapshot contents
+    let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+    let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
+
+    // Entries <=3 should exist
+    for i in 1..=3 {
+        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+    }
+
+    // Entries >3 should not exist
+    for i in 4..=5 {
+        assert!(tree.get(&safe_kv(i)).unwrap().is_none());
+    }
+}
+
+/// # Case 3: Metadata correctness
+#[tokio::test]
+async fn test_generate_snapshot_data_case3() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case3", None, false);
+    let sm = context.state_machine.clone();
+
+    // Generate snapshot with specific metadata
+    let temp_path = root.path().join("snapshot3");
+    sm.generate_snapshot_data(&temp_path, 42, 5).await.unwrap();
+
+    // Verify metadata
+    let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+    let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
+
+    assert_eq!(
+        safe_vk(
+            &metadata_tree
+                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        42u64
+    );
+    assert_eq!(
+        safe_vk(
+            &metadata_tree
+                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        5u64
+    );
+}
+
+/// # Case 4: Batch processing
+#[tokio::test]
+async fn test_generate_snapshot_data_case4() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case4", None, false);
+    let sm = context.state_machine.clone();
+
+    // Insert 150 test entries
+    let mut batch = Batch::default();
+    for i in 1..=150 {
+        let key = safe_kv(i);
+        batch.insert(&key, &key);
+    }
+    sm.apply_batch(batch).unwrap();
+
+    // Generate snapshot
+    let temp_path = root.path().join("snapshot4");
+    sm.generate_snapshot_data(&temp_path, 150, 1).await.unwrap();
+
+    // Verify all entries exist
+    let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+    let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
+
+    assert_eq!(tree.len(), 150);
+    for i in 1..=150 {
+        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+    }
+}

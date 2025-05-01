@@ -1,112 +1,159 @@
+use std::collections::HashSet;
+use std::fs::File;
+use std::fs::{self};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use crc32fast::Hasher;
 use futures::Stream;
+use mockall::predicate::eq;
+use mockall::predicate::{self};
+use mockall::Predicate;
+use mockall::Sequence;
 use prost::Message;
+use tempfile::TempDir;
 use tokio_stream::StreamExt;
 use tokio_stream::{self as stream};
+use tracing::error;
 
 use super::DefaultStateMachineHandler;
 use super::StateMachineHandler;
+use crate::file_io::crate_parent_dir_if_not_exist;
+use crate::file_io::is_dir;
 use crate::proto::Entry;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotMetadata;
+use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
 use crate::MockRaftLog;
 use crate::MockStateMachine;
+use crate::MockStateMachineHandler;
+use crate::StorageError;
 
 // Case 1: normal update
 #[test]
 fn test_update_pending_case1() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1, Arc::new(state_machine_mock), "/tmp/db");
-    applier.update_pending(1);
-    assert_eq!(applier.pending_commit(), 1);
-    applier.update_pending(10);
-    assert_eq!(applier.pending_commit(), 10);
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(state_machine_mock),
+        "/tmp/test_update_pending_case1",
+    );
+    handler.update_pending(1);
+    assert_eq!(handler.pending_commit(), 1);
+    handler.update_pending(10);
+    assert_eq!(handler.pending_commit(), 10);
 }
 
 // Case 2: new commit < existing commit
 #[test]
 fn test_update_pending_case2() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1, Arc::new(state_machine_mock), "/tmp/db");
-    applier.update_pending(10);
-    assert_eq!(applier.pending_commit(), 10);
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(state_machine_mock),
+        "/tmp/test_update_pending_case2",
+    );
+    handler.update_pending(10);
+    assert_eq!(handler.pending_commit(), 10);
 
-    applier.update_pending(7);
-    assert_eq!(applier.pending_commit(), 10);
+    handler.update_pending(7);
+    assert_eq!(handler.pending_commit(), 10);
 }
 // Case 3: multi thread update
 #[tokio::test]
 async fn test_update_pending_case3() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let applier = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+    let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/db",
+        "/tmp/test_update_pending_case3",
     ));
 
     let mut tasks = vec![];
     for i in 1..=10 {
-        let applier = applier.clone();
+        let handler = handler.clone();
         tasks.push(tokio::spawn(async move {
-            applier.update_pending(i);
+            handler.update_pending(i);
         }));
     }
     futures::future::join_all(tasks).await;
-    assert_eq!(applier.pending_commit(), 10);
+    assert_eq!(handler.pending_commit(), 10);
 }
 
 // Case 1: pending commit is zero
 #[test]
 fn test_pending_range_case1() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(10, 1, Arc::new(state_machine_mock), "/tmp/db");
-    assert_eq!(applier.pending_range(), None);
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        "/tmp/test_pending_range_case1",
+    );
+    assert_eq!(handler.pending_range(), None);
 }
 
 // Case 2: pending commit <= last_applied
 #[test]
 fn test_pending_range_case2() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(10, 1, Arc::new(state_machine_mock), "/tmp/db");
-    applier.update_pending(7);
-    applier.update_pending(10);
-    assert_eq!(applier.pending_range(), None);
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        "/tmp/test_pending_range_case2",
+    );
+    handler.update_pending(7);
+    handler.update_pending(10);
+    assert_eq!(handler.pending_range(), None);
 }
 
 // Case 3: pending commit > last_applied
 #[test]
 fn test_pending_range_case3() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(10, 1, Arc::new(state_machine_mock), "/tmp/db");
-    applier.update_pending(7);
-    applier.update_pending(10);
-    applier.update_pending(11);
-    assert_eq!(applier.pending_range(), Some(11..=11));
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        "/tmp/test_pending_range_case2",
+    );
+    handler.update_pending(7);
+    handler.update_pending(10);
+    handler.update_pending(11);
+    assert_eq!(handler.pending_range(), Some(11..=11));
 }
 
 // Case1: No pending commit
 #[tokio::test]
 async fn test_apply_batch_case1() {
-    // Init Applier
+    // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let mut raft_log_mock = MockRaftLog::new();
     raft_log_mock
         .expect_get_entries_between()
         .times(0)
         .returning(|_| vec![]);
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(10, 1, Arc::new(state_machine_mock), "/tmp/db");
-    assert!(applier.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        "/tmp/test_apply_batch_case1",
+    );
+    assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
 }
 
 // Case2: There is pending commit
@@ -115,7 +162,7 @@ async fn test_apply_batch_case1() {
 // - last_applied should be updated
 #[tokio::test]
 async fn test_apply_batch_case2() {
-    // Init Applier
+    // Init Handler
     let mut state_machine_mock = MockStateMachine::new();
     state_machine_mock.expect_apply_chunk().times(1).returning(|_| Ok(()));
     let mut raft_log_mock = MockRaftLog::new();
@@ -128,18 +175,18 @@ async fn test_apply_batch_case2() {
     });
 
     let max_entries_per_chunk = 1;
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         10,
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
-        "/tmp/db",
+        "/tmp/test_apply_batch_case2",
     );
 
     // Update pending commit
-    applier.update_pending(11);
+    handler.update_pending(11);
 
-    assert!(applier.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
-    assert_eq!(applier.last_applied(), 11);
+    assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
+    assert_eq!(handler.last_applied(), 11);
 }
 
 // Case 3: There is pending commit
@@ -148,7 +195,7 @@ async fn test_apply_batch_case2() {
 // - test the pending commit should be split into 10 chunks
 #[tokio::test]
 async fn test_apply_batch_case3() {
-    // Init Applier
+    // Init Handler
     let mut state_machine_mock = MockStateMachine::new();
     state_machine_mock.expect_apply_chunk().times(10).returning(|_| Ok(()));
     let mut raft_log_mock = MockRaftLog::new();
@@ -165,21 +212,22 @@ async fn test_apply_batch_case3() {
     });
 
     let max_entries_per_chunk = 1;
-    let applier = DefaultStateMachineHandler::<MockTypeConfig>::new(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         10,
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
-        "/tmp/db",
+        "/tmp/test_apply_batch_case3",
     );
 
     // Update pending commit
-    applier.update_pending(21);
+    handler.update_pending(21);
 
-    assert!(applier.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
-    assert_eq!(applier.last_applied(), 21);
+    assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
+    assert_eq!(handler.last_applied(), 21);
 }
 
 /// Helper to compute CRC32 checksum for test data
+#[allow(unused)]
 fn compute_checksum(data: &[u8]) -> Vec<u8> {
     let mut hasher = Hasher::new();
     hasher.update(data);
@@ -187,6 +235,7 @@ fn compute_checksum(data: &[u8]) -> Vec<u8> {
 }
 
 /// Helper to create valid test chunk
+#[allow(unused)]
 fn create_test_chunk(
     seq: u32,
     term: u64,
@@ -380,3 +429,320 @@ async fn test_install_snapshot_chunk_case1() {
 //         }
 //     }
 // }
+
+// #[tokio::test]
+// async fn test_create_snapshot_case1() {
+//     // Init Handler
+//     let mut state_machine_mock = MockStateMachine::new();
+//     state_machine_mock.expect_apply_chunk().times(10).returning(|_| Ok(()));
+//     let mut raft_log_mock = MockRaftLog::new();
+//     raft_log_mock.expect_get_entries_between().times(1).returning(move |_| {
+//         let mut entries = vec![];
+//         for i in 1..=10 {
+//             entries.push(Entry {
+//                 index: i,
+//                 term: 1,
+//                 command: vec![1; 8],
+//             });
+//         }
+//         entries
+//     });
+
+//     let max_entries_per_chunk = 1;
+//     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+//         10,
+//         max_entries_per_chunk,
+//         Arc::new(state_machine_mock),
+//         "/tmp/test_create_snapshot_case1",
+//     );
+
+//     handler.create_snapshot();
+// }
+
+/// # Case 1: Basic creation flow
+#[tokio::test]
+async fn test_create_snapshot_case1() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut sm = MockStateMachine::new();
+
+    // Mock state machine behavior
+    let mut seq = Sequence::new();
+    sm.expect_last_applied()
+        .times(1)
+        .in_sequence(&mut seq)
+        .returning(|| (5, 1));
+    sm.expect_generate_snapshot_data()
+        .times(1)
+        .withf(|path, idx, term| {
+            // Create the directory structure correctly
+            fs::create_dir_all(path).unwrap();
+            //Simulate sled to create a subdirectory
+            let db_path = path.join("state_machine");
+            fs::create_dir(&db_path).unwrap();
+
+            path.ends_with("temp-1") && idx == &5 && term == &1
+        })
+        .returning(|_, _, _| Ok(()));
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1, Arc::new(sm), temp_dir.path());
+
+    // Execute snapshot creation
+    let result = handler.create_snapshot().await;
+    assert!(result.is_ok());
+
+    // Verify file system changes
+    let final_path = result.unwrap();
+    assert!(final_path.exists());
+    assert!(final_path.to_str().unwrap().contains("snapshot-1-5-1"));
+
+    assert!(is_dir(&final_path).await.unwrap());
+
+    // Verify version update
+    assert_eq!(handler.current_snapshot_version(), 1);
+}
+
+/// # Case 2: Test concurrent protection
+#[tokio::test]
+async fn test_create_snapshot_case2() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut sm = MockStateMachine::new();
+
+    // Setup slow snapshot generation
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    sm.expect_last_applied().returning(|| (1, 1));
+    sm.expect_generate_snapshot_data().times(2).returning(move |_, _, _| {
+        let _ = rx.try_recv(); // Wait forever
+        Ok(())
+    });
+
+    let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(sm),
+        temp_dir.path(),
+    ));
+
+    // Spawn concurrent snapshot creations
+    let h1 = handler.clone();
+    let t1 = tokio::spawn(async move { h1.create_snapshot().await });
+
+    let h2 = handler.clone();
+    let t2 = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        h2.create_snapshot().await
+    });
+
+    // Allow some time for execution
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tx.send(()).unwrap(); // Unblock the first task
+
+    let results = futures::future::join_all(vec![t1, t2]).await;
+
+    // Verify only one successful creation
+    let success_count = results.iter().filter(|r| r.as_ref().unwrap().is_ok()).count();
+    assert_eq!(success_count, 1);
+    assert_eq!(count_snapshots(temp_dir.path()), 1);
+}
+
+/// # Case 3: Test cleanup old versions
+#[tokio::test]
+async fn test_create_snapshot_case3() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create dummy old snapshots
+    create_dummy_snapshot(&temp_dir, 1, 3, 1);
+    create_dummy_snapshot(&temp_dir, 2, 5, 1);
+    create_dummy_snapshot(&temp_dir, 3, 7, 1);
+
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().returning(|| (9, 1));
+    sm.expect_generate_snapshot_data().returning(|_, _, _| Ok(()));
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        3, // Current version
+        1,
+        Arc::new(sm),
+        temp_dir.path(),
+    );
+
+    // Create new snapshot (version 4)
+    handler.create_snapshot().await.unwrap();
+
+    // Verify cleanup results
+    let remaining: HashSet<u64> = get_snapshot_versions(temp_dir.path()).into_iter().collect();
+    assert_eq!(remaining, [3, 4].into_iter().collect());
+}
+
+/// # Case 4: Test failure handling
+#[tokio::test]
+async fn test_create_snapshot_case4() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut sm = MockStateMachine::new();
+
+    // Setup failing snapshot generation
+    sm.expect_last_applied().returning(|| (1, 1));
+    sm.expect_generate_snapshot_data()
+        .returning(|_, _, _| Err(StorageError::Snapshot("test failure".into()).into()));
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1, Arc::new(sm), temp_dir.path());
+
+    // Attempt snapshot creation
+    let result = handler.create_snapshot().await;
+    assert!(result.is_err());
+
+    // Verify no files created
+    assert_eq!(count_snapshots(temp_dir.path()), 0);
+    assert_eq!(handler.current_snapshot_version(), 0);
+}
+
+// Helper functions
+fn count_snapshots(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_str().unwrap().starts_with("snapshot-")
+        })
+        .count()
+}
+
+fn create_dummy_snapshot(
+    dir: &tempfile::TempDir,
+    version: u64,
+    index: u64,
+    term: u64,
+) {
+    let path = dir.path().join(format!("snapshot-{}-{}-{}.bin", version, index, term));
+    std::fs::File::create(path).unwrap();
+}
+
+fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name();
+            let name = name.to_str().unwrap();
+            name.split('-').nth(1).and_then(|v| v.parse().ok())
+        })
+        .collect()
+}
+
+/// # Case 1: Test normal deletion
+#[tokio::test]
+async fn test_cleanup_snapshot_case1() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_dirs(&temp_dir, &[1, 2, 3]).await;
+
+    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
+    let temp_dir_path = temp_dir.path().to_path_buf();
+    mock.expect_cleanup_snapshot()
+        .with(eq(3), path_eq(temp_dir_path))
+        .returning(|_, _| Ok(()));
+
+    mock.cleanup_snapshot(3, &temp_dir.path().into()).await.unwrap();
+
+    // Verify remaining snapshots
+    let remaining = get_snapshot_versions(temp_dir.path());
+    assert_eq!(remaining, vec![3]);
+}
+
+#[tokio::test]
+async fn test_cleanup_snapshot_case2_no_old_versions() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_dirs(&temp_dir, &[3, 4]).await;
+
+    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
+    let temp_dir_path = temp_dir.path().to_path_buf();
+    mock.expect_cleanup_snapshot()
+        .with(eq(2), path_eq(temp_dir_path))
+        .returning(|_, _| Ok(()));
+
+    mock.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+
+    // Verify no deletions
+    let remaining = get_snapshot_versions(temp_dir.path());
+    assert_eq!(remaining, vec![3, 4]);
+}
+
+#[tokio::test]
+async fn test_cleanup_snapshot_case3_invalid_dirnames() {
+    let temp_dir = TempDir::new().unwrap();
+    // Create valid and invalid directories
+    create_dir(&temp_dir, "snapshot-1-100-1").await;
+    create_dir(&temp_dir, "invalid_format").await;
+    create_dir(&temp_dir, "snapshot-bad-200-2").await;
+
+    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
+    let temp_dir_path = temp_dir.path().to_path_buf();
+    mock.expect_cleanup_snapshot()
+        .with(eq(2), path_eq(temp_dir_path))
+        .returning(|_, _| Ok(()));
+
+    mock.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+
+    //Verify only valid version 1 is deleted
+    let remaining = get_dir_names(temp_dir.path()).await;
+    assert!(remaining.contains(&"invalid_format".into()));
+    assert!(remaining.contains(&"snapshot-bad-200-2".into()));
+    assert!(!remaining.contains(&"snapshot-1-100-1".into()));
+}
+
+#[tokio::test]
+async fn test_cleanup_snapshot_case4_deletion_failure() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_dirs(&temp_dir, &[1]).await;
+
+    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
+    let temp_dir_path = temp_dir.path().to_path_buf();
+    mock.expect_cleanup_snapshot()
+        .with(eq(2), path_eq(temp_dir_path))
+        .returning(|_, path| {
+            //Simulate deletion failure
+            let dummy_path = path.join("snapshot-1-100-1");
+            Err(StorageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Simulation deletion failed",
+            ))
+            .into())
+        });
+
+    let result = mock.cleanup_snapshot(2, &temp_dir.path().into()).await;
+    assert!(result.is_err());
+}
+
+// Helper functions
+async fn create_test_dirs(
+    temp_dir: &TempDir,
+    versions: &[u64],
+) {
+    for v in versions {
+        create_dir(temp_dir, &format!("snapshot-{}-{}-1", v, v * 100)).await;
+    }
+}
+
+async fn create_dir(
+    temp_dir: &TempDir,
+    name: &str,
+) {
+    let path = temp_dir.path().join(name);
+    tokio::fs::create_dir_all(&path).await.unwrap();
+}
+
+async fn get_dir_names(path: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut entries = tokio::fs::read_dir(path).await.unwrap();
+
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        if let Some(name) = entry.file_name().to_str() {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+// Custom predicate for path comparison
+fn path_eq(expected: PathBuf) -> impl Predicate<PathBuf> + 'static {
+    predicate::function(move |x: &PathBuf| x == &expected)
+}

@@ -7,12 +7,14 @@ use std::sync::Arc;
 
 use autometrics::autometrics;
 use tokio::fs;
+use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::async_trait;
 use tonic::IntoRequest;
 use tonic::Status;
 use tonic::Streaming;
+use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
@@ -22,7 +24,7 @@ use super::StateMachineHandler;
 use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::constants::SNAPSHOT_DIR;
-use crate::file_io::delete_file;
+use crate::file_io::move_directory;
 use crate::file_io::validate_checksum;
 use crate::proto::client_command::Command;
 use crate::proto::ClientCommand;
@@ -145,7 +147,10 @@ where T: TypeConfig
         sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
     ) -> Result<()> {
         // 1. Create a temporary directory
-        let temp_dir = tempfile::tempdir_in(&self.snapshot_dir)?;
+        let temp_dir = tempfile::tempdir_in(&self.snapshot_dir).map_err(|e| StorageError::PathError {
+            path: self.snapshot_dir.clone(),
+            source: e,
+        })?;
         let mut assembler = SnapshotAssembler::new(temp_dir.path()).await?;
 
         // 2. Block processing loop (including network fault tolerance)
@@ -217,7 +222,7 @@ where T: TypeConfig
         // Application snapshot
         let metadata = metadata.unwrap();
         self.state_machine
-            .apply_snapshot(metadata, assembler.finalize().await?)
+            .apply_snapshot_from_file(metadata, assembler.finalize().await?)
             .await?;
 
         // Final confirmation
@@ -233,25 +238,42 @@ where T: TypeConfig
     }
 
     async fn create_snapshot(&self) -> Result<std::path::PathBuf> {
-        // 1: Get write lock 
+        // 1: Get write lock
+        debug!("create_snapshot 1: Get write lock");
         let _guard = self.snapshot_lock.write().await;
 
+        // 2: Prepare temp snapshot file and final snapshot file
+        debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
         let (last_included_index, last_included_term) = self.state_machine.last_applied();
-
         let current_snapshot_version = self.current_snapshot_version();
         let new_snapshot_version = current_snapshot_version + 1;
-        let temp_path = self.snapshot_dir.join(format!(".temp-{}", new_snapshot_version));
-        let final_path = self.snapshot_dir.join(format!(
-            "snapshot-{}-{}-{}.bin",
+        let temp_dir = self.snapshot_dir.join(format!("temp-{}", new_snapshot_version));
+        let final_dir = self.snapshot_dir.join(format!(
+            "snapshot-{}-{}-{}",
             new_snapshot_version, last_included_index, last_included_term
         ));
 
-        self.state_machine.create_snapshot(&temp_path).await?;
+        // 3: Crate snapshot based on the temp path
+        debug!(?temp_dir, "create_snapshot 3: Crate snapshot based on the temp path");
+        if let Err(e) = self
+            .state_machine
+            .generate_snapshot_data(&temp_dir, last_included_index, last_included_term)
+            .await
+        {
+            error!(?e, "state_machine.generate_snapshot_data failed");
+            return Err(e);
+        }
 
-        // 2: Atomic rename
-        fs::rename(&temp_path, &final_path).await?;
+        // 4: Atomic rename to final snapshot file path
+        debug!(
+            ?final_dir,
+            "create_snapshot 4: Atomic rename to final snapshot file path"
+        );
 
-        // 3: finalize snapshot version
+        move_directory(&temp_dir, &final_dir).await?;
+
+        // 5: Update snapshot version
+        debug!("create_snapshot 5: Update snapshot version");
         self.current_snapshot_version
             .compare_exchange(
                 current_snapshot_version,
@@ -261,13 +283,14 @@ where T: TypeConfig
             )
             .map_err(|e| StorageError::Snapshot(format!("{:?}", e)))?;
 
-        // Phase 3: cleanup old versions
+        // 6: cleanup old versions
+        debug!("create_snapshot 6: cleanup old versions");
         let cleanup_version = current_snapshot_version.saturating_sub(2);
         if let Err(e) = self.cleanup_snapshot(cleanup_version, &self.snapshot_dir).await {
             error!(%e, "clean up old snapshot file failed");
         }
 
-        Ok(final_path)
+        Ok(final_dir)
     }
 
     async fn cleanup_snapshot(
@@ -275,28 +298,34 @@ where T: TypeConfig
         before_version: u64,
         snapshot_dir: &PathBuf,
     ) -> Result<()> {
-        let mut entries = fs::read_dir(snapshot_dir.as_path()).await?;
+        let mut entries = fs::read_dir(snapshot_dir.as_path())
+            .await
+            .map_err(|e| StorageError::PathError {
+                path: snapshot_dir.clone(),
+                source: e,
+            })?;
 
-        while let Some(entry) = entries.next_entry().await? {
+        while let Some(entry) = entries.next_entry().await.map_err(|e| StorageError::IoError(e))? {
             let path = entry.path();
+            debug!(?path, "cleanup_snapshot");
 
             if path.is_dir() {
-                continue;
-            } else if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                //File name parsing logic
-                if let Some((version, index, term)) = parse_filename(file_name) {
-                    info!(
-                        "Version: {:>4} | Index: {:>10} | Term: {:>10} | Path: {}",
-                        version,
-                        index,
-                        term,
-                        path.display()
-                    );
+                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                    //File name parsing logic
+                    if let Some((version, index, term)) = parse_snapshot_dirname(dir_name) {
+                        info!(
+                            "Version: {:>4} | Index: {:>10} | Term: {:>10} | Path: {}",
+                            version,
+                            index,
+                            term,
+                            path.display()
+                        );
 
-                    if version < before_version {
-                        info!(?version, "going to be deleted.");
-                        if let Err(e) = delete_file(path).await {
-                            error!(%e, "delete_file failed");
+                        if version < before_version {
+                            info!(?version, "going to be deleted.");
+                            if let Err(e) = remove_dir_all(&path).await {
+                                error!(%e, "delete_file failed");
+                            }
                         }
                     }
                 }
@@ -355,7 +384,7 @@ where T: TypeConfig
 }
 
 /// Manual parsing file name format: snapshot-{version}-{index}.bin
-fn parse_filename(name: &str) -> Option<(u64, u64, u64)> {
+fn parse_snapshot_dirname(name: &str) -> Option<(u64, u64, u64)> {
     // Check prefix and suffix
     if !name.starts_with("snapshot-") || !name.ends_with(".bin") {
         return None;

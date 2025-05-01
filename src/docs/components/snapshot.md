@@ -89,7 +89,7 @@ sequenceDiagram
 
 ```    
 ---
-### Module responbilitiies - Statemachine and StateMachineHandler
+### Module responsbilitiies - Statemachine and StateMachineHandler
 
 #### Generating a new snapshot:
 1. [**StateMachine**] Generate new DB based on the temporary file provided by the [**StateMachineHandler**] → 

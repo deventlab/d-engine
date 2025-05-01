@@ -65,8 +65,9 @@ pub(crate) enum RaftEvent {
     ),
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone))]
+#[cfg(test)]
+#[cfg_attr(test, derive(Debug, Clone))]
+#[allow(unused)]
 pub(crate) enum TestEvent {
     ReceiveVoteRequest(VoteRequest),
 

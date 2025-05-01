@@ -1,6 +1,7 @@
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -19,7 +20,11 @@ pub fn crate_parent_dir_if_not_exist(path: &Path) -> Result<()> {
         if !parent_dir.exists() {
             if let Err(e) = create_dir_all(parent_dir) {
                 error!("Failed to create log directory: {:?}", e);
-                return Err(StorageError::IoError(e).into());
+                return Err(StorageError::PathError {
+                    path: path.to_path_buf(),
+                    source: e,
+                }
+                .into());
             }
         }
     }
@@ -31,7 +36,7 @@ pub fn open_file_for_append(path: PathBuf) -> Result<File> {
     let log_file = match OpenOptions::new().append(true).create(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
-            return Err(StorageError::IoError(e).into());
+            return Err(StorageError::PathError { path, source: e }.into());
         }
     };
     Ok(log_file)
@@ -155,4 +160,35 @@ pub fn validate_checksum(
     let mut hasher = crc32fast::Hasher::new();
     hasher.update(data);
     hasher.finalize().to_be_bytes() == expected
+}
+
+pub(crate) async fn move_directory(
+    temp_dir: &PathBuf,
+    final_dir: &PathBuf,
+) -> Result<()> {
+    // Check if final_dir already exists
+    if fs::metadata(final_dir).await.is_ok() {
+        return Err(StorageError::PathError {
+            path: final_dir.to_path_buf(),
+            source: std::io::Error::new(ErrorKind::AlreadyExists, "Target directory exists"),
+        }
+        .into());
+    }
+
+    // Attempt to rename/move the directory
+    fs::rename(&temp_dir, &final_dir)
+        .await
+        .map_err(|e| StorageError::PathError {
+            path: temp_dir.to_path_buf(),
+            source: e,
+        })?;
+
+    Ok(())
+}
+
+pub(crate) async fn is_dir(path: &Path) -> Result<bool> {
+    let metadata = fs::metadata(path).await.map_err(|e| StorageError::IoError(e))?;
+
+    // Check if it's a directory
+    Ok(metadata.is_dir())
 }

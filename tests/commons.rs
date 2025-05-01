@@ -21,6 +21,7 @@ use d_engine::storage::SledStateStorage;
 use d_engine::storage::StateStorage;
 use d_engine::HardState;
 use d_engine::Result;
+use d_engine::StorageError;
 use prost::Message;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
@@ -226,8 +227,16 @@ pub async fn reset(case_name: &str) -> Result<()> {
     let db_dir = format!("{}/db/{}", root_path.display(), case_name);
 
     // Make sure the parent directory exists
-    fs::create_dir_all(&logs_dir).await?;
-    fs::create_dir_all(&db_dir).await?;
+    fs::create_dir_all(&logs_dir)
+        .await
+        .map_err(|e| StorageError::PathError {
+            path: PathBuf::from(&logs_dir),
+            source: e,
+        })?;
+    fs::create_dir_all(&db_dir).await.map_err(|e| StorageError::PathError {
+        path: PathBuf::from(&db_dir),
+        source: e,
+    })?;
 
     // Clean up the log directory (ignore errors that do not exist)
     let _ = remove_dir_all(Path::new(&logs_dir)).await;

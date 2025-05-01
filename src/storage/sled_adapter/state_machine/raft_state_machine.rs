@@ -17,10 +17,13 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
+use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_TERM;
 use crate::constants::STATE_MACHINE_META_NAMESPACE;
-use crate::constants::STATE_MACHINE_NAMESPACE;
+use crate::constants::STATE_MACHINE_TREE;
+use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
 use crate::convert::safe_vk;
 use crate::init_sled_state_machine_db;
@@ -209,17 +212,20 @@ impl StateMachine for RaftStateMachine {
         Ok(())
     }
 
-    async fn create_snapshot(
+    async fn generate_snapshot_data(
         &self,
         temp_snapshot_dir: &PathBuf,
+        last_included_index: u64,
+        last_included_term: u64,
     ) -> Result<()> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
         let _guard = self.snapshot_lock.write().await;
         // 2. Create a new state machine database instance
-        let db = init_sled_state_machine_db(temp_snapshot_dir)?;
+        let new_db = init_sled_state_machine_db(temp_snapshot_dir).map_err(|e| StorageError::IoError(e))?;
 
         let exist_db_tree = self.current_tree();
-        let new_db_tree = new_tree(db)?;
+        let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
+        let new_snapshot_metadata_tree = new_tree(&new_db, STATE_SNAPSHOT_METADATA_TREE)?;
 
         let mut batch = sled::Batch::default();
         let mut counter = 0;
@@ -227,25 +233,33 @@ impl StateMachine for RaftStateMachine {
         for item in exist_db_tree.iter() {
             let (k, v) = item?;
 
+            let key_num = safe_vk(&k)?;
+            if key_num > last_included_index {
+                break; // Stop applying further entries as they will all be greater
+            }
+
             batch.insert(k, v);
             counter += 1;
 
             // Perform a batch insert every 100 records
             if counter % 100 == 0 {
-                new_db_tree.apply_batch(batch)?;
+                new_state_machine_tree.apply_batch(batch)?;
                 batch = sled::Batch::default(); // Reset the batch object
             }
         }
 
         // Process the remaining data (the tail data of less than 100 records)
         if counter % 100 != 0 {
-            new_db_tree.apply_batch(batch)?;
+            new_state_machine_tree.apply_batch(batch)?;
         }
+        new_snapshot_metadata_tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included_index))?;
+        new_snapshot_metadata_tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included_term))?;
 
+        new_db.flush()?;
         Ok(())
     }
 
-    async fn apply_snapshot(
+    async fn apply_snapshot_from_file(
         &self,
         metadata: proto::SnapshotMetadata,
         snapshot_path: PathBuf,
@@ -254,7 +268,10 @@ impl StateMachine for RaftStateMachine {
         let _guard = self.snapshot_lock.write().await;
 
         // 2. Create a new state machine database instance
-        let db = init_sled_state_machine_db(&snapshot_path)?;
+        let db = init_sled_state_machine_db(&snapshot_path).map_err(|e| StorageError::PathError {
+            path: snapshot_path,
+            source: e,
+        })?;
 
         // 3. Atomically replace the current database
         self.db.store(Arc::new(db));
@@ -306,24 +323,12 @@ impl RaftStateMachine {
     fn load_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
         let index = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX)?
-            .map(|v| {
-                safe_vk(
-                    v.as_ref()
-                        .try_into()
-                        .map_err(|e| StorageError::StateMachineError(format!("Invalid index bytes: {:?}", e)))?,
-                )
-            })
+            .map(|v| safe_vk(v))
             .unwrap_or(Ok(0))?;
 
         let term = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM)?
-            .map(|v| {
-                safe_vk(
-                    v.as_ref()
-                        .try_into()
-                        .map_err(|e| StorageError::StateMachineError(format!("Invalid term bytes: {:?}", e)))?,
-                )
-            })
+            .map(|v| safe_vk(v))
             .unwrap_or(Ok(0))?;
 
         Ok((index, term))
@@ -345,12 +350,15 @@ impl RaftStateMachine {
     #[inline]
     fn current_tree(&self) -> sled::Tree {
         // Each Db instance only needs to get the Tree once
-        self.db.load().open_tree(STATE_MACHINE_NAMESPACE).unwrap()
+        self.db.load().open_tree(STATE_MACHINE_TREE).unwrap()
     }
 }
 
 /// TODO: how to refactor with `current_tree`
-fn new_tree(db: sled::Db) -> Result<sled::Tree> {
-    db.open_tree(STATE_MACHINE_NAMESPACE)
+fn new_tree(
+    db: &sled::Db,
+    key: &str,
+) -> Result<sled::Tree> {
+    db.open_tree(key)
         .map_err(|e| StorageError::Snapshot(format!("{:?}", e)).into())
 }
