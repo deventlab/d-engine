@@ -27,6 +27,7 @@ pub trait StateStorage: Send + Sync + 'static {
 
     /// When node restarts, check if there is stored state from disk
     fn load_hard_state(&self) -> Option<HardState>;
+    
     /// Save role hard state into db
     fn save_hard_state(
         &self,

@@ -18,3 +18,6 @@ pub mod time;
 
 #[cfg(test)]
 mod utils_test;
+
+#[cfg(test)]
+mod file_io_test;

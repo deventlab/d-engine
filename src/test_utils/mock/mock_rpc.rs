@@ -1,3 +1,5 @@
+use tonic::Streaming;
+
 use crate::proto::rpc_service_server::RpcService;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -8,6 +10,8 @@ use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::MetadataRequest;
+use crate::proto::SnapshotChunk;
+use crate::proto::SnapshotResponse;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
 
@@ -20,6 +24,7 @@ pub struct MockRpcService {
     pub expected_client_propose_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
+    pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
 }
 
 #[tonic::async_trait]
@@ -84,6 +89,16 @@ impl RpcService for MockRpcService {
         _request: tonic::Request<MetadataRequest>,
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         match &self.expected_metadata_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown("No mock append entries response set")),
+        }
+    }
+    async fn install_snapshot(
+        &self,
+        request: tonic::Request<Streaming<SnapshotChunk>>,
+    ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
+        match &self.expected_snapshot_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock append entries response set")),

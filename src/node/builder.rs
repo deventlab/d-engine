@@ -241,11 +241,14 @@ impl NodeBuilder {
         let state_machine = self.state_machine.take().unwrap_or_else(|| {
             let state_machine_db =
                 init_sled_state_machine_db(&db_root_dir).expect("init_sled_state_machine_db successfully.");
-            Arc::new(RaftStateMachine::new(node_id, Arc::new(state_machine_db)))
+            Arc::new(
+                RaftStateMachine::new(node_id, Arc::new(state_machine_db))
+                    .expect("Init raft state machine successfully."),
+            )
         });
 
         //Retrieve last applied index from state machine
-        let last_applied_index = state_machine.last_entry_index();
+        let last_applied_index = state_machine.last_applied().0;
 
         let raft_log = self.raft_log.take().unwrap_or_else(|| {
             let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
@@ -265,6 +268,7 @@ impl NodeBuilder {
                 last_applied_index,
                 node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),
+                db_root_dir.clone(),
             ))
         });
         let membership = self

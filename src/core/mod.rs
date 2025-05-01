@@ -3,7 +3,6 @@ mod election;
 mod event;
 mod raft;
 mod raft_context;
-
 mod raft_role;
 
 mod replication;
@@ -23,8 +22,6 @@ pub(crate) use replication::*;
 pub(crate) use state_machine_handler::*;
 pub(crate) use timer::*;
 
-#[cfg(test)]
-mod event_test;
 #[cfg(test)]
 mod raft_oneshot_test;
 #[cfg(test)]

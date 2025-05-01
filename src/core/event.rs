@@ -9,6 +9,8 @@ use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::MetadataRequest;
+use crate::proto::SnapshotChunk;
+use crate::proto::SnapshotResponse;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
 use crate::MaybeCloneOneshotSender;
@@ -26,7 +28,6 @@ pub(crate) enum RoleEvent {
 }
 
 #[derive(Debug)]
-#[cfg_attr(test, derive(Clone))]
 pub(crate) enum RaftEvent {
     ReceiveVoteRequest(
         VoteRequest,
@@ -57,4 +58,40 @@ pub(crate) enum RaftEvent {
         ClientReadRequest,
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
+
+    InstallSnapshotChunk(
+        tonic::Streaming<SnapshotChunk>,
+        MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
+    ),
+}
+
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+pub(crate) enum TestEvent {
+    ReceiveVoteRequest(VoteRequest),
+
+    ClusterConf(MetadataRequest),
+
+    ClusterConfUpdate(ClusteMembershipChangeRequest),
+
+    AppendEntries(AppendEntriesRequest),
+
+    ClientPropose(ClientProposeRequest),
+
+    ClientReadRequest(ClientReadRequest),
+
+    InstallSnapshotChunk,
+}
+
+#[cfg(test)]
+pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
+    match event {
+        RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(req.clone()),
+        RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(req.clone()),
+        RaftEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
+        RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
+        RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
+        RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
+        RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
+    }
 }

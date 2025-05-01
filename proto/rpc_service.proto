@@ -194,54 +194,6 @@ message ClusterMembership {
   repeated NodeMeta nodes = 1;
 }
 
-// message RaftState {
-//   // Public fields
-//   uint64 current_term = 1;
-//   // Optional voted_for field, represented by oneof
-//   oneof voted_for {
-//     uint32 voted_for_node_id = 2; // Node ID of the candidate voted for
-//   }
-
-//   uint64 commit_index = 3;
-//   uint64 last_applied = 4;
-  
-//   // Role type and exclusive state
-//   oneof role_state {
-//     FollowerState follower = 5;
-//     CandidateState candidate = 6;
-//     LeaderState leader = 7;
-//   }
-  
-// }
-  
-// // Exclusive structure for each state
-// message FollowerState {
-//   int64 last_heartbeat = 1;
-//   string leader_hint = 2;
-// }
-  
-// message CandidateState {
-//   map<uint32, bool> votes = 1; // Node ID -> whether to vote
-//   int64 election_start = 2;
-// }
-  
-// message LeaderState {
-//   map<uint32, uint64> next_index = 1; // Node ID -> next log index
-//   map<uint32, uint64> match_index = 2; // Node ID -> matched log index
-// }
-
-// enum RaftRole {
-//   Follower = 0;
-//   Candidate = 1;
-//   Leader = 2;
-//   Learner = 3;
-// }
-
-// message NodeRole {
-//   uint64 id = 1;
-//   RaftRole role = 2;
-// }
-
 message VotedFor {
   uint32 voted_for_id = 1; 
   uint64 voted_for_term = 2;
@@ -288,13 +240,40 @@ message ClusterConfUpdateResponse {
   bool success = 4;
 }
 
+message SnapshotChunk {
+  // Protocol header (repeated in each block)
+  fixed64 term = 1; // compact binary encoding
+  fixed64 leader_id = 2; // digital node ID
+
+  // Chunk metadata
+  fixed32 seq = 3; // Block sequence number starting from 0
+  fixed32 total = 4; // Total number of blocks
+  bytes checksum = 5; // 4-byte CRC32
+
+  // Metaeata
+  SnapshotMetadata metadata = 6;
+  
+  // Payload data
+  bytes data = 7; // 4MB is recommended
+}
+
+message SnapshotMetadata {
+  uint64 last_included_index = 1; // The last log index included in the snapshot
+  uint64 last_included_term = 2; // The last log term included in the snapshot
+}
+  
+message SnapshotResponse {
+  uint64 term = 1; // Follower's current term (for Leader degradation detection)
+  bool success = 2; // Whether the reception is successful
+  uint32 next_chunk = 3; // If failed, specify the chunk index to be retransmitted
+}
 
 service RpcService {
   rpc RequestVote (VoteRequest) returns (VoteResponse){};
   rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse){};
   rpc UpdateClusterConf (ClusteMembershipChangeRequest) returns (ClusterConfUpdateResponse){};
-
   rpc HandleClientPropose (ClientProposeRequest) returns (ClientResponse){};
   rpc HandleClientRead (ClientReadRequest) returns (ClientResponse){};
   rpc GetClusterMetadata (MetadataRequest) returns (ClusterMembership){};
+  rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse) {}
 }

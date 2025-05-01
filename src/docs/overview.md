@@ -1,0 +1,52 @@
+
+# D-Engine
+
+[![Crates.io](https://img.shields.io/crates/v/d-engine.svg)](https://crates.io/crates/d-engine)
+[![docs.rs](https://docs.rs/d-engine/badge.svg)](https://docs.rs/d-engine)
+[![codecov](https://codecov.io/gh/deventlab/d-engine/graph/badge.svg?token=K3BEDM45V8)](https://codecov.io/gh/deventlab/d-engine)
+![Static Badge](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)
+[![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
+
+**d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that maximizes single CPU core performance while minimizing resource overhead. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
+
+---
+
+## Features
+
+- **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
+- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, in-memory).
+- **Observability**: Built-in metrics, structured logging, and distributed tracing.
+- **Runtime Agnostic**: Works seamlessly with `tokio`.
+- **Extensible Design**: Decouples business logic from the protocol layer for easy customization.
+
+---
+
+## Quick Start
+```no_run
+use d_engine::NodeBuilder;
+use tokio::sync::watch;
+use tracing::error;
+use tracing::info;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let (graceful_tx, graceful_rx) = watch::channel(());
+
+    let node = NodeBuilder::new(None, graceful_rx)
+        .build()
+        .start_rpc_server()
+        .await
+        .ready().unwrap();
+
+    if let Err(e) = node.run().await {
+        error!("node stops: {:?}", e);
+    } else {
+        info!("node stops.");
+    }
+}
+```
+
+## Core Concepts
+![Data Flow](https://www.mermaidchart.com/raw/67aa2040-9292-4aed-b5cd-44621245f1c4?theme=light&version=v0.1&format=svg)
+
+For production deployments, a minimum cluster size of **3 nodes** is required.

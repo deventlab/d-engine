@@ -49,11 +49,11 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     // 1. Prepare state machine for node 1 so that we could read out the last applied id in this test
     println!("1. Prepare state_machine & raft_log");
     let sm1 = Arc::new(prepare_state_machine(1, "./db/append_entries/case1/cs/1"));
-    let r1 = prepare_raft_log("./db/append_entries/case1/cs/1", None);
+    let r1 = prepare_raft_log("./db/append_entries/case1/cs/1", 0);
     manipulate_log(&r1, vec![1, 2, 3], 1);
-    let r2 = prepare_raft_log("./db/append_entries/case1/cs/2", None);
+    let r2 = prepare_raft_log("./db/append_entries/case1/cs/2", 0);
     manipulate_log(&r2, vec![1, 2, 3, 4], 1);
-    let r3 = prepare_raft_log("./db/append_entries/case1/cs/3", None);
+    let r3 = prepare_raft_log("./db/append_entries/case1/cs/3", 0);
     manipulate_log(&r3, (1..=10).collect(), 2);
     let ss1 = prepare_state_storage("./db/append_entries/case1/cs/1");
     init_state_storage(&ss1, 1, None);

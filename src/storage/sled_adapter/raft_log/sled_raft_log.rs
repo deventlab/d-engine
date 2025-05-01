@@ -640,7 +640,7 @@ impl SledRaftLog {
     #[autometrics(objective = API_SLO)]
     pub fn new(
         raft_log_db: Arc<sled::Db>,
-        commit_index: Option<u64>,
+        commit_index: u64,
     ) -> Self {
         match raft_log_db.open_tree(RAFT_LOG_NAMESPACE) {
             Ok(raft_log_tree) => {
@@ -657,7 +657,7 @@ impl SledRaftLog {
                         next_id: AtomicU64::new(disk_len + 1),
                     },
                 };
-                l.load_uncommitted_from_db_to_cache(commit_index.unwrap_or(0), disk_len);
+                l.load_uncommitted_from_db_to_cache(commit_index, disk_len);
                 l
             }
             Err(e) => {

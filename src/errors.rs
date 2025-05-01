@@ -174,6 +174,48 @@ pub enum StorageError {
     /// Embedded database errors
     #[error("Embedded database error: {0}")]
     DbError(String),
+
+    /// Error type for value conversion operations
+    #[error("Value convert failed")]
+    Convert(#[from] ConvertError),
+
+    /// File delete errors
+    #[error("Delete file failed")]
+    FileDelete(#[from] FileDeleteError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FileDeleteError {
+    #[error("Path does not exist: {0}")]
+    NotFound(String),
+    #[error("Path is a directory: {0}")]
+    IsDirectory(String),
+    #[error("File is busy: {0}")]
+    Busy(String),
+    #[error("Insufficient permissions: {0}")]
+    PermissionDenied(String),
+    #[error("File is occupied: {0}")]
+    FileBusy(String),
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
+    #[error("Unknown IO error: {0}")]
+    UnknownIo(String),
+}
+
+/// Error type for value conversion operations
+#[derive(Debug, thiserror::Error)]
+pub enum ConvertError {
+    /// Invalid input length error
+    ///
+    /// This occurs when the input byte slice length doesn't match the required 8 bytes.
+    #[error("invalid byte length: expected 8 bytes, received {0} bytes")]
+    InvalidLength(usize),
+
+    /// Generic conversion failure with detailed message
+    ///
+    /// Wraps underlying parsing/conversion errors with context information
+    #[error("conversion failure: {0}")]
+    ConversionFailure(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -332,6 +374,18 @@ impl From<NetworkError> for Error {
 impl From<StorageError> for Error {
     fn from(e: StorageError) -> Self {
         Error::System(SystemError::Storage(e))
+    }
+}
+
+impl From<ConvertError> for Error {
+    fn from(e: ConvertError) -> Self {
+        Error::System(SystemError::Storage(StorageError::Convert(e)))
+    }
+}
+
+impl From<FileDeleteError> for Error {
+    fn from(e: FileDeleteError) -> Self {
+        Error::System(SystemError::Storage(StorageError::FileDelete(e)))
     }
 }
 

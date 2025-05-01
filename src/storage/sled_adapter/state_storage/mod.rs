@@ -4,12 +4,12 @@ use tracing::error;
 use tracing::info;
 
 use super::STATE_STORAGE_NAMESPACE;
+use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::convert::skv;
 use crate::HardState;
 use crate::Result;
 use crate::StateStorage;
 use crate::StorageError;
-use crate::HARD_STATE_KEY;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -58,9 +58,12 @@ impl StateStorage for SledStateStorage {
     }
 
     fn load_hard_state(&self) -> Option<crate::HardState> {
-        info!("pending load_role_hard_state_from_db with key: {}", HARD_STATE_KEY);
-        if let Ok(Some(v)) = self.get(skv(HARD_STATE_KEY.to_string())) {
-            info!("found node state from DB with key: {}", HARD_STATE_KEY);
+        info!(
+            "pending load_role_hard_state_from_db with key: {}",
+            STATE_STORAGE_HARD_STATE_KEY
+        );
+        if let Ok(Some(v)) = self.get(skv(STATE_STORAGE_HARD_STATE_KEY.to_string())) {
+            info!("found node state from DB with key: {}", STATE_STORAGE_HARD_STATE_KEY);
 
             let v = v.to_vec();
             match bincode::deserialize::<HardState>(&v) {
@@ -76,7 +79,10 @@ impl StateStorage for SledStateStorage {
                 }
             }
         } else {
-            info!("no hard state found from db with key: {}.", HARD_STATE_KEY);
+            info!(
+                "no hard state found from db with key: {}.",
+                STATE_STORAGE_HARD_STATE_KEY
+            );
         }
         None
     }
@@ -87,7 +93,7 @@ impl StateStorage for SledStateStorage {
     ) -> Result<()> {
         match bincode::serialize(&hard_state) {
             Ok(v) => {
-                if let Err(e) = self.insert(skv(HARD_STATE_KEY.to_string()), v) {
+                if let Err(e) = self.insert(skv(STATE_STORAGE_HARD_STATE_KEY.to_string()), v) {
                     error!("self.node_state_metadata_db.insert error: {}", e);
                     return Err(e);
                 }

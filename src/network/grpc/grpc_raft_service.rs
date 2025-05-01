@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
+use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
@@ -26,6 +27,8 @@ use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::MetadataRequest;
+use crate::proto::SnapshotChunk;
+use crate::proto::SnapshotResponse;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
 use crate::MaybeCloneOneshot;
@@ -210,6 +213,26 @@ where T: TypeConfig
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
             .send(RaftEvent::ClientReadRequest(request.into_inner(), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
+    }
+
+    async fn install_snapshot(
+        &self,
+        request: tonic::Request<Streaming<SnapshotChunk>>,
+    ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
+        if !self.server_is_ready() {
+            warn!("handle_client_read: Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::InstallSnapshotChunk(request.into_inner(), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 

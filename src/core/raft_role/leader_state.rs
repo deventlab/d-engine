@@ -317,7 +317,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let state_machine = ctx.state_machine();
-        let last_applied = state_machine.last_applied();
+        let last_applied_index = state_machine.last_applied().0;
         let my_id = self.shared_state.node_id;
         let my_term = self.current_term();
 
@@ -465,9 +465,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             Err(tonic::Status::failed_precondition(
                                 "enforce_quorum_consensus failed".to_string(),
                             ))
-                        } else if let Err(e) = self
-                            .ensure_state_machine_upto_commit_index(&ctx.handlers.state_machine_handler, last_applied)
-                        {
+                        } else if let Err(e) = self.ensure_state_machine_upto_commit_index(
+                            &ctx.handlers.state_machine_handler,
+                            last_applied_index,
+                        ) {
                             warn!("ensure_state_machine_upto_commit_index failed for linear read request");
                             Err(tonic::Status::failed_precondition(format!(
                                 "ensure_state_machine_upto_commit_index failed: {:?}",
@@ -487,6 +488,16 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
+            }
+
+            RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
+                sender
+                    .send(Err(Status::permission_denied("Not Follower or Learner. ")))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
             }
         }
         return Ok(());

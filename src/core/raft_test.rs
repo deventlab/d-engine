@@ -98,7 +98,7 @@ async fn test_role_event_priority_over_event_rx() {
     let role_tx = raft.role_tx.clone();
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(monitor_tx.clone());
-    let (event_monitor_tx, mut event_monitor_rx) = mpsc::unbounded_channel::<RaftEvent>();
+    let (event_monitor_tx, mut event_monitor_rx) = mpsc::unbounded_channel::<TestEvent>();
     raft.register_raft_event_listener(event_monitor_tx);
 
     // 3. Start the Raft main loop
@@ -129,7 +129,7 @@ async fn test_role_event_priority_over_event_rx() {
     let second_state = monitor_rx.recv().await.unwrap();
     assert!(is_leader(second_state), "Then process the RoleEvent");
     let event = event_monitor_rx.recv().await.unwrap();
-    assert_eq!(5, event.to_code()); // RecvHeartbeat code == 1
+    assert!(matches!(event, TestEvent::ClusterConf(_)));
 
     raft_handle.await.expect("should succeed");
 }
@@ -163,7 +163,7 @@ async fn test_election_timeout_case1() {
     // 3. Add state listeners
     let (role_monitor_tx, mut role_monitor_rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(role_monitor_tx);
-    let (event_monitor_tx, mut event_monitor_rx) = mpsc::unbounded_channel::<RaftEvent>();
+    let (event_monitor_tx, mut event_monitor_rx) = mpsc::unbounded_channel::<TestEvent>();
     raft.register_raft_event_listener(event_monitor_tx);
 
     // 4. Start the Raft main loop

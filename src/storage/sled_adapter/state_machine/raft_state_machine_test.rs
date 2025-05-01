@@ -8,7 +8,6 @@ use crate::convert::kv;
 use crate::init_sled_storages;
 use crate::proto::ClientCommand;
 use crate::proto::Entry;
-use crate::proto::SnapshotEntry;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::{self};
@@ -46,7 +45,7 @@ fn test_apply_committed_raft_logs_in_batch() {
         entries.push(log);
     }
     context.state_machine.apply_chunk(entries).expect("should succeed");
-    assert_eq!(context.state_machine.last_entry_index(), Some(3));
+    assert_eq!(context.state_machine.last_applied(), (3, 1));
 }
 
 fn init(path: &str) -> Arc<sled::Db> {
@@ -65,7 +64,7 @@ fn test_state_machine_flush() {
         let _ = std::fs::remove_dir_all(p);
         println!("Test setup ...");
         let state_machine_db = init(p);
-        let state_machine = Arc::new(RaftStateMachine::new(1, state_machine_db));
+        let state_machine = Arc::new(RaftStateMachine::new(1, state_machine_db).expect("success"));
         let mut batch = Batch::default();
         batch.insert(kv(1), kv(1));
         batch.insert(kv(2), kv(2));
@@ -76,7 +75,7 @@ fn test_state_machine_flush() {
 
     {
         let state_machine_db = init(p);
-        let state_machine = RaftStateMachine::new(1, state_machine_db);
+        let state_machine = RaftStateMachine::new(1, state_machine_db).expect("success");
         assert_eq!(state_machine.len(), 2);
         assert_eq!(state_machine.get(&kv(2)).unwrap_or(Some(kv(0))), Some(kv(2)));
     }
@@ -109,30 +108,6 @@ async fn test_basic_kv_operations() {
     assert_eq!(sm.get(&test_value).unwrap(), None);
 }
 
-#[tokio::test]
-async fn test_snapshot_operations() {
-    let root_path = "/tmp/test_snapshot_operations";
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
-    let test_entry = SnapshotEntry {
-        key: kv(100),
-        value: kv(100),
-    };
-
-    // Test successful snapshot application
-    sm.stop().unwrap();
-    sm.apply_snapshot(test_entry.clone()).unwrap();
-    assert_eq!(sm.get(&test_entry.key).unwrap(), Some(test_entry.value));
-
-    // Test error handling
-    sm.start().unwrap();
-    let test_entry = SnapshotEntry {
-        key: kv(100),
-        value: kv(100),
-    };
-    assert!(sm.apply_snapshot(test_entry).is_err());
-}
-
 #[test]
 fn test_last_entry_detection() {
     let root_path = "/tmp/test_last_entry_detection";
@@ -152,8 +127,7 @@ fn test_last_entry_detection() {
     sm.apply_chunk(entries).unwrap();
 
     // Verify last entry
-    assert_eq!(sm.last_entry_index(), Some(5));
-    assert_eq!(sm.last_applied(), 5);
+    assert_eq!(sm.last_applied(), (5, 1));
 }
 
 #[tokio::test]
@@ -218,7 +192,7 @@ async fn test_apply_chunk_functionality() {
 
     // Verify results
     assert_eq!(sm.get(&kv(1)).unwrap(), None);
-    assert_eq!(sm.last_applied(), 2);
+    assert_eq!(sm.last_applied(), (2, 1));
 }
 
 #[test]
@@ -242,3 +216,6 @@ fn test_metrics_integration() {
 
     assert_eq!(post - initial, 1);
 }
+
+#[test]
+fn test_create_snapshot() {}

@@ -1,26 +1,34 @@
 //! It works as KV storage for client business CRUDs.
 
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use autometrics::autometrics;
 use prost::Message;
 use sled::Batch;
+use tokio::sync::RwLock;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::convert::vk;
+use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX;
+use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_TERM;
+use crate::constants::STATE_MACHINE_META_NAMESPACE;
+use crate::constants::STATE_MACHINE_NAMESPACE;
+use crate::convert::safe_kv;
+use crate::convert::safe_vk;
+use crate::init_sled_state_machine_db;
+use crate::proto;
 use crate::proto::client_command::Command;
 use crate::proto::client_command::Insert;
 use crate::proto::ClientCommand;
 use crate::proto::Entry;
-use crate::proto::SnapshotEntry;
-use crate::storage::sled_adapter::STATE_MACHINE_NAMESPACE;
 use crate::Result;
 use crate::StateMachine;
 use crate::StateMachineIter;
@@ -31,14 +39,19 @@ use crate::COMMITTED_LOG_METRIC;
 pub struct RaftStateMachine {
     node_id: u32,
 
+    db: ArcSwap<sled::Db>,
+
+    is_serving: Arc<AtomicBool>,
+
     /// Volatile state on all servers:
     /// index of highest log entry applied to state machine (initialized to 0,
     /// increases monotonically)
-    last_applied: AtomicU64,
+    /// The last submitted log index and term (atomic operation ensures lock-free)
+    last_applied_index: AtomicU64,
+    last_applied_term: AtomicU64,
 
-    db: Arc<sled::Db>,
-    tree: Arc<sled::Tree>,
-    is_serving: Arc<AtomicBool>,
+    /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
+    snapshot_lock: RwLock<()>,
 }
 
 impl std::fmt::Debug for RaftStateMachine {
@@ -47,7 +60,7 @@ impl std::fmt::Debug for RaftStateMachine {
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         f.debug_struct("RaftStateMachine")
-            .field("tree_len", &self.tree.len())
+            .field("tree_len", &self.current_tree().len())
             .finish()
     }
 }
@@ -70,15 +83,28 @@ impl StateMachine for RaftStateMachine {
         self.is_serving.load(Ordering::Acquire)
     }
 
-    fn iter(&self) -> StateMachineIter {
-        self.tree.iter()
+    fn update_last_applied(
+        &self,
+        index: u64,
+        term: u64,
+    ) {
+        debug!(%index, %term, "update_last_applied");
+        self.last_applied_index.store(index, Ordering::SeqCst);
+        self.last_applied_term.store(term, Ordering::SeqCst);
+    }
+
+    fn last_applied(&self) -> (u64, u64) {
+        (
+            self.last_applied_index.load(Ordering::SeqCst),
+            self.last_applied_term.load(Ordering::SeqCst),
+        )
     }
 
     fn get(
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Vec<u8>>> {
-        match self.tree.get(key_buffer) {
+        match self.current_tree().get(key_buffer) {
             Ok(Some(v)) => Ok(Some(v.to_vec())),
             Ok(None) => Ok(None),
             Err(e) => {
@@ -88,89 +114,28 @@ impl StateMachine for RaftStateMachine {
         }
     }
 
-    #[autometrics(objective = API_SLO)]
-    fn apply_snapshot(
-        &self,
-        entry: SnapshotEntry,
-    ) -> Result<()> {
-        if self.is_running() {
-            return Err(StorageError::StateMachineError(
-                "state machine is still running while applying snapshot".to_string(),
-            )
-            .into());
-        }
-        let key = entry.key;
-        if let Err(e) = self.tree.insert(key.clone(), entry.value) {
-            error!("apply_snapshot insert error: {}", e);
-            return Err(StorageError::DbError(e.to_string()).into());
-        } else {
-            debug!("state machine insert snapshot entry (index: {:?}) successfully!", key);
-        }
-        Ok(())
-    }
-
-    /// return the last entry index from state machine
-    #[autometrics(objective = API_SLO)]
-    fn last_entry_index(&self) -> Option<u64> {
-        debug!("getting last entry from state machine");
-        if let Ok(Some(v)) = self.tree.last() {
-            let key: u64 = vk(&v.0);
-            debug!("last entry, key: {:?}.", key);
-
-            Some(key)
-        } else {
-            debug!("no entry found from State Machine.");
-            None
-        }
-    }
-
-    fn flush(&self) -> Result<()> {
-        match self.db.flush() {
-            Ok(bytes) => {
-                info!("Successfully flushed State Machine, bytes flushed: {}", bytes);
-                println!("Successfully flushed State Machine, bytes flushed: {}", bytes);
-            }
-            Err(e) => {
-                error!("Failed to flush State Machine: {}", e);
-                eprintln!("Failed to flush State Machine: {}", e);
-            }
-        }
-        Ok(())
-    }
-    #[cfg(test)]
-    fn clean(&self) -> Result<()> {
-        self.tree.clear()?;
-        Ok(())
-    }
-
-    fn len(&self) -> usize {
-        self.tree.len()
-    }
-
-    fn last_applied(&self) -> u64 {
-        self.last_applied.load(Ordering::Acquire)
-    }
-
-    fn update_last_applied(
-        &self,
-        new_id: u64,
-    ) {
-        debug!("update_last_applied_id: {:?}", new_id);
-        self.last_applied.store(new_id, Ordering::SeqCst);
+    fn iter(&self) -> StateMachineIter {
+        self.current_tree().iter()
     }
 
     fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
     ) -> Result<()> {
-        let mut highest_index = None;
+        let mut highest_index_entry = None;
         let mut batch = Batch::default();
         for entry in chunk {
             if entry.command.is_empty() {
                 warn!("why entry command is empty?");
                 continue;
             }
-            highest_index = Some(entry.index);
+            if let Some((index, _term)) = highest_index_entry {
+                if entry.index > index {
+                    highest_index_entry = Some((entry.index, entry.term));
+                } else {
+                    panic!("apply_chunk: receive entry not in order, TBF")
+                }
+            }
 
             debug!("[ConverterEngine] prepare to insert entry({:?})", entry);
             let req = match ClientCommand::decode(entry.command.as_slice()) {
@@ -211,41 +176,157 @@ impl StateMachine for RaftStateMachine {
             Err(e)
         } else {
             debug!("[ConverterEngine] convert bath successfully! ");
-            if let Some(index) = highest_index {
-                self.update_last_applied(index);
+            if let Some((index, term)) = highest_index_entry {
+                self.update_last_applied(index, term);
             }
             Ok(())
         }
     }
+
+    fn save_hard_state(&self) -> Result<()> {
+        let db = self.db.load();
+        let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
+        let (last_applied_index, last_applied_term) = self.last_applied();
+        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX, &safe_kv(last_applied_index))?;
+        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM, &safe_kv(last_applied_term))?;
+
+        tree.flush()?;
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<()> {
+        let db = self.db.load();
+        match db.flush() {
+            Ok(bytes) => {
+                info!("Successfully flushed State Machine, bytes flushed: {}", bytes);
+                println!("Successfully flushed State Machine, bytes flushed: {}", bytes);
+            }
+            Err(e) => {
+                error!("Failed to flush State Machine: {}", e);
+                eprintln!("Failed to flush State Machine: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_snapshot(
+        &self,
+        temp_snapshot_dir: &PathBuf,
+    ) -> Result<()> {
+        // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
+        let _guard = self.snapshot_lock.write().await;
+        // 2. Create a new state machine database instance
+        let db = init_sled_state_machine_db(temp_snapshot_dir)?;
+
+        let exist_db_tree = self.current_tree();
+        let new_db_tree = new_tree(db)?;
+
+        let mut batch = sled::Batch::default();
+        let mut counter = 0;
+
+        for item in exist_db_tree.iter() {
+            let (k, v) = item?;
+
+            batch.insert(k, v);
+            counter += 1;
+
+            // Perform a batch insert every 100 records
+            if counter % 100 == 0 {
+                new_db_tree.apply_batch(batch)?;
+                batch = sled::Batch::default(); // Reset the batch object
+            }
+        }
+
+        // Process the remaining data (the tail data of less than 100 records)
+        if counter % 100 != 0 {
+            new_db_tree.apply_batch(batch)?;
+        }
+
+        Ok(())
+    }
+
+    async fn apply_snapshot(
+        &self,
+        metadata: proto::SnapshotMetadata,
+        snapshot_path: PathBuf,
+    ) -> Result<()> {
+        // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
+        let _guard = self.snapshot_lock.write().await;
+
+        // 2. Create a new state machine database instance
+        let db = init_sled_state_machine_db(&snapshot_path)?;
+
+        // 3. Atomically replace the current database
+        self.db.store(Arc::new(db));
+
+        // 4. Update the last applied log index and term
+        self.last_applied_index
+            .store(metadata.last_included_index, Ordering::SeqCst);
+        self.last_applied_term
+            .store(metadata.last_included_term, Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn clean(&self) -> Result<()> {
+        self.current_tree().clear()?;
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.current_tree().len()
+    }
 }
 
 impl RaftStateMachine {
-    #[autometrics(objective = API_SLO)]
     pub fn new(
         node_id: u32,
         db: Arc<sled::Db>,
-    ) -> Self {
-        match db.open_tree(STATE_MACHINE_NAMESPACE) {
-            Ok(state_machine_tree) => {
-                let sm = RaftStateMachine {
-                    db,
-                    tree: Arc::new(state_machine_tree),
-                    is_serving: Arc::new(AtomicBool::new(true)),
+    ) -> Result<Self> {
+        let state_machine_meta_tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
+        let (index, term) = Self::load_metadata(&state_machine_meta_tree)?;
 
-                    last_applied: AtomicU64::new(0),
-                    node_id,
-                };
+        let sm = RaftStateMachine {
+            db: ArcSwap::from(db),
+            is_serving: Arc::new(AtomicBool::new(true)),
+            node_id,
 
-                //very important to sync the last applied index into memory
-                sm.last_applied
-                    .store(sm.last_entry_index().unwrap_or(0), Ordering::SeqCst);
-                sm
-            }
-            Err(e) => {
-                error!("Failed to open state machine db tree: {}", e);
-                panic!("failed to open sled tree: {}", e);
-            }
-        }
+            last_applied_index: AtomicU64::new(0),
+            last_applied_term: AtomicU64::new(0),
+
+            snapshot_lock: RwLock::new(()),
+        };
+
+        //very important to sync the last applied index into memory
+        sm.update_last_applied(index, term);
+        Ok(sm)
+    }
+
+    fn load_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
+        let index = tree
+            .get(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX)?
+            .map(|v| {
+                safe_vk(
+                    v.as_ref()
+                        .try_into()
+                        .map_err(|e| StorageError::StateMachineError(format!("Invalid index bytes: {:?}", e)))?,
+                )
+            })
+            .unwrap_or(Ok(0))?;
+
+        let term = tree
+            .get(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM)?
+            .map(|v| {
+                safe_vk(
+                    v.as_ref()
+                        .try_into()
+                        .map_err(|e| StorageError::StateMachineError(format!("Invalid term bytes: {:?}", e)))?,
+                )
+            })
+            .unwrap_or(Ok(0))?;
+
+        Ok((index, term))
     }
 
     #[autometrics(objective = API_SLO)]
@@ -253,10 +334,23 @@ impl RaftStateMachine {
         &self,
         batch: Batch,
     ) -> Result<()> {
-        if let Err(e) = self.tree.apply_batch(batch) {
+        if let Err(e) = self.current_tree().apply_batch(batch) {
             error!("state_machine apply_batch failed: {}", e);
             return Err(StorageError::DbError(e.to_string()).into());
         }
         Ok(())
     }
+
+    // Dynamically obtain the current Tree (lock-free cache optimization)
+    #[inline]
+    fn current_tree(&self) -> sled::Tree {
+        // Each Db instance only needs to get the Tree once
+        self.db.load().open_tree(STATE_MACHINE_NAMESPACE).unwrap()
+    }
+}
+
+/// TODO: how to refactor with `current_tree`
+fn new_tree(db: sled::Db) -> Result<sled::Tree> {
+    db.open_tree(STATE_MACHINE_NAMESPACE)
+        .map_err(|e| StorageError::Snapshot(format!("{:?}", e)).into())
 }

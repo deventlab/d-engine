@@ -42,9 +42,9 @@ async fn test_leader_election_based_on_log_term_and_index() -> std::result::Resu
     // 1. Start a 3-node cluster and artificially create inconsistent states
     println!("1. Start a 3-node cluster and artificially create inconsistent states");
 
-    let r1 = prepare_raft_log("./db/election/case1/cs/1", None);
+    let r1 = prepare_raft_log("./db/election/case1/cs/1", 0);
     manipulate_log(&r1, (1..=10).collect(), 2);
-    let r2 = prepare_raft_log("./db/election/case1/cs/2", None);
+    let r2 = prepare_raft_log("./db/election/case1/cs/2", 0);
     manipulate_log(&r2, (1..=8).collect(), 3);
     let ss1 = prepare_state_storage("./db/election/case1/cs/1");
     init_state_storage(&ss1, 2, None);

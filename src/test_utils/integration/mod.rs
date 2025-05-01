@@ -146,9 +146,9 @@ pub fn setup_raft_components(
     let state_machine_db = Arc::new(state_machine_db);
     let state_storage_db = Arc::new(state_storage_db);
 
-    let sled_raft_log = SledRaftLog::new(raft_log_db, None);
-    let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone());
-    let last_applied_index_option = sled_state_machine.last_entry_index();
+    let sled_raft_log = SledRaftLog::new(raft_log_db, 0);
+    let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone()).expect("success");
+    let last_applied_pair = sled_state_machine.last_applied();
     let sled_state_storage = SledStateStorage::new(state_storage_db);
 
     let grpc_transport = GrpcTransport { my_id: id };
@@ -182,9 +182,10 @@ pub fn setup_raft_components(
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
-        last_applied_index_option,
+        last_applied_pair.0,
         settings.raft.commit_handler.max_entries_per_chunk,
         state_machine.clone(),
+        db_path.clone(),
     );
 
     let settings_clone = settings.clone();

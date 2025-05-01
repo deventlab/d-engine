@@ -1,48 +1,40 @@
-//! The `StateMachineHandler` module provides a core component for managing both
-//! write operations and read requests against the `StateMachine`.
-//!
-//! ## Relationship Between `StateMachineHandler` and `StateMachine`
-//! The `StateMachineHandler` serves as the primary interface for interacting
-//! with the `StateMachine`. Its dual responsibilities are:
-//! 1. Applying committed log entries to the `StateMachine` to maintain state consistency
-//! 2. Directly servicing client read requests through state machine queries
-//!
-//! While maintaining separation from the `StateMachine` itself, the handler
-//! leverages the `StateMachine` trait for both state updates and read
-//! operations. This design centralizes all state access points while preserving
-//! separation of concerns.
-//!
-//! ## Design Recommendations
-//! - **Customization Focus**: Developers should prioritize extending the `StateMachine`
-//!   implementation rather than modifying the `StateMachineHandler`. The handler is intentionally
-//!   generic and battle-tested, serving as:
-//!   - Write coordinator for log application
-//!   - Read router for direct state queries
-//! - **State Access Unification**: All state access (both write and read) should flow through the
-//!   handler to leverage:
-//!   - Consistent concurrency control
-//!   - Atomic visibility guarantees
-//!   - Linearizable read optimizations
-
 use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use autometrics::autometrics;
+use tokio::fs;
+use tokio::sync::RwLock;
+use tokio_stream::StreamExt;
 use tonic::async_trait;
+use tonic::IntoRequest;
+use tonic::Status;
+use tonic::Streaming;
 use tracing::error;
+use tracing::info;
+use tracing::warn;
 
+use super::SnapshotAssembler;
 use super::StateMachineHandler;
 use crate::alias::ROF;
 use crate::alias::SMOF;
+use crate::constants::SNAPSHOT_DIR;
+use crate::file_io::delete_file;
+use crate::file_io::validate_checksum;
 use crate::proto::client_command::Command;
 use crate::proto::ClientCommand;
 use crate::proto::ClientResult;
+use crate::proto::SnapshotChunk;
+use crate::proto::SnapshotResponse;
 use crate::utils::cluster::error;
+use crate::MaybeCloneOneshotSender;
 use crate::RaftLog;
 use crate::Result;
 use crate::StateMachine;
+use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
 
@@ -56,6 +48,12 @@ where T: TypeConfig
     pending_commit: AtomicU64, // The highest pending commit index
     max_entries_per_chunk: usize,
     state_machine: Arc<SMOF<T>>,
+
+    snapshot_dir: PathBuf,
+
+    current_snapshot_version: AtomicU64,
+    /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
+    snapshot_lock: RwLock<()>,
 }
 
 #[async_trait]
@@ -139,21 +137,198 @@ where T: TypeConfig
             None
         }
     }
+
+    async fn install_snapshot_chunk(
+        &self,
+        current_term: u64,
+        stream_request: Streaming<SnapshotChunk>,
+        sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
+    ) -> Result<()> {
+        // 1. Create a temporary directory
+        let temp_dir = tempfile::tempdir_in(&self.snapshot_dir)?;
+        let mut assembler = SnapshotAssembler::new(temp_dir.path()).await?;
+
+        // 2. Block processing loop (including network fault tolerance)
+        let mut term_check = None;
+        let mut metadata = None;
+        let mut total_chunks = None;
+
+        let mut stream = stream_request.into_request().into_inner();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = sender.send(Err(e));
+                    return Ok(());
+                }
+            };
+
+            // Verify the legitimacy of Leader
+            if let Some((term, leader_id)) = &term_check {
+                if chunk.term != *term || chunk.leader_id != *leader_id {
+                    sender
+                        .send(Err(Status::aborted("Leader changed")))
+                        .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                    return Ok(());
+                }
+            } else {
+                term_check = Some((chunk.term, chunk.leader_id.clone()));
+                metadata = chunk.metadata.clone();
+                total_chunks = Some(chunk.total);
+            }
+
+            // Checksum validation
+            if !validate_checksum(&chunk.data, &chunk.checksum) {
+                sender
+                    .send(Ok(SnapshotResponse {
+                        term: current_term,
+                        success: false,
+                        next_chunk: chunk.seq,
+                    }))
+                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                return Ok(());
+            }
+
+            // Write to temporary file
+            if let Err(e) = assembler.write_chunk(chunk.seq, chunk.data).await {
+                sender
+                    .send(Err(Status::internal(e.to_string())))
+                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                return Ok(());
+            }
+        }
+
+        let total = total_chunks.unwrap_or(0);
+        if assembler.received_chunks() != total {
+            sender
+                .send(Err(Status::internal(format!(
+                    "Received chunks({}) != total({})",
+                    assembler.received_chunks(),
+                    total
+                ))))
+                .map_err(|e| {
+                    warn!("Failed to send response: {:?}", e);
+                    StorageError::Snapshot(format!("Send snapshot error: {:?}", e))
+                })?;
+            return Ok(());
+        }
+
+        // Application snapshot
+        let metadata = metadata.unwrap();
+        self.state_machine
+            .apply_snapshot(metadata, assembler.finalize().await?)
+            .await?;
+
+        // Final confirmation
+        sender
+            .send(Ok(SnapshotResponse {
+                term: current_term,
+                success: true,
+                next_chunk: 0,
+            }))
+            .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    async fn create_snapshot(&self) -> Result<std::path::PathBuf> {
+        // 1: Get write lock 
+        let _guard = self.snapshot_lock.write().await;
+
+        let (last_included_index, last_included_term) = self.state_machine.last_applied();
+
+        let current_snapshot_version = self.current_snapshot_version();
+        let new_snapshot_version = current_snapshot_version + 1;
+        let temp_path = self.snapshot_dir.join(format!(".temp-{}", new_snapshot_version));
+        let final_path = self.snapshot_dir.join(format!(
+            "snapshot-{}-{}-{}.bin",
+            new_snapshot_version, last_included_index, last_included_term
+        ));
+
+        self.state_machine.create_snapshot(&temp_path).await?;
+
+        // 2: Atomic rename
+        fs::rename(&temp_path, &final_path).await?;
+
+        // 3: finalize snapshot version
+        self.current_snapshot_version
+            .compare_exchange(
+                current_snapshot_version,
+                new_snapshot_version,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .map_err(|e| StorageError::Snapshot(format!("{:?}", e)))?;
+
+        // Phase 3: cleanup old versions
+        let cleanup_version = current_snapshot_version.saturating_sub(2);
+        if let Err(e) = self.cleanup_snapshot(cleanup_version, &self.snapshot_dir).await {
+            error!(%e, "clean up old snapshot file failed");
+        }
+
+        Ok(final_path)
+    }
+
+    async fn cleanup_snapshot(
+        &self,
+        before_version: u64,
+        snapshot_dir: &PathBuf,
+    ) -> Result<()> {
+        let mut entries = fs::read_dir(snapshot_dir.as_path()).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+
+            if path.is_dir() {
+                continue;
+            } else if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                //File name parsing logic
+                if let Some((version, index, term)) = parse_filename(file_name) {
+                    info!(
+                        "Version: {:>4} | Index: {:>10} | Term: {:>10} | Path: {}",
+                        version,
+                        index,
+                        term,
+                        path.display()
+                    );
+
+                    if version < before_version {
+                        info!(?version, "going to be deleted.");
+                        if let Err(e) = delete_file(path).await {
+                            error!(%e, "delete_file failed");
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn current_snapshot_version(&self) -> u64 {
+        self.current_snapshot_version.load(Ordering::Acquire)
+    }
 }
 
 impl<T> DefaultStateMachineHandler<T>
 where T: TypeConfig
 {
     pub fn new(
-        last_applied: Option<u64>,
+        last_applied_index: u64,
         max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
+        db_root_dir: impl AsRef<Path>,
     ) -> Self {
+        let snapshot_dir = db_root_dir.as_ref().to_path_buf().join(SNAPSHOT_DIR);
         Self {
-            last_applied: AtomicU64::new(last_applied.unwrap_or(0)),
+            last_applied: AtomicU64::new(last_applied_index),
             pending_commit: AtomicU64::new(0),
             max_entries_per_chunk,
             state_machine,
+            snapshot_dir,
+            current_snapshot_version: AtomicU64::new(0),
+            snapshot_lock: RwLock::new(()),
         }
     }
 
@@ -176,5 +351,32 @@ where T: TypeConfig
     #[cfg(test)]
     pub fn last_applied(&self) -> u64 {
         self.last_applied.load(Ordering::Acquire)
+    }
+}
+
+/// Manual parsing file name format: snapshot-{version}-{index}.bin
+fn parse_filename(name: &str) -> Option<(u64, u64, u64)> {
+    // Check prefix and suffix
+    if !name.starts_with("snapshot-") || !name.ends_with(".bin") {
+        return None;
+    }
+
+    // Remove fixed parts
+    let core = &name[9..name.len() - 4]; // "snapshot-".len() = 9, ".bin".len() = 4
+
+    // Split version and index
+    let parts: Vec<&str> = core.splitn(3, '-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    // Parse numbers
+    match (
+        parts[0].parse::<u64>(),
+        parts[1].parse::<u64>(),
+        parts[2].parse::<u64>(),
+    ) {
+        (Ok(v), Ok(i), Ok(t)) => Some((v, i, t)),
+        _ => None,
     }
 }

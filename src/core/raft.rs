@@ -10,6 +10,8 @@ use tracing::trace;
 use tracing::warn;
 
 use super::follower_state::FollowerState;
+#[cfg(test)]
+use super::raft_event_to_test_event;
 use super::RaftContext;
 use super::RaftCoreHandlers;
 use super::RaftEvent;
@@ -61,7 +63,7 @@ where T: TypeConfig
     test_role_transition_listener: Vec<mpsc::UnboundedSender<i32>>,
 
     #[cfg(test)]
-    test_raft_event_listener: Vec<mpsc::UnboundedSender<RaftEvent>>,
+    test_raft_event_listener: Vec<mpsc::UnboundedSender<super::TestEvent>>,
 }
 
 pub(crate) struct SignalParams {
@@ -85,7 +87,7 @@ where T: TypeConfig
         settings: Arc<RaftNodeConfig>,
     ) -> Self {
         // Load last applied index from state machine
-        let last_applied_index = storage.state_machine.last_entry_index();
+        let last_applied_index = Some(storage.state_machine.last_applied().0);
 
         let ctx = Self::build_context(node_id, storage, transport, membership, handlers, settings.clone());
 
@@ -197,7 +199,7 @@ where T: TypeConfig
                     debug!("receive raft event: {:?}", raft_event);
 
                     #[cfg(test)]
-                    let event = raft_event.clone();
+                    let event = raft_event_to_test_event(&raft_event);
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, self.peer_channels()?, &self.ctx, self.role_tx.clone()).await {
                         error!("handle_raft_event: {:?}", e);
@@ -336,7 +338,7 @@ where T: TypeConfig
     #[cfg(test)]
     pub(crate) fn register_raft_event_listener(
         &mut self,
-        tx: mpsc::UnboundedSender<RaftEvent>,
+        tx: mpsc::UnboundedSender<super::TestEvent>,
     ) {
         self.test_raft_event_listener.push(tx);
     }
@@ -344,7 +346,7 @@ where T: TypeConfig
     #[cfg(test)]
     pub(crate) fn notify_raft_event(
         &self,
-        event: RaftEvent,
+        event: super::TestEvent,
     ) {
         debug!("unit test:: notify new raft event: {:?}", &event);
 
@@ -373,17 +375,21 @@ where T: TypeConfig
             .state_storage()
             .save_hard_state(self.role.state().shared_state().hard_state)
         {
-            error!("State storage persist node hard state failed: {:?}", e);
+            error!(?e, "State storage persist node hard state failed.");
+        }
+
+        if let Err(e) = self.ctx.state_machine().save_hard_state() {
+            error!(?e, "State storage persist node hard state failed.");
         }
 
         info!("raft_log:: flush...");
         if let Err(e) = self.ctx.storage.raft_log.flush() {
-            error!("Flush raft log failed: {:?}", e);
+            error!(?e, "Flush raft log failed.");
         }
 
         info!("state_machine:: before_shutdown...");
         if let Err(e) = self.ctx.storage.state_machine.flush() {
-            error!("Flush raft log failed: {:?}", e);
+            error!(?e, "Flush raft log failed.");
         }
 
         info!("Graceful shutdown node state ...");

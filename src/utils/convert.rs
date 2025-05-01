@@ -6,13 +6,19 @@ use prost::Message;
 use sled::IVec;
 use tracing::error;
 
+use crate::ConvertError;
+use crate::Result;
+
 pub fn str_to_u64(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     s.hash(&mut hasher);
     hasher.finish()
 }
 
-//max of u64
+#[deprecated(
+    since = "0.2.0",
+    note = "Please use the more efficient and safe `u64::to_be_bytes()` instead. For custom lengths use the new safe_kv() method"
+)]
 pub fn kv(i: u64) -> Vec<u8> {
     // let i = i % SPACE;
     // let k = [(i >> 16) as u8, (i >> 8) as u8, i as u8];
@@ -29,6 +35,10 @@ pub fn kv(i: u64) -> Vec<u8> {
     k.to_vec()
 }
 
+#[deprecated(
+    since = "0.2.0",
+    note = "Please use the safer `safe_vk()` method instead, which provides proper error handling"
+)]
 pub fn vk(v: &[u8]) -> u64 {
     if v.is_empty() {
         error!("v is empty");
@@ -49,6 +59,16 @@ pub fn vk(v: &[u8]) -> u64 {
                                               // the byte
     }
     result
+}
+
+pub fn safe_kv(num: u64) -> [u8; 8] {
+    num.to_be_bytes()
+}
+
+pub fn safe_vk(bytes: &[u8]) -> Result<u64> {
+    let array: [u8; 8] = bytes.try_into().map_err(|_| ConvertError::InvalidLength(bytes.len()))?;
+
+    Ok(u64::from_be_bytes(array))
 }
 
 pub fn vki(v: &IVec) -> u64 {

@@ -147,7 +147,7 @@ pub fn get_root_path() -> PathBuf {
 
 pub fn prepare_raft_log(
     db_path: &str,
-    last_applied_index: Option<u64>,
+    last_applied_index: u64,
 ) -> SledRaftLog {
     let raft_log_db_path = format!("{}/raft_log", db_path);
     let raft_log_db = sled::Config::default()
@@ -169,7 +169,7 @@ pub fn prepare_state_machine(
         .compression_factor(1)
         .open()
         .unwrap();
-    RaftStateMachine::new(node_id, Arc::new(state_machine_db))
+    RaftStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
 }
 pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
     let state_storage_db_path = format!("{}/state_storage", db_path);

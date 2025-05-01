@@ -30,6 +30,7 @@ use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::RoleEvent;
+use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 
@@ -227,6 +228,12 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
+            }
+            RaftEvent::InstallSnapshotChunk(stream, sender) => {
+                ctx.handlers
+                    .state_machine_handler
+                    .install_snapshot_chunk(my_term, stream, sender)
+                    .await?;
             }
         }
         return Ok(());

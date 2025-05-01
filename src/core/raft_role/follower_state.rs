@@ -294,6 +294,13 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     })?;
                 }
             }
+
+            RaftEvent::InstallSnapshotChunk(stream, sender) => {
+                ctx.handlers
+                    .state_machine_handler
+                    .install_snapshot_chunk(self.current_term(), stream, sender)
+                    .await?;
+            }
         }
 
         return Ok(());

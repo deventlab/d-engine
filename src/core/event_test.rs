@@ -9,6 +9,7 @@ impl RaftEvent {
             RaftEvent::AppendEntries(_, _) => 7,
             RaftEvent::ClientPropose(_, _) => 8,
             RaftEvent::ClientReadRequest(_, _) => 9,
+            RaftEvent::InstallSnapshotChunk(_, _) => 10,
         }
     }
 }
