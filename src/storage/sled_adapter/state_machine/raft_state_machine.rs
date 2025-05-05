@@ -138,6 +138,8 @@ impl StateMachine for RaftStateMachine {
                 } else {
                     panic!("apply_chunk: receive entry not in order, TBF")
                 }
+            } else {
+                highest_index_entry = Some((entry.index, entry.term));
             }
 
             debug!("[ConverterEngine] prepare to insert entry({:?})", entry);

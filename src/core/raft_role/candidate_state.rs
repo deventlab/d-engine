@@ -45,8 +45,8 @@ pub struct CandidateState<T: TypeConfig> {
 
     pub(super) timer: ElectionTimer,
 
-    // Shared global settings
-    pub(super) settings: Arc<RaftNodeConfig>,
+    // Shared global node_config
+    pub(super) node_config: Arc<RaftNodeConfig>,
     _marker: PhantomData<T>,
 }
 
@@ -175,7 +175,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 ctx.voting_members(peer_channels),
                 ctx.raft_log(),
                 ctx.transport(),
-                &ctx.settings(),
+                &ctx.node_config(),
             )
             .await
         {
@@ -420,12 +420,12 @@ impl<T: TypeConfig> CandidateState<T> {
     #[cfg(test)]
     pub fn new(
         node_id: u32,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         Self {
             shared_state: SharedState::new(node_id, None, None),
             timer: ElectionTimer::new((1, 2)),
-            settings,
+            node_config,
             _marker: PhantomData,
         }
     }
@@ -436,10 +436,10 @@ impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
         Self {
             shared_state: follower.shared_state.clone(),
             timer: ElectionTimer::new((
-                follower.settings.raft.election.election_timeout_min,
-                follower.settings.raft.election.election_timeout_max,
+                follower.node_config.raft.election.election_timeout_min,
+                follower.node_config.raft.election.election_timeout_max,
             )),
-            settings: follower.settings.clone(),
+            node_config: follower.node_config.clone(),
             _marker: PhantomData,
         }
     }

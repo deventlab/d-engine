@@ -10,7 +10,7 @@ use crate::proto::ClusterMembership;
 use crate::proto::LogId;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
-use crate::test_utils::settings;
+use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
@@ -55,8 +55,8 @@ async fn test_send_cluster_update_case1() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let mut settings = settings("/tmp/test_send_cluster_update_case1");
-    settings.retry.membership.max_retries = 1;
+    let mut node_config = node_config("/tmp/test_send_cluster_update_case1");
+    node_config.retry.membership.max_retries = 1;
     let request = ClusteMembershipChangeRequest {
         id: 1,
         term: 1,
@@ -65,7 +65,7 @@ async fn test_send_cluster_update_case1() {
     };
 
     let client = GrpcTransport { my_id };
-    let result = client.send_cluster_update(vec![], request, &settings.retry).await;
+    let result = client.send_cluster_update(vec![], request, &node_config.retry).await;
     let err = result.unwrap_err();
     assert!(matches!(
         err,
@@ -83,8 +83,8 @@ async fn test_send_cluster_update_case2() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let mut settings = settings("/tmp/test_send_cluster_update_case2");
-    settings.retry.membership.max_retries = 1;
+    let mut node_config = node_config("/tmp/test_send_cluster_update_case2");
+    node_config.retry.membership.max_retries = 1;
     let request = ClusteMembershipChangeRequest {
         id: 1,
         term: 1,
@@ -107,7 +107,7 @@ async fn test_send_cluster_update_case2() {
 
     let client = GrpcTransport { my_id };
     match client
-        .send_cluster_update(requests_with_peer_address, request, &settings.retry)
+        .send_cluster_update(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -134,8 +134,8 @@ async fn test_send_cluster_update_case3() {
     let my_id = 1;
     let peer1_id = 2;
     let peer2_id = 3;
-    let mut settings = settings("/tmp/test_send_cluster_update_case3");
-    settings.retry.membership.max_retries = 1;
+    let mut node_config = node_config("/tmp/test_send_cluster_update_case3");
+    node_config.retry.membership.max_retries = 1;
     let request = ClusteMembershipChangeRequest {
         id: 1,
         term: 1,
@@ -170,7 +170,7 @@ async fn test_send_cluster_update_case3() {
 
     let client = GrpcTransport { my_id };
     match client
-        .send_cluster_update(requests_with_peer_address, request, &settings.retry)
+        .send_cluster_update(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -196,8 +196,8 @@ async fn test_send_cluster_update_case4() {
     let my_id = 1;
     let peer1_id = 2;
     let peer2_id = 3;
-    let mut settings = settings("/tmp/test_send_cluster_update_case4");
-    settings.retry.membership.max_retries = 1;
+    let mut node_config = node_config("/tmp/test_send_cluster_update_case4");
+    node_config.retry.membership.max_retries = 1;
     let request = ClusteMembershipChangeRequest {
         id: 1,
         term: 1,
@@ -229,7 +229,7 @@ async fn test_send_cluster_update_case4() {
 
     let client = GrpcTransport { my_id };
     match client
-        .send_cluster_update(requests_with_peer_address, request, &settings.retry)
+        .send_cluster_update(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -293,12 +293,12 @@ async fn test_send_append_requests_case2() {
     };
     let requests_with_peer_address = vec![(leader_id, addr, request)];
 
-    let settings = settings("/tmp/test_send_append_requests_case2");
+    let node_config = node_config("/tmp/test_send_append_requests_case2");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client
-        .send_append_requests(requests_with_peer_address, &settings.retry)
+        .send_append_requests(requests_with_peer_address, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -366,12 +366,12 @@ async fn test_send_append_requests_case3_1() {
         (peer_3_id, peer_3_address, peer_req),
     ];
 
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client
-        .send_append_requests(requests_with_peer_address, &settings.retry)
+        .send_append_requests(requests_with_peer_address, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -438,12 +438,12 @@ async fn test_send_append_requests_case3_2() {
         (peer_3_id, peer_3_address, peer_req),
     ];
 
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let my_id = 1;
     let client = GrpcTransport { my_id };
     match client
-        .send_append_requests(requests_with_peer_address, &settings.retry)
+        .send_append_requests(requests_with_peer_address, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -464,7 +464,7 @@ async fn test_send_vote_requests_case1() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let request = VoteRequest {
         term: 1,
         candidate_id: my_id,
@@ -472,7 +472,7 @@ async fn test_send_vote_requests_case1() {
         last_log_term: 1,
     };
     let client = GrpcTransport { my_id };
-    match client.send_vote_requests(vec![], request, &settings.retry).await {
+    match client.send_vote_requests(vec![], request, &node_config.retry).await {
         Ok(_) => panic!(),
         Err(e) => assert!(matches!(
             e,
@@ -491,7 +491,7 @@ async fn test_send_vote_requests_case2() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
@@ -519,7 +519,7 @@ async fn test_send_vote_requests_case2() {
     }];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -544,7 +544,7 @@ async fn test_send_vote_requests_case3() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -584,7 +584,7 @@ async fn test_send_vote_requests_case3() {
     ];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -609,7 +609,7 @@ async fn test_send_vote_requests_case4_1() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -644,7 +644,7 @@ async fn test_send_vote_requests_case4_1() {
     ];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -669,7 +669,7 @@ async fn test_send_vote_requests_case4_2() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -705,7 +705,7 @@ async fn test_send_vote_requests_case4_2() {
     ];
     let client = GrpcTransport { my_id };
     assert!(client
-        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
         .await
         .is_ok());
 }
@@ -725,7 +725,7 @@ async fn test_send_vote_requests_case4_3() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -762,7 +762,7 @@ async fn test_send_vote_requests_case4_3() {
     ];
     let client = GrpcTransport { my_id };
     assert!(client
-        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
         .await
         .is_ok());
 }
@@ -779,7 +779,7 @@ async fn test_send_vote_requests_case5() {
     test_utils::enable_logger();
 
     let my_id = 1;
-    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -824,7 +824,7 @@ async fn test_send_vote_requests_case5() {
     ];
     let client = GrpcTransport { my_id };
     match client
-        .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+        .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
         .await
     {
         Ok(res) => {
@@ -848,7 +848,7 @@ async fn test_send_vote_requests_case5() {
 //     test_utils::enable_logger();
 
 //     let my_id = 1;
-//     let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+//     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
 //     let peer1_id = 2;
 //     let peer2_id = 3;
@@ -893,7 +893,7 @@ async fn test_send_vote_requests_case5() {
 //     ];
 //     let client = GrpcTransport { my_id };
 //     match client
-//         .send_vote_requests(requests_with_peer_address, request, &settings.retry)
+//         .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
 //         .await
 //     {
 //         Ok(_) => panic!(),

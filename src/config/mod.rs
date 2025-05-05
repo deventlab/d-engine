@@ -7,12 +7,14 @@
 //! - Component-wise validation
 mod cluster;
 use std::fmt::Debug;
+use std::path::Path;
 mod monitoring;
 mod network;
 mod raft;
 mod retry;
 mod tls;
 pub use cluster::*;
+use config::ConfigError;
 pub use monitoring::*;
 pub use network::*;
 pub use raft::*;
@@ -33,6 +35,7 @@ use config::File;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::Error;
 use crate::Result;
 
 /// Main configuration container for Raft consensus engine components
@@ -170,4 +173,47 @@ impl RaftNodeConfig {
         self.retry.validate()?;
         Ok(())
     }
+}
+
+/// Ensures directory path is valid and writable
+pub(super) fn validate_directory(
+    path: &Path,
+    name: &str,
+) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::Config(ConfigError::Message(format!(
+            "{} path cannot be empty",
+            name
+        ))));
+    }
+
+    #[cfg(not(test))]
+    {
+        use std::fs;
+        // Check directory existence or create ability
+        if !path.exists() {
+            fs::create_dir_all(path).map_err(|e| {
+                Error::Config(ConfigError::Message(format!(
+                    "Failed to create {} directory at {}: {}",
+                    name,
+                    path.display(),
+                    e
+                )))
+            })?;
+        }
+
+        // Check write permissions
+        let test_file = path.join(".permission_test");
+        fs::write(&test_file, b"test").map_err(|e| {
+            Error::Config(ConfigError::Message(format!(
+                "No write permission in {} directory {}: {}",
+                name,
+                path.display(),
+                e
+            )))
+        })?;
+        fs::remove_file(&test_file).ok();
+    }
+
+    Ok(())
 }

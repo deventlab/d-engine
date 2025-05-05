@@ -95,7 +95,7 @@ where T: TypeConfig
         let entries_per_peer = self.prepare_peer_entries(
             &new_entries,
             &replication_data,
-            ctx.settings.raft.replication.append_entries_max_entries_per_replication,
+            ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
             raft_log,
         );
 
@@ -115,7 +115,7 @@ where T: TypeConfig
         let mut peer_updates = HashMap::new();
         match ctx
             .transport()
-            .send_append_requests(requests, &ctx.settings.retry)
+            .send_append_requests(requests, &ctx.node_config.retry)
             .await
         {
             Ok(append_result) => {

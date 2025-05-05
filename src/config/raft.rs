@@ -1,9 +1,11 @@
 use std::fmt::Debug;
+use std::path::PathBuf;
 
 use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::validate_directory;
 use crate::Error;
 use crate::Result;
 
@@ -29,6 +31,10 @@ pub struct RaftConfig {
     /// Controls how committed log entries are applied to the state machine
     #[serde(default)]
     pub commit_handler: CommitHandlerConfig,
+
+    /// Configuration settings for snapshot feature
+    #[serde(default)]
+    pub snapshot: SnapshotConfig,
 
     /// Maximum allowed log entry gap between leader and learner nodes
     /// Learners with larger gaps than this value will trigger catch-up replication
@@ -58,6 +64,7 @@ impl Default for RaftConfig {
             election: ElectionConfig::default(),
             membership: MembershipConfig::default(),
             commit_handler: CommitHandlerConfig::default(),
+            snapshot: SnapshotConfig::default(),
             learner_raft_log_gap: default_learner_gap(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
         }
@@ -295,4 +302,66 @@ fn default_process_interval_ms() -> u64 {
 }
 fn default_max_entries_per_chunk() -> usize {
     100
+}
+
+/// Submit processor-specific configuration
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SnapshotConfig {
+    /// Maximum number of log entries to accumulate before triggering snapshot creation
+    /// This helps control memory usage by enforcing periodic state compaction
+    #[serde(default = "default_max_log_entries_before_snapshot")]
+    pub max_log_entries_before_snapshot: usize,
+
+    /// Number of historical snapshot versions to retain during cleanup
+    /// Ensures we maintain a safety buffer of previous states for recovery
+    #[serde(default = "default_cleanup_version_offset")]
+    pub cleanup_version_offset: u64,
+
+    /// Snapshot storage directory
+    ///
+    /// Default: `default_snapshots_dir()` (/tmp/snapshots)
+    #[serde(default = "default_snapshots_dir")]
+    pub snapshots_dir: PathBuf,
+}
+impl Default for SnapshotConfig {
+    fn default() -> Self {
+        Self {
+            max_log_entries_before_snapshot: default_max_log_entries_before_snapshot(),
+            cleanup_version_offset: default_cleanup_version_offset(),
+            snapshots_dir: default_snapshots_dir(),
+        }
+    }
+}
+impl SnapshotConfig {
+    fn validate(&self) -> Result<()> {
+        if self.max_log_entries_before_snapshot == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_log_entries_before_snapshot must be greater than 0".into(),
+            )));
+        }
+
+        if self.cleanup_version_offset == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "cleanup_version_offset must be greater than 0".into(),
+            )));
+        }
+
+        // Validate storage paths
+        validate_directory(&self.snapshots_dir, "snapshots_dir")?;
+
+        Ok(())
+    }
+}
+/// Default threshold for triggering snapshot creation
+fn default_max_log_entries_before_snapshot() -> usize {
+    1000
+}
+
+/// Default number of historical snapshots to retain
+fn default_cleanup_version_offset() -> u64 {
+    2
+}
+/// Default snapshots storage path
+fn default_snapshots_dir() -> PathBuf {
+    PathBuf::from("/tmp/snapshots")
 }

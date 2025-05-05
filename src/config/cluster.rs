@@ -6,6 +6,7 @@ use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::validate_directory;
 use crate::proto::NodeMeta;
 use crate::Error;
 use crate::Result;
@@ -45,7 +46,7 @@ pub struct ClusterConfig {
 
     /// Database storage root directory
     ///
-    /// Default: `default_db_dir()` (./data/db)
+    /// Default: `default_db_dir()` (/tmp/db)
     #[serde(default = "default_db_dir")]
     pub db_root_dir: PathBuf,
 
@@ -114,52 +115,8 @@ impl ClusterConfig {
         }
 
         // Validate storage paths
-        self.validate_directory(&self.db_root_dir, "db_root_dir")?;
-        self.validate_directory(&self.log_dir, "log_dir")?;
-
-        Ok(())
-    }
-
-    /// Ensures directory path is valid and writable
-    fn validate_directory(
-        &self,
-        path: &Path,
-        name: &str,
-    ) -> Result<()> {
-        if path.as_os_str().is_empty() {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "{} path cannot be empty",
-                name
-            ))));
-        }
-
-        #[cfg(not(test))]
-        {
-            use std::fs;
-            // Check directory existence or create ability
-            if !path.exists() {
-                fs::create_dir_all(path).map_err(|e| {
-                    Error::Config(ConfigError::Message(format!(
-                        "Failed to create {} directory at {}: {}",
-                        name,
-                        path.display(),
-                        e
-                    )))
-                })?;
-            }
-
-            // Check write permissions
-            let test_file = path.join(".permission_test");
-            fs::write(&test_file, b"test").map_err(|e| {
-                Error::Config(ConfigError::Message(format!(
-                    "No write permission in {} directory {}: {}",
-                    name,
-                    path.display(),
-                    e
-                )))
-            })?;
-            fs::remove_file(&test_file).ok();
-        }
+        validate_directory(&self.db_root_dir, "db_root_dir")?;
+        validate_directory(&self.log_dir, "log_dir")?;
 
         Ok(())
     }

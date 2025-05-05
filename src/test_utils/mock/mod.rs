@@ -48,7 +48,7 @@ pub use mock_rpc_service::*;
 use tokio::sync::watch;
 
 use super::enable_logger;
-use super::settings;
+use super::node_config;
 use super::MockTypeConfig;
 use crate::proto::NodeMeta;
 use crate::Node;
@@ -62,13 +62,15 @@ pub(crate) fn mock_node(
 ) -> Node<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = settings(db_path);
+    let mut node_config = node_config(db_path);
     if peers_meta_option.is_some() {
-        settings.cluster.initial_cluster = peers_meta_option.unwrap();
+        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
     }
     // Initializing Shutdown Signal
     // let (graceful_tx, graceful_rx) = watch::channel(());
-    MockBuilder::new(shutdown_signal).with_settings(settings).build_node()
+    MockBuilder::new(shutdown_signal)
+        .wiht_node_config(node_config)
+        .build_node()
 }
 
 pub(crate) fn mock_raft(
@@ -78,14 +80,16 @@ pub(crate) fn mock_raft(
 ) -> Raft<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = settings(db_path);
+    let mut node_config = node_config(db_path);
     // Set batch_threshold=0, means the replication will be triggered immediatelly.
-    settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 0;
     if peers_meta_option.is_some() {
-        settings.cluster.initial_cluster = peers_meta_option.unwrap();
+        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
     }
 
-    MockBuilder::new(shutdown_signal).with_settings(settings).build_raft()
+    MockBuilder::new(shutdown_signal)
+        .wiht_node_config(node_config)
+        .build_raft()
 }
 
 pub(crate) fn mock_raft_context(
@@ -95,12 +99,12 @@ pub(crate) fn mock_raft_context(
 ) -> RaftContext<MockTypeConfig> {
     enable_logger();
 
-    let mut settings = settings(db_path);
+    let mut node_config = node_config(db_path);
     if peers_meta_option.is_some() {
-        settings.cluster.initial_cluster = peers_meta_option.unwrap();
+        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
     }
 
     MockBuilder::new(shutdown_signal)
-        .with_settings(settings)
+        .wiht_node_config(node_config)
         .build_context()
 }

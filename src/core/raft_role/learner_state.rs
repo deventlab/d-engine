@@ -37,8 +37,8 @@ use crate::TypeConfig;
 pub struct LearnerState<T: TypeConfig> {
     pub shared_state: SharedState,
     pub(super) timer: ElectionTimer,
-    // Shared global settings
-    pub(super) settings: Arc<RaftNodeConfig>,
+    // Shared global node_config
+    pub(super) node_config: Arc<RaftNodeConfig>,
 
     _marker: PhantomData<T>,
 }
@@ -254,15 +254,15 @@ impl<T: TypeConfig> LearnerState<T> {
 impl<T: TypeConfig> LearnerState<T> {
     pub fn new(
         node_id: u32,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         LearnerState {
             shared_state: SharedState::new(node_id, None, None),
             timer: ElectionTimer::new((
-                settings.raft.election.election_timeout_min,
-                settings.raft.election.election_timeout_max,
+                node_config.raft.election.election_timeout_min,
+                node_config.raft.election.election_timeout_max,
             )),
-            settings,
+            node_config,
             _marker: PhantomData,
         }
     }
@@ -272,10 +272,10 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
         Self {
             shared_state: follower_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                follower_state.settings.raft.election.election_timeout_min,
-                follower_state.settings.raft.election.election_timeout_max,
+                follower_state.node_config.raft.election.election_timeout_min,
+                follower_state.node_config.raft.election.election_timeout_max,
             )),
-            settings: follower_state.settings.clone(),
+            node_config: follower_state.node_config.clone(),
             _marker: PhantomData,
         }
     }
@@ -285,10 +285,10 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
         Self {
             shared_state: candidate_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                candidate_state.settings.raft.election.election_timeout_min,
-                candidate_state.settings.raft.election.election_timeout_max,
+                candidate_state.node_config.raft.election.election_timeout_min,
+                candidate_state.node_config.raft.election.election_timeout_max,
             )),
-            settings: candidate_state.settings.clone(),
+            node_config: candidate_state.node_config.clone(),
             _marker: PhantomData,
         }
     }

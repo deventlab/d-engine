@@ -7,8 +7,8 @@ use tokio::sync::watch;
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
 use crate::test_utils::insert_state_storage;
+use crate::test_utils::node_config;
 use crate::test_utils::reset_dbs;
-use crate::test_utils::settings;
 use crate::Error;
 use crate::NodeBuilder;
 use crate::RaftLog;
@@ -112,12 +112,12 @@ async fn test_start_rpc_panics_without_node() {
 // No panic
 #[tokio::test]
 async fn test_metrics_server_starts_on_correct_port() {
-    let mut settings = settings("/tmp/test_metrics_server_starts_on_correct_port");
-    settings.monitoring.prometheus_port = 12345; // Set the test port
+    let mut node_config = node_config("/tmp/test_metrics_server_starts_on_correct_port");
+    node_config.monitoring.prometheus_port = 12345; // Set the test port
 
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
-    NodeBuilder::init(settings, shutdown_rx)
+    NodeBuilder::init(node_config, shutdown_rx)
         .build()
         .start_metrics_server(shutdown_tx.subscribe());
 }

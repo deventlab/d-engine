@@ -268,7 +268,7 @@ impl NodeBuilder {
                 last_applied_index,
                 node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),
-                db_root_dir.clone(),
+                node_config.raft.snapshot.clone(),
             ))
         });
         let membership = self
@@ -279,7 +279,7 @@ impl NodeBuilder {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
 
-        let settings_arc = Arc::new(node_config);
+        let node_config_arc = Arc::new(node_config);
         let shutdown_signal = self.shutdown_signal.clone();
         let mut raft_core = Raft::<RaftTypeConfig>::new(
             node_id,
@@ -302,7 +302,7 @@ impl NodeBuilder {
                 event_rx,
                 shutdown_signal: shutdown_signal.clone(),
             },
-            settings_arc.clone(),
+            node_config_arc.clone(),
         );
 
         // Register commit event listener
@@ -313,8 +313,8 @@ impl NodeBuilder {
             state_machine_handler,
             raft_core.ctx.storage.raft_log.clone(),
             new_commit_event_rx,
-            settings_arc.raft.commit_handler.batch_size,
-            settings_arc.raft.commit_handler.process_interval_ms,
+            node_config_arc.raft.commit_handler.batch_size,
+            node_config_arc.raft.commit_handler.process_interval_ms,
             shutdown_signal,
         );
         tokio::spawn(async move {
@@ -335,7 +335,7 @@ impl NodeBuilder {
             raft_core: Arc::new(Mutex::new(raft_core)),
             event_tx: event_tx.clone(),
             ready: AtomicBool::new(false),
-            settings: settings_arc,
+            node_config: node_config_arc,
         };
 
         self.node = Some(Arc::new(node));

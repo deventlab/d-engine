@@ -57,10 +57,11 @@ use crate::SystemError;
 fn test_new_with_fresh_start() {
     let components = setup_raft_components("/tmp/test_new_with_fresh_start", None, false);
     let node_id = 1;
-    let settings = components.arc_settings.clone();
+    let node_config = components.arc_node_config.clone();
     let hard_state_from_db = None;
     let last_applied_index_option = None;
-    let state = FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
+    let state =
+        FollowerState::<RaftTypeConfig>::new(node_id, node_config, hard_state_from_db, last_applied_index_option);
 
     assert_eq!(state.commit_index(), 0);
     assert_eq!(state.current_term(), 1);
@@ -95,11 +96,11 @@ fn test_new_with_restart() {
     {
         let components = setup_raft_components("/tmp/test_new_with_restart", None, false);
         let node_id = 1;
-        let settings = components.arc_settings.clone();
+        let node_config = components.arc_node_config.clone();
         let hard_state_from_db = None;
         let last_applied_index_option = None;
         let mut state =
-            FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
+            FollowerState::<RaftTypeConfig>::new(node_id, node_config, hard_state_from_db, last_applied_index_option);
 
         state.update_current_term(1);
         state.update_commit_index(5).expect("should succeed");
@@ -109,7 +110,7 @@ fn test_new_with_restart() {
     // Restart
     {
         let components = setup_raft_components("/tmp/test_new_with_restart", None, true);
-        let settings = components.arc_settings.clone();
+        let node_config = components.arc_node_config.clone();
         let node_id = 1;
         let hard_state_from_db = Some(HardState {
             current_term: 2,
@@ -120,7 +121,7 @@ fn test_new_with_restart() {
         });
         let last_applied_index_option = Some(2);
         let state =
-            FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
+            FollowerState::<RaftTypeConfig>::new(node_id, node_config, hard_state_from_db, last_applied_index_option);
         assert_eq!(state.commit_index(), 2);
         assert_eq!(state.current_term(), 2);
         assert_eq!(state.voted_for().unwrap(), Some(voted_for));
@@ -135,7 +136,7 @@ async fn test_tick() {
     let context = mock_raft_context("/tmp/test_tick", graceful_rx, None);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
     let peer_channels = Arc::new(mock_peer_channels());
@@ -185,7 +186,7 @@ async fn test_handle_raft_event_case1_1() {
         });
     context.handlers.election_handler = election_handler;
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let term_before = state.current_term();
 
     // Prepare function params
@@ -240,7 +241,7 @@ async fn test_handle_raft_event_case1_2() {
         });
     context.handlers.election_handler = election_handler;
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -287,7 +288,7 @@ async fn test_handle_raft_event_case1_3() {
         });
     context.handlers.election_handler = election_handler;
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let term_before = state.current_term();
 
     // Prepare function params
@@ -319,7 +320,7 @@ async fn test_handle_raft_event_case2() {
         .returning(|| ClusterMembership { nodes: vec![] });
     context.membership = Arc::new(membership);
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -342,7 +343,7 @@ async fn test_handle_raft_event_case3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -423,7 +424,7 @@ async fn test_handle_raft_event_case4_1() {
     context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.update_current_term(follower_term);
 
     // Prepare Append entries request
@@ -502,7 +503,7 @@ async fn test_handle_raft_event_case4_2() {
     context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.update_current_term(follower_term);
 
     // Prepare Append entries request
@@ -581,7 +582,7 @@ async fn test_handle_raft_event_case4_3() {
     context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.update_current_term(follower_term);
 
     // Prepare Append entries request
@@ -625,7 +626,7 @@ async fn test_handle_raft_event_case5() {
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Handle raft event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -654,7 +655,7 @@ async fn test_handle_raft_event_case6_1() {
     let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -686,7 +687,7 @@ async fn test_handle_raft_event_case6_2() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     let client_read_request = ClientReadRequest {
         client_id: 1,

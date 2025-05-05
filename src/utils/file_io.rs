@@ -15,24 +15,40 @@ use crate::FileDeleteError;
 use crate::Result;
 use crate::StorageError;
 
-pub fn crate_parent_dir_if_not_exist(path: &Path) -> Result<()> {
-    if let Some(parent_dir) = path.parent() {
-        if !parent_dir.exists() {
-            if let Err(e) = create_dir_all(parent_dir) {
-                error!("Failed to create log directory: {:?}", e);
-                return Err(StorageError::PathError {
-                    path: path.to_path_buf(),
-                    source: e,
-                }
-                .into());
+/// Creates parent directories for the given path.
+/// e.g. path = "/tmp/a/b/c", "/tmp/a/b" will be crated
+/// e.g. path = "/tmp/a/b/c/", "/tmp/a/b/c" will be crated
+/// e.g. path = "/tmp/a/b/x.txt", "/tmp/a/b" will be crated
+pub fn create_parent_dir_if_not_exist(path: &Path) -> Result<()> {
+    /// Check if the path ends with the system separator
+    fn has_trailing_separator(path: &Path) -> bool {
+        let s = path.to_string_lossy();
+        !s.is_empty() && s.ends_with(std::path::MAIN_SEPARATOR)
+    }
+
+    // Core logic: Prioritize detection of the end delimiter
+    let dir_to_create = if has_trailing_separator(path) {
+        path //Explicitly indicate the directory path and create a complete path
+    } else {
+        path.parent().unwrap_or(path) // file path, create parent directory
+    };
+
+    if !dir_to_create.exists() {
+        if let Err(e) = create_dir_all(dir_to_create) {
+            error!(?e, "create_parent_dir_if_not_exist failed.");
+            return Err(StorageError::PathError {
+                path: path.to_path_buf(),
+                source: e,
             }
+            .into());
         }
     }
+
     Ok(())
 }
 
 pub fn open_file_for_append(path: PathBuf) -> Result<File> {
-    crate_parent_dir_if_not_exist(&path)?;
+    create_parent_dir_if_not_exist(&path)?;
     let log_file = match OpenOptions::new().append(true).create(true).open(&path) {
         Ok(f) => f,
         Err(e) => {

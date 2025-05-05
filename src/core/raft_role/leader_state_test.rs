@@ -24,7 +24,7 @@ use crate::proto::VoteResponse;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
-use crate::test_utils::settings;
+use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
@@ -53,7 +53,7 @@ struct TestContext {
     // replication_handler: MockReplicationCore<MockTypeConfig>,
     // raft_log: Arc<MockRaftLog>,
     // transport: Arc<MockTransport>,
-    // arc_settings: Arc<RaftNodeConfig>,
+    // arc_node_config: Arc<RaftNodeConfig>,
 }
 
 /// Initialize the test environment and return the core components
@@ -63,26 +63,26 @@ async fn setup_test_case(
     handle_client_proposal_in_batch_expect_times: usize,
     shutdown_signal: watch::Receiver<()>,
 ) -> TestContext {
-    let mut settings = settings(&format!("/tmp/{}", test_name));
-    settings.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
+    let mut node_config = node_config(&format!("/tmp/{}", test_name));
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
     let mut raft_context = MockBuilder::new(shutdown_signal)
-        .with_settings(settings)
+        .wiht_node_config(node_config)
         .build_context();
 
     // let raft = RaftConfig {
     //     replication: ReplicationConfig {
     //         rpc_append_entries_in_batch_threshold: batch_threshold,
-    //         ..context.settings.raft.replication.clone()
+    //         ..context.node_config.raft.replication.clone()
     //     },
-    //     ..context.settings.raft.clone()
+    //     ..context.node_config.raft.clone()
     // };
 
     // Create Leader state
-    // let settings = Arc::new(RaftNodeConfig {
+    // let node_config = Arc::new(RaftNodeConfig {
     //     raft: raft.clone(),
-    //     ..context.settings.clone()
+    //     ..context.node_config.clone()
     // });
-    let mut state = LeaderState::new(1, raft_context.settings());
+    let mut state = LeaderState::new(1, raft_context.node_config());
     state
         .update_commit_index(4)
         .expect("Should succeed to update commit index");
@@ -126,7 +126,7 @@ async fn setup_test_case(
         // replication_handler,
         // raft_log: Arc::new(raft_log),
         // transport: Arc::new(MockTransport::new()),
-        // arc_settings: settings,
+        // arc_node_config: node_config,
     }
 }
 
@@ -317,7 +317,7 @@ async fn test_process_client_propose_case2() {
 async fn test_ensure_state_machine_upto_commit_index_case1() {
     // Prepare Leader State
     let context = setup_raft_components("/tmp/test_ensure_state_machine_upto_commit_index_case1", None, false);
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_node_config.clone());
 
     // Update commit index
     let commit_index = 10;
@@ -340,7 +340,7 @@ async fn test_ensure_state_machine_upto_commit_index_case1() {
 async fn test_ensure_state_machine_upto_commit_index_case2() {
     // Prepare Leader State
     let context = setup_raft_components("/tmp/test_ensure_state_machine_upto_commit_index_case2", None, false);
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_node_config.clone());
 
     // Update Commit index
     let commit_index = 10;
@@ -386,7 +386,7 @@ async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     let term_before = state.current_term();
     let request_term = term_before;
 
@@ -425,7 +425,7 @@ async fn test_handle_raft_event_case1_2() {
 
     let updated_term = 100;
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -463,7 +463,7 @@ async fn test_handle_raft_event_case2() {
         .returning(|| ClusterMembership { nodes: vec![] });
     context.membership = Arc::new(membership);
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -494,7 +494,7 @@ async fn test_handle_raft_event_case3_1() {
     membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
     context.membership = Arc::new(membership);
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -536,7 +536,7 @@ async fn test_handle_raft_event_case3_2() {
     membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
     context.membership = Arc::new(membership);
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -566,7 +566,7 @@ async fn test_handle_raft_event_case4_1() {
     // Prepare Leader State
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case4_1", graceful_rx, None);
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Update my term higher than request one
     let my_term = 10;
@@ -618,7 +618,7 @@ async fn test_handle_raft_event_case4_2() {
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case4_2")
         .build_context();
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Update my term higher than request one
     state.update_current_term(my_term);
@@ -660,7 +660,7 @@ async fn test_handle_raft_event_case5_1() {
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5_1", graceful_rx, None);
 
     // New state
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Handle raft event
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
@@ -704,7 +704,7 @@ async fn test_handle_raft_event_case6_1() {
         .with_replication_handler(replication_handler)
         .build_context();
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
     let commands = vec![ClientCommand::get(kv(1))];
@@ -779,7 +779,7 @@ async fn test_handle_raft_event_case6_2() {
         .with_replication_handler(replication_handler)
         .build_context();
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
     let commands = vec![ClientCommand::get(kv(1))];
@@ -851,7 +851,7 @@ async fn test_handle_raft_event_case6_3() {
         .with_replication_handler(replication_handler)
         .build_context();
 
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request

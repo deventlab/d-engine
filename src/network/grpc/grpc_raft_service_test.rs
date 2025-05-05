@@ -233,7 +233,7 @@ async fn test_handle_rpc_services_successfully() {
         .with_membership(membership)
         .with_replication_handler(replication_handler)
         .with_election_handler(election_handler)
-        .with_settings(settings)
+        .wiht_node_config(settings)
         .build_node();
     node.set_ready(true);
 

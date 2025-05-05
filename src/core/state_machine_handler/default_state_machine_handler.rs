@@ -1,5 +1,4 @@
 use std::ops::RangeInclusive;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -23,7 +22,7 @@ use super::SnapshotAssembler;
 use super::StateMachineHandler;
 use crate::alias::ROF;
 use crate::alias::SMOF;
-use crate::constants::SNAPSHOT_DIR;
+use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::move_directory;
 use crate::file_io::validate_checksum;
 use crate::proto::client_command::Command;
@@ -35,6 +34,7 @@ use crate::utils::cluster::error;
 use crate::MaybeCloneOneshotSender;
 use crate::RaftLog;
 use crate::Result;
+use crate::SnapshotConfig;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
@@ -51,9 +51,9 @@ where T: TypeConfig
     max_entries_per_chunk: usize,
     state_machine: Arc<SMOF<T>>,
 
-    snapshot_dir: PathBuf,
-
     current_snapshot_version: AtomicU64,
+    snapshot_config: SnapshotConfig,
+
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
 }
@@ -147,10 +147,11 @@ where T: TypeConfig
         sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
     ) -> Result<()> {
         // 1. Create a temporary directory
-        let temp_dir = tempfile::tempdir_in(&self.snapshot_dir).map_err(|e| StorageError::PathError {
-            path: self.snapshot_dir.clone(),
-            source: e,
-        })?;
+        let temp_dir =
+            tempfile::tempdir_in(&self.snapshot_config.snapshots_dir).map_err(|e| StorageError::PathError {
+                path: self.snapshot_config.snapshots_dir.clone(),
+                source: e,
+            })?;
         let mut assembler = SnapshotAssembler::new(temp_dir.path()).await?;
 
         // 2. Block processing loop (including network fault tolerance)
@@ -247,14 +248,17 @@ where T: TypeConfig
         let (last_included_index, last_included_term) = self.state_machine.last_applied();
         let current_snapshot_version = self.current_snapshot_version();
         let new_snapshot_version = current_snapshot_version + 1;
-        let temp_dir = self.snapshot_dir.join(format!("temp-{}", new_snapshot_version));
-        let final_dir = self.snapshot_dir.join(format!(
-            "snapshot-{}-{}-{}",
-            new_snapshot_version, last_included_index, last_included_term
+        let temp_dir = self
+            .snapshot_config
+            .snapshots_dir
+            .join(format!("temp-{}", new_snapshot_version));
+        let final_dir = self.snapshot_config.snapshots_dir.join(format!(
+            "{}{}-{}-{}",
+            SNAPSHOT_DIR_PREFIX, new_snapshot_version, last_included_index, last_included_term
         ));
 
-        // 3: Crate snapshot based on the temp path
-        debug!(?temp_dir, "create_snapshot 3: Crate snapshot based on the temp path");
+        // 3: Create snapshot based on the temp path
+        debug!(?temp_dir, "create_snapshot 3: Create snapshot based on the temp path");
         if let Err(e) = self
             .state_machine
             .generate_snapshot_data(&temp_dir, last_included_index, last_included_term)
@@ -273,7 +277,7 @@ where T: TypeConfig
         move_directory(&temp_dir, &final_dir).await?;
 
         // 5: Update snapshot version
-        debug!("create_snapshot 5: Update snapshot version");
+        debug!(%current_snapshot_version, %new_snapshot_version, "create_snapshot 5: Update snapshot version");
         self.current_snapshot_version
             .compare_exchange(
                 current_snapshot_version,
@@ -284,9 +288,12 @@ where T: TypeConfig
             .map_err(|e| StorageError::Snapshot(format!("{:?}", e)))?;
 
         // 6: cleanup old versions
-        debug!("create_snapshot 6: cleanup old versions");
-        let cleanup_version = current_snapshot_version.saturating_sub(2);
-        if let Err(e) = self.cleanup_snapshot(cleanup_version, &self.snapshot_dir).await {
+        let cleanup_version = current_snapshot_version.saturating_sub(self.snapshot_config.cleanup_version_offset);
+        debug!(%cleanup_version, "create_snapshot 6: cleanup old versions");
+        if let Err(e) = self
+            .cleanup_snapshot(cleanup_version, &self.snapshot_config.snapshots_dir)
+            .await
+        {
             error!(%e, "clean up old snapshot file failed");
         }
 
@@ -321,7 +328,9 @@ where T: TypeConfig
                             path.display()
                         );
 
-                        if version < before_version {
+                        debug!(%version, %before_version, "cleanup_snapshot");
+
+                        if version <= before_version {
                             info!(?version, "going to be deleted.");
                             if let Err(e) = remove_dir_all(&path).await {
                                 error!(%e, "delete_file failed");
@@ -347,17 +356,16 @@ where T: TypeConfig
         last_applied_index: u64,
         max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
-        db_root_dir: impl AsRef<Path>,
+        snapshot_config: SnapshotConfig,
     ) -> Self {
-        let snapshot_dir = db_root_dir.as_ref().to_path_buf().join(SNAPSHOT_DIR);
         Self {
             last_applied: AtomicU64::new(last_applied_index),
             pending_commit: AtomicU64::new(0),
             max_entries_per_chunk,
             state_machine,
-            snapshot_dir,
             current_snapshot_version: AtomicU64::new(0),
             snapshot_lock: RwLock::new(()),
+            snapshot_config,
         }
     }
 
@@ -385,13 +393,15 @@ where T: TypeConfig
 
 /// Manual parsing file name format: snapshot-{version}-{index}.bin
 fn parse_snapshot_dirname(name: &str) -> Option<(u64, u64, u64)> {
+    debug!(%name, "parse_snapshot_dirname");
+
     // Check prefix and suffix
-    if !name.starts_with("snapshot-") || !name.ends_with(".bin") {
+    if !name.starts_with(SNAPSHOT_DIR_PREFIX) {
         return None;
     }
 
     // Remove fixed parts
-    let core = &name[9..name.len() - 4]; // "snapshot-".len() = 9, ".bin".len() = 4
+    let core = &name[9..name.len()]; // "snapshot-".len() = 9, ".bin".len() = 4
 
     // Split version and index
     let parts: Vec<&str> = core.splitn(3, '-').collect();

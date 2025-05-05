@@ -18,4 +18,4 @@ pub(crate) const SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM: &str = "_raft_last_in
 pub(crate) const STATE_STORAGE_HARD_STATE_KEY: &str = "_state_storage_hard_state";
 
 /// Snapshot dir
-pub(crate) const SNAPSHOT_DIR: &str = "_snapshot";
+pub(crate) const SNAPSHOT_DIR_PREFIX: &str = "snapshot-";

@@ -12,7 +12,7 @@
 //!
 //! ## Example Usage
 //! ```ignore
-//! let node = NodeBuilder::new(settings).build().ready().unwrap();
+//! let node = NodeBuilder::new(node_config).build().ready().unwrap();
 //! tokio::spawn(async move {
 //!     node.run().await.expect("Raft node execution failed");
 //! });
@@ -62,7 +62,7 @@ where T: TypeConfig
     pub(crate) ready: AtomicBool,
 
     /// Raft node config
-    pub settings: Arc<RaftNodeConfig>,
+    pub node_config: Arc<RaftNodeConfig>,
 }
 
 impl<T> Debug for Node<T>
@@ -80,9 +80,9 @@ where T: TypeConfig
 {
     async fn connect_with_peers(
         node_id: u32,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> Result<POF<T>> {
-        let mut peer_channels = T::P::create(node_id, settings.clone());
+        let mut peer_channels = T::P::create(node_id, node_config.clone());
         peer_channels.connect_with_peers(node_id).await?;
 
         Ok(peer_channels)
@@ -113,7 +113,7 @@ where T: TypeConfig
     /// ```
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
-        let peer_channels = Self::connect_with_peers(self.node_id, self.settings.clone()).await?;
+        let peer_channels = Self::connect_with_peers(self.node_id, self.node_config.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
         peer_channels.check_cluster_is_ready().await?;

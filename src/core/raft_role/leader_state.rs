@@ -78,8 +78,8 @@ pub struct LeaderState<T: TypeConfig> {
 
     timer: ReplicationTimer,
 
-    // Shared global settings
-    pub(super) settings: Arc<RaftNodeConfig>,
+    // Shared global node_config
+    pub(super) node_config: Arc<RaftNodeConfig>,
 
     _marker: PhantomData<T>,
 }
@@ -780,7 +780,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
         let client_propose_request = ClientProposeRequest {
-            client_id: self.settings.raft.election.internal_rpc_client_request_id,
+            client_id: self.node_config.raft.election.internal_rpc_client_request_id,
             commands: vec![],
         };
 
@@ -822,7 +822,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             rpc_append_entries_batch_process_delay_in_ms,
             rpc_append_entries_clock_in_ms,
             ..
-        } = candidate.settings.raft.replication;
+        } = candidate.node_config.raft.replication;
 
         Self {
             shared_state: candidate.shared_state.clone(),
@@ -839,7 +839,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
                 Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
             ),
 
-            settings: candidate.settings.clone(),
+            node_config: candidate.node_config.clone(),
             _marker: PhantomData,
         }
     }
@@ -870,7 +870,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         self.wait_quorum_response(
             resp_rx,
-            Duration::from_millis(self.settings.raft.general_raft_timeout_duration_in_ms),
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms),
         )
         .await
     }
@@ -915,14 +915,14 @@ impl<T: TypeConfig> LeaderState<T> {
     #[cfg(test)]
     pub(crate) fn new(
         node_id: u32,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
             rpc_append_entries_batch_process_delay_in_ms,
             rpc_append_entries_clock_in_ms,
             ..
-        } = settings.raft.replication;
+        } = node_config.raft.replication;
 
         LeaderState {
             shared_state: SharedState::new(node_id, None, None),
@@ -939,7 +939,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
             ),
 
-            settings,
+            node_config,
             _marker: PhantomData,
         }
     }

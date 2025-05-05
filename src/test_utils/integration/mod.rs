@@ -95,8 +95,8 @@ where T: TypeConfig
     pub replication_handler: ReplicationHandler<T>,
     pub state_machine_handler: DefaultStateMachineHandler<T>,
 
-    pub settings: RaftNodeConfig,
-    pub arc_settings: Arc<RaftNodeConfig>,
+    pub node_config: RaftNodeConfig,
+    pub arc_node_config: Arc<RaftNodeConfig>,
 }
 
 // If param `restart` is true, we will not reset dbs
@@ -124,7 +124,7 @@ pub(crate) fn setup_context(
         },
 
         membership: components.membership,
-        settings: components.arc_settings,
+        node_config: components.arc_node_config,
     }
 }
 // If param `restart` is true, we will not reset dbs
@@ -176,20 +176,20 @@ pub fn setup_raft_components(
     let (_graceful_tx, _graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
-    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-    settings.cluster.db_root_dir = PathBuf::from(db_path);
-    settings.cluster.initial_cluster = peers_meta.clone();
+    let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    node_config.cluster.db_root_dir = PathBuf::from(db_path);
+    node_config.cluster.initial_cluster = peers_meta.clone();
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
         last_applied_pair.0,
-        settings.raft.commit_handler.max_entries_per_chunk,
+        node_config.raft.commit_handler.max_entries_per_chunk,
         state_machine.clone(),
-        db_path.clone(),
+        node_config.raft.snapshot.clone(),
     );
 
-    let settings_clone = settings.clone();
-    let arc_settings = Arc::new(settings);
+    let node_config_clone = node_config.clone();
+    let arc_node_config = Arc::new(node_config);
 
     TestContext::<RaftTypeConfig> {
         id,
@@ -197,11 +197,11 @@ pub fn setup_raft_components(
         state_machine,
         state_storage: Box::new(sled_state_storage),
         transport: Arc::new(grpc_transport),
-        membership: Arc::new(RaftMembership::new(id, arc_settings.cluster.initial_cluster.clone())),
+        membership: Arc::new(RaftMembership::new(id, arc_node_config.cluster.initial_cluster.clone())),
         election_handler: ElectionHandler::new(id),
         replication_handler: ReplicationHandler::new(id),
-        settings: settings_clone,
-        arc_settings,
+        node_config: node_config_clone,
+        arc_node_config,
         state_machine_handler,
     }
 }
@@ -276,7 +276,7 @@ pub(crate) fn insert_state_machine(
     }
 }
 
-pub(crate) fn settings(db_path: &str) -> RaftNodeConfig {
+pub(crate) fn node_config(db_path: &str) -> RaftNodeConfig {
     let mut s = RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully.");
     s.cluster.db_root_dir = PathBuf::from(db_path);
     s

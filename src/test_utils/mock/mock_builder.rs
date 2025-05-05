@@ -41,7 +41,7 @@ pub struct MockBuilder {
     pub replication_handler: Option<MockReplicationCore<MockTypeConfig>>,
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
     pub peer_channels: Option<MockPeerChannels>,
-    pub settings: Option<RaftNodeConfig>,
+    pub node_config: Option<RaftNodeConfig>,
     shutdown_signal: watch::Receiver<()>,
 
     pub(crate) event_tx: Option<mpsc::Sender<RaftEvent>>,
@@ -64,7 +64,7 @@ impl MockBuilder {
             replication_handler: None,
             state_machine_handler: None,
             peer_channels: None,
-            settings: None,
+            node_config: None,
             shutdown_signal,
 
             role_tx: None,
@@ -84,7 +84,7 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
             membership,
-            settings,
+            node_config,
         ) = (
             Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
@@ -95,7 +95,7 @@ impl MockBuilder {
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
-            self.settings
+            self.node_config
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
         );
 
@@ -109,7 +109,7 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
         };
-        mock_raft_context_internal(1, storage, transport, membership, handlers, settings)
+        mock_raft_context_internal(1, storage, transport, membership, handlers, node_config)
     }
 
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
@@ -126,7 +126,7 @@ impl MockBuilder {
             state_machine_handler,
             membership,
             peer_channels,
-            settings,
+            node_config,
             role_tx,
             role_rx,
             event_tx,
@@ -143,7 +143,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(mock_peer_channels),
-            self.settings
+            self.node_config
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
             self.role_tx.unwrap_or(role_tx),
             self.role_rx.unwrap_or(role_rx),
@@ -177,11 +177,11 @@ impl MockBuilder {
                     election: ElectionConfig {
                         election_timeout_min: 1,
                         election_timeout_max: 2,
-                        ..settings.raft.election
+                        ..node_config.raft.election
                     },
-                    ..settings.raft
+                    ..node_config.raft
                 },
-                ..settings
+                ..node_config
             }),
         );
 
@@ -193,13 +193,13 @@ impl MockBuilder {
     pub fn build_node(self) -> Node<MockTypeConfig> {
         let raft = self.build_raft();
         let event_tx = raft.event_tx.clone();
-        let settings = raft.settings.clone();
+        let node_config = raft.node_config.clone();
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             event_tx,
             ready: AtomicBool::new(false),
-            settings,
+            node_config,
         }
     }
 
@@ -266,11 +266,11 @@ impl MockBuilder {
         self
     }
 
-    pub fn with_settings(
+    pub fn wiht_node_config(
         mut self,
-        settings: RaftNodeConfig,
+        node_config: RaftNodeConfig,
     ) -> Self {
-        self.settings = Some(settings);
+        self.node_config = Some(node_config);
         self
     }
 
@@ -278,9 +278,9 @@ impl MockBuilder {
         mut self,
         db_root_dir: &str,
     ) -> Self {
-        let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-        settings.cluster.db_root_dir = PathBuf::from(db_root_dir);
-        self.settings = Some(settings);
+        let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+        node_config.cluster.db_root_dir = PathBuf::from(db_root_dir);
+        self.node_config = Some(node_config);
         self
     }
 }
@@ -296,6 +296,7 @@ pub fn mock_state_machine() -> MockStateMachine {
     let mut state_machine = MockStateMachine::new();
     state_machine.expect_last_applied().returning(|| (0, 0));
     state_machine.expect_flush().returning(|| Ok(()));
+    state_machine.expect_save_hard_state().returning(|| Ok(()));
     state_machine
 }
 pub fn mock_state_storage() -> MockStateStorage {
@@ -358,7 +359,7 @@ fn mock_raft_context_internal(
     transport: Arc<MockTransport>,
     membership: Arc<MockMembership<MockTypeConfig>>,
     handlers: RaftCoreHandlers<MockTypeConfig>,
-    settings: RaftNodeConfig,
+    node_config: RaftNodeConfig,
 ) -> RaftContext<MockTypeConfig> {
     RaftContext {
         node_id: id,
@@ -369,6 +370,6 @@ fn mock_raft_context_internal(
 
         handlers,
 
-        settings: Arc::new(settings),
+        node_config: Arc::new(node_config),
     }
 }

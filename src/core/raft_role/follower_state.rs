@@ -41,8 +41,8 @@ use crate::TypeConfig;
 pub struct FollowerState<T: TypeConfig> {
     pub shared_state: SharedState,
     pub(super) timer: ElectionTimer,
-    // Shared global settings
-    pub(super) settings: Arc<RaftNodeConfig>,
+    // Shared global node_config
+    pub(super) node_config: Arc<RaftNodeConfig>,
 
     _marker: PhantomData<T>,
 }
@@ -310,17 +310,17 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
 impl<T: TypeConfig> FollowerState<T> {
     pub fn new(
         node_id: u32,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
         hard_state_from_db: Option<HardState>,
         last_applied_index_option: Option<u64>,
     ) -> Self {
         Self {
             shared_state: SharedState::new(node_id, hard_state_from_db, last_applied_index_option),
             timer: ElectionTimer::new((
-                settings.raft.election.election_timeout_min,
-                settings.raft.election.election_timeout_max,
+                node_config.raft.election.election_timeout_min,
+                node_config.raft.election.election_timeout_max,
             )),
-            settings,
+            node_config,
             _marker: PhantomData,
         }
     }
@@ -340,10 +340,10 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
         Self {
             shared_state: candidate_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                candidate_state.settings.raft.election.election_timeout_min,
-                candidate_state.settings.raft.election.election_timeout_max,
+                candidate_state.node_config.raft.election.election_timeout_min,
+                candidate_state.node_config.raft.election.election_timeout_max,
             )),
-            settings: candidate_state.settings.clone(),
+            node_config: candidate_state.node_config.clone(),
             _marker: PhantomData,
         }
     }
@@ -353,10 +353,10 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
         Self {
             shared_state: leader_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                leader_state.settings.raft.election.election_timeout_min,
-                leader_state.settings.raft.election.election_timeout_max,
+                leader_state.node_config.raft.election.election_timeout_min,
+                leader_state.node_config.raft.election.election_timeout_max,
             )),
-            settings: leader_state.settings.clone(),
+            node_config: leader_state.node_config.clone(),
             _marker: PhantomData,
         }
     }
@@ -367,10 +367,10 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
             //TODO: should we copy or new?
             shared_state: learner_state.shared_state.clone(),
             timer: ElectionTimer::new((
-                learner_state.settings.raft.election.election_timeout_min,
-                learner_state.settings.raft.election.election_timeout_max,
+                learner_state.node_config.raft.election.election_timeout_min,
+                learner_state.node_config.raft.election.election_timeout_max,
             )),
-            settings: learner_state.settings.clone(),
+            node_config: learner_state.node_config.clone(),
             _marker: PhantomData,
         }
     }

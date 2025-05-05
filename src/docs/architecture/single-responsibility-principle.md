@@ -28,7 +28,7 @@ A role **must never** directly modify another role’s state or handle its eve
 
 **Bad Example** (Violates SRP):
 
-```rust
+```ignore
 // ❌ LeaderState handling Follower-specific logic
 impl LeaderState {
     async fn handle_append_entries(...) {
@@ -42,7 +42,7 @@ impl LeaderState {
 
 **Correct Approach**:
 
-```rust
+```ignore
 // ✅ Leader sends a role transition event to main_loop
 impl LeaderState {
     async fn handle_append_entries(...) -> Result<()> {
@@ -63,7 +63,7 @@ When a role changes (e.g., `Leader → Follower`), the new role **immediately 
 
 **Example**:
 
-```rust
+```ignore
 // main_loop.rs (simplified)
 loop {
     let event = event_rx.recv().await;
@@ -85,7 +85,7 @@ Role-specific data (e.g., `LeaderState.next_index`) **must not** leak into ot
 
 **Bad Example**:
 
-```rust
+```ignore
 // ❌ FollowerState accessing LeaderState internals
 impl FollowerState {
     fn reset_leader_index(&mut self, leader: &LeaderState) {
@@ -96,7 +96,7 @@ impl FollowerState {
 
 **Correct Approach**:
 
-```rust
+```ignore
 // ✅ LeaderState persists its state to disk before stepping down
 impl LeaderState {
     async fn step_down(&mut self, ctx: &RaftContext) -> Result<()> {
@@ -120,7 +120,7 @@ impl FollowerState {
 
 The codebase enforces SRP through role-specific modules:
 
-```
+```ignore
 src/core/raft_role/
 ├── leader_state.rs          # Leader-only logic (e.g., log replication)
 ├── follower_state.rs        # Follower-only logic (e.g., election timeout)

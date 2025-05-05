@@ -14,7 +14,7 @@ This section outlines the core principles for distinguishing between **protocol
 
 ### **Example 1: Protocol Logic Error**
 
-```rust
+```ignore
 // Reject stale AppendEntries request (term < current_term)
 if req.term < self.current_term() {
     let resp = AppendEntriesResponse { success: false, term: self.current_term() };
@@ -25,14 +25,14 @@ if req.term < self.current_term() {
 
 ### **Example 2: System-Level Error**
 
-```rust
+```ignore
 // Fail to persist logs (return Error)
 ctx.raft_log().append_entries(&req.entries).await?; // Propagates storage error
 ```
 
 ### **Example 3: Illegal Operation Error**
 
-```rust
+```ignore
 // Follower illegally attempts to become Leader
 impl RaftRoleState for FollowerState {
     fn become_leader(&self) -> Result<LeaderState> {
@@ -56,7 +56,7 @@ impl RaftRoleState for FollowerState {
     
     Define explicit error types to distinguish recoverable and non-recoverable failures:
     
-    ```rust
+    ```ignore
     enum Error {
         Protocol(String),         // Debugging only (e.g., "term mismatch")
         Storage(io::Error),       // Retry or alert
@@ -69,7 +69,7 @@ impl RaftRoleState for FollowerState {
     - Log illegal operations at `error!` level.
     - Add unit tests to ensure invalid transitions return `Error`.
     
-    ```rust
+    ```ignore
     #[test]
     fn follower_cannot_become_leader() {
         let follower = FollowerState::new();

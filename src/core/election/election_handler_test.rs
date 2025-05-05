@@ -72,7 +72,13 @@ async fn test_broadcast_vote_requests_case1() {
     let transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
 
     let err = election_handler
-        .broadcast_vote_requests(term, voting_members, &raft_log_mock, &transport_mock, &ctx.arc_settings)
+        .broadcast_vote_requests(
+            term,
+            voting_members,
+            &raft_log_mock,
+            &transport_mock,
+            &ctx.arc_node_config,
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -123,7 +129,7 @@ async fn test_broadcast_vote_requests_case2() {
             test_context.voting_members,
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
         .await
         .unwrap_err();
@@ -179,7 +185,7 @@ async fn test_broadcast_vote_requests_case3() {
             test_context.voting_members,
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
         .await;
     debug!("test_broadcast_vote_requests_case3: {:?}", &r);
@@ -234,7 +240,7 @@ async fn test_broadcast_vote_requests_case4() {
             test_context.voting_members,
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
         .await
         .unwrap_err();
@@ -298,7 +304,7 @@ async fn test_broadcast_vote_requests_case5() {
             test_context.voting_members,
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
         .await
         .unwrap_err();

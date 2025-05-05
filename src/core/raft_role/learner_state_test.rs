@@ -33,7 +33,7 @@ async fn test_tick() {
     let context = mock_raft_context("/tmp/test_tick", graceful_rx, None);
 
     // New state
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
     let peer_channels = Arc::new(mock_peer_channels());
@@ -52,7 +52,7 @@ async fn test_handle_raft_event_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case1", graceful_rx, None);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -89,7 +89,7 @@ async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -112,7 +112,7 @@ async fn test_handle_raft_event_case3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -193,7 +193,7 @@ async fn test_handle_raft_event_case4_1() {
     context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(term);
 
     // Prepare Append entries request
@@ -265,7 +265,7 @@ async fn test_handle_raft_event_case4_2() {
     context.membership = Arc::new(membership);
 
     // New state
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(term);
 
     // Prepare Append entries request
@@ -342,7 +342,7 @@ async fn test_handle_raft_event_case4_3() {
     context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(term);
 
     // Prepare Append entries request
@@ -385,7 +385,7 @@ async fn test_handle_raft_event_case5() {
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
 
     // New state
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Handle raft event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -416,7 +416,7 @@ async fn test_handle_raft_event_case6() {
     let context = mock_raft_context("/tmp/test_handle_raft_event_case6", graceful_rx, None);
 
     // New state
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.settings.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: false,

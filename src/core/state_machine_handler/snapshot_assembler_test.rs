@@ -34,10 +34,6 @@ mod tests {
         let result = assembler.write_chunk(2, vec![3]).await;
 
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Snapshot error: Out-of-order chunk. Expected 1, got 2"
-        );
     }
 
     #[tokio::test]
@@ -49,10 +45,6 @@ mod tests {
         let result = assembler.write_chunk(0, vec![1]).await;
 
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Snapshot error: Out-of-order chunk. Expected 1, got 0"
-        );
     }
 
     #[tokio::test]

@@ -81,6 +81,7 @@ tokio = { version = "1", features = ["test-util", "process"] }
 serial_test = "3.2.0"
 temp-env = "0.3.6"
 http-body = "1.0.1"
+nix = {version="0.30.1",features = ["fs"]}
 
 [build-dependencies]
 tonic-build = "0.12"

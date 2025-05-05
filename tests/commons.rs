@@ -78,7 +78,7 @@ pub async fn start_node(
     let node = build_node(&config_path, graceful_rx, state_machine, raft_log, state_storage).await?;
 
     let node_clone = node.clone();
-    let node_id = node.settings.cluster.node_id;
+    let node_id = node.node_config.cluster.node_id;
     let handle = tokio::spawn(async move { run_node(node_id, node_clone).await });
 
     Ok((graceful_tx, handle))

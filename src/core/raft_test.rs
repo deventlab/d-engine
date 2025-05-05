@@ -219,7 +219,7 @@ async fn test_election_timeout_case2_1() {
     // 3. Prepare the node as Candidate
     raft.set_role(RaftRole::Candidate(Box::new(CandidateState::new(
         1,
-        raft.settings.clone(),
+        raft.node_config.clone(),
     ))));
 
     // 4. Add state listeners
@@ -277,7 +277,7 @@ async fn test_election_timeout_case2_2() {
     // 3. Prepare the node as Candidate
     raft.set_role(RaftRole::Candidate(Box::new(CandidateState::new(
         1,
-        raft.settings.clone(),
+        raft.node_config.clone(),
     ))));
 
     // 4. Add state listeners
@@ -327,7 +327,10 @@ async fn test_election_timeout_case3() {
     raft.ctx.handlers.election_handler = election_handler_mock;
 
     // 3. Prepare the node as Candidate
-    raft.set_role(RaftRole::Leader(Box::new(LeaderState::new(1, raft.settings.clone()))));
+    raft.set_role(RaftRole::Leader(Box::new(LeaderState::new(
+        1,
+        raft.node_config.clone(),
+    ))));
 
     // 4. Add state listeners
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
@@ -1069,6 +1072,7 @@ async fn test_raft_shutdown() {
     state_storage.expect_save_hard_state().times(1).returning(|_| Ok(()));
     raft_log.expect_flush().times(1).returning(|| Ok(()));
     state_machine.expect_flush().times(1).returning(|| Ok(()));
+    state_machine.expect_save_hard_state().returning(|| Ok(()));
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.storage.state_machine = Arc::new(state_machine);
     raft.ctx.storage.state_storage = Box::new(state_storage);

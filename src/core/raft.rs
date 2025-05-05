@@ -38,7 +38,7 @@ where T: TypeConfig
     pub role: RaftRole<T>,
     pub(crate) ctx: RaftContext<T>,
     #[allow(dead_code)]
-    pub settings: Arc<RaftNodeConfig>,
+    pub node_config: Arc<RaftNodeConfig>,
 
     // Channels with peers
     // PeersChannel will be used inside Transport::spawn when sending peers messages
@@ -84,17 +84,17 @@ where T: TypeConfig
         handlers: RaftCoreHandlers<T>,
         membership: Arc<MOF<T>>,
         signal_params: SignalParams,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         // Load last applied index from state machine
         let last_applied_index = Some(storage.state_machine.last_applied().0);
 
-        let ctx = Self::build_context(node_id, storage, transport, membership, handlers, settings.clone());
+        let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
 
         // let ctx = Box::new(ctx);
         let role = RaftRole::Follower(Box::new(FollowerState::new(
             node_id,
-            settings.clone(),
+            node_config.clone(),
             ctx.storage.state_storage.load_hard_state(),
             last_applied_index,
         )));
@@ -102,7 +102,7 @@ where T: TypeConfig
             node_id,
             ctx,
             role,
-            settings: settings.clone(),
+            node_config: node_config.clone(),
 
             peer_channels: None,
 
@@ -130,7 +130,7 @@ where T: TypeConfig
         transport: TROF<T>,
         membership: Arc<MOF<T>>,
         handlers: RaftCoreHandlers<T>,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> RaftContext<T> {
         RaftContext {
             node_id: id,
@@ -139,7 +139,7 @@ where T: TypeConfig
             membership,
             handlers,
 
-            settings,
+            node_config,
         }
     }
 

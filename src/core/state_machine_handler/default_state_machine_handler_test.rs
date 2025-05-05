@@ -1,6 +1,5 @@
 use std::collections::HashSet;
-use std::fs::File;
-use std::fs::{self};
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,7 +8,6 @@ use std::time::Duration;
 use bytes::Bytes;
 use crc32fast::Hasher;
 use futures::Stream;
-use mockall::predicate::eq;
 use mockall::predicate::{self};
 use mockall::Predicate;
 use mockall::Sequence;
@@ -17,11 +15,11 @@ use prost::Message;
 use tempfile::TempDir;
 use tokio_stream::StreamExt;
 use tokio_stream::{self as stream};
-use tracing::error;
+use tracing::debug;
 
 use super::DefaultStateMachineHandler;
 use super::StateMachineHandler;
-use crate::file_io::crate_parent_dir_if_not_exist;
+use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::is_dir;
 use crate::proto::Entry;
 use crate::proto::SnapshotChunk;
@@ -30,7 +28,7 @@ use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
 use crate::MockRaftLog;
 use crate::MockStateMachine;
-use crate::MockStateMachineHandler;
+use crate::SnapshotConfig;
 use crate::StorageError;
 
 // Case 1: normal update
@@ -42,7 +40,7 @@ fn test_update_pending_case1() {
         0,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_update_pending_case1",
+        snapshot_config(PathBuf::from("/tmp/test_update_pending_case1")),
     );
     handler.update_pending(1);
     assert_eq!(handler.pending_commit(), 1);
@@ -59,7 +57,7 @@ fn test_update_pending_case2() {
         0,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_update_pending_case2",
+        snapshot_config(PathBuf::from("/tmp/test_update_pending_case2")),
     );
     handler.update_pending(10);
     assert_eq!(handler.pending_commit(), 10);
@@ -76,7 +74,7 @@ async fn test_update_pending_case3() {
         0,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_update_pending_case3",
+        snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
     ));
 
     let mut tasks = vec![];
@@ -99,7 +97,7 @@ fn test_pending_range_case1() {
         10,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_pending_range_case1",
+        snapshot_config(PathBuf::from("/tmp/test_pending_range_case1")),
     );
     assert_eq!(handler.pending_range(), None);
 }
@@ -113,7 +111,7 @@ fn test_pending_range_case2() {
         10,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_pending_range_case2",
+        snapshot_config(PathBuf::from("/tmp/test_pending_range_case2")),
     );
     handler.update_pending(7);
     handler.update_pending(10);
@@ -129,7 +127,7 @@ fn test_pending_range_case3() {
         10,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_pending_range_case2",
+        snapshot_config(PathBuf::from("/tmp/test_pending_range_case3")),
     );
     handler.update_pending(7);
     handler.update_pending(10);
@@ -151,7 +149,7 @@ async fn test_apply_batch_case1() {
         10,
         1,
         Arc::new(state_machine_mock),
-        "/tmp/test_apply_batch_case1",
+        snapshot_config(PathBuf::from("/tmp/test_apply_batch_case1")),
     );
     assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
 }
@@ -179,7 +177,7 @@ async fn test_apply_batch_case2() {
         10,
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
-        "/tmp/test_apply_batch_case2",
+        snapshot_config(PathBuf::from("/tmp/test_apply_batch_case2")),
     );
 
     // Update pending commit
@@ -216,7 +214,7 @@ async fn test_apply_batch_case3() {
         10,
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
-        "/tmp/test_apply_batch_case3",
+        snapshot_config(PathBuf::from("/tmp/test_apply_batch_case3")),
     );
 
     // Update pending commit
@@ -486,7 +484,12 @@ async fn test_create_snapshot_case1() {
         })
         .returning(|_, _, _| Ok(()));
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1, Arc::new(sm), temp_dir.path());
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
 
     // Execute snapshot creation
     let result = handler.create_snapshot().await;
@@ -495,7 +498,10 @@ async fn test_create_snapshot_case1() {
     // Verify file system changes
     let final_path = result.unwrap();
     assert!(final_path.exists());
-    assert!(final_path.to_str().unwrap().contains("snapshot-1-5-1"));
+    assert!(final_path
+        .to_str()
+        .unwrap()
+        .contains(&format!("{}1-5-1", SNAPSHOT_DIR_PREFIX)));
 
     assert!(is_dir(&final_path).await.unwrap());
 
@@ -506,23 +512,41 @@ async fn test_create_snapshot_case1() {
 /// # Case 2: Test concurrent protection
 #[tokio::test]
 async fn test_create_snapshot_case2() {
+    enable_logger();
+
     let temp_dir = tempfile::tempdir().unwrap();
     let mut sm = MockStateMachine::new();
 
     // Setup slow snapshot generation
     let (tx, mut rx) = tokio::sync::oneshot::channel();
     sm.expect_last_applied().returning(|| (1, 1));
-    sm.expect_generate_snapshot_data().times(2).returning(move |_, _, _| {
-        let _ = rx.try_recv(); // Wait forever
-        Ok(())
-    });
+    sm.expect_generate_snapshot_data()
+        .times(2)
+        .returning(move |path, _, _| {
+            std::thread::sleep(Duration::from_millis(50));
+            // Wait forever
+            if let Err(_e) = rx.try_recv() {
+                return Err(StorageError::Snapshot("test failure".into()).into());
+            }
+
+            debug!(?path, "generate_snapshot_data");
+
+            // Create the directory structure correctly
+            fs::create_dir_all(path).unwrap();
+            //Simulate sled to create a subdirectory
+            let db_path = path.join("state_machine");
+            fs::create_dir(&db_path).unwrap();
+
+            Ok(())
+        });
 
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
         1,
         Arc::new(sm),
-        temp_dir.path(),
+        snapshot_config(temp_dir.path().to_path_buf()),
     ));
+    tx.send(()).unwrap(); // Unblock the first task
 
     // Spawn concurrent snapshot creations
     let h1 = handler.clone();
@@ -535,13 +559,13 @@ async fn test_create_snapshot_case2() {
     });
 
     // Allow some time for execution
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    tx.send(()).unwrap(); // Unblock the first task
+    tokio::time::sleep(Duration::from_millis(20)).await;
 
     let results = futures::future::join_all(vec![t1, t2]).await;
+    println!("{:?}", &results);
 
     // Verify only one successful creation
-    let success_count = results.iter().filter(|r| r.as_ref().unwrap().is_ok()).count();
+    let success_count = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
     assert_eq!(success_count, 1);
     assert_eq!(count_snapshots(temp_dir.path()), 1);
 }
@@ -549,35 +573,43 @@ async fn test_create_snapshot_case2() {
 /// # Case 3: Test cleanup old versions
 #[tokio::test]
 async fn test_create_snapshot_case3() {
+    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
-
-    // Create dummy old snapshots
-    create_dummy_snapshot(&temp_dir, 1, 3, 1);
-    create_dummy_snapshot(&temp_dir, 2, 5, 1);
-    create_dummy_snapshot(&temp_dir, 3, 7, 1);
 
     let mut sm = MockStateMachine::new();
     sm.expect_last_applied().returning(|| (9, 1));
-    sm.expect_generate_snapshot_data().returning(|_, _, _| Ok(()));
+    sm.expect_generate_snapshot_data().returning(|path, _, _| {
+        // Create the directory structure correctly
+        fs::create_dir_all(path).unwrap();
+        //Simulate sled to create a subdirectory
+        let db_path = path.join("state_machine");
+        fs::create_dir(&db_path).unwrap();
 
+        Ok(())
+    });
+    let snapshot_dir = temp_dir.as_ref().to_path_buf();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         3, // Current version
         1,
         Arc::new(sm),
-        temp_dir.path(),
+        snapshot_config(snapshot_dir.clone()),
     );
 
     // Create new snapshot (version 4)
     handler.create_snapshot().await.unwrap();
+    handler.create_snapshot().await.unwrap();
+    handler.create_snapshot().await.unwrap();
+    handler.create_snapshot().await.unwrap();
 
     // Verify cleanup results
-    let remaining: HashSet<u64> = get_snapshot_versions(temp_dir.path()).into_iter().collect();
-    assert_eq!(remaining, [3, 4].into_iter().collect());
+    let remaining: HashSet<u64> = get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
+    assert_eq!(remaining, [4, 3, 2].into_iter().collect());
 }
 
 /// # Case 4: Test failure handling
 #[tokio::test]
 async fn test_create_snapshot_case4() {
+    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let mut sm = MockStateMachine::new();
 
@@ -586,7 +618,12 @@ async fn test_create_snapshot_case4() {
     sm.expect_generate_snapshot_data()
         .returning(|_, _, _| Err(StorageError::Snapshot("test failure".into()).into()));
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1, Arc::new(sm), temp_dir.path());
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
 
     // Attempt snapshot creation
     let result = handler.create_snapshot().await;
@@ -599,11 +636,13 @@ async fn test_create_snapshot_case4() {
 
 // Helper functions
 fn count_snapshots(dir: &Path) -> usize {
+    debug!(?dir, "count_snapshots");
+
     std::fs::read_dir(dir)
         .unwrap()
         .filter(|entry| {
             let name = entry.as_ref().unwrap().file_name();
-            name.to_str().unwrap().starts_with("snapshot-")
+            name.to_str().unwrap().starts_with(SNAPSHOT_DIR_PREFIX)
         })
         .count()
 }
@@ -614,16 +653,21 @@ fn create_dummy_snapshot(
     index: u64,
     term: u64,
 ) {
-    let path = dir.path().join(format!("snapshot-{}-{}-{}.bin", version, index, term));
+    let path = dir
+        .path()
+        .join(format!("{}{}-{}-{}", SNAPSHOT_DIR_PREFIX, version, index, term));
     std::fs::File::create(path).unwrap();
 }
 
 fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
+    debug!(?dir, "get_snapshot_versions");
+
     std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|entry| {
             let name = entry.unwrap().file_name();
             let name = name.to_str().unwrap();
+            debug!(%name, "get_snapshot_versions");
             name.split('-').nth(1).and_then(|v| v.parse().ok())
         })
         .collect()
@@ -632,84 +676,72 @@ fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
 /// # Case 1: Test normal deletion
 #[tokio::test]
 async fn test_cleanup_snapshot_case1() {
+    enable_logger();
+
     let temp_dir = TempDir::new().unwrap();
+    let sm = MockStateMachine::new();
+
     create_test_dirs(&temp_dir, &[1, 2, 3]).await;
 
-    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
-    let temp_dir_path = temp_dir.path().to_path_buf();
-    mock.expect_cleanup_snapshot()
-        .with(eq(3), path_eq(temp_dir_path))
-        .returning(|_, _| Ok(()));
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
 
-    mock.cleanup_snapshot(3, &temp_dir.path().into()).await.unwrap();
+    handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
 
     // Verify remaining snapshots
     let remaining = get_snapshot_versions(temp_dir.path());
     assert_eq!(remaining, vec![3]);
 }
 
+/// # Case 2: Test no old versions to be cleaned
 #[tokio::test]
-async fn test_cleanup_snapshot_case2_no_old_versions() {
+async fn test_cleanup_snapshot_case2() {
     let temp_dir = TempDir::new().unwrap();
+    let sm = MockStateMachine::new();
     create_test_dirs(&temp_dir, &[3, 4]).await;
 
-    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
-    let temp_dir_path = temp_dir.path().to_path_buf();
-    mock.expect_cleanup_snapshot()
-        .with(eq(2), path_eq(temp_dir_path))
-        .returning(|_, _| Ok(()));
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
 
-    mock.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+    handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
 
     // Verify no deletions
     let remaining = get_snapshot_versions(temp_dir.path());
     assert_eq!(remaining, vec![3, 4]);
 }
 
+/// # Case 3: Test invalid dirnames
 #[tokio::test]
-async fn test_cleanup_snapshot_case3_invalid_dirnames() {
+async fn test_cleanup_snapshot_case3() {
     let temp_dir = TempDir::new().unwrap();
+    let sm = MockStateMachine::new();
     // Create valid and invalid directories
-    create_dir(&temp_dir, "snapshot-1-100-1").await;
+    create_dir(&temp_dir, &format!("{}1-100-1", SNAPSHOT_DIR_PREFIX)).await;
     create_dir(&temp_dir, "invalid_format").await;
-    create_dir(&temp_dir, "snapshot-bad-200-2").await;
+    create_dir(&temp_dir, &format!("{}bad-200-2", SNAPSHOT_DIR_PREFIX)).await;
 
-    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
-    let temp_dir_path = temp_dir.path().to_path_buf();
-    mock.expect_cleanup_snapshot()
-        .with(eq(2), path_eq(temp_dir_path))
-        .returning(|_, _| Ok(()));
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        0,
+        1,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
 
-    mock.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+    handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
 
     //Verify only valid version 1 is deleted
     let remaining = get_dir_names(temp_dir.path()).await;
     assert!(remaining.contains(&"invalid_format".into()));
-    assert!(remaining.contains(&"snapshot-bad-200-2".into()));
-    assert!(!remaining.contains(&"snapshot-1-100-1".into()));
-}
-
-#[tokio::test]
-async fn test_cleanup_snapshot_case4_deletion_failure() {
-    let temp_dir = TempDir::new().unwrap();
-    create_test_dirs(&temp_dir, &[1]).await;
-
-    let mut mock = MockStateMachineHandler::<MockTypeConfig>::new();
-    let temp_dir_path = temp_dir.path().to_path_buf();
-    mock.expect_cleanup_snapshot()
-        .with(eq(2), path_eq(temp_dir_path))
-        .returning(|_, path| {
-            //Simulate deletion failure
-            let dummy_path = path.join("snapshot-1-100-1");
-            Err(StorageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "Simulation deletion failed",
-            ))
-            .into())
-        });
-
-    let result = mock.cleanup_snapshot(2, &temp_dir.path().into()).await;
-    assert!(result.is_err());
+    assert!(remaining.contains(&format!("{}bad-200-2", SNAPSHOT_DIR_PREFIX).into()));
+    assert!(!remaining.contains(&format!("{}1-100-1", SNAPSHOT_DIR_PREFIX).into()));
 }
 
 // Helper functions
@@ -718,7 +750,7 @@ async fn create_test_dirs(
     versions: &[u64],
 ) {
     for v in versions {
-        create_dir(temp_dir, &format!("snapshot-{}-{}-1", v, v * 100)).await;
+        create_dir(temp_dir, &format!("{}{}-{}-1", SNAPSHOT_DIR_PREFIX, v, v * 100,)).await;
     }
 }
 
@@ -745,4 +777,12 @@ async fn get_dir_names(path: &Path) -> Vec<String> {
 // Custom predicate for path comparison
 fn path_eq(expected: PathBuf) -> impl Predicate<PathBuf> + 'static {
     predicate::function(move |x: &PathBuf| x == &expected)
+}
+
+fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
+    SnapshotConfig {
+        max_log_entries_before_snapshot: 1,
+        cleanup_version_offset: 2,
+        snapshots_dir,
+    }
 }

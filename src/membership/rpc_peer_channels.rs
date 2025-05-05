@@ -48,7 +48,7 @@ pub struct RpcPeerChannels {
     pub(super) node_id: u32,
 
     pub(super) channels: DashMap<u32, ChannelWithAddress>, //store peers connection
-    pub(super) settings: Arc<RaftNodeConfig>,
+    pub(super) node_config: Arc<RaftNodeConfig>,
 }
 
 impl Debug for RpcPeerChannels {
@@ -64,12 +64,12 @@ impl Debug for RpcPeerChannels {
 impl PeerChannelsFactory for RpcPeerChannels {
     fn create(
         node_id: u32,
-        settings: Arc<RaftNodeConfig>,
+        node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         Self {
             node_id,
             channels: DashMap::new(),
-            settings,
+            node_config,
         }
     }
 }
@@ -82,15 +82,15 @@ impl PeerChannels for RpcPeerChannels {
         &mut self,
         my_id: u32,
     ) -> Result<()> {
-        let initial_cluster = &self.settings.cluster.initial_cluster;
+        let initial_cluster = &self.node_config.cluster.initial_cluster;
         info!("Connecting with peers: {:?}", initial_cluster);
 
         let cluster_size = initial_cluster.len();
         let tasks = self.spawn_connection_tasks(
             my_id,
             initial_cluster,
-            self.settings.retry.clone(),
-            &self.settings.network,
+            self.node_config.retry.clone(),
+            &self.node_config.network,
         );
         let channels = self.collect_connections(tasks, cluster_size - 1).await?;
 
@@ -102,9 +102,9 @@ impl PeerChannels for RpcPeerChannels {
         info!("check_cluster_is_ready...");
         let mut tasks = FuturesUnordered::new();
 
-        let settings = self.settings.network.clone();
-        let raft = self.settings.raft.clone();
-        let retry = self.settings.retry.clone();
+        let node_config = self.node_config.network.clone();
+        let raft = self.node_config.raft.clone();
+        let retry = self.node_config.retry.clone();
 
         let mut peer_ids = Vec::new();
         for peer in self.voting_members().iter() {
@@ -114,7 +114,7 @@ impl PeerChannels for RpcPeerChannels {
             let peer_channel_with_addr = peer.value().clone();
             let addr: String = peer_channel_with_addr.address.clone();
 
-            let settings = settings.clone();
+            let node_config = node_config.clone();
             let cluster_healthcheck_probe_service_name = raft.membership.cluster_healthcheck_probe_service_name.clone();
 
             let task_handle = task::spawn(async move {
@@ -122,7 +122,7 @@ impl PeerChannels for RpcPeerChannels {
                     move || {
                         HealthChecker::check_peer_is_ready(
                             addr.clone(),
-                            settings.clone(),
+                            node_config.clone(),
                             cluster_healthcheck_probe_service_name.clone(),
                         )
                     },
@@ -277,17 +277,17 @@ impl RpcPeerChannels {
 
     async fn connect(
         node_meta: NodeMeta,
-        settings: NetworkConfig,
+        node_config: NetworkConfig,
     ) -> Result<Channel> {
         let addr = address_str(&node_meta.ip, node_meta.port as u16);
         Endpoint::try_from(addr.clone())?
-            .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))
-            .timeout(Duration::from_millis(settings.request_timeout_in_ms))
-            .tcp_keepalive(Some(Duration::from_secs(settings.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(settings.http2_keep_alive_interval_in_secs))
-            .keep_alive_timeout(Duration::from_secs(settings.http2_keep_alive_timeout_in_secs))
-            .initial_connection_window_size(settings.initial_connection_window_size) // 5MB initial connection window
-            .initial_stream_window_size(settings.initial_stream_window_size) // 2MB initial stream window
+            .connect_timeout(Duration::from_millis(node_config.connect_timeout_in_ms))
+            .timeout(Duration::from_millis(node_config.request_timeout_in_ms))
+            .tcp_keepalive(Some(Duration::from_secs(node_config.tcp_keepalive_in_secs)))
+            .http2_keep_alive_interval(Duration::from_secs(node_config.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(node_config.http2_keep_alive_timeout_in_secs))
+            .initial_connection_window_size(node_config.initial_connection_window_size) // 5MB initial connection window
+            .initial_stream_window_size(node_config.initial_stream_window_size) // 2MB initial stream window
             .connect()
             .await
             .map_err(|err| {

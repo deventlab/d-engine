@@ -42,7 +42,7 @@ async fn test_get_peers_address_with_role_condition_case1() {
     let address = MockNode::simulate_mock_service_without_reps(port, rx, true)
         .await
         .expect("should succeed");
-    let peer_channels: RpcPeerChannels = PeerChannelsFactory::create(1, context.settings());
+    let peer_channels: RpcPeerChannels = PeerChannelsFactory::create(1, context.node_config());
     peer_channels.set_peer_channel(f1, address.clone());
     peer_channels.set_peer_channel(f2, address.clone());
 
@@ -110,7 +110,7 @@ async fn test_get_peers_address_with_role_condition_case2() {
     let address = MockNode::simulate_mock_service_without_reps(port, rx, true)
         .await
         .expect("should succeed");
-    let peer_channels: RpcPeerChannels = PeerChannelsFactory::create(1, context.settings());
+    let peer_channels: RpcPeerChannels = PeerChannelsFactory::create(1, context.node_config());
     peer_channels.set_peer_channel(f1, address.clone());
 
     // Step 2: prepare cluster membership

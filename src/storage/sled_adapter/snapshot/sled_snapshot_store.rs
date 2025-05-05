@@ -40,7 +40,8 @@ impl SnapshotStore for SledSnapshotStore {
         let version = self.current_version.fetch_add(1, Ordering::SeqCst);
         let temp_path = self.dir.join(format!(".temp-{}", version));
         let final_path = self.dir.join(format!(
-            "snapshot-{}-{}-{}.bin",
+            "{}{}-{}-{}",
+            SNAPSHOT_DIR_PREFIX,
             version,
             snapshot.metadata().last_included_index,
             snapshot.metadata().last_included_term
@@ -191,7 +192,7 @@ impl SledSnapshotStore {
 /// Manual parsing file name format: snapshot-{version}-{index}.bin
 fn parse_filename(name: &str) -> Option<(u64, u64, u64)> {
     // Check prefix and suffix
-    if !name.starts_with("snapshot-") || !name.ends_with(".bin") {
+    if !name.starts_with(SNAPSHOT_DIR_PREFIX) {
         return None;
     }
 

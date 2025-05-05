@@ -45,7 +45,7 @@ where T: TypeConfig
     pub(crate) handlers: RaftCoreHandlers<T>,
 
     // RaftNodeConfig
-    pub(crate) settings: Arc<RaftNodeConfig>,
+    pub(crate) node_config: Arc<RaftNodeConfig>,
 }
 
 impl<T> RaftContext<T>
@@ -72,8 +72,8 @@ where T: TypeConfig
     pub fn election_handler(&self) -> &EOF<T> {
         &self.handlers.election_handler
     }
-    pub fn settings(&self) -> Arc<RaftNodeConfig> {
-        self.settings.clone()
+    pub fn node_config(&self) -> Arc<RaftNodeConfig> {
+        self.node_config.clone()
     }
 
     pub fn membership(&self) -> Arc<MOF<T>> {
