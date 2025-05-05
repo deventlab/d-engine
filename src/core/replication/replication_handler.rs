@@ -95,7 +95,10 @@ where T: TypeConfig
         let entries_per_peer = self.prepare_peer_entries(
             &new_entries,
             &replication_data,
-            ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
+            ctx.node_config
+                .raft
+                .replication
+                .append_entries_max_entries_per_replication,
             raft_log,
         );
 
