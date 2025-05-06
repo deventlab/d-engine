@@ -89,6 +89,7 @@ impl RaftConfig {
         self.election.validate()?;
         self.membership.validate()?;
         self.commit_handler.validate()?;
+        self.snapshot.validate()?;
 
         Ok(())
     }

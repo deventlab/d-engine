@@ -8,7 +8,7 @@ use tokio::sync::watch;
 use super::ReplicationCore;
 use super::ReplicationData;
 use super::ReplicationHandler;
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::proto::append_entries_response;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -308,7 +308,7 @@ fn test_generate_new_entries_case2() {
     let my_id = 1;
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
-    let commands = vec![ClientCommand::get(kv(1))];
+    let commands = vec![ClientCommand::get(safe_kv(1))];
     let current_term = 1;
     assert_eq!(
         handler
@@ -762,8 +762,8 @@ async fn test_handle_client_proposal_in_batch_case5() {
 
     // New commands submitted by the client generate logs with index=6~7
     let commands = vec![
-        ClientCommand::insert(kv(100), kv(100)),
-        ClientCommand::insert(kv(200), kv(200)),
+        ClientCommand::insert(safe_kv(100), safe_kv(100)),
+        ClientCommand::insert(safe_kv(200), safe_kv(200)),
     ];
 
     // Leader status snapshot
@@ -869,7 +869,7 @@ async fn test_handle_client_proposal_in_batch_case6() {
 
     // Prepare client commands (new entries to replicate)
     let commands = vec![
-        ClientCommand::insert(kv(300), kv(300)), // Will create log index 11
+        ClientCommand::insert(safe_kv(300), safe_kv(300)), // Will create log index 11
     ];
 
     // Initialize leader state

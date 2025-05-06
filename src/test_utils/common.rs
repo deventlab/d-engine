@@ -2,7 +2,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use crate::alias::ROF;
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::proto::Entry;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
@@ -16,7 +16,7 @@ pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 
     let mut commands = Vec::new();
     for id in ids {
-        commands.push(ClientCommand::insert(kv(id), kv(id)));
+        commands.push(ClientCommand::insert(safe_kv(id), safe_kv(id)));
     }
 
     for c in commands {
@@ -35,7 +35,7 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 
     let mut commands = Vec::new();
     for id in range {
-        commands.push(ClientCommand::delete(kv(id)));
+        commands.push(ClientCommand::delete(safe_kv(id)));
     }
 
     for c in commands {

@@ -24,7 +24,7 @@ pub(crate) enum RoleEvent {
     BecomeLearner,
 
     NotifyNewCommitIndex { new_commit_index: u64 },
-    ReprocessEvent(RaftEvent), //Replay the raft event when step down as another role
+    ReprocessEvent(Box<RaftEvent>), //Replay the raft event when step down as another role
 }
 
 #[derive(Debug)]

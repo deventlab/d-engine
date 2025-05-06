@@ -48,7 +48,7 @@ use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_storages;
 use crate::proto::Entry;
@@ -251,7 +251,7 @@ pub(crate) fn insert_state_storage(
     ids: Vec<u64>,
 ) {
     for i in ids {
-        if let Err(e) = state_storage.insert(kv(i), kv(i)) {
+        if let Err(e) = state_storage.insert(safe_kv(i).to_vec(), safe_kv(i).to_vec()) {
             panic!("error:{:?}", e);
         }
     }

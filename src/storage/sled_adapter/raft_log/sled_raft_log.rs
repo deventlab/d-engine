@@ -23,7 +23,7 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::convert::vki;
 use crate::proto::Entry;
 use crate::proto::LogId;
@@ -253,7 +253,7 @@ impl RaftLog for SledRaftLog {
 
             // Append new log
             for entry in new_entries {
-                batch.insert(kv(entry.index), entry);
+                batch.insert(safe_kv(entry.index), entry);
             }
             self.apply(&batch).expect("Failed to apply batch");
             return Ok(last);
@@ -264,11 +264,11 @@ impl RaftLog for SledRaftLog {
             Some(entry) if entry.term == prev_log_term => {
                 // Delete all logs after prev_log_index
                 for index in (prev_log_index + 1)..=self.last_entry_id() {
-                    batch.remove(kv(index));
+                    batch.remove(safe_kv(index));
                 }
                 // Append new log
                 for entry in new_entries {
-                    batch.insert(kv(entry.index), entry);
+                    batch.insert(safe_kv(entry.index), entry);
                 }
             }
             _ => {
@@ -320,7 +320,7 @@ impl RaftLog for SledRaftLog {
             let index = entry.index;
             let size = mem::size_of_val(&entry);
 
-            batch.insert(kv(index), entry);
+            batch.insert(safe_kv(index), entry);
             //-------------------
             //performance testing: /*
             MESSAGE_SIZE_IN_BYTES_METRIC
@@ -418,7 +418,7 @@ impl RaftLog for SledRaftLog {
     ) -> Result<()> {
         let mut batch = LocalLogBatch::default();
 
-        for result in self.tree.range(..kv(last_applied + 1)) {
+        for result in self.tree.range(..safe_kv(last_applied + 1)) {
             let (key, _value) = result?;
             batch.remove(key.to_vec());
         }
@@ -702,7 +702,7 @@ impl SledRaftLog {
         &self,
         key: u64,
     ) -> Option<Entry> {
-        let k = kv(key);
+        let k = safe_kv(key);
         if let Some(v) = self.get_from_cache(&k) {
             return Some(v);
         }
@@ -748,7 +748,7 @@ impl SledRaftLog {
         &self,
         key: u64,
     ) -> sled::Result<Option<IVec>> {
-        self.tree.remove(kv(key))
+        self.tree.remove(safe_kv(key))
     }
     #[autometrics(objective = API_SLO)]
     fn clear(&self) -> sled::Result<()> {
@@ -759,7 +759,7 @@ impl SledRaftLog {
     // /// @Write - For Leader
     // #[autometrics(objective = API_SLO)]
     // fn insert(&self, key: u64, value: Entry) -> sled::Result<Option<IVec>> {
-    //     let k = kv(key);
+    //     let k = safe_kv(key);
     //     debug!("insert local log: key: {:?} - value: {:?}", k, value);
     //     let r = self.tree.insert(k.clone(), value.encode_to_vec());
     //     if let Err(ref e) = r {

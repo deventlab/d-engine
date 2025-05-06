@@ -282,7 +282,7 @@ where T: TypeConfig
 
             RoleEvent::ReprocessEvent(raft_event) => {
                 info!("Replay the RaftEvent: {:?}", &raft_event);
-                self.event_tx.send(raft_event).await.map_err(|e| {
+                self.event_tx.send(*raft_event).await.map_err(|e| {
                     let error_str = format!("{:?}", e);
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)

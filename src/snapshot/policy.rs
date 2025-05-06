@@ -1,9 +1,11 @@
+#[allow(unused)]
 pub(crate) struct SnapshotPolicy {
     threshold: u64, // e.g. 5000 log entries
     last_trigger: u64,
 }
 
 impl SnapshotPolicy {
+    #[allow(unused)]
     pub(crate) fn check(
         &mut self,
         last_applied: u64,

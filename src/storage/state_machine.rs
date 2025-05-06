@@ -79,7 +79,7 @@ pub trait StateMachine: Send + Sync + 'static {
     /// * `last_included_index` - Maximum log index (inclusive) included in the snapshot.
     async fn generate_snapshot_data(
         &self,
-        temp_snapshot_dir: &std::path::PathBuf,
+        temp_snapshot_dir: std::path::PathBuf,
         last_included_index: u64,
         last_included_term: u64,
     ) -> Result<()>;

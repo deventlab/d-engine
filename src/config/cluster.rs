@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::Path;
 use std::path::PathBuf;
 
 use config::ConfigError;

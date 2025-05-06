@@ -240,7 +240,7 @@ async fn test_generate_snapshot_data_case1() {
 
     // Generate snapshot with last included index=3
     let temp_path = root.path().join("snapshot1");
-    sm.generate_snapshot_data(&temp_path, 3, 1).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), 3, 1).await.unwrap();
 
     // Verify snapshot contents
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -292,7 +292,7 @@ async fn test_generate_snapshot_data_case2() {
 
     // Generate snapshot with last included index=3
     let temp_path = root.path().join("snapshot2");
-    sm.generate_snapshot_data(&temp_path, 3, 1).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), 3, 1).await.unwrap();
 
     // Verify snapshot contents
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -318,7 +318,7 @@ async fn test_generate_snapshot_data_case3() {
 
     // Generate snapshot with specific metadata
     let temp_path = root.path().join("snapshot3");
-    sm.generate_snapshot_data(&temp_path, 42, 5).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), 42, 5).await.unwrap();
 
     // Verify metadata
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -363,7 +363,7 @@ async fn test_generate_snapshot_data_case4() {
 
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
-    sm.generate_snapshot_data(&temp_path, 150, 1).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), 150, 1).await.unwrap();
 
     // Verify all entries exist
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();

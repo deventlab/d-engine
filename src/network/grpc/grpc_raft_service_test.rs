@@ -7,7 +7,7 @@ use tokio::time;
 use tonic::Code;
 use tonic::Request;
 
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::proto::rpc_service_server::RpcService;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
@@ -283,7 +283,7 @@ async fn test_handle_rpc_services_successfully() {
         assert!(node
             .handle_client_propose(Request::new(ClientProposeRequest {
                 client_id: 1,
-                commands: vec![ClientCommand::get(kv(1))],
+                commands: vec![ClientCommand::get(safe_kv(1))],
             }))
             .await
             .is_ok());

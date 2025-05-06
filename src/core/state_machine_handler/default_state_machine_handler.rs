@@ -179,8 +179,8 @@ where T: TypeConfig
                     return Ok(());
                 }
             } else {
-                term_check = Some((chunk.term, chunk.leader_id.clone()));
-                metadata = chunk.metadata.clone();
+                term_check = Some((chunk.term, chunk.leader_id));
+                metadata = chunk.metadata;
                 total_chunks = Some(chunk.total);
             }
 
@@ -261,7 +261,7 @@ where T: TypeConfig
         debug!(?temp_dir, "create_snapshot 3: Create snapshot based on the temp path");
         if let Err(e) = self
             .state_machine
-            .generate_snapshot_data(&temp_dir, last_included_index, last_included_term)
+            .generate_snapshot_data(temp_dir.clone(), last_included_index, last_included_term)
             .await
         {
             error!(?e, "state_machine.generate_snapshot_data failed");
@@ -312,7 +312,7 @@ where T: TypeConfig
                 source: e,
             })?;
 
-        while let Some(entry) = entries.next_entry().await.map_err(|e| StorageError::IoError(e))? {
+        while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
             let path = entry.path();
             debug!(?path, "cleanup_snapshot");
 

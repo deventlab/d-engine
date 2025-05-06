@@ -7,8 +7,8 @@ use tokio::time::sleep;
 use super::cluster::find_nearest_lower_number;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::convert::abs_ceil;
-use crate::convert::kv;
-use crate::convert::vk;
+use crate::convert::safe_kv;
+use crate::convert::safe_vk;
 use crate::utils::cluster::is_majority;
 use crate::BackoffPolicy;
 use crate::NetworkError;
@@ -16,22 +16,22 @@ use crate::Result;
 
 #[test]
 fn test_kv_1() {
-    let v = kv(1);
-    assert_eq!(1, vk(&v));
-    let v = kv(25);
-    assert_eq!(25, vk(&v));
+    let v = safe_kv(1);
+    assert_eq!(1, safe_vk(&v).unwrap());
+    let v = safe_kv(25);
+    assert_eq!(25, safe_vk(&v).unwrap());
 }
 
 #[test]
 fn test_kv_2() {
     let i = u64::MAX; //max of u64
-    let v = kv(i);
-    assert_eq!(i, vk(&v));
+    let v = safe_kv(i);
+    assert_eq!(i, safe_vk(&v).unwrap());
 }
 #[test]
 fn test_kv_3() {
-    let v = kv(1);
-    assert_eq!(1, vk(&v));
+    let v = safe_kv(1);
+    assert_eq!(1, safe_vk(&v).unwrap());
 }
 
 #[test]

@@ -9,7 +9,7 @@ use tonic::Status;
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::alias::POF;
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::ClientCommand;
 use crate::proto::ClientProposeRequest;
@@ -707,7 +707,7 @@ async fn test_handle_raft_event_case6_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let commands = vec![ClientCommand::get(kv(1))];
+    let commands = vec![ClientCommand::get(safe_kv(1))];
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
@@ -782,7 +782,7 @@ async fn test_handle_raft_event_case6_2() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let commands = vec![ClientCommand::get(kv(1))];
+    let commands = vec![ClientCommand::get(safe_kv(1))];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -855,7 +855,7 @@ async fn test_handle_raft_event_case6_3() {
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
-    let commands = vec![ClientCommand::get(kv(1))];
+    let commands = vec![ClientCommand::get(safe_kv(1))];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,

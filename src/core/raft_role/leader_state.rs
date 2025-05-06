@@ -540,11 +540,13 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         raft_event: RaftEvent,
     ) -> Result<()> {
-        role_tx.send(RoleEvent::ReprocessEvent(raft_event)).map_err(|e| {
-            let error_str = format!("{:?}", e);
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str).into()
-        })
+        role_tx
+            .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
+            .map_err(|e| {
+                let error_str = format!("{:?}", e);
+                error!("Failed to send: {}", error_str);
+                NetworkError::SingalSendFailed(error_str).into()
+            })
     }
 
     /// # Params

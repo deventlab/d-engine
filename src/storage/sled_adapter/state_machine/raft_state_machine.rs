@@ -216,14 +216,14 @@ impl StateMachine for RaftStateMachine {
 
     async fn generate_snapshot_data(
         &self,
-        temp_snapshot_dir: &PathBuf,
+        temp_snapshot_dir: PathBuf,
         last_included_index: u64,
         last_included_term: u64,
     ) -> Result<()> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
         let _guard = self.snapshot_lock.write().await;
         // 2. Create a new state machine database instance
-        let new_db = init_sled_state_machine_db(temp_snapshot_dir).map_err(|e| StorageError::IoError(e))?;
+        let new_db = init_sled_state_machine_db(temp_snapshot_dir).map_err(StorageError::IoError)?;
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -325,12 +325,12 @@ impl RaftStateMachine {
     fn load_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
         let index = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX)?
-            .map(|v| safe_vk(v))
+            .map(safe_vk)
             .unwrap_or(Ok(0))?;
 
         let term = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM)?
-            .map(|v| safe_vk(v))
+            .map(safe_vk)
             .unwrap_or(Ok(0))?;
 
         Ok((index, term))

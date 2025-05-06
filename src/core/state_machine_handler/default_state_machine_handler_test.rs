@@ -532,7 +532,7 @@ async fn test_create_snapshot_case2() {
             debug!(?path, "generate_snapshot_data");
 
             // Create the directory structure correctly
-            fs::create_dir_all(path).unwrap();
+            fs::create_dir_all(path.clone()).unwrap();
             //Simulate sled to create a subdirectory
             let db_path = path.join("state_machine");
             fs::create_dir(&db_path).unwrap();
@@ -580,7 +580,7 @@ async fn test_create_snapshot_case3() {
     sm.expect_last_applied().returning(|| (9, 1));
     sm.expect_generate_snapshot_data().returning(|path, _, _| {
         // Create the directory structure correctly
-        fs::create_dir_all(path).unwrap();
+        fs::create_dir_all(path.clone()).unwrap();
         //Simulate sled to create a subdirectory
         let db_path = path.join("state_machine");
         fs::create_dir(&db_path).unwrap();

@@ -410,11 +410,13 @@ impl<T: TypeConfig> CandidateState<T> {
         raft_event: RaftEvent,
     ) -> Result<()> {
         debug!("send_replay_raft_event, raft_event:{:?}", &raft_event);
-        role_tx.send(RoleEvent::ReprocessEvent(raft_event)).map_err(|e| {
-            let error_str = format!("{:?}", e);
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str).into()
-        })
+        role_tx
+            .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
+            .map_err(|e| {
+                let error_str = format!("{:?}", e);
+                error!("Failed to send: {}", error_str);
+                NetworkError::SingalSendFailed(error_str).into()
+            })
     }
 
     #[cfg(test)]

@@ -135,7 +135,7 @@ pub fn init_sled_snapshot_storage_db(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::kv;
+    use crate::convert::safe_kv;
     use crate::convert::skv;
     use crate::proto::ClusterMembership;
     use crate::proto::NodeMeta;
@@ -162,9 +162,9 @@ mod tests {
             let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
                 init_sled_storages(path.to_string()).unwrap();
 
-            raft_log_db.insert(kv(1), kv(2)).expect("should succeed");
+            raft_log_db.insert(safe_kv(1), &safe_kv(2)).expect("should succeed");
             state_machine_db
-                .insert(state_key.clone(), kv(17))
+                .insert(state_key.clone(), &safe_kv(17))
                 .expect("should succeed");
 
             //prepare a formal membership conf
@@ -197,7 +197,7 @@ mod tests {
                 ],
             };
             state_storage_db
-                .insert(kv(11), cluster_membership.encode_to_vec())
+                .insert(safe_kv(11), cluster_membership.encode_to_vec())
                 .expect("should succeed");
         }
 
@@ -205,18 +205,18 @@ mod tests {
             let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
                 init_sled_storages(path.to_string()).unwrap();
             assert_eq!(
-                Some(kv(2)),
-                raft_log_db.get(kv(1)).expect("should succeed").map(|v| v.to_vec())
+                Some(safe_kv(2).to_vec()),
+                raft_log_db.get(safe_kv(1)).expect("should succeed").map(|v| v.to_vec())
             );
             assert_eq!(
-                Some(kv(17)),
+                Some(safe_kv(17).to_vec()),
                 state_machine_db
                     .get(state_key)
                     .expect("should succeed")
                     .map(|v| v.to_vec())
             );
 
-            let v = state_storage_db.get(kv(11)).unwrap().unwrap();
+            let v = state_storage_db.get(safe_kv(11)).unwrap().unwrap();
             let v = v.to_vec();
             let m = ClusterMembership::decode(&v[..]).unwrap();
             assert_eq!(4, m.nodes.len());

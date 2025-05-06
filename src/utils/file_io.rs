@@ -203,7 +203,7 @@ pub(crate) async fn move_directory(
 }
 
 pub(crate) async fn is_dir(path: &Path) -> Result<bool> {
-    let metadata = fs::metadata(path).await.map_err(|e| StorageError::IoError(e))?;
+    let metadata = fs::metadata(path).await.map_err(StorageError::IoError)?;
 
     // Check if it's a directory
     Ok(metadata.is_dir())
