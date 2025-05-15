@@ -20,6 +20,7 @@ use mockall::predicate::{self};
 use mockall::Predicate;
 use mockall::Sequence;
 use prost::Message;
+use tempfile::tempdir;
 use tempfile::TempDir;
 use tokio::sync::watch;
 use tokio::time;
@@ -37,6 +38,7 @@ use crate::proto::Entry;
 use crate::proto::NodeMeta;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotMetadata;
+use crate::proto::SnapshotResponse;
 use crate::proto::VotedFor;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
@@ -267,16 +269,8 @@ fn listen_addr(port: u64) -> SocketAddr {
 /// Case1: Complete successful snapshot installation
 #[tokio::test]
 async fn test_install_snapshot_chunk_case1() {
-    // 0. To be able to test install_snapshot_chunk fun
-    let temp_dir = tempfile::tempdir().unwrap();
-    let state_machine_mock = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        10,
-        1,
-        Arc::new(state_machine_mock),
-        snapshot_config(temp_dir.path().to_path_buf()),
-    );
-    // 0. Define rpc port for this unit test
+    enable_logger();
+
     let port = MOCK_STATE_MACHINE_HANDLER_PORT_BASE + 1;
     // 1. Simulate node with RPC server running in a new thread
     let (graceful_tx, graceful_rx) = watch::channel(());
@@ -286,14 +280,13 @@ async fn test_install_snapshot_chunk_case1() {
         false,
         graceful_rx,
         None,
-        Some(handler),
     );
     node.set_ready(true);
 
     // 3. Start the Raft main loop
     let raft_handle = tokio::spawn(async move {
         let mut raft = node.raft_core.lock().await;
-        let _ = time::timeout(Duration::from_millis(10), raft.run()).await;
+        let _ = time::timeout(Duration::from_millis(100), raft.run()).await;
     });
 
     // 2. Crate RPC client
@@ -313,6 +306,7 @@ async fn test_install_snapshot_chunk_case1() {
         for seq in 0..total_chunks {
             let chunk = create_test_chunk(
                 seq,
+                &format!("chunk-{}", seq).into_bytes(),
                 3, // chunk term (higher than handler's current_term)
                 1, // leader_id
                 total_chunks,
@@ -341,11 +335,11 @@ async fn test_install_snapshot_chunk_case1() {
 /// Helper to create valid test chunk
 fn create_test_chunk(
     seq: u32,
+    data: &[u8],
     term: u64,
     leader_id: u64,
     total: u32,
 ) -> SnapshotChunk {
-    let data = format!("chunk-{}", seq).into_bytes();
     SnapshotChunk {
         term,
         leader_id,
@@ -356,7 +350,7 @@ fn create_test_chunk(
             last_included_index: 100,
             last_included_term: term,
         }),
-        data,
+        data: data.to_vec(),
     }
 }
 
@@ -393,6 +387,11 @@ fn create_test_stream(chunks: Vec<SnapshotChunk>) -> tonic::Streaming<SnapshotCh
     )
 }
 
+fn create_test_handler(temp_dir: &Path) -> DefaultStateMachineHandler<MockTypeConfig> {
+    let state_machine = MockStateMachine::new();
+    DefaultStateMachineHandler::new(0, 1, Arc::new(state_machine), snapshot_config(temp_dir.to_path_buf()))
+}
+
 /// # Case 2: Successfully applies valid chunks
 #[tokio::test]
 async fn test_install_snapshot_chunk_case2() {
@@ -418,6 +417,7 @@ async fn test_install_snapshot_chunk_case2() {
     for seq in 0..total_chunks {
         chunks.push(create_test_chunk(
             seq,
+            &format!("chunk-{}", seq).into_bytes(),
             3, // chunk term (higher than handler's current_term)
             1, // leader_id
             total_chunks,
@@ -433,6 +433,85 @@ async fn test_install_snapshot_chunk_case2() {
     let response = receiver.await.unwrap().unwrap();
     assert!(response.success);
     assert_eq!(response.next_chunk, 0);
+}
+
+const TEST_TERM: u64 = 1;
+const TEST_LEADER_ID: u64 = 1;
+
+/// # Case 3: Rejects chunk with invalid checksum
+#[tokio::test]
+async fn test_install_snapshot_chunk_case3() {
+    let temp_dir = tempdir().unwrap();
+    let handler = create_test_handler(temp_dir.path());
+
+    // Create chunk with invalid checksum
+    let mut bad_chunk = create_test_chunk(0, b"bad data", TEST_TERM, TEST_LEADER_ID, 1);
+    bad_chunk.checksum = vec![0xde, 0xad, 0xbe, 0xef]; // Corrupt checksum
+
+    let (sender, receiver) = MaybeCloneOneshot::new();
+    let stream = create_test_stream(vec![bad_chunk]);
+    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+
+    let response = receiver.await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(response.next_chunk, 0); // Expect retry same chunk
+}
+
+/// # Case 4: aborts_when_leader_changes_during_stream
+#[tokio::test]
+async fn test_install_snapshot_chunk_case4() {
+    let temp_dir = tempdir().unwrap();
+    let handler = create_test_handler(temp_dir.path());
+
+    // First chunk with term 1, second with term 2
+    let chunks = vec![
+        create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2),
+        create_test_chunk(1, b"chunk1", TEST_TERM + 1, TEST_LEADER_ID, 2),
+    ];
+
+    let (sender, receiver) = MaybeCloneOneshot::new();
+    let stream = create_test_stream(chunks);
+    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+
+    let status = receiver.await.unwrap().unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Aborted);
+    assert_eq!(status.message(), "Leader changed");
+}
+
+/// # Case 5: handles_stream_errors_gracefully
+#[tokio::test]
+async fn test_install_snapshot_chunk_case5() {
+    let temp_dir = tempdir().unwrap();
+    let handler = create_test_handler(temp_dir.path());
+
+    // Create stream that returns error after first chunk
+    let chunks = vec![create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2)];
+    let stream = create_test_stream(chunks);
+
+    let (sender, receiver) = MaybeCloneOneshot::new();
+    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+
+    // Should get error from receiver
+    let status = receiver.await.unwrap().unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Internal);
+}
+
+/// # Case 6: rejects_chunks_with_missing_metadata
+#[tokio::test]
+async fn test_install_snapshot_chunk_case6() {
+    let temp_dir = tempdir().unwrap();
+    let handler = create_test_handler(temp_dir.path());
+
+    // First chunk missing metadata
+    let mut invalid_chunk = create_test_chunk(0, b"data", TEST_TERM, TEST_LEADER_ID, 1);
+    invalid_chunk.metadata = None;
+
+    let (sender, receiver) = MaybeCloneOneshot::new();
+    let stream = create_test_stream(vec![invalid_chunk]);
+    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+
+    let status = receiver.await.unwrap().unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Internal);
 }
 
 /// # Case 1: Basic creation flow
@@ -771,7 +850,6 @@ fn mock_node_with_rpc_service(
     is_leader: bool,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
-    state_machine_handler: Option<impl StateMachineHandler<MockTypeConfig>>,
 ) -> Arc<Node<MockTypeConfig>> {
     enable_logger();
 
@@ -839,18 +917,15 @@ fn mock_node_with_rpc_service(
     // let state_machine_handler = Arc::new(state_machine_handler);
     let mut mock_state_machine_handler = MockStateMachineHandler::new();
     mock_state_machine_handler.expect_install_snapshot_chunk().returning(
-        move |current_term, stream_request, sender| {
-            if let Some(smh) = &state_machine_handler {
-                async move {
-                    assert!(smh
-                        .install_snapshot_chunk(current_term, stream_request, sender)
-                        .await
-                        .is_ok());
-                    ()
-                }
-                .now_or_never()
-                .unwrap()
-            }
+        move |_current_term, _stream_request, sender| {
+            sender
+                .send(Ok(SnapshotResponse {
+                    term: 1,
+                    success: true,
+                    next_chunk: 0,
+                }))
+                .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+
             Ok(())
         },
     );

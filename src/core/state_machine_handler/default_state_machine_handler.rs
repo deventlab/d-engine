@@ -217,6 +217,17 @@ where T: TypeConfig
             return Ok(());
         }
 
+        if metadata.is_none() {
+            sender
+                .send(Err(Status::internal(format!(
+                    "Received snapshot chunk does not include metadata information",
+                ))))
+                .map_err(|e| {
+                    warn!("Failed to send response: {:?}", e);
+                    StorageError::Snapshot(format!("Send snapshot error: {:?}", e))
+                })?;
+            return Ok(());
+        }
         // Application snapshot
         let metadata = metadata.unwrap();
         self.state_machine
