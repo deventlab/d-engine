@@ -1,35 +1,64 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::BufMut;
+use bytes::BytesMut;
 use crc32fast::Hasher;
-use futures::Stream;
+use futures::stream;
+use futures::FutureExt;
+use futures::TryStreamExt;
+use http_body::Frame;
+use http_body_util::BodyExt;
+use http_body_util::StreamBody;
 use mockall::predicate::{self};
 use mockall::Predicate;
 use mockall::Sequence;
 use prost::Message;
 use tempfile::TempDir;
-use tokio_stream::StreamExt;
-use tokio_stream::{self as stream};
+use tokio::sync::watch;
+use tokio::time;
+use tonic::Code;
+use tonic::Status;
 use tracing::debug;
 
 use super::DefaultStateMachineHandler;
+use super::MockStateMachineHandler;
 use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::is_dir;
+use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::Entry;
+use crate::proto::NodeMeta;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotMetadata;
+use crate::proto::VotedFor;
 use crate::test_utils::enable_logger;
+use crate::test_utils::node_config;
+use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
+use crate::test_utils::MOCK_STATE_MACHINE_HANDLER_PORT_BASE;
+use crate::AppendResults;
+use crate::ConsensusError;
+use crate::ElectionError;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MockElectionCore;
 use crate::MockRaftLog;
+use crate::MockReplicationCore;
 use crate::MockStateMachine;
+use crate::NetworkError;
+use crate::Node;
+use crate::RaftOneshot;
 use crate::SnapshotConfig;
+use crate::StateUpdate;
 use crate::StorageError;
+use crate::SystemError;
 
 // Case 1: normal update
 #[test]
@@ -225,15 +254,91 @@ async fn test_apply_batch_case3() {
 }
 
 /// Helper to compute CRC32 checksum for test data
-#[allow(unused)]
 fn compute_checksum(data: &[u8]) -> Vec<u8> {
     let mut hasher = Hasher::new();
     hasher.update(data);
     hasher.finalize().to_be_bytes().to_vec()
 }
 
+fn listen_addr(port: u64) -> SocketAddr {
+    format!("127.0.0.1:{}", port).parse().unwrap()
+}
+
+/// Case1: Complete successful snapshot installation
+#[tokio::test]
+async fn test_install_snapshot_chunk_case1() {
+    // 0. To be able to test install_snapshot_chunk fun
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_machine_mock = MockStateMachine::new();
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
+    // 0. Define rpc port for this unit test
+    let port = MOCK_STATE_MACHINE_HANDLER_PORT_BASE + 1;
+    // 1. Simulate node with RPC server running in a new thread
+    let (graceful_tx, graceful_rx) = watch::channel(());
+    let node = mock_node_with_rpc_service(
+        "/tmp/test_install_snapshot_chunk_case1",
+        listen_addr(port),
+        false,
+        graceful_rx,
+        None,
+        Some(handler),
+    );
+    node.set_ready(true);
+
+    // 3. Start the Raft main loop
+    let raft_handle = tokio::spawn(async move {
+        let mut raft = node.raft_core.lock().await;
+        let _ = time::timeout(Duration::from_millis(10), raft.run()).await;
+    });
+
+    // 2. Crate RPC client
+    let addr: SocketAddr = format!("[::]:{}", port).parse().unwrap();
+    let mut rpc_client = RpcServiceClient::connect(format!(
+        "grpc://localhost:{}",
+        addr.to_string().split(':').last().unwrap()
+    ))
+    .await
+    .unwrap();
+
+    // 3. Fake install snapshot request stream
+    let total_chunks = 3;
+    let (tx, rx) = tokio::sync::mpsc::channel(10);
+    // Generate valid chunks with seq 0..2
+    tokio::spawn(async move {
+        for seq in 0..total_chunks {
+            let chunk = create_test_chunk(
+                seq,
+                3, // chunk term (higher than handler's current_term)
+                1, // leader_id
+                total_chunks,
+            );
+
+            tx.send(chunk).await.expect("send failed");
+        }
+    });
+    // Convert mpsc receiver into tonic::Streaming
+    let request_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+
+    // 4. Waiting to receive response
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let response = rpc_client.install_snapshot(request_stream).await.unwrap().into_inner();
+
+    assert!(response.success);
+    assert_eq!(response.term, 1); // Should reflect handler's current_term
+    assert_eq!(response.next_chunk, 0); // Indicates full success
+
+    // Release handler
+    graceful_tx.send(()).expect("shutdown successfully!");
+    raft_handle.await.expect("should succeed");
+}
+
 /// Helper to create valid test chunk
-#[allow(unused)]
 fn create_test_chunk(
     seq: u32,
     term: u64,
@@ -254,208 +359,81 @@ fn create_test_chunk(
         data,
     }
 }
-// fn echo_requests_iter(
-//     term: u64,
-//     leader_id: u64,
-//     total: u32,
-// ) -> Request<tonic::Streaming<SnapshotChunk>> {
-//     let (tx, rx) = mpsc::channel::<Result<SnapshotChunk, Status>>(10); // Clear channel type
 
-//     tokio::spawn(async move {
-//         for i in 1..=total {
-//             let data = format!("chunk-{}", i).into_bytes();
-//             let chunk = SnapshotChunk {
-//                 term,
-//                 leader_id,
-//                 seq: i,
-//                 total,
-//                 checksum: compute_checksum(&data),
-//                 metadata: Some(SnapshotMetadata {
-//                     last_included_index: 100,
-//                     last_included_term: term,
-//                 }),
-//                 data,
-//             };
+fn create_test_stream(chunks: Vec<SnapshotChunk>) -> tonic::Streaming<SnapshotChunk> {
+    // Convert chunks to encoded byte streams
+    let byte_stream = stream::iter(chunks.into_iter().map(|chunk| {
+        let mut buf = Vec::new();
 
-//             if tx.send(Ok(chunk)).await.is_err() {
-//                 break;
-//             }
-//         }
-//     });
-
-//     let stream = ReceiverStream::new(rx);
-//     Request::new(tonic::Streaming::new(stream))
-// }
-
-fn mock_stream(
-    term: u64,
-    leader_id: u64,
-    total: u32,
-) -> impl Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> {
-    let data = format!("chunk-{}", 1).into_bytes();
-    let chunks = vec![SnapshotChunk {
-        term,
-        leader_id,
-        seq: 1,
-        total,
-        checksum: compute_checksum(&data),
-        metadata: Some(SnapshotMetadata {
-            last_included_index: 100,
-            last_included_term: term,
-        }),
-        data,
-    }];
-
-    // let codec = ProstCodec::default();
-
-    stream::iter(chunks).map(move |chunk| {
-        let mut buf = bytes::BytesMut::new();
         chunk
             .encode(&mut buf)
-            .map_err(|e: prost::EncodeError| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-        Ok(buf.freeze())
-    })
+            .map_err(|e| Status::new(Code::Internal, format!("Encoding failed: {}", e)))?;
+
+        // Add Tonic frame header
+        let mut frame = BytesMut::new();
+        frame.put_u8(0); // No compression
+        debug!("buf.len()={}", buf.len());
+
+        frame.put_u32(buf.len() as u32); // Message length
+        frame.extend_from_slice(&buf);
+
+        Ok(frame.freeze())
+    }));
+
+    let body = StreamBody::new(
+        byte_stream
+            .map_ok(Frame::data)
+            .map_err(|e: Status| Status::new(Code::Internal, format!("Stream error: {}", e))),
+    );
+    tonic::Streaming::new_request(
+        SnapshotChunkDecoder,
+        body.boxed_unsync(),
+        None,
+        Some(1024 * 1024 * 1024),
+    )
 }
 
-fn echo_requests_iter2(
-    term: u64,
-    leader_id: u64,
-    total: u32,
-) -> impl Stream<Item = SnapshotChunk> {
-    tokio_stream::iter(1..u32::MAX).map(move |i| {
-        let data = format!("chunk-{}", i).into_bytes();
-        SnapshotChunk {
-            term,
-            leader_id,
-            seq: i,
-            total,
-            checksum: compute_checksum(&data),
-            metadata: Some(SnapshotMetadata {
-                last_included_index: 100,
-                last_included_term: term,
-            }),
-            data,
-        }
-    })
-}
-// 1. Create a message stream generator
-fn mock_chunks_stream(
-    term: u64,
-    leader_id: u64,
-    total: u32,
-) -> impl Stream<Item = SnapshotChunk> {
-    tokio_stream::iter(1..=total).map(move |seq| {
-        let data = format!("chunk-{}", seq).into_bytes();
-        SnapshotChunk {
-            term,
-            leader_id,
-            seq,
-            total,
-            checksum: compute_checksum(&data),
-            metadata: Some(SnapshotMetadata {
-                last_included_index: 100,
-                last_included_term: term,
-            }),
-            data,
-        }
-    })
-}
-
-// fn encoded_stream(
-//     term: u64,
-//     leader_id: u64,
-//     total: u32,
-// ) -> impl Stream<Item = Result<Bytes, Status>> {
-//     let codec = ProstCodec::<SnapshotChunk, Bytes>::default();
-//     let mut encoder = codec.encoder();
-
-//     mock_chunks_stream(term, leader_id, total).map(move |chunk| {
-//         let mut buf = bytes::BytesMut::new();
-//         encoder
-//             .encode(chunk, &mut buf)
-//             .map(|_| buf.freeze())
-//             .map_err(|e| Status::internal(format!("Encoding error: {}", e)))
-//     })
-// }
-
-/// Case1: Complete successful snapshot installation
+/// # Case 2: Successfully applies valid chunks
 #[tokio::test]
-async fn test_install_snapshot_chunk_case1() {
-    // let state_machine_mock = MockStateMachine::new();
-    // let snapshot_dir = tempdir().unwrap().path().to_path_buf();
-    // let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(0, 1,
-    // Arc::new(state_machine_mock), snapshot_dir);
+async fn test_install_snapshot_chunk_case2() {
+    enable_logger();
 
-    // let total_chunks = 3;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut state_machine_mock = MockStateMachine::new();
+    state_machine_mock
+        .expect_apply_snapshot_from_file()
+        .times(1)
+        .returning(|_, _| Ok(()));
 
-    // let (sender, receiver) = oneshot::channel();
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        snapshot_config(temp_dir.path().to_path_buf()),
+    );
+    // 3. Fake install snapshot request stream
+    let total_chunks = 1;
+    // Generate valid chunks with seq 0..2
+    let mut chunks: Vec<SnapshotChunk> = vec![];
+    for seq in 0..total_chunks {
+        chunks.push(create_test_chunk(
+            seq,
+            3, // chunk term (higher than handler's current_term)
+            1, // leader_id
+            total_chunks,
+        ));
+    }
 
-    // let encoded_stream = encoded_stream(3, 1, 3);
-    // let body = MockBody(encoded_stream);
-    // let codec = ProstCodec::<SnapshotChunk, Bytes>::default();
+    let streaming_request = create_test_stream(chunks);
+    let (sender, receiver) = MaybeCloneOneshot::new();
+    let result = handler.install_snapshot_chunk(1, streaming_request, sender).await;
+    assert!(result.is_ok());
 
-    // let request_stream = tonic::codec::Streaming::new_request(codec.decoder(),
-    // BoxBody::new(body), None, None);
-
-    // // let request = tonic::Request::new(request_stream);
-
-    // let result = handler.install_snapshot_chunk(1, request_stream, sender.into()).await;
-
-    // assert!(result.is_ok());
-    // let response = receiver.await.unwrap().unwrap();
-    // assert!(response.success);
-    // assert_eq!(response.next_chunk, 0);
+    // Verify final response
+    let response = receiver.await.unwrap().unwrap();
+    assert!(response.success);
+    assert_eq!(response.next_chunk, 0);
 }
-// struct MockBody<S>(S);
-
-// impl<S, T> http_body::Body for MockBody<S>
-// where
-//     S: Stream<Item = Result<T, Status>> + Unpin + Send + 'static,
-//     T: Into<Bytes>,
-// {
-//     type Data = Bytes;
-//     type Error = Status;
-
-//     fn poll_frame(
-//         mut self: Pin<&mut Self>,
-//         cx: &mut std::task::Context<'_>,
-//     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-//         match ready!(self.0.poll_next_unpin(cx)) {
-//             Some(Ok(data)) => Poll::Ready(Some(Ok(http_body::Frame::data(data.into())))),
-//             Some(Err(e)) => Poll::Ready(Some(Err(e))),
-//             None => Poll::Ready(None),
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_create_snapshot_case1() {
-//     // Init Handler
-//     let mut state_machine_mock = MockStateMachine::new();
-//     state_machine_mock.expect_apply_chunk().times(10).returning(|_| Ok(()));
-//     let mut raft_log_mock = MockRaftLog::new();
-//     raft_log_mock.expect_get_entries_between().times(1).returning(move |_| {
-//         let mut entries = vec![];
-//         for i in 1..=10 {
-//             entries.push(Entry {
-//                 index: i,
-//                 term: 1,
-//                 command: vec![1; 8],
-//             });
-//         }
-//         entries
-//     });
-
-//     let max_entries_per_chunk = 1;
-//     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-//         10,
-//         max_entries_per_chunk,
-//         Arc::new(state_machine_mock),
-//         "/tmp/test_create_snapshot_case1",
-//     );
-
-//     handler.create_snapshot();
-// }
 
 /// # Case 1: Basic creation flow
 #[tokio::test]
@@ -784,5 +762,125 @@ fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         max_log_entries_before_snapshot: 1,
         cleanup_version_offset: 2,
         snapshots_dir,
+    }
+}
+
+fn mock_node_with_rpc_service(
+    db_path: &str,
+    listen_address: SocketAddr,
+    is_leader: bool,
+    shutdown_signal: watch::Receiver<()>,
+    peers_meta_option: Option<Vec<NodeMeta>>,
+    state_machine_handler: Option<impl StateMachineHandler<MockTypeConfig>>,
+) -> Arc<Node<MockTypeConfig>> {
+    enable_logger();
+
+    let mut node_config = node_config(db_path);
+    if peers_meta_option.is_some() {
+        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
+    }
+
+    // Update listen address with passed one
+    node_config.cluster.listen_address = listen_address;
+    if !is_leader {
+        // Make sure no election happens
+        node_config.raft.election.election_timeout_min = 500000;
+        node_config.raft.election.election_timeout_max = 1000000
+    }
+
+    // Initializing Shutdown Signal
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_handle_client_proposal_in_batch()
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::new(),
+            })
+        });
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| true);
+    if is_leader {
+        election_handler
+            .expect_broadcast_vote_requests()
+            .returning(|_, _, _, _, _| Ok(()));
+        election_handler
+            .expect_handle_vote_request()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok(StateUpdate {
+                    new_voted_for: Some(VotedFor {
+                        voted_for_id: 1,
+                        voted_for_term: 1,
+                    }),
+                    term_update: Some(2),
+                })
+            });
+    } else {
+        // Make sure node is Follower
+        election_handler
+            .expect_broadcast_vote_requests()
+            .returning(|_, _, _, _, _| {
+                Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
+                    100,
+                ))))
+            });
+        election_handler
+            .expect_handle_vote_request()
+            .times(1)
+            .returning(|_, _, _, _| {
+                Err(Error::System(SystemError::Network(NetworkError::SingalSendFailed(
+                    "".to_string(),
+                ))))
+            });
+    }
+    // let state_machine_handler = Arc::new(state_machine_handler);
+    let mut mock_state_machine_handler = MockStateMachineHandler::new();
+    mock_state_machine_handler.expect_install_snapshot_chunk().returning(
+        move |current_term, stream_request, sender| {
+            if let Some(smh) = &state_machine_handler {
+                async move {
+                    assert!(smh
+                        .install_snapshot_chunk(current_term, stream_request, sender)
+                        .await
+                        .is_ok());
+                    ()
+                }
+                .now_or_never()
+                .unwrap()
+            }
+            Ok(())
+        },
+    );
+
+    MockBuilder::new(shutdown_signal)
+        .wiht_node_config(node_config)
+        .with_replication_handler(replication_handler)
+        .with_election_handler(election_handler)
+        .with_state_machine_handler(mock_state_machine_handler)
+        .turn_on_election(is_leader)
+        .build_node_with_rpc_server()
+}
+
+// Create a custom Decoder implementation
+struct SnapshotChunkDecoder;
+impl tonic::codec::Decoder for SnapshotChunkDecoder {
+    type Item = SnapshotChunk;
+    type Error = Status;
+    fn decode(
+        &mut self,
+        buf: &mut tonic::codec::DecodeBuf<'_>,
+    ) -> Result<Option<Self::Item>, Self::Error> {
+        debug!(?buf, "SnapshotChunkDecoder");
+
+        match SnapshotChunk::decode(buf) {
+            Ok(chunk) => Ok(Some(chunk)),
+            Err(e) => Err(Status::new(Code::Internal, format!("Decode error: {}", e))),
+        }
+    }
+    fn buffer_settings(&self) -> tonic::codec::BufferSettings {
+        tonic::codec::BufferSettings::new(4 * 1024 * 1024, 4 * 1024 * 1025)
     }
 }

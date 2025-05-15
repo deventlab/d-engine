@@ -12,9 +12,8 @@ impl ElectionTimer {
     /// @param: timeout_range: (ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
     pub fn new(timeout_range: (u64, u64)) -> Self {
         let (min, max) = timeout_range;
-        let tick_interval = Self::random_duration(min, max);
         Self {
-            next_deadline: Instant::now() + tick_interval,
+            next_deadline: Instant::now() + Self::random_duration(min, max),
             timeout_range,
         }
     }

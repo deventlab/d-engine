@@ -5,7 +5,11 @@ use std::sync::atomic::Ordering;
 
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tracing::debug;
 
+use crate::constants::SNAPSHOT_DIR_PREFIX;
+use crate::file_io::move_directory;
+use crate::proto::SnapshotMetadata;
 use crate::Result;
 use crate::StorageError;
 
@@ -15,24 +19,28 @@ pub(crate) struct SnapshotAssembler {
     expected_index: u32,
     total_size: usize,
     received_chunks: AtomicU32,
+    snapshots_dir: PathBuf,
 }
 
 impl SnapshotAssembler {
-    pub(crate) async fn new(temp_dir: impl AsRef<Path>) -> Result<Self> {
-        let file_path = temp_dir.as_ref().join("snapshot.part");
+    pub(crate) async fn new(snapshots_dir: impl AsRef<Path>) -> Result<Self> {
+        let snapshots_dir = snapshots_dir.as_ref().to_path_buf();
+
+        let temp_file_path = snapshots_dir.join("snapshot.part");
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&file_path)
+            .open(&temp_file_path)
             .await
             .map_err(StorageError::IoError)?;
 
         Ok(SnapshotAssembler {
             temp_file: file,
-            temp_path: file_path,
+            temp_path: temp_file_path,
             expected_index: 0,
             total_size: 0,
             received_chunks: AtomicU32::new(0),
+            snapshots_dir,
         })
     }
     pub(crate) async fn write_chunk(
@@ -65,9 +73,44 @@ impl SnapshotAssembler {
         Ok(())
     }
 
-    pub(crate) async fn finalize(&mut self) -> Result<PathBuf> {
+    /// Finalizes the snapshot assembly by flushing data to disk and performing an atomic rename of
+    /// the temporary snapshot directory to its final destination.
+    ///
+    /// # Arguments
+    /// * `snapshot_meta`: Metadata for the snapshot, including the last included index and term.
+    ///
+    /// # Returns
+    /// * `Result<PathBuf>`: The final path of the snapshot after the rename operation is
+    ///   successful.
+    ///
+    /// # Errors
+    /// This function may return an error if:
+    /// - Flushing data to disk fails (`flush_to_disk()`).
+    /// - The atomic rename operation fails (`move_directory()`).
+    pub(crate) async fn finalize(
+        &mut self,
+        snapshot_meta: SnapshotMetadata,
+    ) -> Result<PathBuf> {
+        // 1. Flush the in-memory snapshot data to disk.
         self.flush_to_disk().await?;
-        Ok(self.temp_path.clone())
+
+        // 2. Construct the final snapshot directory path, based on snapshot metadata.
+        let final_dir = self.snapshots_dir.join(format!(
+            "{}{}-{}",
+            SNAPSHOT_DIR_PREFIX, snapshot_meta.last_included_index, snapshot_meta.last_included_term
+        ));
+
+        debug!(
+            ?self.temp_path,
+            ?final_dir,
+            "SnapshotAssembler: Atomic rename to final snapshot file path"
+        );
+
+        // 3. Perform an atomic rename of the temporary snapshot directory to the final directory path.
+        move_directory(&self.temp_path, &final_dir).await?;
+
+        // 4. Return the final snapshot directory path.
+        Ok(final_dir)
     }
 
     pub(crate) fn received_chunks(&self) -> u32 {

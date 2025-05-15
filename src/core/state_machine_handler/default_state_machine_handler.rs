@@ -146,13 +146,10 @@ where T: TypeConfig
         stream_request: Streaming<SnapshotChunk>,
         sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
     ) -> Result<()> {
-        // 1. Create a temporary directory
-        let temp_dir =
-            tempfile::tempdir_in(&self.snapshot_config.snapshots_dir).map_err(|e| StorageError::PathError {
-                path: self.snapshot_config.snapshots_dir.clone(),
-                source: e,
-            })?;
-        let mut assembler = SnapshotAssembler::new(temp_dir.path()).await?;
+        debug!(%current_term, ?stream_request, "install_snapshot_chunk");
+
+        // 1. Init SnapshotAssembler
+        let mut assembler = SnapshotAssembler::new(&self.snapshot_config.snapshots_dir).await?;
 
         // 2. Block processing loop (including network fault tolerance)
         let mut term_check = None;
@@ -223,7 +220,7 @@ where T: TypeConfig
         // Application snapshot
         let metadata = metadata.unwrap();
         self.state_machine
-            .apply_snapshot_from_file(metadata, assembler.finalize().await?)
+            .apply_snapshot_from_file(metadata, assembler.finalize(metadata).await?)
             .await?;
 
         // Final confirmation
@@ -253,8 +250,8 @@ where T: TypeConfig
             .snapshots_dir
             .join(format!("temp-{}", new_snapshot_version));
         let final_dir = self.snapshot_config.snapshots_dir.join(format!(
-            "{}{}-{}-{}",
-            SNAPSHOT_DIR_PREFIX, new_snapshot_version, last_included_index, last_included_term
+            "{}{}-{}",
+            SNAPSHOT_DIR_PREFIX, last_included_index, last_included_term
         ));
 
         // 3: Create snapshot based on the temp path

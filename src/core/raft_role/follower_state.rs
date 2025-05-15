@@ -9,6 +9,7 @@ use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::trace;
 use tracing::warn;
 
 use super::candidate_state::CandidateState;
@@ -314,6 +315,8 @@ impl<T: TypeConfig> FollowerState<T> {
         hard_state_from_db: Option<HardState>,
         last_applied_index_option: Option<u64>,
     ) -> Self {
+        trace!(node_config.raft.election.election_timeout_min, "FollowerState::new");
+
         Self {
             shared_state: SharedState::new(node_id, hard_state_from_db, last_applied_index_option),
             timer: ElectionTimer::new((

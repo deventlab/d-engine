@@ -37,7 +37,6 @@ where T: TypeConfig
     pub node_id: u32,
     pub role: RaftRole<T>,
     pub(crate) ctx: RaftContext<T>,
-    #[allow(dead_code)]
     pub node_config: Arc<RaftNodeConfig>,
 
     // Channels with peers
@@ -159,6 +158,7 @@ where T: TypeConfig
         loop {
             // Note: next_deadline wil be reset in each role's tick function
             let tick = sleep_until(self.role.next_deadline());
+
             tokio::select! {
                 // Use biased to ensure branch order
                 biased;

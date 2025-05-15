@@ -6,8 +6,11 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tracing::error;
+use tracing::trace;
 
 use super::MockTypeConfig;
+use crate::grpc;
 use crate::proto::ClusterMembership;
 use crate::ElectionConfig;
 use crate::MockElectionCore;
@@ -42,6 +45,7 @@ pub struct MockBuilder {
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
     pub peer_channels: Option<MockPeerChannels>,
     pub node_config: Option<RaftNodeConfig>,
+    pub turn_on_election: Option<bool>,
     shutdown_signal: watch::Receiver<()>,
 
     pub(crate) event_tx: Option<mpsc::Sender<RaftEvent>>,
@@ -65,6 +69,7 @@ impl MockBuilder {
             state_machine_handler: None,
             peer_channels: None,
             node_config: None,
+            turn_on_election: None,
             shutdown_signal,
 
             role_tx: None,
@@ -151,6 +156,19 @@ impl MockBuilder {
             self.event_rx.unwrap_or(event_rx),
         );
 
+        trace!(node_config.raft.election.election_timeout_min, "build_raft");
+
+        let election_config = {
+            if self.turn_on_election.unwrap_or(true) {
+                ElectionConfig {
+                    election_timeout_min: 1,
+                    election_timeout_max: 2,
+                    ..node_config.raft.election
+                }
+            } else {
+                node_config.raft.election
+            }
+        };
         let mut raft = Raft::new(
             id,
             RaftStorageHandles::<MockTypeConfig> {
@@ -174,11 +192,7 @@ impl MockBuilder {
             },
             Arc::new(RaftNodeConfig {
                 raft: RaftConfig {
-                    election: ElectionConfig {
-                        election_timeout_min: 1,
-                        election_timeout_max: 2,
-                        ..node_config.raft.election
-                    },
+                    election: election_config,
                     ..node_config.raft
                 },
                 ..node_config
@@ -203,6 +217,38 @@ impl MockBuilder {
         }
     }
 
+    pub fn build_node_with_rpc_server(self) -> Arc<Node<MockTypeConfig>> {
+        let shutdown = self.shutdown_signal.clone();
+        let node_config_option = self.node_config.clone();
+
+        let raft = self.build_raft();
+        let event_tx = raft.event_tx.clone();
+        let node_config =
+            node_config_option.unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig"));
+
+        trace!(
+            node_config.raft.election.election_timeout_min,
+            "build_node_with_rpc_server"
+        );
+        let node = Arc::new(Node::<MockTypeConfig> {
+            node_id: raft.node_id,
+            raft_core: Arc::new(Mutex::new(raft)),
+            event_tx,
+            ready: AtomicBool::new(false),
+            node_config: Arc::new(node_config.clone()),
+        });
+        let node_clone = node.clone();
+        let listen_address = node_config.cluster.listen_address;
+        let node_config = node_config.clone();
+        tokio::spawn(async move {
+            if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
+                eprintln!("RPC server stops. {:?}", e);
+                error!("RPC server stops. {:?}", e);
+            }
+        });
+
+        node
+    }
     pub fn with_raft_log(
         mut self,
         raft_log: MockRaftLog,
@@ -281,6 +327,14 @@ impl MockBuilder {
         let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
         node_config.cluster.db_root_dir = PathBuf::from(db_root_dir);
         self.node_config = Some(node_config);
+        self
+    }
+
+    pub fn turn_on_election(
+        mut self,
+        is_on: bool,
+    ) -> Self {
+        self.turn_on_election = Some(is_on);
         self
     }
 }

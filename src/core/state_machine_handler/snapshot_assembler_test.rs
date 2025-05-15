@@ -3,6 +3,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::fs::read;
 
+    use crate::proto::SnapshotMetadata;
     use crate::SnapshotAssembler;
 
     #[tokio::test]
@@ -16,7 +17,11 @@ mod tests {
             assembler.write_chunk(i, data.clone()).await.unwrap();
         }
 
-        let final_path = assembler.finalize().await.unwrap();
+        let snapshot_meta = SnapshotMetadata {
+            last_included_index: 1,
+            last_included_term: 1,
+        };
+        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
         let content = read(&final_path).await.unwrap();
 
         assert_eq!(content.len(), 5 * 1024);
@@ -55,7 +60,11 @@ mod tests {
         assembler.write_chunk(0, vec![]).await.unwrap();
         assembler.write_chunk(1, vec![1]).await.unwrap();
 
-        let final_path = assembler.finalize().await.unwrap();
+        let snapshot_meta = SnapshotMetadata {
+            last_included_index: 1,
+            last_included_term: 1,
+        };
+        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
         let content = read(final_path).await.unwrap();
         assert_eq!(content, vec![1]);
     }
@@ -78,7 +87,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut assembler = SnapshotAssembler::new(dir.path()).await.unwrap();
 
-        let final_path = assembler.finalize().await.unwrap();
+        let snapshot_meta = SnapshotMetadata {
+            last_included_index: 1,
+            last_included_term: 1,
+        };
+        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
         assert!(final_path.ends_with("snapshot.part"));
         assert!(final_path.exists());
     }
@@ -93,7 +106,11 @@ mod tests {
             assembler.write_chunk(i, vec![i as u8; 4096]).await.unwrap();
         }
 
-        let final_path = assembler.finalize().await.unwrap();
+        let snapshot_meta = SnapshotMetadata {
+            last_included_index: 1,
+            last_included_term: 1,
+        };
+        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
         let metadata = tokio::fs::metadata(final_path).await.unwrap();
         assert_eq!(metadata.len(), 1000 * 4096);
     }

@@ -225,7 +225,7 @@ where T: TypeConfig
         request: tonic::Request<Streaming<SnapshotChunk>>,
     ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
         if !self.server_is_ready() {
-            warn!("handle_client_read: Node-{} is not ready!", self.node_id);
+            warn!("install_snapshot: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -237,7 +237,7 @@ where T: TypeConfig
             .map_err(|_| Status::internal("Event channel closed"))?;
 
         let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
+        handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
     }
 }
 

@@ -9,6 +9,7 @@ use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::trace;
 use tracing::warn;
 
 use super::follower_state::FollowerState;
@@ -435,6 +436,7 @@ impl<T: TypeConfig> CandidateState<T> {
 
 impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
     fn from(follower: &FollowerState<T>) -> Self {
+        trace!(%follower.node_config.raft.election.election_timeout_min, "From<&FollowerState<T>> for CandidateState");
         Self {
             shared_state: follower.shared_state.clone(),
             timer: ElectionTimer::new((
