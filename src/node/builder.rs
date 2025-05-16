@@ -309,7 +309,7 @@ impl NodeBuilder {
         raft_core.register_new_commit_listener(new_commit_event_tx);
 
         // Start CommitHandler in a single thread
-        let mut commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
+        let commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
             state_machine_handler,
             raft_core.ctx.storage.raft_log.clone(),
             new_commit_event_rx,
@@ -317,17 +317,7 @@ impl NodeBuilder {
             node_config_arc.raft.commit_handler.process_interval_ms,
             shutdown_signal,
         );
-        tokio::spawn(async move {
-            match commit_handler.run().await {
-                Ok(_) => {
-                    info!("commit_handler exit program");
-                }
-                Err(e) => {
-                    error!("commit_handler exit program with unpexected error: {:?}", e);
-                    println!("commit_handler exit program");
-                }
-            }
-        });
+        self.enable_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_tx.clone();
         let node = Node::<RaftTypeConfig> {
@@ -340,6 +330,24 @@ impl NodeBuilder {
 
         self.node = Some(Arc::new(node));
         self
+    }
+
+    /// When a new commit is detected, convert the log into a state machine log.
+    fn enable_state_machine_commit_listener(
+        &self,
+        mut commit_handler: DefaultCommitHandler<RaftTypeConfig>,
+    ) {
+        tokio::spawn(async move {
+            match commit_handler.run().await {
+                Ok(_) => {
+                    info!("commit_handler exit program");
+                }
+                Err(e) => {
+                    error!("commit_handler exit program with unpexected error: {:?}", e);
+                    println!("commit_handler exit program");
+                }
+            }
+        });
     }
 
     /// Starts the metrics server for monitoring node operations.
