@@ -7,7 +7,6 @@ pub mod config;
 mod docs;
 pub mod node;
 pub mod proto;
-pub mod snapshot;
 #[doc(hidden)]
 pub mod storage;
 

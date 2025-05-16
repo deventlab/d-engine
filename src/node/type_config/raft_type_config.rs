@@ -2,12 +2,14 @@ use crate::grpc::grpc_transport::GrpcTransport;
 use crate::DefaultCommitHandler;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::LogSizePolicy;
 use crate::RaftMembership;
 use crate::RaftStateMachine;
 use crate::ReplicationHandler;
 use crate::RpcPeerChannels;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
+use crate::SnapshotPolicy;
 use crate::TypeConfig;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
@@ -33,4 +35,6 @@ impl TypeConfig for RaftTypeConfig {
     type C = DefaultCommitHandler<Self>;
 
     type SMH = DefaultStateMachineHandler<Self>;
+
+    type SNP = LogSizePolicy;
 }

@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use config::ConfigError;
 use serde::Deserialize;
@@ -311,7 +312,12 @@ pub struct SnapshotConfig {
     /// Maximum number of log entries to accumulate before triggering snapshot creation
     /// This helps control memory usage by enforcing periodic state compaction
     #[serde(default = "default_max_log_entries_before_snapshot")]
-    pub max_log_entries_before_snapshot: usize,
+    pub max_log_entries_before_snapshot: u64,
+
+    /// Minimum duration to wait between consecutive snapshot checks.
+    /// Acts as a cooldown period to avoid overly frequent snapshot evaluations.
+    #[serde(default = "default_snapshot_cool_down_since_last_check")]
+    pub snapshot_cool_down_since_last_check: Duration,
 
     /// Number of historical snapshot versions to retain during cleanup
     /// Ensures we maintain a safety buffer of previous states for recovery
@@ -328,6 +334,7 @@ impl Default for SnapshotConfig {
     fn default() -> Self {
         Self {
             max_log_entries_before_snapshot: default_max_log_entries_before_snapshot(),
+            snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
             cleanup_version_offset: default_cleanup_version_offset(),
             snapshots_dir: default_snapshots_dir(),
         }
@@ -354,8 +361,16 @@ impl SnapshotConfig {
     }
 }
 /// Default threshold for triggering snapshot creation
-fn default_max_log_entries_before_snapshot() -> usize {
+fn default_max_log_entries_before_snapshot() -> u64 {
     1000
+}
+
+/// Default cooldown duration between snapshot checks.
+///
+/// Prevents constant evaluation of snapshot conditions in tight loops.
+/// Currently set to 60 days (5,184,000 seconds).
+fn default_snapshot_cool_down_since_last_check() -> Duration {
+    Duration::from_secs(5_184_000)
 }
 
 /// Default number of historical snapshots to retain

@@ -57,6 +57,7 @@ use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::LogSizePolicy;
 use crate::RaftContext;
 use crate::RaftCoreHandlers;
 use crate::RaftLog;
@@ -180,12 +181,18 @@ pub fn setup_raft_components(
     node_config.cluster.db_root_dir = PathBuf::from(db_path);
     node_config.cluster.initial_cluster = peers_meta.clone();
 
+    let snapshot_policy = LogSizePolicy::new(
+        node_config.raft.snapshot.max_log_entries_before_snapshot,
+        node_config.raft.snapshot.snapshot_cool_down_since_last_check,
+    );
+
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
         last_applied_pair.0,
         node_config.raft.commit_handler.max_entries_per_chunk,
         state_machine.clone(),
         node_config.raft.snapshot.clone(),
+        snapshot_policy,
     );
 
     let node_config_clone = node_config.clone();

@@ -32,9 +32,14 @@
 //!   - Linearizable read optimizations
 
 mod default_state_machine_handler;
-pub(crate) use default_state_machine_handler::*;
 mod snapshot_assembler;
+mod snapshot_guard;
+mod snapshot_policy;
+
+pub(crate) use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
+pub(crate) use snapshot_guard::*;
+pub(crate) use snapshot_policy::*;
 
 #[cfg(test)]
 mod default_state_machine_handler_test;
@@ -79,6 +84,9 @@ where T: TypeConfig
         stream_request: tonic::Streaming<SnapshotChunk>,
         sender: crate::MaybeCloneOneshotSender<std::result::Result<crate::proto::SnapshotResponse, tonic::Status>>,
     ) -> Result<()>;
+
+    /// Validate if should generate snapshot now
+    fn should_snapshot(&self) -> bool;
 
     /// Asynchronously creates a state machine snapshot with the following steps:
     /// 1. Acquires a write lock to ensure exclusive access during snapshot creation

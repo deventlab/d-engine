@@ -1,5 +1,6 @@
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -19,9 +20,12 @@ use tracing::info;
 use tracing::warn;
 
 use super::SnapshotAssembler;
+use super::SnapshotContext;
+use super::SnapshotPolicy;
 use super::StateMachineHandler;
 use crate::alias::ROF;
 use crate::alias::SMOF;
+use crate::alias::SNP;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::move_directory;
 use crate::file_io::validate_checksum;
@@ -35,6 +39,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::RaftLog;
 use crate::Result;
 use crate::SnapshotConfig;
+use crate::SnapshotGuard;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
@@ -53,6 +58,8 @@ where T: TypeConfig
 
     current_snapshot_version: AtomicU64,
     snapshot_config: SnapshotConfig,
+    snapshot_policy: SNP<T>,
+    snapshot_in_progress: AtomicBool,
 
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
@@ -246,7 +253,24 @@ where T: TypeConfig
         Ok(())
     }
 
+    #[inline]
+    fn should_snapshot(&self) -> bool {
+        if self.snapshot_in_progress.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.snapshot_policy.should_trigger(&SnapshotContext {
+            role: todo!(),
+            last_snapshot_index: todo!(),
+            last_snapshot_term: todo!(),
+            last_applied_index: todo!(),
+            current_term: todo!(),
+        })
+    }
+
     async fn create_snapshot(&self) -> Result<std::path::PathBuf> {
+        // 0. Create a guard (automatically manage state)
+        let _guard = SnapshotGuard::new(&self.snapshot_in_progress)?;
+
         // 1: Get write lock
         debug!("create_snapshot 1: Get write lock");
         let _guard = self.snapshot_lock.write().await;
@@ -365,6 +389,7 @@ where T: TypeConfig
         max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
+        snapshot_policy: SNP<T>,
     ) -> Self {
         Self {
             last_applied: AtomicU64::new(last_applied_index),
@@ -372,8 +397,10 @@ where T: TypeConfig
             max_entries_per_chunk,
             state_machine,
             current_snapshot_version: AtomicU64::new(0),
-            snapshot_lock: RwLock::new(()),
             snapshot_config,
+            snapshot_policy,
+            snapshot_lock: RwLock::new(()),
+            snapshot_in_progress: AtomicBool::new(false),
         }
     }
 

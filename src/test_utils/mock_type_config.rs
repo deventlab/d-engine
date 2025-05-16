@@ -6,6 +6,7 @@ use crate::MockMembership;
 use crate::MockPeerChannels;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
+use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockStateStorage;
@@ -37,6 +38,8 @@ impl TypeConfig for MockTypeConfig {
     type C = MockCommitHandler;
 
     type SMH = MockStateMachineHandler<Self>;
+
+    type SNP = MockSnapshotPolicy;
 }
 
 impl Clone for MockRaftLog {

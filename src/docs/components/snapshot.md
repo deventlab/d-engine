@@ -6,7 +6,7 @@ This module defines the interface and expected behaviors for snapshot generation
 
 Snapshotting is a critical component of any Raft-based system. However, the exact strategy for generating and applying snapshots can vary widely depending on the type of storage engine, system requirements, and performance characteristics.
 
-Rather than enforce a single implementation, `d-engine` **intentionally leaves the snapshot generation strategy open to the developer**. This provides flexibility for different use cases and backend storage systems.
+Rather than enforce a single implementation, `d-engine` **intentionally leaves the snapshot generation strategy including snapshot policy customization open to the developer**. This provides flexibility for different use cases and backend storage systems.
 
 ### Pluggable Snapshot Strategy
 
@@ -29,7 +29,79 @@ The `sled`-based snapshot implementation included in `d-engine` is meant to serv
 - A simple full-state serialization approach using `sled` key-value pairs.
 - How to restore state from a binary snapshot blob.
 
+## **Generate Snapshot**
+
+### Snapshot Policy Configuration
+
+#### Custom Snapshot Policies
+The snapshot generation strategy is fully customizable through the SnapshotPolicy trait. Developers can implement their own policies based on specific requirements like:
+
+- Log size thresholds
+- Time-based intervals
+- Combination of multiple conditions
+- External system metrics
+
+```rust,ignore
+/// Trait to implement custom snapshot policies
+pub trait SnapshotPolicy: Send + Sync + 'static {
+    /// Determine if a snapshot should be generated
+    /// - ctx: Contains snapshot generation context (last applied index, term, etc.)
+    /// - config: Current node configuration
+    fn should_create_snapshot(&self, ctx: &SnapshotContext, config: &SnapshotConfig) -> bool;
+}
+
+/// Context for policy decision
+pub struct SnapshotContext {
+    pub last_snapshot_index: u64,
+    pub last_applied_index: u64,
+    pub current_term: u64,
+    pub unapplied_entries: usize,
+}
+```
+
+#### Implementing a Custom Policy
+1. Implement the trait:
+
+```rust,ignore
+struct TimeBasedPolicy {
+    interval: Duration,
+}
+
+impl SnapshotPolicy for TimeBasedPolicy {
+    fn should_create_snapshot(&self, ctx: &SnapshotContext, _: &SnapshotConfig) -> bool {
+        SystemTime::now()
+            .duration_since(LAST_SNAPSHOT_TIME.load(Ordering::Relaxed))
+            .unwrap() >= self.interval
+    }
+}
+```
+2. Register with NodeBuilder:
+
+#### Install Snapshot Sequence Diagram
+```mermaid
+sequenceDiagram
+    participant Leader
+    participant Policy
+    participant StateMachine
+
+    Leader->>Policy: Check should_create_snapshot()
+    Policy-->>Leader: true/false
+    alt Should create
+        Leader->>StateMachine: Initiate snapshot creation
+    end
+```
+
 ## **Install Snapshot**
+
+```rust,ignore
+let node = NodeBuilder::new()
+    .with_snapshot_policy(Arc::new(TimeBasedPolicy {
+        interval: Duration::from_secs(3600),
+    }))
+    .build();
+```
+
+By default, Size-Based Policy is enabled.
 
 ### Sequence diagram
 
@@ -59,8 +131,7 @@ sequenceDiagram
 4. **Flow Control**: Dynamically adjust chunk size based on network conditions (e.g., 4MB–16MB chunks).
     
 
-#### Stream<Chunk> vs. Direct Chunk (Even Chunk Size Is Controlled)
-# Stream<Chunk> vs. Direct Chunk (Even Chunk Size Is Controlled)
+#### **Stream<Chunk> vs. Direct Chunk (Even Chunk Size Is Controlled)**
 
 | Criteria           | Stream<Chunk>                                    | Direct Chunk (One Chunk per Request)                       |
 |--------------------|--------------------------------------------------|------------------------------------------------------------|
@@ -95,7 +166,7 @@ sequenceDiagram
 1. [**StateMachine**] Generate new DB based on the temporary file provided by the [**StateMachineHandler**] → 
 2. [**StateMachine**] Generate data → 
 3. [**StateMachine**] Dump current DB into the new DB → 
-3. [**StateMachineHandler**] Finalize the snapshot and updating the snapshot version.
+3. [**StateMachineHandler**] Verify policy conditions and finalize the snapshot and updating the snapshot version.
 
 #### Applying a snapshot:
 1. [**StateMachineHandler**] Snapshot chunk reception and validation → 

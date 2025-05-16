@@ -5,6 +5,8 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
 use tracing::debug;
+use tracing::error;
+use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
@@ -20,7 +22,7 @@ use crate::TypeConfig;
 pub struct DefaultCommitHandler<T>
 where T: TypeConfig
 {
-    applier: Arc<SMHOF<T>>,
+    state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
     new_commit_rx: Option<mpsc::UnboundedReceiver<u64>>,
     batch_size_threshold: u64,
@@ -60,13 +62,21 @@ where T: TypeConfig
 
                     // Submit events in real time
                     Some(new_commit) = new_commit_rx.recv() => {
-                        self.applier.update_pending(new_commit);
+                        self.state_machine_handler.update_pending(new_commit);
                         batch_counter += 1;
 
                         if batch_counter >= self.batch_size_threshold {
                             debug!("_ = self.check_batch_size");
                             self.process_batch().await;
                             batch_counter = 0;
+                        }
+                        // snapshot checker
+                        if self.state_machine_handler.should_snapshot() {
+                            info!("Listened a new commit and should generate snapshot now");
+                            if let Err(e) = self.state_machine_handler.create_snapshot().await {
+                                error!(%e, "self.state_machine_handler.create_snapshot with error.");
+                            }
+
                         }
                     }
             }
@@ -78,7 +88,7 @@ impl<T> DefaultCommitHandler<T>
 where T: TypeConfig
 {
     pub fn new(
-        applier: Arc<SMHOF<T>>,
+        state_machine_handler: Arc<SMHOF<T>>,
         raft_log: Arc<ROF<T>>,
         new_commit_rx: mpsc::UnboundedReceiver<u64>,
         batch_size_threshold: u64,
@@ -86,7 +96,7 @@ where T: TypeConfig
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
-            applier,
+            state_machine_handler,
             raft_log,
             new_commit_rx: Some(new_commit_rx),
             batch_size_threshold,
@@ -97,7 +107,7 @@ where T: TypeConfig
 
     /// Process batch logs
     async fn process_batch(&self) {
-        if let Err(e) = self.applier.apply_batch(self.raft_log.clone()).await {
+        if let Err(e) = self.state_machine_handler.apply_batch(self.raft_log.clone()).await {
             error("process_batch", &e);
         }
     }

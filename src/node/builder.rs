@@ -48,6 +48,7 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
+use crate::alias::SNP;
 use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::grpc;
@@ -61,6 +62,7 @@ use crate::CommitHandler;
 use crate::DefaultCommitHandler;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::LogSizePolicy;
 use crate::Node;
 use crate::Raft;
 use crate::RaftCoreHandlers;
@@ -73,6 +75,7 @@ use crate::Result;
 use crate::SignalParams;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
+use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::SystemError;
 
@@ -89,6 +92,7 @@ pub struct NodeBuilder {
     pub(super) transport: Option<TROF<RaftTypeConfig>>,
     pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
     pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
+    pub(super) snapshot_policy: Option<SNP<RaftTypeConfig>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
 
     pub(super) node: Option<Arc<Node<RaftTypeConfig>>>,
@@ -153,6 +157,7 @@ impl NodeBuilder {
             shutdown_signal,
             commit_handler: None,
             state_machine_handler: None,
+            snapshot_policy: None,
             node: None,
         }
     }
@@ -263,12 +268,18 @@ impl NodeBuilder {
 
         let transport = self.transport.take().unwrap_or(GrpcTransport { my_id: node_id });
 
+        let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
+            node_config.raft.snapshot.max_log_entries_before_snapshot,
+            node_config.raft.snapshot.snapshot_cool_down_since_last_check,
+        ));
+
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             Arc::new(DefaultStateMachineHandler::new(
                 last_applied_index,
                 node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
+                snapshot_policy,
             ))
         });
         let membership = self
@@ -348,6 +359,13 @@ impl NodeBuilder {
                 }
             }
         });
+    }
+
+    pub fn set_snapshot_policy(
+        self,
+        snapshot_policy: impl SnapshotPolicy,
+    ) -> Self {
+        self
     }
 
     /// Starts the metrics server for monitoring node operations.

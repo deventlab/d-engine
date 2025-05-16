@@ -7,6 +7,7 @@ use crate::PeerChannels;
 use crate::PeerChannelsFactory;
 use crate::RaftLog;
 use crate::ReplicationCore;
+use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateStorage;
@@ -34,6 +35,8 @@ pub trait TypeConfig:
     type C: CommitHandler;
 
     type SMH: StateMachineHandler<Self> + Debug;
+
+    type SNP: SnapshotPolicy + Debug;
 }
 
 pub mod alias {
@@ -58,4 +61,6 @@ pub mod alias {
     pub type COF<T> = <T as TypeConfig>::C;
 
     pub type SMHOF<T> = <T as TypeConfig>::SMH;
+
+    pub type SNP<T> = <T as TypeConfig>::SNP;
 }

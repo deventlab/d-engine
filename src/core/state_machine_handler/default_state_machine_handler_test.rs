@@ -11,12 +11,11 @@ use bytes::BufMut;
 use bytes::BytesMut;
 use crc32fast::Hasher;
 use futures::stream;
-use futures::FutureExt;
 use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
-use mockall::predicate::{self};
+use mockall::predicate;
 use mockall::Predicate;
 use mockall::Sequence;
 use prost::Message;
@@ -53,6 +52,7 @@ use crate::MaybeCloneOneshot;
 use crate::MockElectionCore;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
+use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::NetworkError;
 use crate::Node;
@@ -72,6 +72,7 @@ fn test_update_pending_case1() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case1")),
+        MockSnapshotPolicy::new(),
     );
     handler.update_pending(1);
     assert_eq!(handler.pending_commit(), 1);
@@ -89,6 +90,7 @@ fn test_update_pending_case2() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case2")),
+        MockSnapshotPolicy::new(),
     );
     handler.update_pending(10);
     assert_eq!(handler.pending_commit(), 10);
@@ -106,6 +108,7 @@ async fn test_update_pending_case3() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
+        MockSnapshotPolicy::new(),
     ));
 
     let mut tasks = vec![];
@@ -129,6 +132,7 @@ fn test_pending_range_case1() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case1")),
+        MockSnapshotPolicy::new(),
     );
     assert_eq!(handler.pending_range(), None);
 }
@@ -143,6 +147,7 @@ fn test_pending_range_case2() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case2")),
+        MockSnapshotPolicy::new(),
     );
     handler.update_pending(7);
     handler.update_pending(10);
@@ -159,6 +164,7 @@ fn test_pending_range_case3() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case3")),
+        MockSnapshotPolicy::new(),
     );
     handler.update_pending(7);
     handler.update_pending(10);
@@ -181,6 +187,7 @@ async fn test_apply_batch_case1() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_apply_batch_case1")),
+        MockSnapshotPolicy::new(),
     );
     assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
 }
@@ -209,6 +216,7 @@ async fn test_apply_batch_case2() {
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_apply_batch_case2")),
+        MockSnapshotPolicy::new(),
     );
 
     // Update pending commit
@@ -246,6 +254,7 @@ async fn test_apply_batch_case3() {
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_apply_batch_case3")),
+        MockSnapshotPolicy::new(),
     );
 
     // Update pending commit
@@ -389,7 +398,13 @@ fn create_test_stream(chunks: Vec<SnapshotChunk>) -> tonic::Streaming<SnapshotCh
 
 fn create_test_handler(temp_dir: &Path) -> DefaultStateMachineHandler<MockTypeConfig> {
     let state_machine = MockStateMachine::new();
-    DefaultStateMachineHandler::new(0, 1, Arc::new(state_machine), snapshot_config(temp_dir.to_path_buf()))
+    DefaultStateMachineHandler::new(
+        0,
+        1,
+        Arc::new(state_machine),
+        snapshot_config(temp_dir.to_path_buf()),
+        MockSnapshotPolicy::new(),
+    )
 }
 
 /// # Case 2: Successfully applies valid chunks
@@ -409,6 +424,7 @@ async fn test_install_snapshot_chunk_case2() {
         1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     );
     // 3. Fake install snapshot request stream
     let total_chunks = 1;
@@ -546,6 +562,7 @@ async fn test_create_snapshot_case1() {
         1,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     );
 
     // Execute snapshot creation
@@ -602,6 +619,7 @@ async fn test_create_snapshot_case2() {
         1,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     ));
     tx.send(()).unwrap(); // Unblock the first task
 
@@ -650,6 +668,7 @@ async fn test_create_snapshot_case3() {
         1,
         Arc::new(sm),
         snapshot_config(snapshot_dir.clone()),
+        MockSnapshotPolicy::new(),
     );
 
     // Create new snapshot (version 4)
@@ -680,6 +699,7 @@ async fn test_create_snapshot_case4() {
         1,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     );
 
     // Attempt snapshot creation
@@ -745,6 +765,7 @@ async fn test_cleanup_snapshot_case1() {
         1,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     );
 
     handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
@@ -766,6 +787,7 @@ async fn test_cleanup_snapshot_case2() {
         1,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     );
 
     handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
@@ -790,6 +812,7 @@ async fn test_cleanup_snapshot_case3() {
         1,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
     );
 
     handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
@@ -839,6 +862,7 @@ fn path_eq(expected: PathBuf) -> impl Predicate<PathBuf> + 'static {
 fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
     SnapshotConfig {
         max_log_entries_before_snapshot: 1,
+        snapshot_cool_down_since_last_check: Duration::from_secs(0),
         cleanup_version_offset: 2,
         snapshots_dir,
     }
