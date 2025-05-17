@@ -52,6 +52,14 @@ impl std::fmt::Debug for SledRaftLog {
     }
 }
 
+impl Drop for SledRaftLog {
+    fn drop(&mut self) {
+        match self.flush() {
+            Ok(_) => info!("Successfully flush RaftLog"),
+            Err(e) => error!(?e, "Failed to flush RaftLog"),
+        }
+    }
+}
 /// This data structure is designed to improve read and write performance.
 /// It has to be refreshed when there is a write
 #[derive(Debug)]

@@ -6,8 +6,8 @@ pub const INTERNAL_CLIENT_ID: u32 = 0;
 
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
-pub(crate) const STATE_SNAPSHOT_METADATA_TREE: &str = "_snapshot_meta_tree";
-pub(crate) const STATE_MACHINE_META_NAMESPACE: &str = "_state_machine_meta";
+pub(crate) const STATE_MACHINE_META_NAMESPACE: &str = "_state_machine_metadata";
+pub(crate) const STATE_SNAPSHOT_METADATA_TREE: &str = "_snapshot_metadata";
 
 /// Sled entry key namespaces
 pub(crate) const STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX: &str = "_raft_last_applied_index";

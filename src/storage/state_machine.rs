@@ -35,13 +35,6 @@ pub trait StateMachine: Send + Sync + 'static {
         chunk: Vec<Entry>,
     ) -> Result<()>;
 
-    // fn last_entry(&self) -> Option<Entry>;
-
-    fn flush(&self) -> Result<()>;
-
-    #[cfg(test)]
-    fn clean(&self) -> Result<()>;
-
     /// NOTE: This method may degrade system performance. Use with caution.
     fn len(&self) -> usize;
 
@@ -49,15 +42,39 @@ pub trait StateMachine: Send + Sync + 'static {
         self.len() == 0
     }
 
-    /// Update last applied log index
+    /// Update last applied  index
     fn update_last_applied(
         &self,
         index: u64,
         term: u64,
     );
 
-    /// Get the index of the last applied log
+    /// Get the index of the last applied log: (last_applied_index, last_applied_term)
     fn last_applied(&self) -> (u64, u64);
+
+    /// Persist (last_applied_index, last_applied_term) into local storage
+    fn persist_last_applied(
+        &self,
+        index: u64,
+        term: u64,
+    ) -> Result<()>;
+
+    /// Update last included index
+    fn update_last_included(
+        &self,
+        index: u64,
+        term: u64,
+    );
+
+    /// Get snapshot metadata: (last_included_index, last_included_term)
+    fn last_included(&self) -> (u64, u64);
+
+    /// Persist (last_included_index, last_included_term) into local storage
+    fn persist_last_included(
+        &self,
+        index: u64,
+        term: u64,
+    ) -> Result<()>;
 
     async fn apply_snapshot_from_file(
         &self,
@@ -85,4 +102,9 @@ pub trait StateMachine: Send + Sync + 'static {
     ) -> Result<()>;
 
     fn save_hard_state(&self) -> Result<()>;
+
+    fn flush(&self) -> Result<()>;
+
+    #[cfg(test)]
+    fn clean(&self) -> Result<()>;
 }

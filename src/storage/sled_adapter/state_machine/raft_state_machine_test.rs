@@ -1,4 +1,6 @@
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use prost::Message;
 use sled::Batch;
@@ -14,10 +16,14 @@ use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
 use crate::proto::ClientCommand;
 use crate::proto::Entry;
+use crate::proto::SnapshotMetadata;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::{self};
+use crate::Error;
 use crate::StateMachine;
+use crate::StorageError;
+use crate::SystemError;
 use crate::COMMITTED_LOG_METRIC;
 
 #[test]
@@ -373,4 +379,179 @@ async fn test_generate_snapshot_data_case4() {
     for i in 1..=150 {
         assert!(tree.get(&safe_kv(i)).unwrap().is_some());
     }
+}
+
+/// # Case 1: Basic snapshot application
+#[tokio::test]
+async fn test_apply_snapshot_from_file_case1() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case1", None, false);
+    let sm = context.state_machine.clone();
+
+    // Generate test snapshot
+    let temp_path = root.path().join("snapshot_basic");
+    let metadata = SnapshotMetadata {
+        last_included_index: 5,
+        last_included_term: 2,
+    };
+
+    {
+        // Create dummy snapshot data
+        let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+        let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
+        tree.insert(b"test_key", b"test_value").unwrap();
+        tree.flush().unwrap();
+    }
+
+    // Apply snapshot
+    sm.apply_snapshot_from_file(metadata.clone(), temp_path.clone())
+        .await
+        .unwrap();
+
+    // Verify data
+    assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
+    assert_eq!(
+        sm.last_applied(),
+        (metadata.last_included_index, metadata.last_included_term)
+    );
+    assert_eq!(
+        sm.last_included(),
+        (metadata.last_included_index, metadata.last_included_term)
+    );
+}
+
+/// # Case 2: Overwrite existing state
+#[tokio::test]
+async fn test_apply_snapshot_from_file_case2() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case2", None, false);
+    let sm = context.state_machine.clone();
+
+    // Add initial data
+    let mut batch = Batch::default();
+    batch.insert(b"existing_key", b"old_value");
+    sm.apply_batch(batch).unwrap();
+
+    // Create snapshot with new data
+    let temp_path = root.path().join("snapshot_overwrite");
+    let metadata = SnapshotMetadata {
+        last_included_index: 10,
+        last_included_term: 3,
+    };
+
+    {
+        let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+        let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
+        tree.insert(b"new_key", b"new_value").unwrap();
+        tree.flush().unwrap();
+    }
+
+    // Apply snapshot
+    sm.apply_snapshot_from_file(metadata, temp_path).await.unwrap();
+
+    // Verify old data replaced
+    assert_eq!(sm.get(b"existing_key").unwrap(), None);
+    assert_eq!(sm.get(b"new_key").unwrap(), Some(b"new_value".to_vec()));
+}
+
+/// # Case 3: Metadata consistency check
+#[tokio::test]
+async fn test_apply_snapshot_from_file_case3() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case3", None, false);
+    let sm = context.state_machine.clone();
+
+    let temp_path = root.path().join("snapshot_metadata");
+    let test_metadata = SnapshotMetadata {
+        last_included_index: 15,
+        last_included_term: 4,
+    };
+
+    {
+        // Create minimal valid snapshot
+        let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
+        let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
+        metadata_tree
+            .insert(
+                SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX,
+                &safe_kv(test_metadata.last_included_index),
+            )
+            .unwrap();
+        metadata_tree
+            .insert(
+                SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM,
+                &safe_kv(test_metadata.last_included_term),
+            )
+            .unwrap();
+        metadata_tree.flush().unwrap();
+    }
+
+    sm.apply_snapshot_from_file(test_metadata.clone(), temp_path)
+        .await
+        .unwrap();
+
+    // Verify metadata propagation
+    assert_eq!(
+        sm.last_included(),
+        (test_metadata.last_included_index, test_metadata.last_included_term)
+    );
+    assert_eq!(
+        sm.last_applied(),
+        (test_metadata.last_included_index, test_metadata.last_included_term)
+    );
+}
+
+/// # Case 4: Concurrent snapshot protection
+#[tokio::test]
+async fn test_apply_snapshot_from_file_case4() {
+    let root = tempfile::tempdir().unwrap();
+    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case4", None, false);
+    let sm = context.state_machine.clone();
+
+    let temp_path = root.path().join("snapshot_concurrent");
+    let metadata = SnapshotMetadata {
+        last_included_index: 20,
+        last_included_term: 5,
+    };
+
+    // Start two concurrent apply operations
+    let handle1 = tokio::spawn({
+        let sm = sm.clone();
+        let path = temp_path.clone();
+        async move { sm.apply_snapshot_from_file(metadata.clone(), path).await }
+    });
+
+    let handle2 = tokio::spawn({
+        let sm = sm.clone();
+        let path = temp_path.clone();
+        async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            sm.apply_snapshot_from_file(metadata.clone(), path).await
+        }
+    });
+
+    // Verify only one succeeds
+    let results = futures::join!(handle1, handle2);
+    println!(" > {:?}", results);
+
+    match (results.0, results.1) {
+        (Ok(Ok(_)), Ok(Err(_))) | (Ok(Err(_)), Ok(Ok(_))) => (), // Expected scenario
+        _ => panic!("Both snapshot applications should not succeed concurrently"),
+    }
+}
+
+/// # Case 5: Invalid snapshot handling
+#[tokio::test]
+async fn test_apply_snapshot_from_file_case5() {
+    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", None, false);
+    let sm = context.state_machine.clone();
+
+    let result = sm
+        .apply_snapshot_from_file(SnapshotMetadata::default(), PathBuf::from("/non/existent/path"))
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::System(SystemError::Storage(StorageError::PathError { .. })))
+    ));
 }

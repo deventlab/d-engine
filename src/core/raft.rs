@@ -378,20 +378,6 @@ where T: TypeConfig
             error!(?e, "State storage persist node hard state failed.");
         }
 
-        if let Err(e) = self.ctx.state_machine().save_hard_state() {
-            error!(?e, "State storage persist node hard state failed.");
-        }
-
-        info!("raft_log:: flush...");
-        if let Err(e) = self.ctx.storage.raft_log.flush() {
-            error!(?e, "Flush raft log failed.");
-        }
-
-        info!("state_machine:: before_shutdown...");
-        if let Err(e) = self.ctx.storage.state_machine.flush() {
-            error!(?e, "Flush raft log failed.");
-        }
-
         info!("Graceful shutdown node state ...");
     }
 }

@@ -29,6 +29,15 @@ impl std::fmt::Debug for SledStateStorage {
     }
 }
 
+impl Drop for SledStateStorage {
+    fn drop(&mut self) {
+        match self.flush() {
+            Ok(_) => info!("Successfully flush StateStorage"),
+            Err(e) => error!(?e, "Failed to flush StateStorage"),
+        }
+    }
+}
+
 impl StateStorage for SledStateStorage {
     fn get(
         &self,
