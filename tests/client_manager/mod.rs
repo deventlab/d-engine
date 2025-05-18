@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use d_engine::client::Client;
 use d_engine::client::ClientBuilder;
-use d_engine::convert::kv;
-use d_engine::convert::vk;
+use d_engine::convert::safe_kv;
+use d_engine::convert::safe_vk;
 use d_engine::proto::ErrorCode;
 use d_engine::proto::NodeMeta;
 use d_engine::ClientApiError;
@@ -67,7 +67,7 @@ impl ClientManager {
 
                     info!("put {}:{}", key, value);
 
-                    match self.client.kv().put(kv(key), kv(value)).await {
+                    match self.client.kv().put(safe_kv(key), safe_kv(value)).await {
                         Ok(res) => {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
@@ -89,7 +89,7 @@ impl ClientManager {
                         }
                     }
                 }
-                ClientCommands::Delete => match self.client.kv().delete(kv(key)).await {
+                ClientCommands::Delete => match self.client.kv().delete(safe_kv(key)).await {
                     Ok(res) => {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
@@ -110,9 +110,9 @@ impl ClientManager {
                         return Err(e);
                     }
                 },
-                ClientCommands::Read => match self.client.kv().get(kv(key), false).await? {
+                ClientCommands::Read => match self.client.kv().get(safe_kv(key), false).await? {
                     Some(r) => {
-                        let v = vk(&r.value);
+                        let v = safe_vk(&r.value).unwrap();
                         debug!("Success: {:?}", v);
                         return Ok(v);
                     }
@@ -121,10 +121,10 @@ impl ClientManager {
                         return Err(ErrorCode::KeyNotExist.into());
                     }
                 },
-                ClientCommands::Lread => match self.client.kv().get(kv(key), true).await {
+                ClientCommands::Lread => match self.client.kv().get(safe_kv(key), true).await {
                     Ok(result) => match result {
                         Some(r) => {
-                            let v = vk(&r.value);
+                            let v = safe_vk(&r.value).unwrap();
                             debug!("Success: {:?}", v);
                             return Ok(v);
                         }

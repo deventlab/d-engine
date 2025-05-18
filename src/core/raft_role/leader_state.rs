@@ -24,6 +24,7 @@ use super::LeaderStateSnapshot;
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
+use super::LEADER;
 use crate::alias::POF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
@@ -511,6 +512,7 @@ impl<T: TypeConfig> LeaderState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
+            role: LEADER,
         }
     }
 
@@ -697,7 +699,9 @@ impl<T: TypeConfig> LeaderState<T> {
                     debug!("old commit: {:?} , new commit: {:?}", old_commit_index, commit_index);
                     //notify commit_success_receiver, new commit is ready to conver to KV store.
                     if updated {
-                        if let Err(e) = self.update_commit_index_with_signal(commit_index, role_tx) {
+                        if let Err(e) =
+                            self.update_commit_index_with_signal(LEADER, self.current_term(), commit_index, role_tx)
+                        {
                             error!(
                                 "update_commit_index_with_signal,commit={}, error: {:?}",
                                 commit_index, e

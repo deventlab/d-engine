@@ -21,6 +21,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
+use crate::NewCommitData;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -166,6 +167,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
     fn update_commit_index_with_signal(
         &mut self,
+        role: i32,
+        current_term: u64,
         new_commit_index: u64,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -175,7 +178,11 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         }
         debug!("send(RoleEvent::NotifyNewCommitIndex");
         role_tx
-            .send(RoleEvent::NotifyNewCommitIndex { new_commit_index })
+            .send(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+                new_commit_index,
+                role,
+                current_term,
+            }))
             .map_err(|e| {
                 let error_str = format!("{:?}", e);
                 error!("Failed to send: {}", error_str);
@@ -280,7 +287,12 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 commit_index_update,
             }) => {
                 if let Some(commit) = commit_index_update {
-                    if let Err(e) = self.update_commit_index_with_signal(commit, &role_tx) {
+                    if let Err(e) = self.update_commit_index_with_signal(
+                        state_snapshot.role,
+                        state_snapshot.current_term,
+                        commit,
+                        &role_tx,
+                    ) {
                         error!("update_commit_index_with_signal,commit={}, error: {:?}", commit, e);
                         return Err(e);
                     }

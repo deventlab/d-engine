@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,30 +13,36 @@ use crate::test_utils::{self};
 use crate::CommitHandler;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
+use crate::NewCommitData;
+use crate::LEADER;
 
 fn setup(
     batch_size_threshold: u64,
     process_interval_ms: u64,
     apply_batch_expected_execution_times: usize,
-    new_commit_rx: mpsc::UnboundedReceiver<u64>,
+    new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
     shutdown_signal: watch::Receiver<()>,
 ) -> DefaultCommitHandler<MockTypeConfig> {
     // prepare commit channel
 
     // Mock Applier
-    let mut mock_applier = MockStateMachineHandler::<MockTypeConfig>::new();
-    mock_applier
+    let mut mock_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    mock_handler
         .expect_apply_batch()
         .times(apply_batch_expected_execution_times)
         .returning(|_| Ok(()));
-    mock_applier.expect_update_pending().returning(|_| {});
+    mock_handler.expect_update_pending().returning(|_| {});
+    mock_handler
+        .expect_create_snapshot()
+        .returning(|| Ok(PathBuf::from("/tmp/value")));
+    mock_handler.expect_should_snapshot().returning(|_| true);
 
     // Mock Raft Log
     let mock_raft_log = MockRaftLog::new();
 
     // Init handler
     DefaultCommitHandler::<MockTypeConfig>::new(
-        Arc::new(mock_applier),
+        Arc::new(mock_handler),
         Arc::new(mock_raft_log),
         new_commit_rx,
         batch_size_threshold,
@@ -59,12 +66,24 @@ async fn test_run_case1() {
     test_utils::enable_logger();
 
     // prepare commit channel
-    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<u64>();
+    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut handler = setup(1000, 2, 2, new_commit_rx, graceful_rx);
 
-    new_commit_tx.send(1).expect("Should succeed to send new commit");
-    new_commit_tx.send(2).expect("Should succeed to send new commit");
+    new_commit_tx
+        .send(NewCommitData {
+            new_commit_index: 1,
+            role: LEADER,
+            current_term: 1,
+        })
+        .expect("Should succeed to send new commit");
+    new_commit_tx
+        .send(NewCommitData {
+            new_commit_index: 2,
+            role: LEADER,
+            current_term: 1,
+        })
+        .expect("Should succeed to send new commit");
     // Start the handler loop
     let handle = tokio::spawn(async move {
         let _ = time::timeout(Duration::from_millis(3), handler.run()).await;
@@ -92,13 +111,19 @@ async fn test_run_case2() {
     tokio::time::pause();
 
     // prepare commit channel
-    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<u64>();
+    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let batch_thresold = 10;
     let mut handler = setup(batch_thresold, 1000, 2, new_commit_rx, graceful_rx);
 
     for i in 1..=batch_thresold {
-        new_commit_tx.send(i).expect("Should succeed to send new commit");
+        new_commit_tx
+            .send(NewCommitData {
+                new_commit_index: i,
+                role: LEADER,
+                current_term: 1,
+            })
+            .expect("Should succeed to send new commit");
     }
     // Start the handler loop
     let handle = tokio::spawn(async move {
@@ -126,13 +151,19 @@ async fn test_run_case3() {
     tokio::time::pause();
 
     // prepare commit channel
-    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<u64>();
+    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
     let batch_thresold = 1000;
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut handler = setup(batch_thresold, 1000, 1, new_commit_rx, graceful_rx);
 
     for i in 1..=(batch_thresold - 10) {
-        new_commit_tx.send(i).expect("Should succeed to send new commit");
+        new_commit_tx
+            .send(NewCommitData {
+                new_commit_index: i,
+                role: LEADER,
+                current_term: 1,
+            })
+            .expect("Should succeed to send new commit");
     }
     // Start the handler loop
     let handle = tokio::spawn(async move {
@@ -161,13 +192,19 @@ async fn test_run_case4() {
     tokio::time::pause();
 
     // prepare commit channel
-    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<u64>();
+    let (new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let batch_thresold = 10;
     let mut handler = setup(batch_thresold, 2, 3, new_commit_rx, graceful_rx);
 
     for i in 1..=batch_thresold {
-        new_commit_tx.send(i).expect("Should succeed to send new commit");
+        new_commit_tx
+            .send(NewCommitData {
+                new_commit_index: i,
+                role: LEADER,
+                current_term: 1,
+            })
+            .expect("Should succeed to send new commit");
     }
     // Start the handler loop
     let handle = tokio::spawn(async move {
@@ -186,7 +223,7 @@ async fn test_dynamic_interval_case1() {
     let interval_ms = 100;
 
     // Setup handler
-    let (_new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<u64>();
+    let (_new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let batch_thresold = 0;
     let apply_batch_expected_execution_times = 0; // we will not trigger `run`
@@ -226,7 +263,7 @@ async fn test_dynamic_interval_case2() {
     let interval_ms = 100;
 
     // Setup handler
-    let (_new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<u64>();
+    let (_new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let batch_thresold = 0;
     let apply_batch_expected_execution_times = 0; // we will not trigger `run`

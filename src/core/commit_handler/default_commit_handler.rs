@@ -14,6 +14,7 @@ use super::CommitHandler;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::utils::cluster::error;
+use crate::NewCommitData;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
@@ -24,7 +25,7 @@ where T: TypeConfig
 {
     state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
-    new_commit_rx: Option<mpsc::UnboundedReceiver<u64>>,
+    new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
     batch_size_threshold: u64,
     process_interval_ms: u64,
 
@@ -61,8 +62,9 @@ where T: TypeConfig
                     }
 
                     // Submit events in real time
-                    Some(new_commit) = new_commit_rx.recv() => {
-                        self.state_machine_handler.update_pending(new_commit);
+                    Some(new_commit_data) = new_commit_rx.recv() => {
+                        self.state_machine_handler.update_pending(new_commit_data.new_commit_index);
+
                         batch_counter += 1;
 
                         if batch_counter >= self.batch_size_threshold {
@@ -70,8 +72,9 @@ where T: TypeConfig
                             self.process_batch().await;
                             batch_counter = 0;
                         }
+
                         // snapshot checker
-                        if self.state_machine_handler.should_snapshot() {
+                        if self.state_machine_handler.should_snapshot(new_commit_data) {
                             info!("Listened a new commit and should generate snapshot now");
                             if let Err(e) = self.state_machine_handler.create_snapshot().await {
                                 error!(%e, "self.state_machine_handler.create_snapshot with error.");
@@ -87,10 +90,10 @@ where T: TypeConfig
 impl<T> DefaultCommitHandler<T>
 where T: TypeConfig
 {
-    pub fn new(
+    pub(crate) fn new(
         state_machine_handler: Arc<SMHOF<T>>,
         raft_log: Arc<ROF<T>>,
-        new_commit_rx: mpsc::UnboundedReceiver<u64>,
+        new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
         batch_size_threshold: u64,
         process_interval_ms: u64,
         shutdown_signal: watch::Receiver<()>,

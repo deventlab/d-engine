@@ -20,6 +20,7 @@ use super::HardState;
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
+use super::FOLLOWER;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
@@ -332,6 +333,7 @@ impl<T: TypeConfig> FollowerState<T> {
     #[tracing::instrument]
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
+            role: FOLLOWER,
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),

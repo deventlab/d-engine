@@ -7,9 +7,10 @@ use tracing::debug;
 
 use super::*;
 use crate::alias::ROF;
-use crate::convert::kv;
+use crate::convert::safe_kv;
 use crate::init_sled_storages;
 use crate::proto::Entry;
+use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::{self};
 use crate::RaftLog;
@@ -421,7 +422,7 @@ fn test_load_uncommitted_from_db_to_cache() {
     let len = context.raft_log.last_entry_id();
     context.raft_log.load_uncommitted_from_db_to_cache(8, len);
     for j in 8..len + 1 {
-        assert!(context.raft_log.get_from_cache(&kv(j)).is_some());
+        assert!(context.raft_log.get_from_cache(&safe_kv(j)).is_some());
     }
 }
 
@@ -542,7 +543,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: kv(i),
+                    command: safe_kv(i).to_vec(),
                 });
             }
             cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
@@ -584,7 +585,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: kv(i),
+                    command: safe_kv(i).to_vec(),
                 });
             }
         });
@@ -599,7 +600,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: kv(i),
+                    command: safe_kv(i).to_vec(),
                 });
             }
             cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
@@ -641,7 +642,7 @@ async fn test_insert_batch_logs_case1() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: kv(i),
+                    command: safe_kv(i).to_vec(),
                 });
             }
             cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
@@ -691,7 +692,7 @@ async fn test_insert_batch_logs_case2() {
         entries.push(Entry {
             index: old_leader.pre_allocate_raft_logs_next_index(),
             term: 1,
-            command: kv(i),
+            command: safe_kv(i).to_vec(),
         });
     }
 
@@ -704,7 +705,7 @@ async fn test_insert_batch_logs_case2() {
         .insert_batch(vec![Entry {
             index: old_leader.pre_allocate_raft_logs_next_index(),
             term: 1,
-            command: kv(8),
+            command: safe_kv(8).to_vec(),
         }])
         .expect("should succeed");
 
@@ -719,7 +720,7 @@ async fn test_insert_batch_logs_case2() {
         new_leader_entries.push(Entry {
             index: new_leader.pre_allocate_raft_logs_next_index(),
             term: 2,
-            command: kv(i),
+            command: safe_kv(i).to_vec(),
         });
     }
     let cloned_new_leader_entries = new_leader_entries.clone();
@@ -1115,4 +1116,25 @@ fn test_get_last_entry_metadata_case2() {
     test_utils::simulate_insert_proposal(&raft_log, vec![1], 11);
 
     assert_eq!((1, 11), raft_log.get_last_entry_metadata());
+}
+
+#[tokio::test]
+async fn test_raft_log_drop() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    {
+        let db = Arc::new(sled::open(temp_dir.path()).unwrap());
+        // Create real instance instead of mock
+        let raft_log = Arc::new(SledRaftLog::new(db.clone(), 0));
+
+        // Insert test data
+        test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+
+        // Explicitly drop to trigger flush
+        drop(raft_log);
+    }
+
+    // Verify flush occurred by checking persistence
+    let reloaded_db = sled::open(temp_dir.path()).unwrap();
+    assert!(reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().len() > 0);
 }

@@ -17,6 +17,7 @@ use super::role_state::RaftRoleState;
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
+use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
@@ -247,6 +248,7 @@ impl<T: TypeConfig> LearnerState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
+            role: LEARNER,
         }
     }
 }

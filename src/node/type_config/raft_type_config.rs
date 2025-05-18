@@ -9,7 +9,6 @@ use crate::ReplicationHandler;
 use crate::RpcPeerChannels;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
-use crate::SnapshotPolicy;
 use crate::TypeConfig;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]

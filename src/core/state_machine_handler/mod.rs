@@ -52,6 +52,7 @@ use std::sync::Arc;
 use mockall::automock;
 use tonic::async_trait;
 
+use super::NewCommitData;
 use crate::alias::ROF;
 use crate::proto::ClientCommand;
 use crate::proto::ClientResult;
@@ -86,7 +87,10 @@ where T: TypeConfig
     ) -> Result<()>;
 
     /// Validate if should generate snapshot now
-    fn should_snapshot(&self) -> bool;
+    fn should_snapshot(
+        &self,
+        new_commit_data: NewCommitData,
+    ) -> bool;
 
     /// Asynchronously creates a state machine snapshot with the following steps:
     /// 1. Acquires a write lock to ensure exclusive access during snapshot creation
@@ -110,5 +114,5 @@ where T: TypeConfig
         snapshot_dir: &std::path::PathBuf,
     ) -> crate::Result<()>;
 
-    fn current_snapshot_version(&self) -> u64;
+    // fn current_snapshot_version(&self) -> u64;
 }

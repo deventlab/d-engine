@@ -741,10 +741,14 @@ async fn test_handle_role_event_state_update_case1_1() {
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
-        .await
-        .expect("should succeed");
-    assert_eq!(rx.recv().await.unwrap(), new_commit_index);
+    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        new_commit_index,
+        role: LEADER,
+        current_term: 1,
+    }))
+    .await
+    .expect("should succeed");
+    assert_eq!(rx.recv().await.unwrap().new_commit_index, new_commit_index);
 }
 
 /// Case 1.2: as Candidate
@@ -762,10 +766,14 @@ async fn test_handle_role_event_state_update_case1_2() {
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
-        .await
-        .expect("should succeed");
-    assert_eq!(rx.recv().await.unwrap(), new_commit_index);
+    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        new_commit_index,
+        role: LEADER,
+        current_term: 1,
+    }))
+    .await
+    .expect("should succeed");
+    assert_eq!(rx.recv().await.unwrap().new_commit_index, new_commit_index);
 }
 
 /// Case 1.3.1: as Leader,
@@ -795,10 +803,14 @@ async fn test_handle_role_event_state_update_case1_3_1() {
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
-        .await
-        .expect("should succeed");
-    assert_eq!(rx.recv().await.unwrap(), new_commit_index);
+    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        new_commit_index,
+        role: LEADER,
+        current_term: 1,
+    }))
+    .await
+    .expect("should succeed");
+    assert_eq!(rx.recv().await.unwrap().new_commit_index, new_commit_index);
 }
 /// Case 1.3.2: as Leader,
 ///
@@ -903,10 +915,14 @@ async fn test_handle_role_event_state_update_case1_4() {
     let new_commit_index = 11;
     let (tx, mut rx) = mpsc::unbounded_channel();
     raft.register_new_commit_listener(tx);
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex { new_commit_index })
-        .await
-        .expect("should succeed");
-    assert_eq!(rx.recv().await.unwrap(), new_commit_index);
+    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        new_commit_index,
+        role: LEADER,
+        current_term: 1,
+    }))
+    .await
+    .expect("should succeed");
+    assert_eq!(rx.recv().await.unwrap().new_commit_index, new_commit_index);
 }
 
 fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<MockTypeConfig>) {
@@ -1059,22 +1075,15 @@ async fn test_handle_role_event_state_update_case1_5_2() {
 /// 3. Raft Log should be flushed
 /// 4. State Machine should be flushed
 #[tokio::test]
-async fn test_raft_shutdown() {
+async fn test_raft_drop() {
     tokio::time::pause();
 
     // 1. Create a Raft instance
     let (graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = mock_raft("/tmp/test_raft_shutdown", graceful_rx, None);
+    let mut raft = mock_raft("/tmp/test_raft_drop", graceful_rx, None);
     let mut state_storage = MockStateStorage::new();
-    let mut raft_log = MockRaftLog::new();
-    let mut state_machine = MockStateMachine::new();
 
     state_storage.expect_save_hard_state().times(1).returning(|_| Ok(()));
-    raft_log.expect_flush().times(1).returning(|| Ok(()));
-    state_machine.expect_flush().times(1).returning(|| Ok(()));
-    state_machine.expect_save_hard_state().returning(|| Ok(()));
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.storage.state_machine = Arc::new(state_machine);
     raft.ctx.storage.state_storage = Box::new(state_storage);
 
     // 2. Start the Raft main loop

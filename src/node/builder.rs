@@ -63,6 +63,7 @@ use crate::DefaultCommitHandler;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::LogSizePolicy;
+use crate::NewCommitData;
 use crate::Node;
 use crate::Raft;
 use crate::RaftCoreHandlers;
@@ -241,7 +242,7 @@ impl NodeBuilder {
         let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
-        let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<u64>();
+        let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
         let state_machine = self.state_machine.take().unwrap_or_else(|| {
             let state_machine_db =

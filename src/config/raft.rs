@@ -321,8 +321,8 @@ pub struct SnapshotConfig {
 
     /// Number of historical snapshot versions to retain during cleanup
     /// Ensures we maintain a safety buffer of previous states for recovery
-    #[serde(default = "default_cleanup_version_offset")]
-    pub cleanup_version_offset: u64,
+    #[serde(default = "default_cleanup_retain_count")]
+    pub cleanup_retain_count: u64,
 
     /// Snapshot storage directory
     ///
@@ -335,7 +335,7 @@ impl Default for SnapshotConfig {
         Self {
             max_log_entries_before_snapshot: default_max_log_entries_before_snapshot(),
             snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
-            cleanup_version_offset: default_cleanup_version_offset(),
+            cleanup_retain_count: default_cleanup_retain_count(),
             snapshots_dir: default_snapshots_dir(),
         }
     }
@@ -348,9 +348,9 @@ impl SnapshotConfig {
             )));
         }
 
-        if self.cleanup_version_offset == 0 {
+        if self.cleanup_retain_count == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "cleanup_version_offset must be greater than 0".into(),
+                "cleanup_retain_count must be greater than 0".into(),
             )));
         }
 
@@ -374,7 +374,7 @@ fn default_snapshot_cool_down_since_last_check() -> Duration {
 }
 
 /// Default number of historical snapshots to retain
-fn default_cleanup_version_offset() -> u64 {
+fn default_cleanup_retain_count() -> u64 {
     2
 }
 /// Default snapshots storage path

@@ -8,6 +8,7 @@ use sled::Batch;
 use super::*;
 use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
 use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
+use crate::constants::STATE_MACHINE_META_NAMESPACE;
 use crate::constants::STATE_MACHINE_TREE;
 use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
@@ -41,6 +42,7 @@ fn test_start_stop() {
     context.state_machine.start().expect("should succeed");
     assert!(context.state_machine.is_running());
 }
+
 #[test]
 fn test_apply_committed_raft_logs_in_batch() {
     let root_path = "/tmp/test_apply_committed_raft_logs_in_batch";
@@ -259,6 +261,7 @@ async fn test_generate_snapshot_data_case1() {
     }
 
     // Check metadata (stored in same tree due to code limitation)
+    assert_eq!(sm.last_included(), (3u64, 1u64));
     assert_eq!(
         safe_vk(
             &metadata_tree
@@ -554,4 +557,28 @@ async fn test_apply_snapshot_from_file_case5() {
         result,
         Err(Error::System(SystemError::Storage(StorageError::PathError { .. })))
     ));
+}
+
+#[tokio::test]
+async fn test_state_machine_drop() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    {
+        let db = Arc::new(sled::open(temp_dir.path()).unwrap());
+        // Create real instance instead of mock
+        let state_machine = Arc::new(RaftStateMachine::new(1, db.clone()).expect("success"));
+
+        // Insert test data
+        let mut batch = Batch::default();
+        batch.insert(&safe_kv(1), &safe_kv(1));
+        batch.insert(&safe_kv(2), &safe_kv(2));
+        state_machine.apply_batch(batch).expect("should succeed");
+
+        // Explicitly drop to trigger flush
+        drop(state_machine);
+    }
+
+    // Verify flush occurred by checking persistence
+    let reloaded_db = sled::open(temp_dir.path()).unwrap();
+    assert!(reloaded_db.open_tree(STATE_MACHINE_META_NAMESPACE).unwrap().len() > 0);
 }

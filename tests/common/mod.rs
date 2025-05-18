@@ -7,7 +7,7 @@ use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
 use d_engine::alias::SSOF;
 use d_engine::config::RaftNodeConfig;
-use d_engine::convert::kv;
+use d_engine::convert::safe_kv;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
@@ -216,7 +216,7 @@ pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 
     let mut commands = Vec::new();
     for id in ids {
-        commands.push(ClientCommand::insert(kv(id), kv(id)));
+        commands.push(ClientCommand::insert(safe_kv(id), safe_kv(id)));
     }
 
     for c in commands {

@@ -83,6 +83,7 @@ pub struct SharedState {
 
 #[derive(Clone, Debug)]
 pub struct StateSnapshot {
+    pub role: i32,
     pub current_term: u64,
     pub voted_for: Option<VotedFor>,
     pub commit_index: u64,

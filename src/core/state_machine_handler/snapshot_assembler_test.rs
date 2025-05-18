@@ -92,7 +92,7 @@ mod tests {
             last_included_term: 1,
         };
         let final_path = assembler.finalize(snapshot_meta).await.unwrap();
-        assert!(final_path.ends_with("snapshot.part"));
+        assert!(final_path.ends_with("snapshot-1-1"));
         assert!(final_path.exists());
     }
 

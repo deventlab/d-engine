@@ -36,7 +36,7 @@ max_entries_per_chunk = 100
 
 [raft.snapshot]
 max_log_entries_before_snapshot = 1000
-cleanup_version_offset = 2
+cleanup_retain_count = 2
 
 [raft.membership]
 cluster_healthcheck_probe_service_name = "rpc_service.RpcService"

@@ -16,8 +16,9 @@ fn test_context(
 ) -> SnapshotContext {
     SnapshotContext {
         last_applied_index: applied,
-        last_snapshot_index: snapshot,
-        last_snapshot_term: 1,
+        last_included_index: snapshot,
+        last_included_term: 1,
+        last_applied_term: 1,
         current_term: 1,
         role,
     }
@@ -112,8 +113,9 @@ fn handles_term_regression() {
     let policy = LogSizePolicy::new(100, Duration::ZERO);
     let ctx = SnapshotContext {
         last_applied_index: 200,
-        last_snapshot_index: 100,
-        last_snapshot_term: 3, // Higher than current term
+        last_included_index: 100,
+        last_included_term: 3, // Higher than current term
+        last_applied_term: 2,
         current_term: 2,
         role: LEADER,
     };

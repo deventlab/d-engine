@@ -40,6 +40,7 @@ use crate::ReplicationError;
 use crate::StateSnapshot;
 use crate::SystemError;
 use crate::FOLLOWER;
+use crate::LEADER;
 
 /// # Case 1: The peer3's next_index is equal to
 ///     the end of the leader's old log,
@@ -402,6 +403,7 @@ async fn test_handle_client_proposal_in_batch_case1() {
         current_term: 1,
         voted_for: None,
         commit_index: 1,
+        role: LEADER,
     };
     let leader_state_snapshot = LeaderStateSnapshot {
         next_index: HashMap::new(),
@@ -458,6 +460,7 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
         current_term: 1,
         voted_for: None,
         commit_index: 1,
+        role: LEADER,
     };
     let leader_state_snapshot = LeaderStateSnapshot {
         next_index: HashMap::new(),
@@ -548,6 +551,7 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
         current_term: 1,
         voted_for: None,
         commit_index: 1,
+        role: LEADER,
     };
     let leader_state_snapshot = LeaderStateSnapshot {
         next_index: HashMap::new(),
@@ -617,6 +621,7 @@ async fn test_handle_client_proposal_in_batch_case3() {
         current_term: 2, // Leader's term is 2
         voted_for: None,
         commit_index: 1,
+        role: LEADER,
     };
     let leader_state_snapshot = LeaderStateSnapshot {
         next_index: HashMap::from_iter(vec![(peer2_id, 3)]),
@@ -687,6 +692,7 @@ async fn test_handle_client_proposal_in_batch_case4() {
         current_term: 1,
         voted_for: None,
         commit_index: 1,
+        role: LEADER,
     };
     let leader_state_snapshot = LeaderStateSnapshot {
         next_index: HashMap::new(),
@@ -771,6 +777,7 @@ async fn test_handle_client_proposal_in_batch_case5() {
         current_term: 1,
         voted_for: None,
         commit_index: 5,
+        role: LEADER,
     };
     let leader_state_snapshot = LeaderStateSnapshot {
         next_index: HashMap::from([(peer2_id, 6)]),
@@ -877,6 +884,7 @@ async fn test_handle_client_proposal_in_batch_case6() {
         current_term: 6,
         voted_for: None,
         commit_index: 10,
+        role: LEADER,
     };
 
     // Initial next_index values from test case description

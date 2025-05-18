@@ -15,52 +15,6 @@ pub fn str_to_u64(s: &str) -> u64 {
     hasher.finish()
 }
 
-#[deprecated(
-    since = "0.2.0",
-    note = "Please use the more efficient and safe `u64::to_be_bytes()` instead. For custom lengths use the new safe_kv() method"
-)]
-pub fn kv(i: u64) -> Vec<u8> {
-    // let i = i % SPACE;
-    // let k = [(i >> 16) as u8, (i >> 8) as u8, i as u8];
-    let k = [
-        ((i >> 56) & 0xFF) as u8,
-        ((i >> 48) & 0xFF) as u8,
-        ((i >> 40) & 0xFF) as u8,
-        ((i >> 32) & 0xFF) as u8,
-        ((i >> 24) & 0xFF) as u8,
-        ((i >> 16) & 0xFF) as u8,
-        ((i >> 8) & 0xFF) as u8,
-        (i & 0xFF) as u8,
-    ];
-    k.to_vec()
-}
-
-#[deprecated(
-    since = "0.2.0",
-    note = "Please use the safer `safe_vk()` method instead, which provides proper error handling"
-)]
-pub fn vk(v: &[u8]) -> u64 {
-    if v.is_empty() {
-        error!("v is empty");
-    }
-
-    // Expand the vector to length 8
-    let mut expanded = [0; 8]; // Create a vector of 8 zeros
-    let len = v.len();
-
-    // Copy the original vector into the expanded vector
-    expanded[..len].copy_from_slice(v); // Copy the elements
-
-    assert_eq!(expanded.len(), 8); // Ensure the length is correct
-
-    let mut result: u64 = 0;
-    for &byte in expanded.iter() {
-        result = (result << 8) | byte as u64; // Shift left by 8 bits and add
-                                              // the byte
-    }
-    result
-}
-
 /// Converts a `u64` to an 8-byte array in big-endian byte order.
 ///
 /// # Examples

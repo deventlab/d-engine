@@ -39,6 +39,7 @@ use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
+use crate::NewCommitData;
 use crate::PeerUpdate;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -188,7 +189,12 @@ async fn test_process_client_propose_case1_1() {
         .await;
 
     // Verify the result
-    if let Some(RoleEvent::NotifyNewCommitIndex { new_commit_index }) = role_rx.recv().await {
+    if let Some(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        new_commit_index,
+        role: _,
+        current_term: _,
+    })) = role_rx.recv().await
+    {
         assert_eq!(new_commit_index, 5);
     }
     assert!(result.is_ok(), "Operation should succeed");
@@ -259,7 +265,12 @@ async fn test_process_client_propose_case1_2() {
         .await;
 
     // Verify the result
-    if let Some(RoleEvent::NotifyNewCommitIndex { new_commit_index }) = role_rx.recv().await {
+    if let Some(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        new_commit_index,
+        role: _,
+        current_term: _,
+    })) = role_rx.recv().await
+    {
         assert_eq!(new_commit_index, 5);
     }
 
@@ -807,9 +818,14 @@ async fn test_handle_raft_event_case6_2() {
 
     // Validation criteria 3: resp_rx receives Ok()
     let event = role_rx.try_recv().unwrap();
-    assert!(matches!(event, RoleEvent::NotifyNewCommitIndex {
-        new_commit_index: _expect_new_commit_index
-    }));
+    assert!(matches!(
+        event,
+        RoleEvent::NotifyNewCommitIndex(NewCommitData {
+            new_commit_index: _expect_new_commit_index,
+            role: _,
+            current_term: _
+        })
+    ));
 }
 
 /// # Case 6.3: Test ClientReadRequest event

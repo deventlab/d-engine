@@ -136,7 +136,7 @@ impl StateMachine for RaftStateMachine {
             self.last_included_term.load(Ordering::SeqCst),
         )
     }
-    
+
     fn get(
         &self,
         key_buffer: &[u8],
@@ -254,10 +254,8 @@ impl StateMachine for RaftStateMachine {
     ) -> Result<()> {
         let db = self.db.load();
         let tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
-        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included_index))?;
-        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included_term))?;
+        self.persist_last_included_with_tree(tree, last_included_index, last_included_term)?;
 
-        tree.flush()?;
         Ok(())
     }
 
@@ -290,6 +288,7 @@ impl StateMachine for RaftStateMachine {
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
+        let new_snapshot_metadatat_tree = new_tree(&new_db, STATE_SNAPSHOT_METADATA_TREE)?;
 
         let mut batch = sled::Batch::default();
         let mut counter = 0;
@@ -319,6 +318,10 @@ impl StateMachine for RaftStateMachine {
 
         // Make sure last included is updated to the new ones
         self.update_last_included(last_included_index, last_included_term);
+
+        // Make sure last included is persisted into local database
+        self.persist_last_included(last_included_index, last_included_term)?;
+        self.persist_last_included_with_tree(new_snapshot_metadatat_tree, last_included_index, last_included_term)?;
 
         new_db.flush()?;
         Ok(())
@@ -435,6 +438,19 @@ impl RaftStateMachine {
     fn current_tree(&self) -> sled::Tree {
         // Each Db instance only needs to get the Tree once
         self.db.load().open_tree(STATE_MACHINE_TREE).unwrap()
+    }
+
+    fn persist_last_included_with_tree(
+        &self,
+        tree: sled::Tree,
+        last_included_index: u64,
+        last_included_term: u64,
+    ) -> Result<()> {
+        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included_index))?;
+        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included_term))?;
+
+        tree.flush()?;
+        Ok(())
     }
 }
 

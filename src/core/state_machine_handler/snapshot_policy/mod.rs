@@ -27,9 +27,10 @@ pub trait SnapshotPolicy: Send + Sync {
 #[derive(Clone)]
 pub struct SnapshotContext {
     pub role: i32,
-    pub last_snapshot_index: u64,
-    pub last_snapshot_term: u64,
+    pub last_included_index: u64,
+    pub last_included_term: u64,
     pub last_applied_index: u64,
+    pub last_applied_term: u64,
     pub current_term: u64,
 }
 

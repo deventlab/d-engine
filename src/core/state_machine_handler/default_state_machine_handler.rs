@@ -36,6 +36,7 @@ use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotResponse;
 use crate::utils::cluster::error;
 use crate::MaybeCloneOneshotSender;
+use crate::NewCommitData;
 use crate::RaftLog;
 use crate::Result;
 use crate::SnapshotConfig;
@@ -56,13 +57,20 @@ where T: TypeConfig
     max_entries_per_chunk: usize,
     state_machine: Arc<SMOF<T>>,
 
-    current_snapshot_version: AtomicU64,
+    // current_snapshot_version: AtomicU64,
     snapshot_config: SnapshotConfig,
     snapshot_policy: SNP<T>,
     snapshot_in_progress: AtomicBool,
 
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
+}
+
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+pub(crate) struct CleanupSnapshotMeta {
+    pub(crate) index: u64,
+    pub(crate) term: u64,
+    pub(crate) path: PathBuf,
 }
 
 #[async_trait]
@@ -254,16 +262,24 @@ where T: TypeConfig
     }
 
     #[inline]
-    fn should_snapshot(&self) -> bool {
+    fn should_snapshot(
+        &self,
+        new_commit_data: NewCommitData,
+    ) -> bool {
         if self.snapshot_in_progress.load(Ordering::Relaxed) {
             return false;
         }
+
+        let (last_applied_index, last_applied_term) = self.state_machine.last_applied();
+        let (last_included_index, last_included_term) = self.state_machine.last_included();
+
         self.snapshot_policy.should_trigger(&SnapshotContext {
-            role: todo!(),
-            last_snapshot_index: todo!(),
-            last_snapshot_term: todo!(),
-            last_applied_index: todo!(),
-            current_term: todo!(),
+            role: new_commit_data.role,
+            last_included_index,
+            last_included_term,
+            last_applied_index,
+            last_applied_term,
+            current_term: new_commit_data.current_term,
         })
     }
 
@@ -278,12 +294,10 @@ where T: TypeConfig
         // 2: Prepare temp snapshot file and final snapshot file
         debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
         let (last_included_index, last_included_term) = self.state_machine.last_applied();
-        let current_snapshot_version = self.current_snapshot_version();
-        let new_snapshot_version = current_snapshot_version + 1;
         let temp_dir = self
             .snapshot_config
             .snapshots_dir
-            .join(format!("temp-{}", new_snapshot_version));
+            .join(format!("temp-{}-{}", last_included_index, last_included_term));
         let final_dir = self.snapshot_config.snapshots_dir.join(format!(
             "{}{}-{}",
             SNAPSHOT_DIR_PREFIX, last_included_index, last_included_term
@@ -308,22 +322,13 @@ where T: TypeConfig
 
         move_directory(&temp_dir, &final_dir).await?;
 
-        // 5: Update snapshot version
-        debug!(%current_snapshot_version, %new_snapshot_version, "create_snapshot 5: Update snapshot version");
-        self.current_snapshot_version
-            .compare_exchange(
-                current_snapshot_version,
-                new_snapshot_version,
-                Ordering::Release,
-                Ordering::Relaxed,
-            )
-            .map_err(|e| StorageError::Snapshot(format!("{:?}", e)))?;
-
-        // 6: cleanup old versions
-        let cleanup_version = current_snapshot_version.saturating_sub(self.snapshot_config.cleanup_version_offset);
-        debug!(%cleanup_version, "create_snapshot 6: cleanup old versions");
+        // 5: cleanup old versions
+        debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 6: cleanup old versions");
         if let Err(e) = self
-            .cleanup_snapshot(cleanup_version, &self.snapshot_config.snapshots_dir)
+            .cleanup_snapshot(
+                self.snapshot_config.cleanup_retain_count,
+                &self.snapshot_config.snapshots_dir,
+            )
             .await
         {
             error!(%e, "clean up old snapshot file failed");
@@ -332,11 +337,15 @@ where T: TypeConfig
         Ok(final_dir)
     }
 
+    #[tracing::instrument]
     async fn cleanup_snapshot(
         &self,
-        before_version: u64,
+        retain_count: u64,
         snapshot_dir: &PathBuf,
     ) -> Result<()> {
+        // Phase 1: Collect and parse snapshots
+        let mut snapshots = Vec::new();
+
         let mut entries = fs::read_dir(snapshot_dir.as_path())
             .await
             .map_err(|e| StorageError::PathError {
@@ -349,35 +358,41 @@ where T: TypeConfig
             debug!(?path, "cleanup_snapshot");
 
             if path.is_dir() {
-                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-                    //File name parsing logic
-                    if let Some((version, index, term)) = parse_snapshot_dirname(dir_name) {
-                        info!(
-                            "Version: {:>4} | Index: {:>10} | Term: {:>10} | Path: {}",
-                            version,
-                            index,
-                            term,
-                            path.display()
-                        );
-
-                        debug!(%version, %before_version, "cleanup_snapshot");
-
-                        if version <= before_version {
-                            info!(?version, "going to be deleted.");
-                            if let Err(e) = remove_dir_all(&path).await {
-                                error!(%e, "delete_file failed");
-                            }
-                        }
-                    }
+                if let Some((index, term)) = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(parse_snapshot_dirname)
+                {
+                    info!("Index: {:>10} | Term: {:>10} | Path: {}", index, term, path.display());
+                    snapshots.push(CleanupSnapshotMeta { index, term, path });
                 }
             }
         }
 
-        Ok(())
-    }
+        // Phase 2: Sorting and cleaning
+        if snapshots.len() <= retain_count as usize {
+            return Ok(()); // No need to clean
+        }
 
-    fn current_snapshot_version(&self) -> u64 {
-        self.current_snapshot_version.load(Ordering::Acquire)
+        // Sort in ascending order by index (earlier snapshots are at the front)
+        snapshots.sort_by_key(|m| m.index);
+
+        // Phase 4: Difference: Take the remaining elements
+        // Calculate the split point to be retained
+        let split_point = snapshots.len() - retain_count as usize;
+
+        for meta in &snapshots[..split_point] {
+            info!(
+                "Deleting old snapshot [index={}, term={}] at {}",
+                meta.index,
+                meta.term,
+                meta.path.display()
+            );
+            if let Err(e) = remove_dir_all(&meta.path).await {
+                error!("Failed to delete {}: {}", meta.path.display(), e);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -396,7 +411,7 @@ where T: TypeConfig
             pending_commit: AtomicU64::new(0),
             max_entries_per_chunk,
             state_machine,
-            current_snapshot_version: AtomicU64::new(0),
+            // current_snapshot_version: AtomicU64::new(0),
             snapshot_config,
             snapshot_policy,
             snapshot_lock: RwLock::new(()),
@@ -426,8 +441,8 @@ where T: TypeConfig
     }
 }
 
-/// Manual parsing file name format: snapshot-{version}-{index}.bin
-fn parse_snapshot_dirname(name: &str) -> Option<(u64, u64, u64)> {
+/// Manual parsing file name format: snapshot-{index}-{term}
+fn parse_snapshot_dirname(name: &str) -> Option<(u64, u64)> {
     debug!(%name, "parse_snapshot_dirname");
 
     // Check prefix and suffix
@@ -436,21 +451,17 @@ fn parse_snapshot_dirname(name: &str) -> Option<(u64, u64, u64)> {
     }
 
     // Remove fixed parts
-    let core = &name[9..name.len()]; // "snapshot-".len() = 9, ".bin".len() = 4
+    let core = &name[9..name.len()]; // "snapshot-".len() = 9,
 
     // Split version and index
-    let parts: Vec<&str> = core.splitn(3, '-').collect();
-    if parts.len() != 3 {
+    let parts: Vec<&str> = core.splitn(2, '-').collect();
+    if parts.len() != 2 {
         return None;
     }
 
     // Parse numbers
-    match (
-        parts[0].parse::<u64>(),
-        parts[1].parse::<u64>(),
-        parts[2].parse::<u64>(),
-    ) {
-        (Ok(v), Ok(i), Ok(t)) => Some((v, i, t)),
+    match (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
+        (Ok(i), Ok(t)) => Some((i, t)),
         _ => None,
     }
 }

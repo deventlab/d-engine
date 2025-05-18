@@ -15,6 +15,13 @@ use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
 use crate::MaybeCloneOneshotSender;
 
+#[derive(Debug, Clone)]
+pub(crate) struct NewCommitData {
+    pub(crate) new_commit_index: u64,
+    pub(crate) role: i32,
+    pub(crate) current_term: u64,
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum RoleEvent {
@@ -23,7 +30,8 @@ pub(crate) enum RoleEvent {
     BecomeLeader,
     BecomeLearner,
 
-    NotifyNewCommitIndex { new_commit_index: u64 },
+    NotifyNewCommitIndex(NewCommitData),
+
     ReprocessEvent(Box<RaftEvent>), //Replay the raft event when step down as another role
 }
 

@@ -52,7 +52,7 @@ pub trait SnapshotPolicy: Send + Sync + 'static {
 
 /// Context for policy decision
 pub struct SnapshotContext {
-    pub last_snapshot_index: u64,
+    pub last_included_index: u64,
     pub last_applied_index: u64,
     pub current_term: u64,
     pub unapplied_entries: usize,

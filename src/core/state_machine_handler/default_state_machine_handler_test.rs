@@ -32,6 +32,7 @@ use super::MockStateMachineHandler;
 use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::is_dir;
+use crate::init_sled_state_machine_db;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::Entry;
 use crate::proto::NodeMeta;
@@ -547,13 +548,14 @@ async fn test_create_snapshot_case1() {
     sm.expect_generate_snapshot_data()
         .times(1)
         .withf(|path, idx, term| {
+            debug!(?path, %idx, %term);
             // Create the directory structure correctly
             fs::create_dir_all(path).unwrap();
             //Simulate sled to create a subdirectory
             let db_path = path.join("state_machine");
             fs::create_dir(&db_path).unwrap();
 
-            path.ends_with("temp-1") && idx == &5 && term == &1
+            path.ends_with("temp-5-1") && idx == &5 && term == &1
         })
         .returning(|_, _, _| Ok(()));
 
@@ -575,12 +577,9 @@ async fn test_create_snapshot_case1() {
     assert!(final_path
         .to_str()
         .unwrap()
-        .contains(&format!("{}1-5-1", SNAPSHOT_DIR_PREFIX)));
+        .contains(&format!("{}5-1", SNAPSHOT_DIR_PREFIX)));
 
     assert!(is_dir(&final_path).await.unwrap());
-
-    // Verify version update
-    assert_eq!(handler.current_snapshot_version(), 1);
 }
 
 /// # Case 2: Test concurrent protection
@@ -652,13 +651,19 @@ async fn test_create_snapshot_case3() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     let mut sm = MockStateMachine::new();
-    sm.expect_last_applied().returning(|| (9, 1));
+    let mut count = 0;
+    sm.expect_last_applied().returning(move || {
+        count += 1;
+        (count, 1)
+    });
     sm.expect_generate_snapshot_data().returning(|path, _, _| {
-        // Create the directory structure correctly
-        fs::create_dir_all(path.clone()).unwrap();
-        //Simulate sled to create a subdirectory
-        let db_path = path.join("state_machine");
-        fs::create_dir(&db_path).unwrap();
+        debug!(?path, "expect_generate_snapshot_data");
+        let _new_db = init_sled_state_machine_db(path).expect("");
+        // // Create the directory structure correctly
+        // fs::create_dir_all(path.clone()).unwrap();
+        // //Simulate sled to create a subdirectory
+        // let db_path = path.join("state_machine");
+        // fs::create_dir(&db_path).unwrap();
 
         Ok(())
     });
@@ -679,7 +684,7 @@ async fn test_create_snapshot_case3() {
 
     // Verify cleanup results
     let remaining: HashSet<u64> = get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
-    assert_eq!(remaining, [4, 3, 2].into_iter().collect());
+    assert_eq!(remaining, [4, 3].into_iter().collect());
 }
 
 /// # Case 4: Test failure handling
@@ -708,7 +713,6 @@ async fn test_create_snapshot_case4() {
 
     // Verify no files created
     assert_eq!(count_snapshots(temp_dir.path()), 0);
-    assert_eq!(handler.current_snapshot_version(), 0);
 }
 
 // Helper functions
@@ -771,8 +775,11 @@ async fn test_cleanup_snapshot_case1() {
     handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
 
     // Verify remaining snapshots
-    let remaining = get_snapshot_versions(temp_dir.path());
-    assert_eq!(remaining, vec![3]);
+    let mut remaining = get_snapshot_versions(temp_dir.path());
+    remaining.sort();
+    let mut expect = vec![2, 3];
+    expect.sort();
+    assert_eq!(remaining, expect);
 }
 
 /// # Case 2: Test no old versions to be cleaned
@@ -793,19 +800,24 @@ async fn test_cleanup_snapshot_case2() {
     handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
 
     // Verify no deletions
-    let remaining = get_snapshot_versions(temp_dir.path());
-    assert_eq!(remaining, vec![3, 4]);
+    let mut remaining = get_snapshot_versions(temp_dir.path());
+    remaining.sort();
+    let mut expect = vec![3, 4];
+    expect.sort();
+    assert_eq!(remaining, expect);
 }
 
 /// # Case 3: Test invalid dirnames
 #[tokio::test]
 async fn test_cleanup_snapshot_case3() {
+    enable_logger();
+
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
     // Create valid and invalid directories
-    create_dir(&temp_dir, &format!("{}1-100-1", SNAPSHOT_DIR_PREFIX)).await;
+    create_dir(&temp_dir, &format!("{}1-1", SNAPSHOT_DIR_PREFIX)).await;
     create_dir(&temp_dir, "invalid_format").await;
-    create_dir(&temp_dir, &format!("{}bad-200-2", SNAPSHOT_DIR_PREFIX)).await;
+    create_dir(&temp_dir, &format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX)).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
@@ -819,18 +831,20 @@ async fn test_cleanup_snapshot_case3() {
 
     //Verify only valid version 1 is deleted
     let remaining = get_dir_names(temp_dir.path()).await;
+    debug!(?remaining);
+
     assert!(remaining.contains(&"invalid_format".into()));
-    assert!(remaining.contains(&format!("{}bad-200-2", SNAPSHOT_DIR_PREFIX).into()));
-    assert!(!remaining.contains(&format!("{}1-100-1", SNAPSHOT_DIR_PREFIX).into()));
+    assert!(remaining.contains(&format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX).into()));
+    assert!(remaining.contains(&format!("{}1-1", SNAPSHOT_DIR_PREFIX).into()));
 }
 
 // Helper functions
 async fn create_test_dirs(
     temp_dir: &TempDir,
-    versions: &[u64],
+    ids: &[u64],
 ) {
-    for v in versions {
-        create_dir(temp_dir, &format!("{}{}-{}-1", SNAPSHOT_DIR_PREFIX, v, v * 100,)).await;
+    for id in ids {
+        create_dir(temp_dir, &format!("{}{}-1", SNAPSHOT_DIR_PREFIX, id,)).await;
     }
 }
 
@@ -863,7 +877,7 @@ fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
     SnapshotConfig {
         max_log_entries_before_snapshot: 1,
         snapshot_cool_down_since_last_check: Duration::from_secs(0),
-        cleanup_version_offset: 2,
+        cleanup_retain_count: 2,
         snapshots_dir,
     }
 }

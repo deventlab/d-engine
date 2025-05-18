@@ -12,6 +12,7 @@ use tracing::warn;
 use super::follower_state::FollowerState;
 #[cfg(test)]
 use super::raft_event_to_test_event;
+use super::NewCommitData;
 use super::RaftContext;
 use super::RaftCoreHandlers;
 use super::RaftEvent;
@@ -34,10 +35,10 @@ use crate::TypeConfig;
 pub struct Raft<T>
 where T: TypeConfig
 {
-    pub node_id: u32,
-    pub role: RaftRole<T>,
+    pub(crate) node_id: u32,
+    pub(crate) role: RaftRole<T>,
     pub(crate) ctx: RaftContext<T>,
-    pub node_config: Arc<RaftNodeConfig>,
+    pub(crate) node_config: Arc<RaftNodeConfig>,
 
     // Channels with peers
     // PeersChannel will be used inside Transport::spawn when sending peers messages
@@ -52,7 +53,7 @@ where T: TypeConfig
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
 
     // For business logic to apply logs into state machine
-    new_commit_listener: Vec<mpsc::UnboundedSender<u64>>,
+    new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
@@ -272,12 +273,9 @@ where T: TypeConfig
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::NotifyNewCommitIndex { new_commit_index } => {
-                debug!(
-                    "[{}] RoleEvent::NotifyNewCommitIndex: {:?}",
-                    self.node_id, new_commit_index
-                );
-                self.notify_new_commit(new_commit_index);
+            RoleEvent::NotifyNewCommitIndex(new_commit_data) => {
+                debug!(?new_commit_data, "[{}] RoleEvent::NotifyNewCommitIndex.", self.node_id,);
+                self.notify_new_commit(new_commit_data);
             }
 
             RoleEvent::ReprocessEvent(raft_event) => {
@@ -293,34 +291,34 @@ where T: TypeConfig
         Ok(())
     }
 
-    pub fn peer_channels(&self) -> Result<Arc<POF<T>>> {
+    pub(crate) fn peer_channels(&self) -> Result<Arc<POF<T>>> {
         self.peer_channels
             .clone()
             .ok_or_else(|| MembershipError::SetupClusterConnectionFailed("handle_raft_event".to_string()).into())
     }
 
-    pub fn register_new_commit_listener(
+    pub(crate) fn register_new_commit_listener(
         &mut self,
-        tx: mpsc::UnboundedSender<u64>,
+        tx: mpsc::UnboundedSender<NewCommitData>,
     ) {
         self.new_commit_listener.push(tx);
     }
 
-    pub fn notify_new_commit(
+    pub(crate) fn notify_new_commit(
         &self,
-        new_commit_index: u64,
+        new_commit_data: NewCommitData,
     ) {
-        debug!("notify_new_commit: {}", new_commit_index);
+        debug!(?new_commit_data, "notify_new_commit",);
 
         for tx in &self.new_commit_listener {
-            if let Err(e) = tx.send(new_commit_index) {
+            if let Err(e) = tx.send(new_commit_data.clone()) {
                 error!("notify_new_commit failed: {:?}", e);
             }
         }
     }
 
     #[cfg(test)]
-    pub fn register_role_transition_listener(
+    pub(crate) fn register_role_transition_listener(
         &mut self,
         tx: mpsc::UnboundedSender<i32>,
     ) {
@@ -328,7 +326,7 @@ where T: TypeConfig
     }
 
     #[cfg(test)]
-    pub fn notify_role_transition(&self) {
+    pub(crate) fn notify_role_transition(&self) {
         let new_role_i32 = self.role.as_i32();
         for tx in &self.test_role_transition_listener {
             tx.send(new_role_i32).expect("should succeed");
@@ -356,7 +354,7 @@ where T: TypeConfig
     }
 
     #[cfg(test)]
-    pub fn set_role(
+    pub(crate) fn set_role(
         &mut self,
         role: RaftRole<T>,
     ) {
