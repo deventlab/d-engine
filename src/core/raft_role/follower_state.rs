@@ -26,6 +26,7 @@ use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::utils::cluster::error;
+use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionTimer;
 use crate::Membership;
@@ -302,6 +303,17 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     .state_machine_handler
                     .install_snapshot_chunk(self.current_term(), stream, sender)
                     .await?;
+            }
+            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!(
+                        "Follower node {} attempted to cleanup logs at index {}",
+                        ctx.node_id, snapshot_metadata.last_included_index
+                    ),
+                }
+                .into())
             }
         }
 

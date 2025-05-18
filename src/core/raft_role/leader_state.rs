@@ -500,6 +500,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
             }
+
+            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Leader",
+                    required_role: "Leader/Learner",
+                    context: format!(
+                        "Leader node {} attempted to cleanup logs at index {}",
+                        ctx.node_id, snapshot_metadata.last_included_index
+                    ),
+                }
+                .into())
+            }
         }
         return Ok(());
     }

@@ -86,17 +86,21 @@ pub trait StateMachine: Send + Sync + 'static {
     /// up to the specified `last_included_index`.
     ///
     /// This function:
-    /// 1. Creates a temporary database at `temp_snapshot_path`.
+    /// 1. Creates a new database at `temp_snapshot_path`.
     /// 2. Copies all key-value entries from the current state machine's database where the key
     ///    (interpreted as a log index) does not exceed `last_included_index`.
     /// 3. Uses batch writes for efficiency, committing every 100 records.
+    /// 4. Will update last_included_index and last_included_term in memory
+    /// 5. Will persist last_included_index and last_included_term into current database and new
+    ///    database specified by `temp_snapshot_path`
     ///
     /// # Arguments
-    /// * `temp_snapshot_path` - Temporary path to store the snapshot data.
-    /// * `last_included_index` - Maximum log index (inclusive) included in the snapshot.
+    /// * `new_snapshot_dir` - Temporary path to store the snapshot data.
+    /// * `last_included_index` - Last log index included in the snapshot.
+    /// * `last_included_term` - Last log term included in the snapshot.
     async fn generate_snapshot_data(
         &self,
-        temp_snapshot_dir: std::path::PathBuf,
+        new_snapshot_dir: std::path::PathBuf,
         last_included_index: u64,
         last_included_term: u64,
     ) -> Result<()>;

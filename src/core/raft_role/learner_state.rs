@@ -23,6 +23,7 @@ use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
+use crate::ConsensusError;
 use crate::ElectionTimer;
 use crate::NetworkError;
 use crate::RaftContext;
@@ -235,6 +236,18 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     .state_machine_handler
                     .install_snapshot_chunk(my_term, stream, sender)
                     .await?;
+            }
+
+            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!(
+                        "Learner node {} attempted to cleanup logs at index {}",
+                        ctx.node_id, snapshot_metadata.last_included_index
+                    ),
+                }
+                .into())
             }
         }
         return Ok(());

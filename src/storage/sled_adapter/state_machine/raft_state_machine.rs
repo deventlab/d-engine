@@ -276,7 +276,7 @@ impl StateMachine for RaftStateMachine {
 
     async fn generate_snapshot_data(
         &self,
-        temp_snapshot_dir: PathBuf,
+        new_snapshot_dir: PathBuf,
         last_included_index: u64,
         last_included_term: u64,
     ) -> Result<()> {
@@ -284,7 +284,7 @@ impl StateMachine for RaftStateMachine {
         let _guard = self.snapshot_lock.write().await;
 
         // 2. Create a new state machine database instance
-        let new_db = init_sled_state_machine_db(temp_snapshot_dir).map_err(StorageError::IoError)?;
+        let new_db = init_sled_state_machine_db(new_snapshot_dir).map_err(StorageError::IoError)?;
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;

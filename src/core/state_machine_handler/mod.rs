@@ -96,14 +96,10 @@ where T: TypeConfig
     /// 1. Acquires a write lock to ensure exclusive access during snapshot creation
     /// 2. Prepares temporary and final snapshot file paths using:
     ///    - Last applied index/term from state machine
-    ///    - Incremented snapshot version number
     /// 3. Generates snapshot data to temporary file using state machine implementation
     /// 4. Atomically renames temporary file to final snapshot file to ensure consistency
-    /// 5. Updates snapshot version using atomic compare-and-swap operation with:
-    ///    - Release ordering for successful update visibility
-    ///    - Relaxed ordering for failure case
-    /// 6. Performs cleanup of snapshots older than current version minus 2 (keeps last 2 versions)
-    ///    - Logs errors but doesn't fail operation if cleanup fails
+    /// 5. Cleans up old snapshots based on last_included_index, retaining only the latest snapshot
+    ///    files as specified by cleanup_retain_count.
     ///
     /// Returns the path to the successfully created final snapshot file
     async fn create_snapshot(&self) -> Result<std::path::PathBuf>;

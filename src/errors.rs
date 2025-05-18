@@ -48,6 +48,14 @@ pub enum ConsensusError {
     /// Cluster membership change failures (Section 6 Raft paper)
     #[error(transparent)]
     Membership(#[from] MembershipError),
+
+    /// Role permission conflict error
+    #[error("Operation requires {required_role} role but current role is {current_role}")]
+    RoleViolation {
+        current_role: &'static str,
+        required_role: &'static str,
+        context: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
