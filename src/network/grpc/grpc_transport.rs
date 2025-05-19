@@ -18,6 +18,8 @@ use tracing::warn;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::ClusteMembershipChangeRequest;
+use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
 use crate::proto::VoteRequest;
 use crate::task_with_timeout_and_exponential_backoff;
 use crate::AppendResult;
@@ -285,6 +287,18 @@ impl Transport for GrpcTransport {
             }
         }
         Ok(VoteResult { peer_ids, responses })
+    }
+
+    async fn send_purge_request(
+        &self,
+        peers: Vec<ChannelWithAddressAndRole>,
+        req: PurgeLogRequest,
+        retry: &RetryPolicies,
+    ) -> Result<PurgeLogResponse> {
+        Ok(PurgeLogResponse {
+            term: todo!(),
+            success: false,
+        })
     }
 }
 

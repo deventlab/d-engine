@@ -8,6 +8,7 @@ use tokio::time::Instant;
 use tokio::time::{self};
 
 use super::DefaultCommitHandler;
+use crate::proto::SnapshotMetadata;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
 use crate::CommitHandler;
@@ -32,9 +33,16 @@ fn setup(
         .times(apply_batch_expected_execution_times)
         .returning(|_| Ok(()));
     mock_handler.expect_update_pending().returning(|_| {});
-    mock_handler
-        .expect_create_snapshot()
-        .returning(|| Ok(PathBuf::from("/tmp/value")));
+    mock_handler.expect_create_snapshot().returning(|| {
+        Ok((
+            SnapshotMetadata {
+                last_included_index: 1,
+                last_included_term: 1,
+                checksum: vec![],
+            },
+            PathBuf::from("/tmp/value"),
+        ))
+    });
     mock_handler.expect_should_snapshot().returning(|_| true);
 
     // Mock Raft Log

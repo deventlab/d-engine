@@ -378,6 +378,10 @@ pub enum MembershipError {
     /// Missing node metadata in configuration
     #[error("Metadata missing for node {node_id} in cluster config")]
     NoMetadataFoundForNode { node_id: u32 },
+
+    /// No available peers found for request
+    #[error("No reachable peers found in cluster membership")]
+    NoPeersAvailable,
 }
 
 // ============== Conversion Implementations ============== //

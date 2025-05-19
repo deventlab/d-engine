@@ -9,8 +9,9 @@ use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::MetadataRequest;
+use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
-use crate::proto::SnapshotMetadata;
 use crate::proto::SnapshotResponse;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
@@ -73,7 +74,13 @@ pub(crate) enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
 
-    RaftLogCleanUp(SnapshotMetadata),
+    RaftLogCleanUp(
+        PurgeLogRequest,
+        MaybeCloneOneshotSender<std::result::Result<PurgeLogResponse, Status>>,
+    ),
+
+    // None RPC event
+    CreateSnapshot,
 }
 
 #[cfg(test)]
@@ -94,7 +101,10 @@ pub(crate) enum TestEvent {
 
     InstallSnapshotChunk,
 
-    RaftLogCleanUp(SnapshotMetadata),
+    RaftLogCleanUp(PurgeLogRequest),
+
+    // None RPC event
+    CreateSnapshot,
 }
 
 #[cfg(test)]
@@ -107,6 +117,7 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
         RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
-        RaftEvent::RaftLogCleanUp(snapshot_metadata) => TestEvent::RaftLogCleanUp(snapshot_metadata.clone()),
+        RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
+        RaftEvent::CreateSnapshot => TestEvent::CreateSnapshot,
     }
 }

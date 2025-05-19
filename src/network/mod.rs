@@ -20,6 +20,8 @@ use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
+use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
 use crate::proto::VoteRequest;
 use crate::proto::VoteResponse;
 use crate::BackoffPolicy;
@@ -159,6 +161,13 @@ pub trait Transport: Send + Sync + 'static {
         req: VoteRequest,
         retry: &RetryPolicies,
     ) -> Result<VoteResult>;
+
+    async fn send_purge_request(
+        &self,
+        peers: Vec<ChannelWithAddressAndRole>,
+        req: PurgeLogRequest,
+        retry: &RetryPolicies,
+    ) -> Result<PurgeLogResponse>;
 }
 
 // Module level utils

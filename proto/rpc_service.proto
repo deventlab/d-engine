@@ -259,7 +259,8 @@ message SnapshotChunk {
 
 message SnapshotMetadata {
   uint64 last_included_index = 1; // The last log index included in the snapshot
-  uint64 last_included_term = 2; // The last log term included in the snapshot
+  uint64 last_included_term = 2;  // The last log term included in the snapshot
+  bytes checksum = 3;             // SHA-256 checksum
 }
   
 message SnapshotResponse {
@@ -268,6 +269,20 @@ message SnapshotResponse {
   uint32 next_chunk = 3; // If failed, specify the chunk index to be retransmitted
 }
 
+message PurgeLogRequest {
+  uint64 term = 1;
+  uint32 leader_id = 2;
+  uint64 last_included_index = 3; // Maximum log index that can be deleted
+  uint64 last_included_term = 4; // Corresponding log term
+  bytes snapshot_checksum = 5;
+}
+  
+message PurgeLogResponse {
+  uint64 term = 1;
+  bool success = 2;
+}
+
+  
 service RpcService {
   rpc RequestVote (VoteRequest) returns (VoteResponse){};
   rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse){};
@@ -275,5 +290,6 @@ service RpcService {
   rpc HandleClientPropose (ClientProposeRequest) returns (ClientResponse){};
   rpc HandleClientRead (ClientReadRequest) returns (ClientResponse){};
   rpc GetClusterMetadata (MetadataRequest) returns (ClusterMembership){};
-  rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse) {}
+  rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse) {};
+  rpc PurgeLog(PurgeLogRequest) returns (PurgeLogResponse);
 }

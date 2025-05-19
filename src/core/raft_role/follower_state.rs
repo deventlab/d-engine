@@ -24,6 +24,7 @@ use super::FOLLOWER;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
+use crate::proto::PurgeLogResponse;
 use crate::proto::VoteResponse;
 use crate::utils::cluster::error;
 use crate::ConsensusError;
@@ -163,11 +164,11 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let state_snapshot = self.state_snapshot();
+        let my_term = self.current_term();
 
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 let candidate_id = vote_request.candidate_id;
-                let my_term = self.current_term();
 
                 let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
 
@@ -298,22 +299,53 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 }
             }
 
+            RaftEvent::CreateSnapshot => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!("Follower node {} attempted to create snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
                 ctx.handlers
                     .state_machine_handler
                     .install_snapshot_chunk(self.current_term(), stream, sender)
                     .await?;
             }
-            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!(
-                        "Follower node {} attempted to cleanup logs at index {}",
-                        ctx.node_id, snapshot_metadata.last_included_index
-                    ),
+            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
+                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
+
+                let leader_id = ctx.membership().current_leader();
+                match ctx
+                    .state_machine_handler()
+                    .handle_purge_request(my_term, leader_id, purchase_log_request, ctx.raft_log())
+                    .await
+                {
+                    Ok(response) => {
+                        debug!(?response, "RaftEvent::RaftLogCleanUp");
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            NetworkError::SingalSendFailed(error_str)
+                        })?;
+                    }
+                    Err(e) => {
+                        error!(?e, "RaftEvent::RaftLogCleanUp");
+                        sender
+                            .send(Ok(PurgeLogResponse {
+                                term: my_term,
+                                success: false,
+                            }))
+                            .map_err(|e| {
+                                let error_str = format!("{:?}", e);
+                                error!("Failed to send: {}", error_str);
+                                NetworkError::SingalSendFailed(error_str)
+                            })?;
+                    }
                 }
-                .into())
+                return Ok(());
             }
         }
 

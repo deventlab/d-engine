@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use autometrics::autometrics;
+use parking_lot::Mutex;
 use prost::Message;
 use sled::Batch;
 use tokio::sync::RwLock;
@@ -20,6 +21,7 @@ use tracing::warn;
 
 use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
 use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
+use crate::constants::SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_TERM;
 use crate::constants::STATE_MACHINE_META_NAMESPACE;
@@ -27,6 +29,7 @@ use crate::constants::STATE_MACHINE_TREE;
 use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
 use crate::convert::safe_vk;
+use crate::file_io::compute_checksum_from_path;
 use crate::init_sled_state_machine_db;
 use crate::proto;
 use crate::proto::client_command::Command;
@@ -57,6 +60,7 @@ pub struct RaftStateMachine {
     /// Snapshot metadata
     last_included_index: AtomicU64, // load from STATE_SNAPSHOT_METADATA_TREE
     last_included_term: AtomicU64,
+    last_snapshot_checksum: Mutex<Option<[u8; 32]>>, //SHA-256
 
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
@@ -117,10 +121,12 @@ impl StateMachine for RaftStateMachine {
         &self,
         last_included_index: u64,
         last_included_term: u64,
+        new_checksum: Option<[u8; 32]>,
     ) {
         debug!(%last_included_index, %last_included_term, "update_last_included");
         self.last_included_index.store(last_included_index, Ordering::SeqCst);
         self.last_included_term.store(last_included_term, Ordering::SeqCst);
+        *self.last_snapshot_checksum.lock() = new_checksum;
     }
 
     fn last_applied(&self) -> (u64, u64) {
@@ -130,10 +136,11 @@ impl StateMachine for RaftStateMachine {
         )
     }
 
-    fn last_included(&self) -> (u64, u64) {
+    fn last_included(&self) -> (u64, u64, Option<[u8; 32]>) {
         (
             self.last_included_index.load(Ordering::SeqCst),
             self.last_included_term.load(Ordering::SeqCst),
+            *self.last_snapshot_checksum.lock(),
         )
     }
 
@@ -226,8 +233,8 @@ impl StateMachine for RaftStateMachine {
         let (last_applied_index, last_applied_term) = self.last_applied();
         self.persist_last_applied(last_applied_index, last_applied_term)?;
 
-        let (last_included_index, last_included_term) = self.last_included();
-        self.persist_last_included(last_included_index, last_included_term)?;
+        let (last_included_index, last_included_term, last_checksum) = self.last_included();
+        self.persist_last_included(last_included_index, last_included_term, last_checksum)?;
 
         self.flush()?;
         Ok(())
@@ -251,10 +258,11 @@ impl StateMachine for RaftStateMachine {
         &self,
         last_included_index: u64,
         last_included_term: u64,
+        last_checksum: Option<[u8; 32]>,
     ) -> Result<()> {
         let db = self.db.load();
         let tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
-        self.persist_last_included_with_tree(tree, last_included_index, last_included_term)?;
+        self.persist_last_included_with_tree(tree, last_included_index, last_included_term, last_checksum)?;
 
         Ok(())
     }
@@ -279,12 +287,12 @@ impl StateMachine for RaftStateMachine {
         new_snapshot_dir: PathBuf,
         last_included_index: u64,
         last_included_term: u64,
-    ) -> Result<()> {
+    ) -> Result<[u8; 32]> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
         let _guard = self.snapshot_lock.write().await;
 
         // 2. Create a new state machine database instance
-        let new_db = init_sled_state_machine_db(new_snapshot_dir).map_err(StorageError::IoError)?;
+        let new_db = init_sled_state_machine_db(&new_snapshot_dir).map_err(StorageError::IoError)?;
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -316,20 +324,30 @@ impl StateMachine for RaftStateMachine {
             new_state_machine_tree.apply_batch(batch)?;
         }
 
+        // Make sure flush into disk
+        new_db.flush()?;
+
+        // Calculate the checksum after generating snapshot data
+        let checksum = compute_checksum_from_path(&new_snapshot_dir).await?;
+
         // Make sure last included is updated to the new ones
-        self.update_last_included(last_included_index, last_included_term);
+        self.update_last_included(last_included_index, last_included_term, Some(checksum));
 
         // Make sure last included is persisted into local database
-        self.persist_last_included(last_included_index, last_included_term)?;
-        self.persist_last_included_with_tree(new_snapshot_metadatat_tree, last_included_index, last_included_term)?;
+        self.persist_last_included(last_included_index, last_included_term, Some(checksum))?;
+        self.persist_last_included_with_tree(
+            new_snapshot_metadatat_tree,
+            last_included_index,
+            last_included_term,
+            Some(checksum),
+        )?;
 
-        new_db.flush()?;
-        Ok(())
+        Ok(checksum)
     }
 
     async fn apply_snapshot_from_file(
         &self,
-        metadata: proto::SnapshotMetadata,
+        metadata: &proto::SnapshotMetadata,
         snapshot_path: PathBuf,
     ) -> Result<()> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
@@ -346,7 +364,11 @@ impl StateMachine for RaftStateMachine {
 
         // 4. Update the last applied and last included index and term
         self.update_last_applied(metadata.last_included_index, metadata.last_included_term);
-        self.update_last_included(metadata.last_included_index, metadata.last_included_term);
+        self.update_last_included(
+            metadata.last_included_index,
+            metadata.last_included_term,
+            Some(metadata.checksum_array()?),
+        );
 
         Ok(())
     }
@@ -371,7 +393,8 @@ impl RaftStateMachine {
         let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&state_machine_meta_tree)?;
 
         let snapshot_meta_tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
-        let (last_included_index, last_included_term) = Self::load_snapshot_metadata(&snapshot_meta_tree)?;
+        let (last_included_index, last_included_term, last_snapshot_checksum) =
+            Self::load_snapshot_metadata(&snapshot_meta_tree)?;
 
         let sm = RaftStateMachine {
             db: ArcSwap::from(db),
@@ -383,13 +406,14 @@ impl RaftStateMachine {
 
             last_included_index: AtomicU64::new(0),
             last_included_term: AtomicU64::new(0),
+            last_snapshot_checksum: Mutex::new(None),
 
             snapshot_lock: RwLock::new(()),
         };
 
         // Important to sync the last applied index into memory
         sm.update_last_applied(last_applied_index, last_applied_term);
-        sm.update_last_included(last_included_index, last_included_term);
+        sm.update_last_included(last_included_index, last_included_term, last_snapshot_checksum);
         Ok(sm)
     }
 
@@ -407,7 +431,7 @@ impl RaftStateMachine {
         Ok((index, term))
     }
 
-    fn load_snapshot_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
+    fn load_snapshot_metadata(tree: &sled::Tree) -> Result<(u64, u64, Option<[u8; 32]>)> {
         let index = tree
             .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)?
             .map(safe_vk)
@@ -418,7 +442,15 @@ impl RaftStateMachine {
             .map(safe_vk)
             .unwrap_or(Ok(0))?;
 
-        Ok((index, term))
+        let checksum = tree
+            .get(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM)?
+            .map(|ivec| {
+                let bytes: Vec<u8> = ivec.to_vec();
+                bytes.try_into().ok()
+            })
+            .flatten();
+
+        Ok((index, term, checksum))
     }
 
     #[autometrics(objective = API_SLO)]
@@ -445,9 +477,17 @@ impl RaftStateMachine {
         tree: sled::Tree,
         last_included_index: u64,
         last_included_term: u64,
+        last_checksum: Option<[u8; 32]>,
     ) -> Result<()> {
         tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included_index))?;
         tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included_term))?;
+
+        if let Some(checksum) = last_checksum {
+            tree.insert(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM, &checksum)?;
+        } else {
+            // delete old checksum, if exists
+            tree.remove(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM)?;
+        }
 
         tree.flush()?;
         Ok(())

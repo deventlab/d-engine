@@ -430,8 +430,8 @@ fn test_load_uncommitted_from_db_to_cache() {
 /// dispatcher has already been set")
 /// #[traced_test]
 #[test]
-fn test_delete_entries_before() {
-    let context = setup("/tmp/test_delete_entries_before");
+fn test_purge_logs_up_to() {
+    let context = setup("/tmp/test_purge_logs_up_to");
 
     context.raft_log.reset().expect("reset successfully!");
 
@@ -449,10 +449,7 @@ fn test_delete_entries_before() {
     // assume we have generated snapshot until $last_applied,
     // now we can clean the local logs
     let last_applied = 3;
-    context
-        .raft_log
-        .delete_entries_before(last_applied)
-        .expect("should succeed");
+    context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
 
     assert_eq!(9, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.get_entry_by_index(3));
@@ -476,10 +473,7 @@ fn test_get_first_raft_log_entry_id_after_delete_entries() {
     context.raft_log.insert_batch(entries).expect("should succeed");
 
     let last_applied = 4;
-    context
-        .raft_log
-        .delete_entries_before(last_applied)
-        .expect("should succeed");
+    context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
     assert_eq!(10, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.get_entry_by_index(3));
     assert_eq!(None, context.raft_log.get_entry_by_index(2));
@@ -504,10 +498,7 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
     context.raft_log.insert_batch(entries).expect("should succeed");
 
     let last_applied = 4;
-    context
-        .raft_log
-        .delete_entries_before(last_applied)
-        .expect("should succeed");
+    context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
     assert_eq!(10, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.get_entry_by_index(3));
     assert_eq!(None, context.raft_log.get_entry_by_index(2));
@@ -658,7 +649,7 @@ async fn test_insert_batch_logs_case1() {
 
 /// # Case 2: Test scenario for log replication conflict handling when combining:
 /// 1. `filter_out_conflicts_and_append` (follower's perspective)
-/// 2. `delete_entries_before` (snapshot compaction)
+/// 2. `purge_logs_up_to` (snapshot compaction)
 /// 3. `insert_batch` (leader's log appending)
 ///
 /// # Test Scenario Flow
@@ -711,7 +702,7 @@ async fn test_insert_batch_logs_case2() {
 
     // 4. Simulate snapshot compaction
     let last_applied = 3;
-    old_leader.delete_entries_before(last_applied).expect("should succeed");
+    old_leader.purge_logs_up_to(last_applied).expect("should succeed");
 
     // 5. New leader appends higher term logs
     let mut handles = Vec::new();

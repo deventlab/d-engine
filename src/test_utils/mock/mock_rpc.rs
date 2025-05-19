@@ -10,6 +10,8 @@ use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::MetadataRequest;
+use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotResponse;
 use crate::proto::VoteRequest;
@@ -25,6 +27,7 @@ pub struct MockRpcService {
     pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
+    pub expected_purge_log_response: Option<Result<PurgeLogResponse, tonic::Status>>,
 }
 
 #[tonic::async_trait]
@@ -58,7 +61,7 @@ impl RpcService for MockRpcService {
         match &self.expected_update_cluster_conf_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown("No mock update_cluster_conf response set")),
         }
     }
 
@@ -69,7 +72,7 @@ impl RpcService for MockRpcService {
         match &self.expected_client_propose_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown("No mock handle_client_propose response set")),
         }
     }
 
@@ -80,7 +83,7 @@ impl RpcService for MockRpcService {
         match &self.expected_client_read_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown("No mock handle_client_read response set")),
         }
     }
 
@@ -91,7 +94,7 @@ impl RpcService for MockRpcService {
         match &self.expected_metadata_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown("No mock get_cluster_metadata response set")),
         }
     }
     async fn install_snapshot(
@@ -101,7 +104,18 @@ impl RpcService for MockRpcService {
         match &self.expected_snapshot_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown("No mock install_snapshot response set")),
+        }
+    }
+
+    async fn purge_log(
+        &self,
+        request: tonic::Request<PurgeLogRequest>,
+    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, tonic::Status> {
+        match &self.expected_purge_log_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown("No mock purge_log response set")),
         }
     }
 }

@@ -21,10 +21,12 @@ use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
+use crate::proto::PurgeLogResponse;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::ConsensusError;
 use crate::ElectionTimer;
+use crate::Membership;
 use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -231,6 +233,16 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
             }
+
+            RaftEvent::CreateSnapshot => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!("Learner node {} attempted to create snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
                 ctx.handlers
                     .state_machine_handler
@@ -238,16 +250,38 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     .await?;
             }
 
-            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!(
-                        "Learner node {} attempted to cleanup logs at index {}",
-                        ctx.node_id, snapshot_metadata.last_included_index
-                    ),
+            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
+                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
+
+                let leader_id = ctx.membership().current_leader();
+                match ctx
+                    .state_machine_handler()
+                    .handle_purge_request(my_term, leader_id, purchase_log_request, ctx.raft_log())
+                    .await
+                {
+                    Ok(response) => {
+                        debug!(?response, "RaftEvent::RaftLogCleanUp");
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            NetworkError::SingalSendFailed(error_str)
+                        })?;
+                    }
+                    Err(e) => {
+                        error!(?e, "RaftEvent::RaftLogCleanUp");
+                        sender
+                            .send(Ok(PurgeLogResponse {
+                                term: my_term,
+                                success: false,
+                            }))
+                            .map_err(|e| {
+                                let error_str = format!("{:?}", e);
+                                error!("Failed to send: {}", error_str);
+                                NetworkError::SingalSendFailed(error_str)
+                            })?;
+                    }
                 }
-                .into())
+                return Ok(());
             }
         }
         return Ok(());

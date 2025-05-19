@@ -420,19 +420,19 @@ impl RaftLog for SledRaftLog {
     }
 
     #[autometrics(objective = API_SLO)]
-    fn delete_entries_before(
+    fn purge_logs_up_to(
         &self,
-        last_applied: u64,
+        cutoff: u64,
     ) -> Result<()> {
         let mut batch = LocalLogBatch::default();
 
-        for result in self.tree.range(..safe_kv(last_applied + 1)) {
+        for result in self.tree.range(..safe_kv(cutoff + 1)) {
             let (key, _value) = result?;
             batch.remove(key.to_vec());
         }
 
         if let Err(e) = self.apply(&batch) {
-            error!("delete_entries_before error: {}", e);
+            error!("purge_logs_up_to error: {}", e);
             return Err(StorageError::DbError(e.to_string()).into());
         }
 

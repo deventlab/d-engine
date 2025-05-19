@@ -110,12 +110,13 @@ pub trait RaftLog: Send + Sync + 'static {
         &self,
         logs: Vec<Entry>,
     ) -> Result<()>;
+
     /// Clear out all the entries in local logs before last_applied
     /// this function will be invoked only when entries been applied to state
     /// machine successfully
-    fn delete_entries_before(
+    fn purge_logs_up_to(
         &self,
-        last_applied: u64,
+        cutoff: u64,
     ) -> Result<()>;
 
     fn retrieve_subscriber(

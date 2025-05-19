@@ -208,3 +208,19 @@ pub(crate) async fn is_dir(path: &Path) -> Result<bool> {
     // Check if it's a directory
     Ok(metadata.is_dir())
 }
+
+pub(crate) async fn compute_checksum_from_path(path: &Path) -> Result<[u8; 32]> {
+    use sha2::Digest;
+    use sha2::Sha256;
+    let mut hasher = Sha256::new();
+
+    let mut entries = fs::read_dir(path).await.map_err(StorageError::IoError)?;
+    while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
+        if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
+            let data = fs::read(entry.path()).await.map_err(StorageError::IoError)?;
+            hasher.update(data);
+        }
+    }
+
+    Ok(hasher.finalize().into())
+}

@@ -27,6 +27,8 @@ use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
 use crate::proto::MetadataRequest;
+use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotResponse;
 use crate::proto::VoteRequest;
@@ -238,6 +240,28 @@ where T: TypeConfig
 
         let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
+    }
+
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
+    #[tracing::instrument]
+    async fn purge_log(
+        &self,
+        request: tonic::Request<PurgeLogRequest>,
+    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, Status> {
+        if !self.server_is_ready() {
+            warn!("purge_log: Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::RaftLogCleanUp(request.into_inner(), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "purge_log").await
     }
 }
 

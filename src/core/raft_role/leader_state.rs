@@ -35,6 +35,7 @@ use crate::proto::ClientProposeRequest;
 use crate::proto::ClientResponse;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ErrorCode;
+use crate::proto::PurgeLogRequest;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::utils::cluster::error;
@@ -47,6 +48,7 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
+use crate::MembershipError;
 use crate::NetworkError;
 use crate::QuorumStatus;
 use crate::RaftContext;
@@ -63,6 +65,7 @@ use crate::RoleEvent;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
+use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
 
@@ -491,6 +494,50 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 })?;
             }
 
+            RaftEvent::CreateSnapshot => {
+                let state_machine_handler = ctx.state_machine_handler();
+
+                match state_machine_handler.create_snapshot().await {
+                    Err(e) => {
+                        error!(%e,"self.state_machine_handler.create_snapshot with error.");
+                    }
+                    Ok((snapshot_metadata, _final_path)) => {
+                        info!("Purge Leader local raft logs");
+
+                        // Purge Raft Logs
+                        if let Err(e) = ctx.raft_log().purge_logs_up_to(snapshot_metadata.last_included_index) {
+                            error!(?e, %snapshot_metadata.last_included_index, "raft_log.purge_logs_up_to");
+                        }
+
+                        // ----------------------
+                        // Phase 1: Pre-Checks
+                        // ----------------------
+                        let peers = ctx.voting_members(peer_channels);
+                        if peers.is_empty() {
+                            warn!("no peer found for leader({})", my_id);
+                            return Err(MembershipError::NoPeersAvailable.into());
+                        }
+                        // ----------------------
+                        // Phase 2: Send Purge request to the other nodes
+                        // ----------------------
+                        let transport = ctx.transport();
+                        transport
+                            .send_purge_request(
+                                peers,
+                                PurgeLogRequest {
+                                    term: my_term,
+                                    leader_id: my_id,
+                                    last_included_index: snapshot_metadata.last_included_index,
+                                    last_included_term: snapshot_metadata.last_included_term,
+                                    snapshot_checksum: snapshot_metadata.checksum.clone(),
+                                },
+                                &self.node_config.retry,
+                            )
+                            .await?;
+                    }
+                }
+            }
+
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
@@ -501,16 +548,21 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     })?;
             }
 
-            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
+            RaftEvent::RaftLogCleanUp(_purchase_log_request, sender) => {
+                sender
+                    .send(Err(Status::permission_denied("Leader should not receive this event.")))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Leader",
-                    required_role: "Leader/Learner",
-                    context: format!(
-                        "Leader node {} attempted to cleanup logs at index {}",
-                        ctx.node_id, snapshot_metadata.last_included_index
-                    ),
+                    required_role: "None Leader",
+                    context: format!("Leader node {} receives RaftEvent::RaftLogCleanUp", ctx.node_id),
                 }
-                .into())
+                .into());
             }
         }
         return Ok(());
@@ -595,19 +647,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 batch.len()
             );
 
-            self.process_batch(
-                batch,
-                role_tx,
-                ctx,
-                peer_channels,
-                // replication_handler,
-                // voting_members,
-                // raft_log,
-                // transport,
-                // raft_config,
-                // retry_policies,
-            )
-            .await?;
+            self.process_batch(batch, role_tx, ctx, peer_channels).await?;
         }
 
         Ok(())
@@ -632,11 +672,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 self.leader_state_snapshot(),
                 ctx,
                 peer_channels,
-                // voting_members,
-                // raft_log,
-                // transport,
-                // raft_config,
-                // retry_policies,
             )
             .await;
 

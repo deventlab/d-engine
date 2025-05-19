@@ -15,6 +15,7 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::utils::cluster::error;
 use crate::NewCommitData;
+use crate::RaftLog;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
@@ -76,10 +77,19 @@ where T: TypeConfig
                         // snapshot checker
                         if self.state_machine_handler.should_snapshot(new_commit_data) {
                             info!("Listened a new commit and should generate snapshot now");
-                            if let Err(e) = self.state_machine_handler.create_snapshot().await {
-                                error!(%e, "self.state_machine_handler.create_snapshot with error.");
-                            }
 
+                            match self.state_machine_handler.create_snapshot().await {
+                                Err(e) => {
+                                    error!(%e,"self.state_machine_handler.create_snapshot with error.");
+                                }
+                                Ok((snapshot_metadata, _final_path)) => {
+                                    info!("Purge Leader local raft logs");
+
+                                    if let Err(e) = self.raft_log.purge_logs_up_to(snapshot_metadata.last_included_index) {
+                                        error!(?e, %snapshot_metadata.last_included_index, "raft_log.purge_logs_up_to");
+                                    }
+                                },
+                            }
                         }
                     }
             }

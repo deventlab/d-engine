@@ -72,6 +72,7 @@ arc-swap = "1.7.1"
 bytes = "1.10"
 tempfile = "3.19.1"
 crc32fast = "1.4.2"
+sha2 = "0.10.9"
 
 [dev-dependencies]
 mockall = "0.12.1"

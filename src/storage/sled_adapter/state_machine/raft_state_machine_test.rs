@@ -13,6 +13,7 @@ use crate::constants::STATE_MACHINE_TREE;
 use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
 use crate::convert::safe_vk;
+use crate::file_io::compute_checksum_from_path;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
 use crate::proto::ClientCommand;
@@ -255,13 +256,15 @@ async fn test_generate_snapshot_data_case1() {
     let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
     let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
 
+    let expected_checksum = compute_checksum_from_path(&temp_path).await.expect("success");
+
     // Check data entries
     for i in 1..=3 {
         assert!(tree.get(&safe_kv(i)).unwrap().is_some());
     }
 
     // Check metadata (stored in same tree due to code limitation)
-    assert_eq!(sm.last_included(), (3u64, 1u64));
+    assert_eq!(sm.last_included(), (3u64, 1u64, Some(expected_checksum)));
     assert_eq!(
         safe_vk(
             &metadata_tree
@@ -396,6 +399,7 @@ async fn test_apply_snapshot_from_file_case1() {
     let metadata = SnapshotMetadata {
         last_included_index: 5,
         last_included_term: 2,
+        checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
     {
@@ -407,9 +411,7 @@ async fn test_apply_snapshot_from_file_case1() {
     }
 
     // Apply snapshot
-    sm.apply_snapshot_from_file(metadata.clone(), temp_path.clone())
-        .await
-        .unwrap();
+    sm.apply_snapshot_from_file(&metadata, temp_path.clone()).await.unwrap();
 
     // Verify data
     assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
@@ -419,7 +421,11 @@ async fn test_apply_snapshot_from_file_case1() {
     );
     assert_eq!(
         sm.last_included(),
-        (metadata.last_included_index, metadata.last_included_term)
+        (
+            metadata.last_included_index,
+            metadata.last_included_term,
+            Some(metadata.checksum_array().expect("success"))
+        )
     );
 }
 
@@ -440,6 +446,7 @@ async fn test_apply_snapshot_from_file_case2() {
     let metadata = SnapshotMetadata {
         last_included_index: 10,
         last_included_term: 3,
+        checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
     {
@@ -450,7 +457,7 @@ async fn test_apply_snapshot_from_file_case2() {
     }
 
     // Apply snapshot
-    sm.apply_snapshot_from_file(metadata, temp_path).await.unwrap();
+    sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
 
     // Verify old data replaced
     assert_eq!(sm.get(b"existing_key").unwrap(), None);
@@ -468,6 +475,7 @@ async fn test_apply_snapshot_from_file_case3() {
     let test_metadata = SnapshotMetadata {
         last_included_index: 15,
         last_included_term: 4,
+        checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
     {
@@ -489,14 +497,16 @@ async fn test_apply_snapshot_from_file_case3() {
         metadata_tree.flush().unwrap();
     }
 
-    sm.apply_snapshot_from_file(test_metadata.clone(), temp_path)
-        .await
-        .unwrap();
+    sm.apply_snapshot_from_file(&test_metadata, temp_path).await.unwrap();
 
     // Verify metadata propagation
     assert_eq!(
         sm.last_included(),
-        (test_metadata.last_included_index, test_metadata.last_included_term)
+        (
+            test_metadata.last_included_index,
+            test_metadata.last_included_term,
+            Some(test_metadata.checksum_array().expect("success"))
+        )
     );
     assert_eq!(
         sm.last_applied(),
@@ -515,21 +525,24 @@ async fn test_apply_snapshot_from_file_case4() {
     let metadata = SnapshotMetadata {
         last_included_index: 20,
         last_included_term: 5,
+        checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
     // Start two concurrent apply operations
     let handle1 = tokio::spawn({
         let sm = sm.clone();
         let path = temp_path.clone();
-        async move { sm.apply_snapshot_from_file(metadata.clone(), path).await }
+        let metadata = metadata.clone();
+        async move { sm.apply_snapshot_from_file(&metadata, path).await }
     });
 
     let handle2 = tokio::spawn({
         let sm = sm.clone();
         let path = temp_path.clone();
+        let metadata = metadata.clone();
         async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            sm.apply_snapshot_from_file(metadata.clone(), path).await
+            sm.apply_snapshot_from_file(&metadata, path).await
         }
     });
 
@@ -550,7 +563,7 @@ async fn test_apply_snapshot_from_file_case5() {
     let sm = context.state_machine.clone();
 
     let result = sm
-        .apply_snapshot_from_file(SnapshotMetadata::default(), PathBuf::from("/non/existent/path"))
+        .apply_snapshot_from_file(&SnapshotMetadata::default(), PathBuf::from("/non/existent/path"))
         .await;
 
     assert!(matches!(

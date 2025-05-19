@@ -83,11 +83,6 @@ where T: TypeConfig
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &crate::RaftContext<T>,
         peer_channels: Arc<crate::alias::POF<T>>,
-        // replication_members: &[ChannelWithAddressAndRole],
-        // raft_log: &Arc<ROF<T>>,
-        // transport: &Arc<TROF<T>>,
-        // raft: &RaftConfig,
-        // retry: &RetryPolicies,
     ) -> Result<AppendResults>;
 
     /// Handles successful AppendEntries responses

@@ -32,7 +32,10 @@ use crate::file_io::validate_checksum;
 use crate::proto::client_command::Command;
 use crate::proto::ClientCommand;
 use crate::proto::ClientResult;
+use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
+use crate::proto::SnapshotMetadata;
 use crate::proto::SnapshotResponse;
 use crate::utils::cluster::error;
 use crate::MaybeCloneOneshotSender;
@@ -246,7 +249,7 @@ where T: TypeConfig
         // Application snapshot
         let metadata = metadata.unwrap();
         self.state_machine
-            .apply_snapshot_from_file(metadata, assembler.finalize(metadata).await?)
+            .apply_snapshot_from_file(&metadata, assembler.finalize(&metadata).await?)
             .await?;
 
         // Final confirmation
@@ -271,7 +274,7 @@ where T: TypeConfig
         }
 
         let (last_applied_index, last_applied_term) = self.state_machine.last_applied();
-        let (last_included_index, last_included_term) = self.state_machine.last_included();
+        let (last_included_index, last_included_term, _) = self.state_machine.last_included();
 
         self.snapshot_policy.should_trigger(&SnapshotContext {
             role: new_commit_data.role,
@@ -283,7 +286,7 @@ where T: TypeConfig
         })
     }
 
-    async fn create_snapshot(&self) -> Result<std::path::PathBuf> {
+    async fn create_snapshot(&self) -> Result<(SnapshotMetadata, PathBuf)> {
         // 0. Create a guard (automatically manage state)
         let _guard = SnapshotGuard::new(&self.snapshot_in_progress)?;
 
@@ -305,14 +308,18 @@ where T: TypeConfig
 
         // 3: Create snapshot based on the temp path
         debug!(?temp_dir, "create_snapshot 3: Create snapshot based on the temp path");
-        if let Err(e) = self
+
+        let checksum = match self
             .state_machine
             .generate_snapshot_data(temp_dir.clone(), last_included_index, last_included_term)
             .await
         {
-            error!(?e, "state_machine.generate_snapshot_data failed");
-            return Err(e);
-        }
+            Err(e) => {
+                error!(?e, "state_machine.generate_snapshot_data failed");
+                return Err(e);
+            }
+            Ok(checksum) => checksum,
+        };
 
         // 4: Atomic rename to final snapshot file path
         debug!(
@@ -334,7 +341,14 @@ where T: TypeConfig
             error!(%e, "clean up old snapshot file failed");
         }
 
-        Ok(final_dir)
+        Ok((
+            SnapshotMetadata {
+                last_included_index,
+                last_included_term,
+                checksum: checksum.to_vec(),
+            },
+            final_dir,
+        ))
     }
 
     #[tracing::instrument]
@@ -393,6 +407,61 @@ where T: TypeConfig
             }
         }
         Ok(())
+    }
+
+    async fn handle_purge_request(
+        &self,
+        current_term: u64,
+        leader_id: Option<u32>,
+        req: PurgeLogRequest,
+        raft_log: &Arc<ROF<T>>,
+    ) -> Result<PurgeLogResponse> {
+        // Verification 1: Leader identity legitimacy
+        if req.term < current_term || leader_id != Some(req.leader_id) {
+            return Ok(PurgeLogResponse {
+                term: current_term,
+                success: false,
+            });
+        }
+
+        // Verification 2: Locally applied log index >= requested up_to_index
+        if self.state_machine.last_applied().0 < req.last_included_index {
+            return Ok(PurgeLogResponse {
+                term: current_term,
+                success: false,
+            });
+        }
+
+        // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
+        if let (_, _, Some(local_checksum)) = self.state_machine.last_included() {
+            if req.snapshot_checksum != local_checksum {
+                return Ok(PurgeLogResponse {
+                    term: current_term,
+                    success: false,
+                });
+            }
+        } else {
+            // There is no corresponding snapshot locally, snapshot synchronization needs to be triggered
+            return Ok(PurgeLogResponse {
+                term: current_term,
+                success: false,
+            });
+        }
+
+        // Perform physical deletion
+        match raft_log.purge_logs_up_to(req.last_included_index) {
+            Ok(_) => Ok(PurgeLogResponse {
+                term: current_term,
+                success: true,
+            }),
+            Err(e) => {
+                error!(?e, "raft_log.purge_logs_up_to");
+                Ok(PurgeLogResponse {
+                    term: current_term,
+                    success: false,
+                })
+            }
+        }
     }
 }
 

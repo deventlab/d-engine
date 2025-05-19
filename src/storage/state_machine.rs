@@ -11,6 +11,8 @@ use mockall::automock;
 use tonic::async_trait;
 
 use crate::proto::Entry;
+use crate::proto::SnapshotMetadata;
+use crate::Error;
 use crate::Result;
 
 //TODO
@@ -64,21 +66,23 @@ pub trait StateMachine: Send + Sync + 'static {
         &self,
         index: u64,
         term: u64,
+        new_checksum: Option<[u8; 32]>,
     );
 
-    /// Get snapshot metadata: (last_included_index, last_included_term)
-    fn last_included(&self) -> (u64, u64);
+    /// Get snapshot metadata: (last_included_index, last_included_term, Option<checksum>)
+    fn last_included(&self) -> (u64, u64, Option<[u8; 32]>);
 
     /// Persist (last_included_index, last_included_term) into local storage
     fn persist_last_included(
         &self,
         index: u64,
         term: u64,
+        last_checksum: Option<[u8; 32]>,
     ) -> Result<()>;
 
     async fn apply_snapshot_from_file(
         &self,
-        metadata: crate::proto::SnapshotMetadata,
+        metadata: &crate::proto::SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
     ) -> Result<()>;
 
@@ -98,12 +102,15 @@ pub trait StateMachine: Send + Sync + 'static {
     /// * `new_snapshot_dir` - Temporary path to store the snapshot data.
     /// * `last_included_index` - Last log index included in the snapshot.
     /// * `last_included_term` - Last log term included in the snapshot.
+    ///
+    /// # Returns
+    /// * if success, checksum will be returned
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included_index: u64,
         last_included_term: u64,
-    ) -> Result<()>;
+    ) -> Result<[u8; 32]>;
 
     fn save_hard_state(&self) -> Result<()>;
 
@@ -111,4 +118,23 @@ pub trait StateMachine: Send + Sync + 'static {
 
     #[cfg(test)]
     fn clean(&self) -> Result<()>;
+}
+
+impl SnapshotMetadata {
+    pub fn checksum_array(&self) -> Result<[u8; 32]> {
+        if self.checksum.len() == 32 {
+            let mut array = [0u8; 32];
+            array.copy_from_slice(&self.checksum);
+            Ok(array)
+        } else {
+            Err(Error::Fatal("Invalid checksum length".to_string()))
+        }
+    }
+
+    pub fn set_checksum_array(
+        &mut self,
+        array: [u8; 32],
+    ) {
+        self.checksum = array.to_vec();
+    }
 }

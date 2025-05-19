@@ -94,7 +94,6 @@ where T: TypeConfig
         leader_id: u32,
     ) -> Result<()>;
 
-    #[allow(dead_code)]
     fn current_leader(&self) -> Option<u32>;
 
     /// Reset old leader to follower

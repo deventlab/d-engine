@@ -89,7 +89,7 @@ impl SnapshotAssembler {
     /// - The atomic rename operation fails (`move_directory()`).
     pub(crate) async fn finalize(
         &mut self,
-        snapshot_meta: SnapshotMetadata,
+        snapshot_meta: &SnapshotMetadata,
     ) -> Result<PathBuf> {
         // 1. Flush the in-memory snapshot data to disk.
         self.flush_to_disk().await?;

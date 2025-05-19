@@ -69,9 +69,15 @@ where T: TypeConfig
     pub fn replication_handler(&self) -> &REPOF<T> {
         &self.handlers.replication_handler
     }
+
     pub fn election_handler(&self) -> &EOF<T> {
         &self.handlers.election_handler
     }
+
+    pub fn state_machine_handler(&self) -> &Arc<SMHOF<T>> {
+        &self.handlers.state_machine_handler
+    }
+
     pub fn node_config(&self) -> Arc<RaftNodeConfig> {
         self.node_config.clone()
     }

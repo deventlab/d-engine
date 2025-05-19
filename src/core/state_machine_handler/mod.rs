@@ -56,7 +56,9 @@ use super::NewCommitData;
 use crate::alias::ROF;
 use crate::proto::ClientCommand;
 use crate::proto::ClientResult;
+use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
+use crate::proto::SnapshotMetadata;
 use crate::Result;
 use crate::TypeConfig;
 
@@ -69,6 +71,7 @@ where T: TypeConfig
         &self,
         new_commit: u64,
     );
+
     async fn apply_batch(
         &self,
         raft_log: Arc<ROF<T>>,
@@ -101,8 +104,9 @@ where T: TypeConfig
     /// 5. Cleans up old snapshots based on last_included_index, retaining only the latest snapshot
     ///    files as specified by cleanup_retain_count.
     ///
-    /// Returns the path to the successfully created final snapshot file
-    async fn create_snapshot(&self) -> Result<std::path::PathBuf>;
+    /// Returns new Snapshot metadata and final snapshot path to indicate the new snapshot file has
+    /// been successfully created
+    async fn create_snapshot(&self) -> Result<(SnapshotMetadata, std::path::PathBuf)>;
 
     async fn cleanup_snapshot(
         &self,
@@ -110,5 +114,12 @@ where T: TypeConfig
         snapshot_dir: &std::path::PathBuf,
     ) -> crate::Result<()>;
 
-    // fn current_snapshot_version(&self) -> u64;
+    /// Function for none Leader nodes
+    async fn handle_purge_request(
+        &self,
+        current_term: u64,
+        leader_id: Option<u32>,
+        req: crate::proto::PurgeLogRequest,
+        raft_log: &Arc<ROF<T>>,
+    ) -> Result<PurgeLogResponse>;
 }

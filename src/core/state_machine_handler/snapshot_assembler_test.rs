@@ -20,8 +20,9 @@ mod tests {
         let snapshot_meta = SnapshotMetadata {
             last_included_index: 1,
             last_included_term: 1,
+            checksum: vec![],
         };
-        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
+        let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
         let content = read(&final_path).await.unwrap();
 
         assert_eq!(content.len(), 5 * 1024);
@@ -63,8 +64,9 @@ mod tests {
         let snapshot_meta = SnapshotMetadata {
             last_included_index: 1,
             last_included_term: 1,
+            checksum: vec![],
         };
-        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
+        let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
         let content = read(final_path).await.unwrap();
         assert_eq!(content, vec![1]);
     }
@@ -90,8 +92,9 @@ mod tests {
         let snapshot_meta = SnapshotMetadata {
             last_included_index: 1,
             last_included_term: 1,
+            checksum: vec![],
         };
-        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
+        let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
         assert!(final_path.ends_with("snapshot-1-1"));
         assert!(final_path.exists());
     }
@@ -109,8 +112,9 @@ mod tests {
         let snapshot_meta = SnapshotMetadata {
             last_included_index: 1,
             last_included_term: 1,
+            checksum: vec![],
         };
-        let final_path = assembler.finalize(snapshot_meta).await.unwrap();
+        let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
         let metadata = tokio::fs::metadata(final_path).await.unwrap();
         assert_eq!(metadata.len(), 1000 * 4096);
     }

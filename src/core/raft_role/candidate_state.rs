@@ -22,6 +22,7 @@ use super::CANDIDATE;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
+use crate::proto::PurgeLogResponse;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::ConsensusError;
@@ -210,10 +211,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
+        let my_term = self.current_term();
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
-                let my_term = self.current_term();
                 let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
 
                 if ctx.election_handler().check_vote_request_is_legal(
@@ -348,6 +349,16 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     })?;
                 }
             }
+
+            RaftEvent::CreateSnapshot => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!("Candidate node {} attempted to create snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
@@ -358,16 +369,38 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     })?;
             }
 
-            RaftEvent::RaftLogCleanUp(snapshot_metadata) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} attempted to cleanup logs at index {}",
-                        ctx.node_id, snapshot_metadata.last_included_index
-                    ),
+            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
+                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
+
+                let leader_id = ctx.membership().current_leader();
+                match ctx
+                    .state_machine_handler()
+                    .handle_purge_request(my_term, leader_id, purchase_log_request, ctx.raft_log())
+                    .await
+                {
+                    Ok(response) => {
+                        debug!(?response, "RaftEvent::RaftLogCleanUp");
+                        sender.send(Ok(response)).map_err(|e| {
+                            let error_str = format!("{:?}", e);
+                            error!("Failed to send: {}", error_str);
+                            NetworkError::SingalSendFailed(error_str)
+                        })?;
+                    }
+                    Err(e) => {
+                        error!(?e, "RaftEvent::RaftLogCleanUp");
+                        sender
+                            .send(Ok(PurgeLogResponse {
+                                term: my_term,
+                                success: false,
+                            }))
+                            .map_err(|e| {
+                                let error_str = format!("{:?}", e);
+                                error!("Failed to send: {}", error_str);
+                                NetworkError::SingalSendFailed(error_str)
+                            })?;
+                    }
                 }
-                .into())
+                return Ok(());
             }
         }
         return Ok(());

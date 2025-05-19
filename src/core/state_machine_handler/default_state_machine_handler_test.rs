@@ -359,6 +359,7 @@ fn create_test_chunk(
         metadata: Some(SnapshotMetadata {
             last_included_index: 100,
             last_included_term: term,
+            checksum: vec![],
         }),
         data: data.to_vec(),
     }
@@ -557,7 +558,7 @@ async fn test_create_snapshot_case1() {
 
             path.ends_with("temp-5-1") && idx == &5 && term == &1
         })
-        .returning(|_, _, _| Ok(()));
+        .returning(|_, _, _| Ok([0; 32]));
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
@@ -572,7 +573,7 @@ async fn test_create_snapshot_case1() {
     assert!(result.is_ok());
 
     // Verify file system changes
-    let final_path = result.unwrap();
+    let (metadata, final_path) = result.unwrap();
     assert!(final_path.exists());
     assert!(final_path
         .to_str()
@@ -580,6 +581,8 @@ async fn test_create_snapshot_case1() {
         .contains(&format!("{}5-1", SNAPSHOT_DIR_PREFIX)));
 
     assert!(is_dir(&final_path).await.unwrap());
+    assert_eq!(metadata.last_included_index, 5);
+    assert_eq!(metadata.last_included_term, 1);
 }
 
 /// # Case 2: Test concurrent protection
@@ -610,7 +613,7 @@ async fn test_create_snapshot_case2() {
             let db_path = path.join("state_machine");
             fs::create_dir(&db_path).unwrap();
 
-            Ok(())
+            Ok([0; 32])
         });
 
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
@@ -659,13 +662,8 @@ async fn test_create_snapshot_case3() {
     sm.expect_generate_snapshot_data().returning(|path, _, _| {
         debug!(?path, "expect_generate_snapshot_data");
         let _new_db = init_sled_state_machine_db(path).expect("");
-        // // Create the directory structure correctly
-        // fs::create_dir_all(path.clone()).unwrap();
-        // //Simulate sled to create a subdirectory
-        // let db_path = path.join("state_machine");
-        // fs::create_dir(&db_path).unwrap();
 
-        Ok(())
+        Ok([0; 32])
     });
     let snapshot_dir = temp_dir.as_ref().to_path_buf();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
