@@ -15,8 +15,7 @@ use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
-use mockall::predicate;
-use mockall::Predicate;
+use mockall::predicate::eq;
 use mockall::Sequence;
 use prost::Message;
 use tempfile::tempdir;
@@ -36,6 +35,7 @@ use crate::init_sled_state_machine_db;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::Entry;
 use crate::proto::NodeMeta;
+use crate::proto::PurgeLogRequest;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotMetadata;
 use crate::proto::SnapshotResponse;
@@ -726,18 +726,6 @@ fn count_snapshots(dir: &Path) -> usize {
         .count()
 }
 
-fn create_dummy_snapshot(
-    dir: &tempfile::TempDir,
-    version: u64,
-    index: u64,
-    term: u64,
-) {
-    let path = dir
-        .path()
-        .join(format!("{}{}-{}-{}", SNAPSHOT_DIR_PREFIX, version, index, term));
-    std::fs::File::create(path).unwrap();
-}
-
 fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
     debug!(?dir, "get_snapshot_versions");
 
@@ -836,6 +824,252 @@ async fn test_cleanup_snapshot_case3() {
     assert!(remaining.contains(&format!("{}1-1", SNAPSHOT_DIR_PREFIX).into()));
 }
 
+/// #Case 1: Reject stale term
+#[tokio::test]
+async fn test_handle_purge_request_case1() {
+    let temp_dir = TempDir::new().unwrap();
+    let sm = MockStateMachine::new();
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        5, // last_applied
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let req = PurgeLogRequest {
+        term: 3, // current_term is 5 in handler
+        leader_id: 1,
+        last_included_index: 5,
+        last_included_term: 1,
+        snapshot_checksum: [1u8; 32].to_vec(),
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .await
+        .unwrap();
+
+    assert!(!res.success);
+    assert_eq!(res.term, 5);
+}
+
+/// # Case 2: Reject if not from current leader
+#[tokio::test]
+async fn test_handle_purge_request_case2() {
+    let temp_dir = TempDir::new().unwrap();
+    let sm = MockStateMachine::new();
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        5,
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let req = PurgeLogRequest {
+        term: 5,
+        leader_id: 2, // current leader is Some(1)
+        last_included_index: 5,
+        last_included_term: 1,
+        snapshot_checksum: vec![],
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .await
+        .unwrap();
+
+    assert!(!res.success);
+}
+
+// # Case 3: Reject if local state is behind
+#[tokio::test]
+async fn test_handle_purge_request_case3() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().returning(|| (3, 1)); // last applied is 3
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        3,
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let req = PurgeLogRequest {
+        term: 5,
+        leader_id: 1,
+        last_included_index: 5, // higher than local 3
+        last_included_term: 1,
+        snapshot_checksum: vec![],
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .await
+        .unwrap();
+
+    assert!(!res.success);
+}
+
+/// # Case 4: Reject on checksum mismatch
+#[tokio::test]
+async fn test_handle_purge_request_case4() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut sm = MockStateMachine::new();
+    let mut correct_checksum = [0u8; 32];
+    correct_checksum[..3].copy_from_slice(&[1, 2, 3]);
+    create_test_snapshot(&mut sm, 5, 1, correct_checksum).await;
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        5,
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let mut wrong_checksum = [0u8; 32];
+    wrong_checksum[..3].copy_from_slice(&[4, 5, 6]);
+    let req = PurgeLogRequest {
+        term: 5,
+        leader_id: 1,
+        last_included_index: 5,
+        last_included_term: 1,
+        snapshot_checksum: wrong_checksum.to_vec(), // mismatch
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .await
+        .unwrap();
+
+    assert!(!res.success);
+}
+
+/// # Case 5: Successful purge
+#[tokio::test]
+async fn test_handle_purge_request_case5() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut sm = MockStateMachine::new();
+    let expected_checksum = [1u8; 32];
+    create_test_snapshot(&mut sm, 5, 1, expected_checksum).await;
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        5,
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_purge_logs_up_to()
+        .with(eq(5))
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let req = PurgeLogRequest {
+        term: 5,
+        leader_id: 1,
+        last_included_index: 5,
+        last_included_term: 1,
+        snapshot_checksum: expected_checksum.to_vec(),
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(raft_log))
+        .await
+        .unwrap();
+
+    assert!(res.success);
+}
+
+/// # Case 6: Handle storage errors during purge
+#[tokio::test]
+async fn test_handle_purge_request_case6() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut sm = MockStateMachine::new();
+
+    let mut expected_checksum = [1u8; 32];
+    expected_checksum[..3].copy_from_slice(&[1, 2, 3]);
+    create_test_snapshot(&mut sm, 5, 1, expected_checksum).await;
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        5,
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_purge_logs_up_to()
+        .returning(|_| Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into()));
+
+    let req = PurgeLogRequest {
+        term: 5,
+        leader_id: 1,
+        last_included_index: 5,
+        last_included_term: 1,
+        snapshot_checksum: expected_checksum.to_vec(),
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(raft_log))
+        .await
+        .unwrap();
+
+    assert!(!res.success);
+}
+
+/// # Case 7: Reject when no local snapshot exists
+#[tokio::test]
+async fn test_handle_purge_request_case7() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut sm = MockStateMachine::new();
+    create_test_snapshot(&mut sm, 5, 1, [0_u8; 32]).await;
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        5,
+        100,
+        Arc::new(sm),
+        snapshot_config(temp_dir.path().to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    let req = PurgeLogRequest {
+        term: 5,
+        leader_id: 1,
+        last_included_index: 5,
+        last_included_term: 1,
+        snapshot_checksum: vec![1, 2, 3],
+    };
+
+    let res = handler
+        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .await
+        .unwrap();
+
+    assert!(!res.success);
+}
+
+// Helper to create test snapshots
+async fn create_test_snapshot(
+    sm: &mut MockStateMachine,
+    index: u64,
+    term: u64,
+    checksum: [u8; 32],
+) {
+    sm.expect_last_applied().returning(move || (index, term));
+    sm.expect_last_included()
+        .returning(move || (index, term, Some(checksum.clone())));
+}
+
 // Helper functions
 async fn create_test_dirs(
     temp_dir: &TempDir,
@@ -864,11 +1098,6 @@ async fn get_dir_names(path: &Path) -> Vec<String> {
         }
     }
     names
-}
-
-// Custom predicate for path comparison
-fn path_eq(expected: PathBuf) -> impl Predicate<PathBuf> + 'static {
-    predicate::function(move |x: &PathBuf| x == &expected)
 }
 
 fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {

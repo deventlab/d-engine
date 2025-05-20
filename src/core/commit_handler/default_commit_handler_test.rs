@@ -46,7 +46,8 @@ fn setup(
     mock_handler.expect_should_snapshot().returning(|_| true);
 
     // Mock Raft Log
-    let mock_raft_log = MockRaftLog::new();
+    let mut mock_raft_log = MockRaftLog::new();
+    mock_raft_log.expect_purge_logs_up_to().returning(|_| Ok(()));
 
     // Init handler
     DefaultCommitHandler::<MockTypeConfig>::new(
