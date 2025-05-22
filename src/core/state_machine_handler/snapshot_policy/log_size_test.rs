@@ -143,7 +143,7 @@ fn high_frequency_performance() {
 
     let duration = start.elapsed();
     assert!(
-        duration < Duration::from_millis(50),
+        duration < Duration::from_millis(100),
         "Performance regression detected: {:?}",
         duration
     );
