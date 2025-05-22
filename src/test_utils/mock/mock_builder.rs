@@ -208,7 +208,7 @@ impl MockBuilder {
     pub fn build_node(self) -> Node<MockTypeConfig> {
         let raft = self.build_raft();
         let event_tx = raft.event_tx.clone();
-        let node_config = raft.node_config.clone();
+        let node_config = raft.ctx.node_config.clone();
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),

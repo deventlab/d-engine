@@ -76,7 +76,6 @@ use crate::Result;
 use crate::SignalParams;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
-use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::SystemError;
 
@@ -365,9 +364,10 @@ impl NodeBuilder {
     }
 
     pub fn set_snapshot_policy(
-        self,
-        snapshot_policy: impl SnapshotPolicy,
+        mut self,
+        snapshot_policy: SNP<RaftTypeConfig>,
     ) -> Self {
+        self.snapshot_policy = Some(snapshot_policy);
         self
     }
 

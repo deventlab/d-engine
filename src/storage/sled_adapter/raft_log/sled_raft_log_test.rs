@@ -1128,5 +1128,5 @@ async fn test_raft_log_drop() {
 
     // Verify flush occurred by checking persistence
     let reloaded_db = sled::open(temp_dir.path()).unwrap();
-    assert!(reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().len() > 0);
+    assert!(!reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().is_empty());
 }

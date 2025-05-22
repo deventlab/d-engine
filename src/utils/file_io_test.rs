@@ -51,7 +51,7 @@ async fn test_create_parent_dir_for_directory_without_trailing_separator() {
     // Verify parent directory exists
     let parent_dir = dir_path.parent().unwrap();
     assert!(parent_dir.exists());
-    assert!(file_io::is_dir(&parent_dir).await.unwrap());
+    assert!(file_io::is_dir(parent_dir).await.unwrap());
 }
 
 /// Passed: "/tmp/dir/subdir/"
@@ -150,6 +150,7 @@ async fn test_delete_busy_file() {
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .mode(0o644) // Set permissions
             .open(&file_path)
             .unwrap();

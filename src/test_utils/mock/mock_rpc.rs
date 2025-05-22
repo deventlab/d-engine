@@ -99,10 +99,10 @@ impl RpcService for MockRpcService {
     }
     async fn install_snapshot(
         &self,
-        request: tonic::Request<Streaming<SnapshotChunk>>,
+        _request: tonic::Request<Streaming<SnapshotChunk>>,
     ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
         match &self.expected_snapshot_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock install_snapshot response set")),
         }
@@ -110,10 +110,10 @@ impl RpcService for MockRpcService {
 
     async fn purge_log(
         &self,
-        request: tonic::Request<PurgeLogRequest>,
+        _request: tonic::Request<PurgeLogRequest>,
     ) -> std::result::Result<tonic::Response<PurgeLogResponse>, tonic::Status> {
         match &self.expected_purge_log_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock purge_log response set")),
         }

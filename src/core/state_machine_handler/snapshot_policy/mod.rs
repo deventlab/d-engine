@@ -4,8 +4,10 @@
 mod composite;
 mod log_size;
 mod time_based;
+#[allow(unused)]
 pub(crate) use composite::*;
 pub(crate) use log_size::*;
+#[allow(unused)]
 pub(crate) use time_based::*;
 
 use crate::cluster::is_leader;
@@ -34,6 +36,7 @@ pub struct SnapshotContext {
 }
 
 impl SnapshotContext {
+    #[allow(unused)]
     pub fn is_leader(&self) -> bool {
         is_leader(self.role)
     }

@@ -87,7 +87,7 @@ where T: TypeConfig
     async fn install_snapshot_chunk(
         &self,
         current_term: u64,
-        stream_request: tonic::Streaming<SnapshotChunk>,
+        stream_request: Box<tonic::Streaming<SnapshotChunk>>,
         sender: crate::MaybeCloneOneshotSender<std::result::Result<crate::proto::SnapshotResponse, tonic::Status>>,
     ) -> Result<()>;
 
@@ -113,7 +113,7 @@ where T: TypeConfig
     async fn cleanup_snapshot(
         &self,
         before_version: u64,
-        snapshot_dir: &std::path::PathBuf,
+        snapshot_dir: &std::path::Path,
     ) -> crate::Result<()>;
 
     /// Function for none Leader nodes

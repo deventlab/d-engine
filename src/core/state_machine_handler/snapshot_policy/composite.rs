@@ -5,6 +5,7 @@
 use super::SnapshotContext;
 use super::SnapshotPolicy;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CompositePolicy {
     log_size_threshold: u64, // e.g. 5000 log entries
@@ -14,7 +15,7 @@ pub(crate) struct CompositePolicy {
 impl SnapshotPolicy for CompositePolicy {
     fn should_trigger(
         &self,
-        ctx: &SnapshotContext,
+        _ctx: &SnapshotContext,
     ) -> bool {
         false
     }

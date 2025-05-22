@@ -31,7 +31,6 @@ use crate::MaybeCloneOneshot;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockRaftLog;
-use crate::MockStateMachine;
 use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::PeerUpdate;
@@ -219,7 +218,7 @@ async fn test_election_timeout_case2_1() {
     // 3. Prepare the node as Candidate
     raft.set_role(RaftRole::Candidate(Box::new(CandidateState::new(
         1,
-        raft.node_config.clone(),
+        raft.ctx.node_config.clone(),
     ))));
 
     // 4. Add state listeners
@@ -277,7 +276,7 @@ async fn test_election_timeout_case2_2() {
     // 3. Prepare the node as Candidate
     raft.set_role(RaftRole::Candidate(Box::new(CandidateState::new(
         1,
-        raft.node_config.clone(),
+        raft.ctx.node_config.clone(),
     ))));
 
     // 4. Add state listeners
@@ -329,7 +328,7 @@ async fn test_election_timeout_case3() {
     // 3. Prepare the node as Candidate
     raft.set_role(RaftRole::Leader(Box::new(LeaderState::new(
         1,
-        raft.node_config.clone(),
+        raft.ctx.node_config.clone(),
     ))));
 
     // 4. Add state listeners

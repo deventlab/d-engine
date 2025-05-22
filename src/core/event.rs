@@ -71,7 +71,7 @@ pub(crate) enum RaftEvent {
     ),
 
     InstallSnapshotChunk(
-        tonic::Streaming<SnapshotChunk>,
+        Box<tonic::Streaming<SnapshotChunk>>,
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
 
@@ -81,6 +81,7 @@ pub(crate) enum RaftEvent {
     ),
 
     // None RPC event
+    #[allow(dead_code)]
     CreateSnapshotEvent,
 
     // Event after log been purged successfully
@@ -117,8 +118,8 @@ pub(crate) enum TestEvent {
 #[cfg(test)]
 pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
     match event {
-        RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(req.clone()),
-        RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(req.clone()),
+        RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
+        RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
         RaftEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
         RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
         RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
@@ -126,6 +127,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
-        RaftEvent::LogPurgedEvent(log_id) => TestEvent::LogPurgedEvent(log_id.clone()),
+        RaftEvent::LogPurgedEvent(log_id) => TestEvent::LogPurgedEvent(*log_id),
     }
 }

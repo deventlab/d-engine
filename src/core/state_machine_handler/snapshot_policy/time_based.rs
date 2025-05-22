@@ -4,12 +4,14 @@
 use super::SnapshotContext;
 use super::SnapshotPolicy;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TimeBasedPolicy {
     last_trigger: u64,
     threshold: u64, // 24 hours
 }
 
+#[allow(dead_code)]
 impl TimeBasedPolicy {
     pub(crate) fn check(
         &mut self,
@@ -31,7 +33,7 @@ impl TimeBasedPolicy {
 impl SnapshotPolicy for TimeBasedPolicy {
     fn should_trigger(
         &self,
-        ctx: &SnapshotContext,
+        _ctx: &SnapshotContext,
     ) -> bool {
         false
     }

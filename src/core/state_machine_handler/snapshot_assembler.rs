@@ -92,7 +92,7 @@ impl SnapshotAssembler {
         snapshot_metadata: &SnapshotMetadata,
     ) -> Result<PathBuf> {
         // 0. Validate snapshot metadata
-        if let None = snapshot_metadata.last_included {
+        if snapshot_metadata.last_included.is_none() {
             return Err(StorageError::Snapshot(
                 "snapshot_metadata is empty when install new snapshot file".to_string(),
             )

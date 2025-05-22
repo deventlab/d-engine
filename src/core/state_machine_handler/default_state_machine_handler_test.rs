@@ -304,7 +304,7 @@ async fn test_install_snapshot_chunk_case1() {
     let addr: SocketAddr = format!("[::]:{}", port).parse().unwrap();
     let mut rpc_client = RpcServiceClient::connect(format!(
         "grpc://localhost:{}",
-        addr.to_string().split(':').last().unwrap()
+        addr.to_string().split(':').next_back().unwrap()
     ))
     .await
     .unwrap();
@@ -356,7 +356,7 @@ fn create_test_chunk(
         leader_id,
         seq,
         total,
-        checksum: compute_checksum(&data),
+        checksum: compute_checksum(data),
         metadata: Some(SnapshotMetadata {
             last_included: Some(LogId { index: 100, term }),
             checksum: vec![],
@@ -444,7 +444,9 @@ async fn test_install_snapshot_chunk_case2() {
 
     let streaming_request = create_test_stream(chunks);
     let (sender, receiver) = MaybeCloneOneshot::new();
-    let result = handler.install_snapshot_chunk(1, streaming_request, sender).await;
+    let result = handler
+        .install_snapshot_chunk(1, Box::new(streaming_request), sender)
+        .await;
     assert!(result.is_ok());
 
     // Verify final response
@@ -468,7 +470,10 @@ async fn test_install_snapshot_chunk_case3() {
 
     let (sender, receiver) = MaybeCloneOneshot::new();
     let stream = create_test_stream(vec![bad_chunk]);
-    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+    handler
+        .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
+        .await
+        .unwrap();
 
     let response = receiver.await.unwrap().unwrap();
     assert!(!response.success);
@@ -489,7 +494,10 @@ async fn test_install_snapshot_chunk_case4() {
 
     let (sender, receiver) = MaybeCloneOneshot::new();
     let stream = create_test_stream(chunks);
-    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+    handler
+        .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
+        .await
+        .unwrap();
 
     let status = receiver.await.unwrap().unwrap_err();
     assert_eq!(status.code(), tonic::Code::Aborted);
@@ -507,7 +515,10 @@ async fn test_install_snapshot_chunk_case5() {
     let stream = create_test_stream(chunks);
 
     let (sender, receiver) = MaybeCloneOneshot::new();
-    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+    handler
+        .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
+        .await
+        .unwrap();
 
     // Should get error from receiver
     let status = receiver.await.unwrap().unwrap_err();
@@ -526,7 +537,10 @@ async fn test_install_snapshot_chunk_case6() {
 
     let (sender, receiver) = MaybeCloneOneshot::new();
     let stream = create_test_stream(vec![invalid_chunk]);
-    handler.install_snapshot_chunk(TEST_TERM, stream, sender).await.unwrap();
+    handler
+        .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
+        .await
+        .unwrap();
 
     let status = receiver.await.unwrap().unwrap_err();
     assert_eq!(status.code(), tonic::Code::Internal);
@@ -755,7 +769,7 @@ async fn test_cleanup_snapshot_case1() {
         MockSnapshotPolicy::new(),
     );
 
-    handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+    handler.cleanup_snapshot(2, temp_dir.path()).await.unwrap();
 
     // Verify remaining snapshots
     let mut remaining = get_snapshot_versions(temp_dir.path());
@@ -780,7 +794,7 @@ async fn test_cleanup_snapshot_case2() {
         MockSnapshotPolicy::new(),
     );
 
-    handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+    handler.cleanup_snapshot(2, temp_dir.path()).await.unwrap();
 
     // Verify no deletions
     let mut remaining = get_snapshot_versions(temp_dir.path());
@@ -810,15 +824,15 @@ async fn test_cleanup_snapshot_case3() {
         MockSnapshotPolicy::new(),
     );
 
-    handler.cleanup_snapshot(2, &temp_dir.path().into()).await.unwrap();
+    handler.cleanup_snapshot(2, temp_dir.path()).await.unwrap();
 
     //Verify only valid version 1 is deleted
     let remaining = get_dir_names(temp_dir.path()).await;
     debug!(?remaining);
 
     assert!(remaining.contains(&"invalid_format".into()));
-    assert!(remaining.contains(&format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX).into()));
-    assert!(remaining.contains(&format!("{}1-1", SNAPSHOT_DIR_PREFIX).into()));
+    assert!(remaining.contains(&format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX)));
+    assert!(remaining.contains(&format!("{}1-1", SNAPSHOT_DIR_PREFIX)));
 }
 
 /// #Case 1: Reject stale term
@@ -838,7 +852,7 @@ async fn test_handle_purge_request_case1() {
     let req = PurgeLogRequest {
         term: 3,
         leader_id: 1,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: [1u8; 32].to_vec(),
         leader_commit: 1,
     };
@@ -869,7 +883,7 @@ async fn test_handle_purge_request_case2() {
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 2,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: vec![],
         leader_commit: 1,
     };
@@ -901,7 +915,7 @@ async fn test_handle_purge_request_case3() {
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: vec![],
         leader_commit: 1,
     };
@@ -937,7 +951,7 @@ async fn test_handle_purge_request_case4() {
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: wrong_checksum.to_vec(), // mismatch
         leader_commit: 1,
     };
@@ -977,7 +991,7 @@ async fn test_handle_purge_request_case5() {
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: expected_checksum.to_vec(),
         leader_commit: 1,
     };
@@ -1017,7 +1031,7 @@ async fn test_handle_purge_request_case6() {
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: expected_checksum.to_vec(),
         leader_commit: 1,
     };
@@ -1049,7 +1063,7 @@ async fn test_handle_purge_request_case7() {
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included: last_included.clone(),
+        last_included,
         snapshot_checksum: vec![1, 2, 3],
         leader_commit: 1,
     };
@@ -1071,7 +1085,7 @@ async fn create_test_snapshot(
 ) {
     sm.expect_last_applied().returning(move || LogId { index, term });
     sm.expect_last_included()
-        .returning(move || (LogId { index, term }, Some(checksum.clone())));
+        .returning(move || (LogId { index, term }, Some(checksum)));
 }
 
 // Helper functions

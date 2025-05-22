@@ -1,4 +1,5 @@
 use std::ops::RangeInclusive;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -162,7 +163,7 @@ where T: TypeConfig
     async fn install_snapshot_chunk(
         &self,
         current_term: u64,
-        stream_request: Streaming<SnapshotChunk>,
+        stream_request: Box<Streaming<SnapshotChunk>>,
         sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
     ) -> Result<()> {
         debug!(%current_term, ?stream_request, "install_snapshot_chunk");
@@ -238,9 +239,9 @@ where T: TypeConfig
 
         if metadata.is_none() {
             sender
-                .send(Err(Status::internal(format!(
-                    "Received snapshot chunk does not include metadata information",
-                ))))
+                .send(Err(Status::internal(
+                    "Received snapshot chunk does not include metadata information".to_string(),
+                )))
                 .map_err(|e| {
                     warn!("Failed to send response: {:?}", e);
                     StorageError::Snapshot(format!("Send snapshot error: {:?}", e))
@@ -353,17 +354,15 @@ where T: TypeConfig
     async fn cleanup_snapshot(
         &self,
         retain_count: u64,
-        snapshot_dir: &PathBuf,
+        snapshot_dir: &Path,
     ) -> Result<()> {
         // Phase 1: Collect and parse snapshots
         let mut snapshots = Vec::new();
 
-        let mut entries = fs::read_dir(snapshot_dir.as_path())
-            .await
-            .map_err(|e| StorageError::PathError {
-                path: snapshot_dir.clone(),
-                source: e,
-            })?;
+        let mut entries = fs::read_dir(snapshot_dir).await.map_err(|e| StorageError::PathError {
+            path: snapshot_dir.to_path_buf(),
+            source: e,
+        })?;
 
         while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
             let path = entry.path();
@@ -425,7 +424,7 @@ where T: TypeConfig
         }
 
         // Verification 2: Locally applied log index >= requested up_to_index
-        if let None = req.last_included {
+        if req.last_included.is_none() {
             return Ok(PurgeLogResponse {
                 term: current_term,
                 success: false,

@@ -289,6 +289,7 @@ impl Transport for GrpcTransport {
         Ok(VoteResult { peer_ids, responses })
     }
 
+    #[allow(unused)]
     async fn send_purge_request(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,

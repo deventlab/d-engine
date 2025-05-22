@@ -193,12 +193,12 @@ async fn test_apply_chunk_functionality() {
     let test_entries = vec![
         Entry {
             index: 1,
-            command: ClientCommand::insert(&safe_kv(1), &safe_kv(2)).encode_to_vec(),
+            command: ClientCommand::insert(safe_kv(1), safe_kv(2)).encode_to_vec(),
             term: 1,
         },
         Entry {
             index: 2,
-            command: ClientCommand::delete(&safe_kv(1)).encode_to_vec(),
+            command: ClientCommand::delete(safe_kv(1)).encode_to_vec(),
             term: 1,
         },
     ];
@@ -218,7 +218,7 @@ fn test_metrics_integration() {
     let sm = context.state_machine.clone();
     let test_entry = Entry {
         index: 1,
-        command: ClientCommand::insert(&safe_kv(1), &safe_kv(2)).encode_to_vec(),
+        command: ClientCommand::insert(safe_kv(1), safe_kv(2)).encode_to_vec(),
         term: 1,
     };
 
@@ -263,7 +263,7 @@ async fn test_generate_snapshot_data_case1() {
 
     // Check data entries
     for i in 1..=3 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(safe_kv(i)).unwrap().is_some());
     }
 
     // Check metadata (stored in same tree due to code limitation)
@@ -279,7 +279,7 @@ async fn test_generate_snapshot_data_case1() {
     );
     assert_eq!(
         safe_vk(
-            &metadata_tree
+            metadata_tree
                 .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)
                 .unwrap()
                 .unwrap()
@@ -289,7 +289,7 @@ async fn test_generate_snapshot_data_case1() {
     );
     assert_eq!(
         safe_vk(
-            &metadata_tree
+            metadata_tree
                 .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)
                 .unwrap()
                 .unwrap()
@@ -326,12 +326,12 @@ async fn test_generate_snapshot_data_case2() {
 
     // Entries <=3 should exist
     for i in 1..=3 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(safe_kv(i)).unwrap().is_some());
     }
 
     // Entries >3 should not exist
     for i in 4..=5 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_none());
+        assert!(tree.get(safe_kv(i)).unwrap().is_none());
     }
 }
 
@@ -354,7 +354,7 @@ async fn test_generate_snapshot_data_case3() {
 
     assert_eq!(
         safe_vk(
-            &metadata_tree
+            metadata_tree
                 .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)
                 .unwrap()
                 .unwrap()
@@ -364,7 +364,7 @@ async fn test_generate_snapshot_data_case3() {
     );
     assert_eq!(
         safe_vk(
-            &metadata_tree
+            metadata_tree
                 .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)
                 .unwrap()
                 .unwrap()
@@ -401,7 +401,7 @@ async fn test_generate_snapshot_data_case4() {
 
     assert_eq!(tree.len(), 150);
     for i in 1..=150 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(safe_kv(i)).unwrap().is_some());
     }
 }
 
@@ -595,5 +595,5 @@ async fn test_state_machine_drop() {
 
     // Verify flush occurred by checking persistence
     let reloaded_db = sled::open(temp_dir.path()).unwrap();
-    assert!(reloaded_db.open_tree(STATE_MACHINE_META_NAMESPACE).unwrap().len() > 0);
+    assert!(!reloaded_db.open_tree(STATE_MACHINE_META_NAMESPACE).unwrap().is_empty());
 }

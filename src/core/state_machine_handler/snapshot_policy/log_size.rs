@@ -82,6 +82,7 @@ impl LogSizePolicy {
         ctx.last_applied.index.saturating_sub(ctx.last_included.index)
     }
 
+    #[allow(unused)]
     pub(crate) fn update_threshold(
         &self,
         new_val: u64,

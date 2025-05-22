@@ -234,7 +234,7 @@ where T: TypeConfig
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
         self.event_tx
-            .send(RaftEvent::InstallSnapshotChunk(request.into_inner(), resp_tx))
+            .send(RaftEvent::InstallSnapshotChunk(Box::new(request.into_inner()), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 

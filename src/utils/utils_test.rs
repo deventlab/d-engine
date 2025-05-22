@@ -17,21 +17,21 @@ use crate::Result;
 #[test]
 fn test_kv_1() {
     let v = safe_kv(1);
-    assert_eq!(1, safe_vk(&v).unwrap());
+    assert_eq!(1, safe_vk(v).unwrap());
     let v = safe_kv(25);
-    assert_eq!(25, safe_vk(&v).unwrap());
+    assert_eq!(25, safe_vk(v).unwrap());
 }
 
 #[test]
 fn test_kv_2() {
     let i = u64::MAX; //max of u64
     let v = safe_kv(i);
-    assert_eq!(i, safe_vk(&v).unwrap());
+    assert_eq!(i, safe_vk(v).unwrap());
 }
 #[test]
 fn test_kv_3() {
     let v = safe_kv(1);
-    assert_eq!(1, safe_vk(&v).unwrap());
+    assert_eq!(1, safe_vk(v).unwrap());
 }
 
 #[test]

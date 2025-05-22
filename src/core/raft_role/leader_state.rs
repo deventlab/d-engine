@@ -103,6 +103,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// Planned purge target (next log position to trigger compaction)
     ///
     /// This is the upper bound (exclusive) for the next scheduled log purge.
+    #[allow(dead_code)]
     pub(super) scheduled_purge_upto: Option<LogId>,
 
     /// === Persistent State (MUST be on disk) ===
@@ -117,6 +118,7 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// When present, indicates an asynchronous cleanup task is in progress
     /// targeting the specified log index.
+    #[allow(dead_code)]
     pub(super) pending_purge: Option<u64>,
 
     /// === Volatile State ===
@@ -124,6 +126,7 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Key: Follower node ID  
     /// Value: Last confirmed purge index from follower
+    #[allow(dead_code)]
     pub(super) follower_purge_progress: HashMap<u32, u64>,
 
     // -- Request Processing --

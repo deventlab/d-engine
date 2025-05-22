@@ -456,11 +456,10 @@ impl RaftStateMachine {
 
         let checksum = tree
             .get(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM)?
-            .map(|ivec| {
+            .and_then(|ivec| {
                 let bytes: Vec<u8> = ivec.to_vec();
                 bytes.try_into().ok()
-            })
-            .flatten();
+            });
 
         Ok((index, term, checksum))
     }

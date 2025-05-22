@@ -38,7 +38,6 @@ where T: TypeConfig
     pub(crate) node_id: u32,
     pub(crate) role: RaftRole<T>,
     pub(crate) ctx: RaftContext<T>,
-    pub(crate) node_config: Arc<RaftNodeConfig>,
 
     // Channels with peers
     // PeersChannel will be used inside Transport::spawn when sending peers messages
@@ -102,7 +101,6 @@ where T: TypeConfig
             node_id,
             ctx,
             role,
-            node_config: node_config.clone(),
 
             peer_channels: None,
 
