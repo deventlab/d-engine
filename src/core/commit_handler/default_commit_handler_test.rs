@@ -8,6 +8,7 @@ use tokio::time::Instant;
 use tokio::time::{self};
 
 use super::DefaultCommitHandler;
+use crate::proto::LogId;
 use crate::proto::SnapshotMetadata;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
@@ -36,8 +37,7 @@ fn setup(
     mock_handler.expect_create_snapshot().returning(|| {
         Ok((
             SnapshotMetadata {
-                last_included_index: 1,
-                last_included_term: 1,
+                last_included: Some(LogId { index: 1, term: 1 }),
                 checksum: vec![],
             },
             PathBuf::from("/tmp/value"),
@@ -50,10 +50,12 @@ fn setup(
     mock_raft_log.expect_purge_logs_up_to().returning(|_| Ok(()));
 
     // Init handler
+    let (event_tx, _event_rx) = mpsc::channel(1);
     DefaultCommitHandler::<MockTypeConfig>::new(
         Arc::new(mock_handler),
         Arc::new(mock_raft_log),
         new_commit_rx,
+        event_tx,
         batch_size_threshold,
         process_interval_ms,
         shutdown_signal,

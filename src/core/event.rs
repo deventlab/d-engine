@@ -8,6 +8,7 @@ use crate::proto::ClientResponse;
 use crate::proto::ClusteMembershipChangeRequest;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ClusterMembership;
+use crate::proto::LogId;
 use crate::proto::MetadataRequest;
 use crate::proto::PurgeLogRequest;
 use crate::proto::PurgeLogResponse;
@@ -80,7 +81,10 @@ pub(crate) enum RaftEvent {
     ),
 
     // None RPC event
-    CreateSnapshot,
+    CreateSnapshotEvent,
+
+    // Event after log been purged successfully
+    LogPurgedEvent(LogId),
 }
 
 #[cfg(test)]
@@ -104,7 +108,10 @@ pub(crate) enum TestEvent {
     RaftLogCleanUp(PurgeLogRequest),
 
     // None RPC event
-    CreateSnapshot,
+    CreateSnapshotEvent,
+
+    // Event after log been purged successfully
+    LogPurgedEvent(LogId),
 }
 
 #[cfg(test)]
@@ -118,6 +125,7 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
-        RaftEvent::CreateSnapshot => TestEvent::CreateSnapshot,
+        RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
+        RaftEvent::LogPurgedEvent(log_id) => TestEvent::LogPurgedEvent(log_id.clone()),
     }
 }

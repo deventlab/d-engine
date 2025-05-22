@@ -35,6 +35,7 @@ use crate::proto::ClientProposeRequest;
 use crate::proto::ClientResponse;
 use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ErrorCode;
+use crate::proto::LogId;
 use crate::proto::PurgeLogRequest;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
@@ -69,22 +70,90 @@ use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
 
+/// Leader node's state in Raft consensus algorithm.
+///
+/// This structure maintains all state that should be persisted on leader crashes,
+/// including replication progress tracking and log compaction management.
+///
+/// # Type Parameters
+/// - `T`: Application-specific Raft type configuration
 pub struct LeaderState<T: TypeConfig> {
-    // Leader State
+    // -- Core Raft Leader State --
+    /// Shared cluster state with lock protection
     pub shared_state: SharedState,
 
+    /// === Volatile State ===
+    /// For each server (node_id), index of the next log entry to send to that server
+    ///
+    /// Raft Paper: §5.3 Figure 2 (nextIndex)
     pub(super) next_index: HashMap<u32, u64>,
+
+    /// === Volatile State ===
+    /// For each server (node_id), index of highest log entry known to be replicated
+    ///
+    /// Raft Paper: §5.3 Figure 2 (matchIndex)
     pub(super) match_index: HashMap<u32, u64>,
+
+    /// === Volatile State ===
+    /// Temporary storage for no-op entry log ID during leader initialization
     pub(super) noop_log_id: Option<u64>,
 
-    // Leader batched proposal buffer
-    batch_buffer: BatchBuffer<ClientRequestWithSignal>,
+    // -- Log Compaction & Purge --
+    /// === Volatile State ===
+    /// Planned purge target (next log position to trigger compaction)
+    ///
+    /// This is the upper bound (exclusive) for the next scheduled log purge.
+    pub(super) scheduled_purge_upto: Option<LogId>,
 
-    timer: ReplicationTimer,
+    /// === Persistent State (MUST be on disk) ===
+    /// Last actually purged log position (inclusive)
+    ///
+    /// This represents the latest log index that has been physically removed
+    /// from storage after successful compaction.
+    pub(super) last_purged_index: Option<LogId>,
 
-    // Shared global node_config
+    /// === Volatile State ===
+    /// Background log purge task status
+    ///
+    /// When present, indicates an asynchronous cleanup task is in progress
+    /// targeting the specified log index.
+    pub(super) pending_purge: Option<u64>,
+
+    /// === Volatile State ===
+    /// Follower purge progress tracking for flow control
+    ///
+    /// Key: Follower node ID  
+    /// Value: Last confirmed purge index from follower
+    pub(super) follower_purge_progress: HashMap<u32, u64>,
+
+    // -- Request Processing --
+    /// Batched proposal buffer for client requests
+    ///
+    /// Accumulates requests until either:
+    /// 1. Batch reaches configured size limit
+    /// 2. Explicit flush is triggered
+    batch_buffer: Box<BatchBuffer<ClientRequestWithSignal>>,
+
+    // -- Timing & Scheduling --
+    /// Replication heartbeat timer manager
+    ///
+    /// Handles:
+    /// - Heartbeat interval tracking
+    /// - Election timeout prevention
+    /// - Batch proposal flushing
+    timer: Box<ReplicationTimer>,
+
+    // -- Cluster Configuration --
+    /// Cached Raft node configuration (shared reference)
+    ///
+    /// This includes:
+    /// - Cluster membership
+    /// - Timeout parameters
+    /// - Performance tuning knobs
     pub(super) node_config: Arc<RaftNodeConfig>,
 
+    // -- Type System Marker --
+    /// Phantom data for type parameter anchoring
     _marker: PhantomData<T>,
 }
 
@@ -321,7 +390,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let state_machine = ctx.state_machine();
-        let last_applied_index = state_machine.last_applied().0;
+        let last_applied_index = state_machine.last_applied().index;
         let my_id = self.shared_state.node_id;
         let my_term = self.current_term();
 
@@ -494,50 +563,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 })?;
             }
 
-            RaftEvent::CreateSnapshot => {
-                let state_machine_handler = ctx.state_machine_handler();
-
-                match state_machine_handler.create_snapshot().await {
-                    Err(e) => {
-                        error!(%e,"self.state_machine_handler.create_snapshot with error.");
-                    }
-                    Ok((snapshot_metadata, _final_path)) => {
-                        info!("Purge Leader local raft logs");
-
-                        // Purge Raft Logs
-                        if let Err(e) = ctx.raft_log().purge_logs_up_to(snapshot_metadata.last_included_index) {
-                            error!(?e, %snapshot_metadata.last_included_index, "raft_log.purge_logs_up_to");
-                        }
-
-                        // ----------------------
-                        // Phase 1: Pre-Checks
-                        // ----------------------
-                        let peers = ctx.voting_members(peer_channels);
-                        if peers.is_empty() {
-                            warn!("no peer found for leader({})", my_id);
-                            return Err(MembershipError::NoPeersAvailable.into());
-                        }
-                        // ----------------------
-                        // Phase 2: Send Purge request to the other nodes
-                        // ----------------------
-                        let transport = ctx.transport();
-                        transport
-                            .send_purge_request(
-                                peers,
-                                PurgeLogRequest {
-                                    term: my_term,
-                                    leader_id: my_id,
-                                    last_included_index: snapshot_metadata.last_included_index,
-                                    last_included_term: snapshot_metadata.last_included_term,
-                                    snapshot_checksum: snapshot_metadata.checksum.clone(),
-                                },
-                                &self.node_config.retry,
-                            )
-                            .await?;
-                    }
-                }
-            }
-
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
@@ -563,6 +588,57 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     context: format!("Leader node {} receives RaftEvent::RaftLogCleanUp", ctx.node_id),
                 }
                 .into());
+            }
+
+            RaftEvent::CreateSnapshotEvent => {
+                let state_machine_handler = ctx.state_machine_handler();
+
+                match state_machine_handler.create_snapshot().await {
+                    Err(e) => {
+                        error!(%e,"self.state_machine_handler.create_snapshot with error.");
+                    }
+                    Ok((snapshot_metadata, _final_path)) => {
+                        info!("Purge Leader local raft logs");
+
+                        if let Some(last_included) = snapshot_metadata.last_included {
+                            // Purge Raft Logs
+                            if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included) {
+                                error!(?e, ?last_included, "raft_log.purge_logs_up_to");
+                            }
+
+                            // ----------------------
+                            // Phase 1: Pre-Checks
+                            // ----------------------
+                            let peers = ctx.voting_members(peer_channels);
+                            if peers.is_empty() {
+                                warn!("no peer found for leader({})", my_id);
+                                return Err(MembershipError::NoPeersAvailable.into());
+                            }
+                            // ----------------------
+                            // Phase 2: Send Purge request to the other nodes
+                            // ----------------------
+                            let transport = ctx.transport();
+                            transport
+                                .send_purge_request(
+                                    peers,
+                                    PurgeLogRequest {
+                                        term: my_term,
+                                        leader_id: my_id,
+                                        last_included: Some(last_included),
+                                        snapshot_checksum: snapshot_metadata.checksum.clone(),
+                                        leader_commit: self.commit_index(),
+                                    },
+                                    &self.node_config.retry,
+                                )
+                                .await?;
+                        }
+                    }
+                }
+            }
+
+            RaftEvent::LogPurgedEvent(log_id) => {
+                debug!(?log_id, "Receive LogPurgedEvent");
+                self.last_purged_index = Some(log_id);
             }
         }
         return Ok(());
@@ -879,21 +955,26 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
         Self {
             shared_state: candidate.shared_state.clone(),
-            timer: ReplicationTimer::new(
+            timer: Box::new(ReplicationTimer::new(
                 rpc_append_entries_clock_in_ms,
                 rpc_append_entries_batch_process_delay_in_ms,
-            ),
+            )),
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            batch_buffer: BatchBuffer::new(
+            batch_buffer: Box::new(BatchBuffer::new(
                 rpc_append_entries_in_batch_threshold,
                 Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
-            ),
+            )),
 
             node_config: candidate.node_config.clone(),
             _marker: PhantomData,
+
+            scheduled_purge_upto: None,
+            last_purged_index: candidate.last_purged_index,
+            follower_purge_progress: HashMap::new(),
+            pending_purge: None,
         }
     }
 }
@@ -979,21 +1060,25 @@ impl<T: TypeConfig> LeaderState<T> {
 
         LeaderState {
             shared_state: SharedState::new(node_id, None, None),
-            timer: ReplicationTimer::new(
+            timer: Box::new(ReplicationTimer::new(
                 rpc_append_entries_clock_in_ms,
                 rpc_append_entries_batch_process_delay_in_ms,
-            ),
+            )),
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            batch_buffer: BatchBuffer::new(
+            batch_buffer: Box::new(BatchBuffer::new(
                 rpc_append_entries_in_batch_threshold,
                 Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
-            ),
+            )),
 
             node_config,
             _marker: PhantomData,
+            scheduled_purge_upto: None,
+            last_purged_index: None, //TODO
+            follower_purge_progress: HashMap::new(),
+            pending_purge: None,
         }
     }
 }

@@ -21,11 +21,11 @@ use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
+use crate::proto::LogId;
 use crate::proto::PurgeLogResponse;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::ConsensusError;
-use crate::ElectionTimer;
 use crate::Membership;
 use crate::NetworkError;
 use crate::RaftContext;
@@ -38,12 +38,48 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 
+/// Learner node's state in Raft cluster.
+///
+/// This state contains both:
+/// - **Persistent State**: Should be written to stable storage before responding to RPCs
+/// - **Volatile State**: Reinitialized after node restarts
+///
+/// Learners are non-voting members participating in log replication but not in leader election.
+/// This state tracks the minimal required information for log synchronization.
+///
+/// # Type Parameters
+/// - `T`: Application-specific Raft type configuration
 pub struct LearnerState<T: TypeConfig> {
+    // -- Core State --
+    /// Shared cluster state with concurrency control
     pub shared_state: SharedState,
-    pub(super) timer: ElectionTimer,
-    // Shared global node_config
+
+    // -- Log Compaction --
+    /// === Persistent State ===
+    /// - Last actually purged log position (inclusive)
+    ///
+    /// Represents the latest log index that has been physically removed
+    /// from storage after successful compaction.
+    pub(super) last_purged_index: Option<LogId>,
+
+    /// === Volatile State ===
+    /// - Asynchronous log cleanup task status
+    ///
+    /// When set to `Some(index)`, indicates there's an ongoing background task
+    /// attempting to purge logs up to the specified index.
+    pub(super) pending_purge: Option<u64>,
+
+    // -- Cluster Configuration --
+    /// Cached Raft node configuration (immutable shared reference)
+    ///
+    /// Contains:
+    /// - Cluster membership topology
+    /// - Timeout parameters
+    /// - Performance tuning parameters
     pub(super) node_config: Arc<RaftNodeConfig>,
 
+    // -- Type System Marker --
+    /// Phantom type marker for compile-time validation
     _marker: PhantomData<T>,
 }
 
@@ -112,14 +148,18 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     }
     //--- None state behaviors
     fn is_timer_expired(&self) -> bool {
-        self.timer.is_expired()
+        warn!("Learner should not has timer");
+
+        false
     }
     fn reset_timer(&mut self) {
-        self.timer.reset();
+        warn!("Learner should not be asked to reset timer");
     }
     fn next_deadline(&self) -> Instant {
-        self.timer.next_deadline()
+        warn!("Learner should not be asked for next_deadline");
+        Instant::now()
     }
+
     // fn tick_interval(&self) -> Duration {
     //     self.timer.tick_interval()
     // }
@@ -131,10 +171,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         _peer_channels: Arc<POF<T>>,
         _ctx: &RaftContext<T>,
     ) -> Result<()> {
-        debug!("reset timer");
-        self.timer.reset();
-
-        debug!("as Learner will do nothing");
+        warn!("Learner should not has timer tick");
 
         Ok(())
     }
@@ -234,15 +271,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     })?;
             }
 
-            RaftEvent::CreateSnapshot => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!("Learner node {} attempted to create snapshot.", ctx.node_id),
-                }
-                .into())
-            }
-
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
                 ctx.handlers
                     .state_machine_handler
@@ -256,7 +284,13 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 let leader_id = ctx.membership().current_leader();
                 match ctx
                     .state_machine_handler()
-                    .handle_purge_request(my_term, leader_id, purchase_log_request, ctx.raft_log())
+                    .handle_purge_request(
+                        my_term,
+                        leader_id,
+                        self.last_purged_index,
+                        &purchase_log_request,
+                        ctx.raft_log(),
+                    )
                     .await
                 {
                     Ok(response) => {
@@ -273,6 +307,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                             .send(Ok(PurgeLogResponse {
                                 term: my_term,
                                 success: false,
+                                last_purged: purchase_log_request.last_included,
                             }))
                             .map_err(|e| {
                                 let error_str = format!("{:?}", e);
@@ -282,6 +317,20 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     }
                 }
                 return Ok(());
+            }
+
+            RaftEvent::CreateSnapshotEvent => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!("Learner node {} attempted to create snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
+            RaftEvent::LogPurgedEvent(log_id) => {
+                debug!(?log_id, "Receive LogPurgedEvent");
+                self.last_purged_index = Some(log_id);
             }
         }
         return Ok(());
@@ -307,12 +356,10 @@ impl<T: TypeConfig> LearnerState<T> {
     ) -> Self {
         LearnerState {
             shared_state: SharedState::new(node_id, None, None),
-            timer: ElectionTimer::new((
-                node_config.raft.election.election_timeout_min,
-                node_config.raft.election.election_timeout_max,
-            )),
             node_config,
             _marker: PhantomData,
+            last_purged_index: None, //TODO
+            pending_purge: None,
         }
     }
 }
@@ -320,11 +367,9 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
     fn from(follower_state: &FollowerState<T>) -> Self {
         Self {
             shared_state: follower_state.shared_state.clone(),
-            timer: ElectionTimer::new((
-                follower_state.node_config.raft.election.election_timeout_min,
-                follower_state.node_config.raft.election.election_timeout_max,
-            )),
             node_config: follower_state.node_config.clone(),
+            last_purged_index: follower_state.last_purged_index,
+            pending_purge: follower_state.pending_purge,
             _marker: PhantomData,
         }
     }
@@ -333,11 +378,9 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
     fn from(candidate_state: &CandidateState<T>) -> Self {
         Self {
             shared_state: candidate_state.shared_state.clone(),
-            timer: ElectionTimer::new((
-                candidate_state.node_config.raft.election.election_timeout_min,
-                candidate_state.node_config.raft.election.election_timeout_max,
-            )),
             node_config: candidate_state.node_config.clone(),
+            last_purged_index: candidate_state.last_purged_index,
+            pending_purge: None,
             _marker: PhantomData,
         }
     }

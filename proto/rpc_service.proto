@@ -210,8 +210,7 @@ message SnapshotMeta {
     uint64 createdAtHigh = 3;
     uint64 createdAtLow = 4;
     uint32 authorId = 5;
-    uint64 lastIncludedIndex = 6;
-    uint64 lastIncludedTerm = 7;
+    LogId lastIncluded = 6;
 }
 
 message Snapshot {
@@ -258,9 +257,8 @@ message SnapshotChunk {
 }
 
 message SnapshotMetadata {
-  uint64 last_included_index = 1; // The last log index included in the snapshot
-  uint64 last_included_term = 2;  // The last log term included in the snapshot
-  bytes checksum = 3;             // SHA-256 checksum
+  LogId last_included = 1; // The last log index included in the snapshot
+  bytes checksum = 2;             // SHA-256 checksum
 }
   
 message SnapshotResponse {
@@ -272,14 +270,15 @@ message SnapshotResponse {
 message PurgeLogRequest {
   uint64 term = 1;
   uint32 leader_id = 2;
-  uint64 last_included_index = 3; // Maximum log index that can be deleted
-  uint64 last_included_term = 4; // Corresponding log term
+  uint64 leader_commit = 3; // Leader's commit_index (for Follower verification)
+  LogId last_included = 4; // Maximum log index that can be deleted
   bytes snapshot_checksum = 5;
 }
   
 message PurgeLogResponse {
-  uint64 term = 1;
-  bool success = 2;
+  uint64 term = 1; // Follower's current term (for Leader abdication)
+  bool success = 2; // Whether to accept the request (non-asynchronous operation result)
+  LogId last_purged = 3; // Follower's current purged position (for Leader update progress)
 }
 
   

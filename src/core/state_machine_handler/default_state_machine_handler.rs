@@ -32,6 +32,7 @@ use crate::file_io::validate_checksum;
 use crate::proto::client_command::Command;
 use crate::proto::ClientCommand;
 use crate::proto::ClientResult;
+use crate::proto::LogId;
 use crate::proto::PurgeLogRequest;
 use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
@@ -273,15 +274,13 @@ where T: TypeConfig
             return false;
         }
 
-        let (last_applied_index, last_applied_term) = self.state_machine.last_applied();
-        let (last_included_index, last_included_term, _) = self.state_machine.last_included();
+        let last_applied = self.state_machine.last_applied();
+        let (last_included, _) = self.state_machine.last_included();
 
         self.snapshot_policy.should_trigger(&SnapshotContext {
             role: new_commit_data.role,
-            last_included_index,
-            last_included_term,
-            last_applied_index,
-            last_applied_term,
+            last_included,
+            last_applied,
             current_term: new_commit_data.current_term,
         })
     }
@@ -296,14 +295,14 @@ where T: TypeConfig
 
         // 2: Prepare temp snapshot file and final snapshot file
         debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
-        let (last_included_index, last_included_term) = self.state_machine.last_applied();
+        let last_included = self.state_machine.last_applied();
         let temp_dir = self
             .snapshot_config
             .snapshots_dir
-            .join(format!("temp-{}-{}", last_included_index, last_included_term));
+            .join(format!("temp-{}-{}", last_included.index, last_included.term));
         let final_dir = self.snapshot_config.snapshots_dir.join(format!(
             "{}{}-{}",
-            SNAPSHOT_DIR_PREFIX, last_included_index, last_included_term
+            SNAPSHOT_DIR_PREFIX, last_included.index, last_included.term
         ));
 
         // 3: Create snapshot based on the temp path
@@ -311,7 +310,7 @@ where T: TypeConfig
 
         let checksum = match self
             .state_machine
-            .generate_snapshot_data(temp_dir.clone(), last_included_index, last_included_term)
+            .generate_snapshot_data(temp_dir.clone(), last_included)
             .await
         {
             Err(e) => {
@@ -343,8 +342,7 @@ where T: TypeConfig
 
         Ok((
             SnapshotMetadata {
-                last_included_index,
-                last_included_term,
+                last_included: Some(last_included),
                 checksum: checksum.to_vec(),
             },
             final_dir,
@@ -413,7 +411,8 @@ where T: TypeConfig
         &self,
         current_term: u64,
         leader_id: Option<u32>,
-        req: PurgeLogRequest,
+        last_purged: Option<LogId>,
+        req: &PurgeLogRequest,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<PurgeLogResponse> {
         // Verification 1: Leader identity legitimacy
@@ -421,23 +420,36 @@ where T: TypeConfig
             return Ok(PurgeLogResponse {
                 term: current_term,
                 success: false,
+                last_purged,
             });
         }
 
         // Verification 2: Locally applied log index >= requested up_to_index
-        if self.state_machine.last_applied().0 < req.last_included_index {
+        if let None = req.last_included {
             return Ok(PurgeLogResponse {
                 term: current_term,
                 success: false,
+                last_purged,
             });
         }
 
+        if let Some(last_included) = req.last_included {
+            if self.state_machine.last_applied().index < last_included.index {
+                return Ok(PurgeLogResponse {
+                    term: current_term,
+                    success: false,
+                    last_purged,
+                });
+            }
+        }
+
         // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let (_, _, Some(local_checksum)) = self.state_machine.last_included() {
+        if let (_, Some(local_checksum)) = self.state_machine.last_included() {
             if req.snapshot_checksum != local_checksum {
                 return Ok(PurgeLogResponse {
                     term: current_term,
                     success: false,
+                    last_purged,
                 });
             }
         } else {
@@ -445,20 +457,23 @@ where T: TypeConfig
             return Ok(PurgeLogResponse {
                 term: current_term,
                 success: false,
+                last_purged,
             });
         }
 
         // Perform physical deletion
-        match raft_log.purge_logs_up_to(req.last_included_index) {
+        match raft_log.purge_logs_up_to(req.last_included.unwrap()) {
             Ok(_) => Ok(PurgeLogResponse {
                 term: current_term,
                 success: true,
+                last_purged,
             }),
             Err(e) => {
                 error!(?e, "raft_log.purge_logs_up_to");
                 Ok(PurgeLogResponse {
                     term: current_term,
                     success: false,
+                    last_purged,
                 })
             }
         }

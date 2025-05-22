@@ -12,6 +12,7 @@ use tracing::trace;
 use super::MockTypeConfig;
 use crate::grpc;
 use crate::proto::ClusterMembership;
+use crate::proto::LogId;
 use crate::ElectionConfig;
 use crate::MockElectionCore;
 use crate::MockMembership;
@@ -348,7 +349,9 @@ pub fn mock_raft_log() -> MockRaftLog {
 }
 pub fn mock_state_machine() -> MockStateMachine {
     let mut state_machine = MockStateMachine::new();
-    state_machine.expect_last_applied().returning(|| (0, 0));
+    state_machine
+        .expect_last_applied()
+        .returning(|| LogId { index: 0, term: 0 });
     state_machine.expect_flush().returning(|| Ok(()));
     state_machine.expect_save_hard_state().returning(|| Ok(()));
     state_machine

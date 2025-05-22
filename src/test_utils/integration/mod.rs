@@ -188,7 +188,7 @@ pub fn setup_raft_components(
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
-        last_applied_pair.0,
+        last_applied_pair.index,
         node_config.raft.commit_handler.max_entries_per_chunk,
         state_machine.clone(),
         node_config.raft.snapshot.clone(),

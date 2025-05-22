@@ -3,6 +3,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::fs::read;
 
+    use crate::proto::LogId;
     use crate::proto::SnapshotMetadata;
     use crate::SnapshotAssembler;
 
@@ -18,8 +19,7 @@ mod tests {
         }
 
         let snapshot_meta = SnapshotMetadata {
-            last_included_index: 1,
-            last_included_term: 1,
+            last_included: Some(LogId { index: 1, term: 1 }),
             checksum: vec![],
         };
         let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
@@ -62,8 +62,7 @@ mod tests {
         assembler.write_chunk(1, vec![1]).await.unwrap();
 
         let snapshot_meta = SnapshotMetadata {
-            last_included_index: 1,
-            last_included_term: 1,
+            last_included: Some(LogId { index: 1, term: 1 }),
             checksum: vec![],
         };
         let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
@@ -90,8 +89,7 @@ mod tests {
         let mut assembler = SnapshotAssembler::new(dir.path()).await.unwrap();
 
         let snapshot_meta = SnapshotMetadata {
-            last_included_index: 1,
-            last_included_term: 1,
+            last_included: Some(LogId { index: 1, term: 1 }),
             checksum: vec![],
         };
         let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
@@ -110,8 +108,7 @@ mod tests {
         }
 
         let snapshot_meta = SnapshotMetadata {
-            last_included_index: 1,
-            last_included_term: 1,
+            last_included: Some(LogId { index: 1, term: 1 }),
             checksum: vec![],
         };
         let final_path = assembler.finalize(&snapshot_meta).await.unwrap();

@@ -422,8 +422,12 @@ impl RaftLog for SledRaftLog {
     #[autometrics(objective = API_SLO)]
     fn purge_logs_up_to(
         &self,
-        cutoff: u64,
+        cutoff: LogId,
     ) -> Result<()> {
+        debug!(?cutoff, "purge_logs_up_to");
+
+        let cutoff = cutoff.index;
+
         let mut batch = LocalLogBatch::default();
 
         for result in self.tree.range(..safe_kv(cutoff + 1)) {

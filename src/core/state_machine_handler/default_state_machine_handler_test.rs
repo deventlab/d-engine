@@ -34,6 +34,7 @@ use crate::file_io::is_dir;
 use crate::init_sled_state_machine_db;
 use crate::proto::rpc_service_client::RpcServiceClient;
 use crate::proto::Entry;
+use crate::proto::LogId;
 use crate::proto::NodeMeta;
 use crate::proto::PurgeLogRequest;
 use crate::proto::SnapshotChunk;
@@ -357,8 +358,7 @@ fn create_test_chunk(
         total,
         checksum: compute_checksum(&data),
         metadata: Some(SnapshotMetadata {
-            last_included_index: 100,
-            last_included_term: term,
+            last_included: Some(LogId { index: 100, term }),
             checksum: vec![],
         }),
         data: data.to_vec(),
@@ -545,20 +545,20 @@ async fn test_create_snapshot_case1() {
     sm.expect_last_applied()
         .times(1)
         .in_sequence(&mut seq)
-        .returning(|| (5, 1));
+        .returning(|| LogId { index: 5, term: 1 });
     sm.expect_generate_snapshot_data()
         .times(1)
-        .withf(|path, idx, term| {
-            debug!(?path, %idx, %term);
+        .withf(|path, last_included| {
+            debug!(?path, ?last_included);
             // Create the directory structure correctly
             fs::create_dir_all(path).unwrap();
             //Simulate sled to create a subdirectory
             let db_path = path.join("state_machine");
             fs::create_dir(&db_path).unwrap();
 
-            path.ends_with("temp-5-1") && idx == &5 && term == &1
+            path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
         })
-        .returning(|_, _, _| Ok([0; 32]));
+        .returning(|_, _| Ok([0; 32]));
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
@@ -581,8 +581,7 @@ async fn test_create_snapshot_case1() {
         .contains(&format!("{}5-1", SNAPSHOT_DIR_PREFIX)));
 
     assert!(is_dir(&final_path).await.unwrap());
-    assert_eq!(metadata.last_included_index, 5);
-    assert_eq!(metadata.last_included_term, 1);
+    assert_eq!(metadata.last_included, Some(LogId { term: 1, index: 5 }));
 }
 
 /// # Case 2: Test concurrent protection
@@ -595,26 +594,24 @@ async fn test_create_snapshot_case2() {
 
     // Setup slow snapshot generation
     let (tx, mut rx) = tokio::sync::oneshot::channel();
-    sm.expect_last_applied().returning(|| (1, 1));
-    sm.expect_generate_snapshot_data()
-        .times(2)
-        .returning(move |path, _, _| {
-            std::thread::sleep(Duration::from_millis(50));
-            // Wait forever
-            if let Err(_e) = rx.try_recv() {
-                return Err(StorageError::Snapshot("test failure".into()).into());
-            }
+    sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
+    sm.expect_generate_snapshot_data().times(2).returning(move |path, _| {
+        std::thread::sleep(Duration::from_millis(50));
+        // Wait forever
+        if let Err(_e) = rx.try_recv() {
+            return Err(StorageError::Snapshot("test failure".into()).into());
+        }
 
-            debug!(?path, "generate_snapshot_data");
+        debug!(?path, "generate_snapshot_data");
 
-            // Create the directory structure correctly
-            fs::create_dir_all(path.clone()).unwrap();
-            //Simulate sled to create a subdirectory
-            let db_path = path.join("state_machine");
-            fs::create_dir(&db_path).unwrap();
+        // Create the directory structure correctly
+        fs::create_dir_all(path.clone()).unwrap();
+        //Simulate sled to create a subdirectory
+        let db_path = path.join("state_machine");
+        fs::create_dir(&db_path).unwrap();
 
-            Ok([0; 32])
-        });
+        Ok([0; 32])
+    });
 
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
@@ -657,9 +654,9 @@ async fn test_create_snapshot_case3() {
     let mut count = 0;
     sm.expect_last_applied().returning(move || {
         count += 1;
-        (count, 1)
+        LogId { term: 1, index: count }
     });
-    sm.expect_generate_snapshot_data().returning(|path, _, _| {
+    sm.expect_generate_snapshot_data().returning(|path, _| {
         debug!(?path, "expect_generate_snapshot_data");
         let _new_db = init_sled_state_machine_db(path).expect("");
 
@@ -693,9 +690,9 @@ async fn test_create_snapshot_case4() {
     let mut sm = MockStateMachine::new();
 
     // Setup failing snapshot generation
-    sm.expect_last_applied().returning(|| (1, 1));
+    sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
     sm.expect_generate_snapshot_data()
-        .returning(|_, _, _| Err(StorageError::Snapshot("test failure".into()).into()));
+        .returning(|_, _| Err(StorageError::Snapshot("test failure".into()).into()));
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         0,
@@ -837,16 +834,17 @@ async fn test_handle_purge_request_case1() {
         MockSnapshotPolicy::new(),
     );
 
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
-        term: 3, // current_term is 5 in handler
+        term: 3,
         leader_id: 1,
-        last_included_index: 5,
-        last_included_term: 1,
+        last_included: last_included.clone(),
         snapshot_checksum: [1u8; 32].to_vec(),
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
         .await
         .unwrap();
 
@@ -867,16 +865,17 @@ async fn test_handle_purge_request_case2() {
         MockSnapshotPolicy::new(),
     );
 
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
         term: 5,
-        leader_id: 2, // current leader is Some(1)
-        last_included_index: 5,
-        last_included_term: 1,
+        leader_id: 2,
+        last_included: last_included.clone(),
         snapshot_checksum: vec![],
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
         .await
         .unwrap();
 
@@ -888,7 +887,7 @@ async fn test_handle_purge_request_case2() {
 async fn test_handle_purge_request_case3() {
     let temp_dir = TempDir::new().unwrap();
     let mut sm = MockStateMachine::new();
-    sm.expect_last_applied().returning(|| (3, 1)); // last applied is 3
+    sm.expect_last_applied().returning(|| LogId { index: 3, term: 1 }); // last applied is 3
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         3,
@@ -898,16 +897,17 @@ async fn test_handle_purge_request_case3() {
         MockSnapshotPolicy::new(),
     );
 
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included_index: 5, // higher than local 3
-        last_included_term: 1,
+        last_included: last_included.clone(),
         snapshot_checksum: vec![],
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
         .await
         .unwrap();
 
@@ -933,16 +933,17 @@ async fn test_handle_purge_request_case4() {
 
     let mut wrong_checksum = [0u8; 32];
     wrong_checksum[..3].copy_from_slice(&[4, 5, 6]);
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included_index: 5,
-        last_included_term: 1,
+        last_included: last_included.clone(),
         snapshot_checksum: wrong_checksum.to_vec(), // mismatch
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
         .await
         .unwrap();
 
@@ -968,20 +969,21 @@ async fn test_handle_purge_request_case5() {
     let mut raft_log = MockRaftLog::new();
     raft_log
         .expect_purge_logs_up_to()
-        .with(eq(5))
+        .with(eq(LogId { index: 5, term: 1 }))
         .times(1)
         .returning(|_| Ok(()));
 
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included_index: 5,
-        last_included_term: 1,
+        last_included: last_included.clone(),
         snapshot_checksum: expected_checksum.to_vec(),
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(raft_log))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(raft_log))
         .await
         .unwrap();
 
@@ -1011,16 +1013,17 @@ async fn test_handle_purge_request_case6() {
         .expect_purge_logs_up_to()
         .returning(|_| Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into()));
 
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included_index: 5,
-        last_included_term: 1,
+        last_included: last_included.clone(),
         snapshot_checksum: expected_checksum.to_vec(),
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(raft_log))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(raft_log))
         .await
         .unwrap();
 
@@ -1042,16 +1045,17 @@ async fn test_handle_purge_request_case7() {
         MockSnapshotPolicy::new(),
     );
 
+    let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
         term: 5,
         leader_id: 1,
-        last_included_index: 5,
-        last_included_term: 1,
+        last_included: last_included.clone(),
         snapshot_checksum: vec![1, 2, 3],
+        leader_commit: 1,
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
         .await
         .unwrap();
 
@@ -1065,9 +1069,9 @@ async fn create_test_snapshot(
     term: u64,
     checksum: [u8; 32],
 ) {
-    sm.expect_last_applied().returning(move || (index, term));
+    sm.expect_last_applied().returning(move || LogId { index, term });
     sm.expect_last_included()
-        .returning(move || (index, term, Some(checksum.clone())));
+        .returning(move || (LogId { index, term }, Some(checksum.clone())));
 }
 
 // Helper functions

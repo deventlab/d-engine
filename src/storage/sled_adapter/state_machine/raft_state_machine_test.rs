@@ -18,6 +18,7 @@ use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
 use crate::proto::ClientCommand;
 use crate::proto::Entry;
+use crate::proto::LogId;
 use crate::proto::SnapshotMetadata;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::setup_raft_components;
@@ -60,7 +61,7 @@ fn test_apply_committed_raft_logs_in_batch() {
         entries.push(log);
     }
     context.state_machine.apply_chunk(entries).expect("should succeed");
-    assert_eq!(context.state_machine.last_applied(), (3, 1));
+    assert_eq!(context.state_machine.last_applied(), LogId { index: 3, term: 1 });
 }
 
 fn init(path: &str) -> Arc<sled::Db> {
@@ -142,7 +143,7 @@ fn test_last_entry_detection() {
     sm.apply_chunk(entries).unwrap();
 
     // Verify last entry
-    assert_eq!(sm.last_applied(), (5, 1));
+    assert_eq!(sm.last_applied(), LogId { index: 5, term: 1 });
 }
 
 #[tokio::test]
@@ -207,7 +208,7 @@ async fn test_apply_chunk_functionality() {
 
     // Verify results
     assert_eq!(sm.get(&safe_kv(1)).unwrap(), None);
-    assert_eq!(sm.last_applied(), (2, 1));
+    assert_eq!(sm.last_applied(), LogId { index: 2, term: 1 });
 }
 
 #[test]
@@ -249,7 +250,9 @@ async fn test_generate_snapshot_data_case1() {
 
     // Generate snapshot with last included index=3
     let temp_path = root.path().join("snapshot1");
-    sm.generate_snapshot_data(temp_path.clone(), 3, 1).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 3, term: 1 })
+        .await
+        .unwrap();
 
     // Verify snapshot contents
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -264,7 +267,16 @@ async fn test_generate_snapshot_data_case1() {
     }
 
     // Check metadata (stored in same tree due to code limitation)
-    assert_eq!(sm.last_included(), (3u64, 1u64, Some(expected_checksum)));
+    assert_eq!(
+        sm.last_included(),
+        (
+            LogId {
+                index: 3u64,
+                term: 1u64
+            },
+            Some(expected_checksum)
+        )
+    );
     assert_eq!(
         safe_vk(
             &metadata_tree
@@ -304,7 +316,9 @@ async fn test_generate_snapshot_data_case2() {
 
     // Generate snapshot with last included index=3
     let temp_path = root.path().join("snapshot2");
-    sm.generate_snapshot_data(temp_path.clone(), 3, 1).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 3, term: 1 })
+        .await
+        .unwrap();
 
     // Verify snapshot contents
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -330,7 +344,9 @@ async fn test_generate_snapshot_data_case3() {
 
     // Generate snapshot with specific metadata
     let temp_path = root.path().join("snapshot3");
-    sm.generate_snapshot_data(temp_path.clone(), 42, 5).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 42, term: 5 })
+        .await
+        .unwrap();
 
     // Verify metadata
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -375,7 +391,9 @@ async fn test_generate_snapshot_data_case4() {
 
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
-    sm.generate_snapshot_data(temp_path.clone(), 150, 1).await.unwrap();
+    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 150, term: 1 })
+        .await
+        .unwrap();
 
     // Verify all entries exist
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -396,9 +414,9 @@ async fn test_apply_snapshot_from_file_case1() {
 
     // Generate test snapshot
     let temp_path = root.path().join("snapshot_basic");
+    let last_included = LogId { index: 5, term: 2 };
     let metadata = SnapshotMetadata {
-        last_included_index: 5,
-        last_included_term: 2,
+        last_included: Some(last_included),
         checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
@@ -415,17 +433,10 @@ async fn test_apply_snapshot_from_file_case1() {
 
     // Verify data
     assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
-    assert_eq!(
-        sm.last_applied(),
-        (metadata.last_included_index, metadata.last_included_term)
-    );
+    assert_eq!(sm.last_applied(), last_included);
     assert_eq!(
         sm.last_included(),
-        (
-            metadata.last_included_index,
-            metadata.last_included_term,
-            Some(metadata.checksum_array().expect("success"))
-        )
+        (last_included, Some(metadata.checksum_array().expect("success")))
     );
 }
 
@@ -444,8 +455,7 @@ async fn test_apply_snapshot_from_file_case2() {
     // Create snapshot with new data
     let temp_path = root.path().join("snapshot_overwrite");
     let metadata = SnapshotMetadata {
-        last_included_index: 10,
-        last_included_term: 3,
+        last_included: Some(LogId { index: 10, term: 3 }),
         checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
@@ -472,9 +482,9 @@ async fn test_apply_snapshot_from_file_case3() {
     let sm = context.state_machine.clone();
 
     let temp_path = root.path().join("snapshot_metadata");
+    let last_included = LogId { index: 15, term: 4 };
     let test_metadata = SnapshotMetadata {
-        last_included_index: 15,
-        last_included_term: 4,
+        last_included: Some(last_included),
         checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
@@ -483,16 +493,10 @@ async fn test_apply_snapshot_from_file_case3() {
         let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
         let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
         metadata_tree
-            .insert(
-                SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX,
-                &safe_kv(test_metadata.last_included_index),
-            )
+            .insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included.index))
             .unwrap();
         metadata_tree
-            .insert(
-                SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM,
-                &safe_kv(test_metadata.last_included_term),
-            )
+            .insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included.term))
             .unwrap();
         metadata_tree.flush().unwrap();
     }
@@ -502,16 +506,9 @@ async fn test_apply_snapshot_from_file_case3() {
     // Verify metadata propagation
     assert_eq!(
         sm.last_included(),
-        (
-            test_metadata.last_included_index,
-            test_metadata.last_included_term,
-            Some(test_metadata.checksum_array().expect("success"))
-        )
+        (last_included, Some(test_metadata.checksum_array().expect("success")))
     );
-    assert_eq!(
-        sm.last_applied(),
-        (test_metadata.last_included_index, test_metadata.last_included_term)
-    );
+    assert_eq!(sm.last_applied(), last_included);
 }
 
 /// # Case 4: Concurrent snapshot protection
@@ -523,8 +520,7 @@ async fn test_apply_snapshot_from_file_case4() {
 
     let temp_path = root.path().join("snapshot_concurrent");
     let metadata = SnapshotMetadata {
-        last_included_index: 20,
-        last_included_term: 5,
+        last_included: Some(LogId { index: 20, term: 5 }),
         checksum: [0; 32].to_vec(), //TODO: to be tested
     };
 
@@ -563,7 +559,13 @@ async fn test_apply_snapshot_from_file_case5() {
     let sm = context.state_machine.clone();
 
     let result = sm
-        .apply_snapshot_from_file(&SnapshotMetadata::default(), PathBuf::from("/non/existent/path"))
+        .apply_snapshot_from_file(
+            &SnapshotMetadata {
+                last_included: Some(LogId { term: 1, index: 1 }),
+                checksum: [0_u8; 32].to_vec(),
+            },
+            PathBuf::from("/non/existent/path"),
+        )
         .await;
 
     assert!(matches!(

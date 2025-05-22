@@ -3,6 +3,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::SnapshotContext;
+use crate::proto::LogId;
 use crate::LogSizePolicy;
 use crate::SnapshotPolicy;
 use crate::FOLLOWER;
@@ -15,10 +16,14 @@ fn test_context(
     role: i32,
 ) -> SnapshotContext {
     SnapshotContext {
-        last_applied_index: applied,
-        last_included_index: snapshot,
-        last_included_term: 1,
-        last_applied_term: 1,
+        last_applied: LogId {
+            index: applied,
+            term: 1,
+        },
+        last_included: LogId {
+            index: snapshot,
+            term: 1,
+        },
         current_term: 1,
         role,
     }
@@ -54,7 +59,7 @@ fn respects_cooldown_period() {
     assert!(policy.should_trigger(&ctx));
 
     // Subsequent check during cooldown should not trigger
-    ctx.last_applied_index = 300;
+    ctx.last_applied.index = 300;
     assert!(!policy.should_trigger(&ctx));
 }
 
@@ -112,10 +117,8 @@ fn dynamic_threshold_adjustment() {
 fn handles_term_regression() {
     let policy = LogSizePolicy::new(100, Duration::ZERO);
     let ctx = SnapshotContext {
-        last_applied_index: 200,
-        last_included_index: 100,
-        last_included_term: 3, // Higher than current term
-        last_applied_term: 2,
+        last_applied: LogId { index: 200, term: 2 },
+        last_included: LogId { index: 100, term: 3 }, // Higher than current term
         current_term: 2,
         role: LEADER,
     };

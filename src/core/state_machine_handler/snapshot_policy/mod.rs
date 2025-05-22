@@ -9,6 +9,7 @@ pub(crate) use log_size::*;
 pub(crate) use time_based::*;
 
 use crate::cluster::is_leader;
+use crate::proto::LogId;
 
 #[cfg(test)]
 mod log_size_test;
@@ -27,10 +28,8 @@ pub trait SnapshotPolicy: Send + Sync {
 #[derive(Clone)]
 pub struct SnapshotContext {
     pub role: i32,
-    pub last_included_index: u64,
-    pub last_included_term: u64,
-    pub last_applied_index: u64,
-    pub last_applied_term: u64,
+    pub last_included: LogId,
+    pub last_applied: LogId,
     pub current_term: u64,
 }
 

@@ -24,6 +24,7 @@ use super::FOLLOWER;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
+use crate::proto::LogId;
 use crate::proto::PurgeLogResponse;
 use crate::proto::VoteResponse;
 use crate::utils::cluster::error;
@@ -42,12 +43,43 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 
+/// Follower node's state in Raft consensus.
+///
+/// Maintains state required for responding to leader heartbeats and log replication.
+///
+/// # Type Parameters
+/// - `T`: Application-specific Raft type configuration
 pub struct FollowerState<T: TypeConfig> {
+    // -- Core State --
+    /// Shared cluster state with mutex protection
     pub shared_state: SharedState,
-    pub(super) timer: ElectionTimer,
-    // Shared global node_config
+
+    // -- Log Compaction --
+    /// === Persistent State ===
+    /// Last physically purged log index (inclusive)
+    pub(super) last_purged_index: Option<LogId>,
+
+    /// === Volatile State ===
+    /// Background log purge task status
+    ///
+    /// When present, indicates an asynchronous cleanup task is in progress
+    /// targeting the specified log index.
+    pub(super) pending_purge: Option<u64>,
+
+    // -- Cluster Configuration --
+    /// Node configuration (shared immutable reference)
     pub(super) node_config: Arc<RaftNodeConfig>,
 
+    // -- Election Timing --
+    /// Leader heartbeat detection timer
+    ///
+    /// Manages:
+    /// - Heartbeat timeout tracking
+    /// - Transition to candidate state when timeout occurs
+    pub(super) timer: ElectionTimer,
+
+    // -- Type System Marker --
+    /// Phantom data for type parameterization
     _marker: PhantomData<T>,
 }
 
@@ -299,28 +331,26 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 }
             }
 
-            RaftEvent::CreateSnapshot => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!("Follower node {} attempted to create snapshot.", ctx.node_id),
-                }
-                .into())
-            }
-
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
                 ctx.handlers
                     .state_machine_handler
                     .install_snapshot_chunk(self.current_term(), stream, sender)
                     .await?;
             }
+
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
                 let leader_id = ctx.membership().current_leader();
                 match ctx
                     .state_machine_handler()
-                    .handle_purge_request(my_term, leader_id, purchase_log_request, ctx.raft_log())
+                    .handle_purge_request(
+                        my_term,
+                        leader_id,
+                        self.last_purged_index,
+                        &purchase_log_request,
+                        ctx.raft_log(),
+                    )
                     .await
                 {
                     Ok(response) => {
@@ -337,6 +367,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             .send(Ok(PurgeLogResponse {
                                 term: my_term,
                                 success: false,
+                                last_purged: purchase_log_request.last_included,
                             }))
                             .map_err(|e| {
                                 let error_str = format!("{:?}", e);
@@ -346,6 +377,20 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     }
                 }
                 return Ok(());
+            }
+
+            RaftEvent::CreateSnapshotEvent => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!("Follower node {} attempted to create snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
+            RaftEvent::LogPurgedEvent(log_id) => {
+                debug!(?log_id, "Receive LogPurgedEvent");
+                self.last_purged_index = Some(log_id);
             }
         }
 
@@ -370,6 +415,8 @@ impl<T: TypeConfig> FollowerState<T> {
             )),
             node_config,
             _marker: PhantomData,
+            last_purged_index: None, //TODO
+            pending_purge: None,
         }
     }
 
@@ -393,6 +440,8 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
                 candidate_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: candidate_state.node_config.clone(),
+            last_purged_index: candidate_state.last_purged_index,
+            pending_purge: None,
             _marker: PhantomData,
         }
     }
@@ -406,6 +455,8 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
                 leader_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: leader_state.node_config.clone(),
+            last_purged_index: leader_state.last_purged_index,
+            pending_purge: None,
             _marker: PhantomData,
         }
     }
@@ -420,6 +471,8 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
                 learner_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: learner_state.node_config.clone(),
+            last_purged_index: learner_state.last_purged_index,
+            pending_purge: learner_state.pending_purge,
             _marker: PhantomData,
         }
     }

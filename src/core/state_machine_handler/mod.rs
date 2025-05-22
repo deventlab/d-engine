@@ -56,6 +56,8 @@ use super::NewCommitData;
 use crate::alias::ROF;
 use crate::proto::ClientCommand;
 use crate::proto::ClientResult;
+use crate::proto::LogId;
+use crate::proto::PurgeLogRequest;
 use crate::proto::PurgeLogResponse;
 use crate::proto::SnapshotChunk;
 use crate::proto::SnapshotMetadata;
@@ -119,7 +121,8 @@ where T: TypeConfig
         &self,
         current_term: u64,
         leader_id: Option<u32>,
-        req: crate::proto::PurgeLogRequest,
+        last_purged: Option<LogId>,
+        req: &PurgeLogRequest,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<PurgeLogResponse>;
 }

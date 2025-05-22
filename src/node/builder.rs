@@ -254,7 +254,7 @@ impl NodeBuilder {
         });
 
         //Retrieve last applied index from state machine
-        let last_applied_index = state_machine.last_applied().0;
+        let last_applied_index = state_machine.last_applied().index;
 
         let raft_log = self.raft_log.take().unwrap_or_else(|| {
             let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
@@ -290,6 +290,7 @@ impl NodeBuilder {
 
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
+        let event_tx_clone = event_tx.clone(); // used in commit handler
 
         let node_config_arc = Arc::new(node_config);
         let shutdown_signal = self.shutdown_signal.clone();
@@ -325,6 +326,7 @@ impl NodeBuilder {
             state_machine_handler,
             raft_core.ctx.storage.raft_log.clone(),
             new_commit_event_rx,
+            event_tx_clone,
             node_config_arc.raft.commit_handler.batch_size,
             node_config_arc.raft.commit_handler.process_interval_ms,
             shutdown_signal,

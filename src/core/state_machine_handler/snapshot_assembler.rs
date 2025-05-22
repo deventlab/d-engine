@@ -89,15 +89,23 @@ impl SnapshotAssembler {
     /// - The atomic rename operation fails (`move_directory()`).
     pub(crate) async fn finalize(
         &mut self,
-        snapshot_meta: &SnapshotMetadata,
+        snapshot_metadata: &SnapshotMetadata,
     ) -> Result<PathBuf> {
+        // 0. Validate snapshot metadata
+        if let None = snapshot_metadata.last_included {
+            return Err(StorageError::Snapshot(
+                "snapshot_metadata is empty when install new snapshot file".to_string(),
+            )
+            .into());
+        }
+        let last_included = snapshot_metadata.last_included.unwrap();
         // 1. Flush the in-memory snapshot data to disk.
         self.flush_to_disk().await?;
 
         // 2. Construct the final snapshot directory path, based on snapshot metadata.
         let final_dir = self.snapshots_dir.join(format!(
             "{}{}-{}",
-            SNAPSHOT_DIR_PREFIX, snapshot_meta.last_included_index, snapshot_meta.last_included_term
+            SNAPSHOT_DIR_PREFIX, last_included.index, last_included.term
         ));
 
         debug!(

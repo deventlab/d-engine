@@ -13,8 +13,10 @@ use tracing::warn;
 use super::CommitHandler;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
+use crate::proto::SnapshotMetadata;
 use crate::utils::cluster::error;
 use crate::NewCommitData;
+use crate::RaftEvent;
 use crate::RaftLog;
 use crate::Result;
 use crate::StateMachineHandler;
@@ -29,6 +31,8 @@ where T: TypeConfig
     new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
     batch_size_threshold: u64,
     process_interval_ms: u64,
+
+    event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
@@ -82,11 +86,22 @@ where T: TypeConfig
                                 Err(e) => {
                                     error!(%e,"self.state_machine_handler.create_snapshot with error.");
                                 }
-                                Ok((snapshot_metadata, _final_path)) => {
+                                Ok((SnapshotMetadata {
+                                    last_included: last_included_option,
+                                    checksum: _
+                                }, _final_path)) => {
                                     info!("Purge Leader local raft logs");
 
-                                    if let Err(e) = self.raft_log.purge_logs_up_to(snapshot_metadata.last_included_index) {
-                                        error!(?e, %snapshot_metadata.last_included_index, "raft_log.purge_logs_up_to");
+                                    if let Some(last_included) = last_included_option {
+                                        if let Err(e) = self.raft_log.purge_logs_up_to(last_included) {
+                                            error!(?e, ?last_included, "raft_log.purge_logs_up_to");
+                                        }
+                                        // Send LogPurgedEvent
+                                        if let Err(e) = self.event_tx.send(RaftEvent::LogPurgedEvent(
+                                            last_included
+                                        )).await {
+                                            error!(?e, "send RaftEvent::LogPurgedEvent failed");
+                                        }
                                     }
                                 },
                             }
@@ -104,6 +119,7 @@ where T: TypeConfig
         state_machine_handler: Arc<SMHOF<T>>,
         raft_log: Arc<ROF<T>>,
         new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
+        event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
         batch_size_threshold: u64,
         process_interval_ms: u64,
         shutdown_signal: watch::Receiver<()>,
@@ -114,6 +130,7 @@ where T: TypeConfig
             new_commit_rx: Some(new_commit_rx),
             batch_size_threshold,
             process_interval_ms,
+            event_tx,
             shutdown_signal,
         }
     }

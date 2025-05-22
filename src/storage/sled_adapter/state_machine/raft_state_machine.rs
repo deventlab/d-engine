@@ -36,6 +36,7 @@ use crate::proto::client_command::Command;
 use crate::proto::client_command::Insert;
 use crate::proto::ClientCommand;
 use crate::proto::Entry;
+use crate::proto::LogId;
 use crate::Result;
 use crate::StateMachine;
 use crate::StateMachineIter;
@@ -109,37 +110,37 @@ impl StateMachine for RaftStateMachine {
 
     fn update_last_applied(
         &self,
-        index: u64,
-        term: u64,
+        last_applied: LogId,
     ) {
-        debug!(%index, %term, "update_last_applied");
-        self.last_applied_index.store(index, Ordering::SeqCst);
-        self.last_applied_term.store(term, Ordering::SeqCst);
+        debug!(?last_applied, "update_last_applied");
+        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
+        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
     }
 
     fn update_last_included(
         &self,
-        last_included_index: u64,
-        last_included_term: u64,
+        last_included: LogId,
         new_checksum: Option<[u8; 32]>,
     ) {
-        debug!(%last_included_index, %last_included_term, "update_last_included");
-        self.last_included_index.store(last_included_index, Ordering::SeqCst);
-        self.last_included_term.store(last_included_term, Ordering::SeqCst);
+        debug!(?last_included, "update_last_included");
+        self.last_included_index.store(last_included.index, Ordering::SeqCst);
+        self.last_included_term.store(last_included.term, Ordering::SeqCst);
         *self.last_snapshot_checksum.lock() = new_checksum;
     }
 
-    fn last_applied(&self) -> (u64, u64) {
-        (
-            self.last_applied_index.load(Ordering::SeqCst),
-            self.last_applied_term.load(Ordering::SeqCst),
-        )
+    fn last_applied(&self) -> LogId {
+        LogId {
+            index: self.last_applied_index.load(Ordering::SeqCst),
+            term: self.last_applied_term.load(Ordering::SeqCst),
+        }
     }
 
-    fn last_included(&self) -> (u64, u64, Option<[u8; 32]>) {
+    fn last_included(&self) -> (LogId, Option<[u8; 32]>) {
         (
-            self.last_included_index.load(Ordering::SeqCst),
-            self.last_included_term.load(Ordering::SeqCst),
+            LogId {
+                index: self.last_included_index.load(Ordering::SeqCst),
+                term: self.last_included_term.load(Ordering::SeqCst),
+            },
             *self.last_snapshot_checksum.lock(),
         )
     }
@@ -166,21 +167,27 @@ impl StateMachine for RaftStateMachine {
         &self,
         chunk: Vec<Entry>,
     ) -> Result<()> {
-        let mut highest_index_entry = None;
+        let mut highest_index_entry: Option<LogId> = None;
         let mut batch = Batch::default();
         for entry in chunk {
             if entry.command.is_empty() {
                 warn!("why entry command is empty?");
                 continue;
             }
-            if let Some((index, _term)) = highest_index_entry {
-                if entry.index > index {
-                    highest_index_entry = Some((entry.index, entry.term));
+            if let Some(log_id) = highest_index_entry {
+                if entry.index > log_id.index {
+                    highest_index_entry = Some(LogId {
+                        index: entry.index,
+                        term: entry.term,
+                    });
                 } else {
                     panic!("apply_chunk: receive entry not in order, TBF")
                 }
             } else {
-                highest_index_entry = Some((entry.index, entry.term));
+                highest_index_entry = Some(LogId {
+                    index: entry.index,
+                    term: entry.term,
+                });
             }
 
             debug!("[ConverterEngine] prepare to insert entry({:?})", entry);
@@ -222,19 +229,19 @@ impl StateMachine for RaftStateMachine {
             Err(e)
         } else {
             debug!("[ConverterEngine] convert bath successfully! ");
-            if let Some((index, term)) = highest_index_entry {
-                self.update_last_applied(index, term);
+            if let Some(log_id) = highest_index_entry {
+                self.update_last_applied(log_id);
             }
             Ok(())
         }
     }
 
     fn save_hard_state(&self) -> Result<()> {
-        let (last_applied_index, last_applied_term) = self.last_applied();
-        self.persist_last_applied(last_applied_index, last_applied_term)?;
+        let last_applied = self.last_applied();
+        self.persist_last_applied(last_applied)?;
 
-        let (last_included_index, last_included_term, last_checksum) = self.last_included();
-        self.persist_last_included(last_included_index, last_included_term, last_checksum)?;
+        let (last_included, last_checksum) = self.last_included();
+        self.persist_last_included(last_included, last_checksum)?;
 
         self.flush()?;
         Ok(())
@@ -242,13 +249,12 @@ impl StateMachine for RaftStateMachine {
 
     fn persist_last_applied(
         &self,
-        last_applied_index: u64,
-        last_applied_term: u64,
+        last_applied: LogId,
     ) -> Result<()> {
         let db = self.db.load();
         let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
-        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX, &safe_kv(last_applied_index))?;
-        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM, &safe_kv(last_applied_term))?;
+        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX, &safe_kv(last_applied.index))?;
+        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM, &safe_kv(last_applied.term))?;
 
         tree.flush()?;
         Ok(())
@@ -256,13 +262,12 @@ impl StateMachine for RaftStateMachine {
 
     fn persist_last_included(
         &self,
-        last_included_index: u64,
-        last_included_term: u64,
+        last_included: LogId,
         last_checksum: Option<[u8; 32]>,
     ) -> Result<()> {
         let db = self.db.load();
         let tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
-        self.persist_last_included_with_tree(tree, last_included_index, last_included_term, last_checksum)?;
+        self.persist_last_included_with_tree(tree, last_included, last_checksum)?;
 
         Ok(())
     }
@@ -285,8 +290,7 @@ impl StateMachine for RaftStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-        last_included_index: u64,
-        last_included_term: u64,
+        last_included: LogId,
     ) -> Result<[u8; 32]> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
         let _guard = self.snapshot_lock.write().await;
@@ -305,7 +309,7 @@ impl StateMachine for RaftStateMachine {
             let (k, v) = item?;
 
             let key_num = safe_vk(&k)?;
-            if key_num > last_included_index {
+            if key_num > last_included.index {
                 break; // Stop applying further entries as they will all be greater
             }
 
@@ -331,16 +335,12 @@ impl StateMachine for RaftStateMachine {
         let checksum = compute_checksum_from_path(&new_snapshot_dir).await?;
 
         // Make sure last included is updated to the new ones
-        self.update_last_included(last_included_index, last_included_term, Some(checksum));
+        self.update_last_included(last_included, Some(checksum));
 
         // Make sure last included is persisted into local database
-        self.persist_last_included(last_included_index, last_included_term, Some(checksum))?;
-        self.persist_last_included_with_tree(
-            new_snapshot_metadatat_tree,
-            last_included_index,
-            last_included_term,
-            Some(checksum),
-        )?;
+        self.persist_last_included(last_included, Some(checksum))?;
+        // Make sure last included is persisted into the new database
+        self.persist_last_included_with_tree(new_snapshot_metadatat_tree, last_included, Some(checksum))?;
 
         Ok(checksum)
     }
@@ -350,25 +350,28 @@ impl StateMachine for RaftStateMachine {
         metadata: &proto::SnapshotMetadata,
         snapshot_path: PathBuf,
     ) -> Result<()> {
-        // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
-        let _guard = self.snapshot_lock.write().await;
+        if let Some(last_included) = metadata.last_included {
+            // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
+            let _guard = self.snapshot_lock.write().await;
 
-        // 2. Create a new state machine database instance
-        let db = init_sled_state_machine_db(&snapshot_path).map_err(|e| StorageError::PathError {
-            path: snapshot_path,
-            source: e,
-        })?;
+            // 2. Create a new state machine database instance
+            let db = init_sled_state_machine_db(&snapshot_path).map_err(|e| StorageError::PathError {
+                path: snapshot_path,
+                source: e,
+            })?;
 
-        // 3. Atomically replace the current database
-        self.db.store(Arc::new(db));
+            // 3. Atomically replace the current database
+            self.db.store(Arc::new(db));
 
-        // 4. Update the last applied and last included index and term
-        self.update_last_applied(metadata.last_included_index, metadata.last_included_term);
-        self.update_last_included(
-            metadata.last_included_index,
-            metadata.last_included_term,
-            Some(metadata.checksum_array()?),
-        );
+            // 4. Update the last applied and last included index and term
+            self.update_last_applied(last_included);
+            self.update_last_included(last_included, Some(metadata.checksum_array()?));
+        } else {
+            error!(
+                ?metadata,
+                "apply_snapshot_from_file should not be triggered if metadata is none"
+            );
+        }
 
         Ok(())
     }
@@ -412,8 +415,17 @@ impl RaftStateMachine {
         };
 
         // Important to sync the last applied index into memory
-        sm.update_last_applied(last_applied_index, last_applied_term);
-        sm.update_last_included(last_included_index, last_included_term, last_snapshot_checksum);
+        sm.update_last_applied(LogId {
+            index: last_applied_index,
+            term: last_applied_term,
+        });
+        sm.update_last_included(
+            LogId {
+                term: last_included_term,
+                index: last_included_index,
+            },
+            last_snapshot_checksum,
+        );
         Ok(sm)
     }
 
@@ -475,12 +487,11 @@ impl RaftStateMachine {
     fn persist_last_included_with_tree(
         &self,
         tree: sled::Tree,
-        last_included_index: u64,
-        last_included_term: u64,
+        last_included: LogId,
         last_checksum: Option<[u8; 32]>,
     ) -> Result<()> {
-        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included_index))?;
-        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included_term))?;
+        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included.index))?;
+        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included.term))?;
 
         if let Some(checksum) = last_checksum {
             tree.insert(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM, &checksum)?;

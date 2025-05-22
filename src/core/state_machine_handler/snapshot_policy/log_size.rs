@@ -29,7 +29,7 @@ impl SnapshotPolicy for LogSizePolicy {
             return false; // Only the Leader actively triggers
         }
 
-        if ctx.current_term < ctx.last_included_term {
+        if ctx.current_term < ctx.last_included.term {
             return false;
         }
 
@@ -79,8 +79,9 @@ impl LogSizePolicy {
         &self,
         ctx: &SnapshotContext,
     ) -> u64 {
-        ctx.last_applied_index.saturating_sub(ctx.last_included_index)
+        ctx.last_applied.index.saturating_sub(ctx.last_included.index)
     }
+
     pub(crate) fn update_threshold(
         &self,
         new_val: u64,

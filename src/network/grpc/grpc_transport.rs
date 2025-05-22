@@ -298,6 +298,7 @@ impl Transport for GrpcTransport {
         Ok(PurgeLogResponse {
             term: todo!(),
             success: false,
+            last_purged: todo!(),
         })
     }
 }

@@ -116,7 +116,7 @@ pub trait RaftLog: Send + Sync + 'static {
     /// machine successfully
     fn purge_logs_up_to(
         &self,
-        cutoff: u64,
+        cutoff: LogId,
     ) -> Result<()>;
 
     fn retrieve_subscriber(

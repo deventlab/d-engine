@@ -11,6 +11,7 @@ use mockall::automock;
 use tonic::async_trait;
 
 use crate::proto::Entry;
+use crate::proto::LogId;
 use crate::proto::SnapshotMetadata;
 use crate::Error;
 use crate::Result;
@@ -47,36 +48,32 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Update last applied  index
     fn update_last_applied(
         &self,
-        index: u64,
-        term: u64,
+        last_applied: LogId,
     );
 
     /// Get the index of the last applied log: (last_applied_index, last_applied_term)
-    fn last_applied(&self) -> (u64, u64);
+    fn last_applied(&self) -> LogId;
 
     /// Persist (last_applied_index, last_applied_term) into local storage
     fn persist_last_applied(
         &self,
-        index: u64,
-        term: u64,
+        last_applied: LogId,
     ) -> Result<()>;
 
     /// Update last included index
     fn update_last_included(
         &self,
-        index: u64,
-        term: u64,
+        last_included: LogId,
         new_checksum: Option<[u8; 32]>,
     );
 
     /// Get snapshot metadata: (last_included_index, last_included_term, Option<checksum>)
-    fn last_included(&self) -> (u64, u64, Option<[u8; 32]>);
+    fn last_included(&self) -> (LogId, Option<[u8; 32]>);
 
     /// Persist (last_included_index, last_included_term) into local storage
     fn persist_last_included(
         &self,
-        index: u64,
-        term: u64,
+        last_applied: LogId,
         last_checksum: Option<[u8; 32]>,
     ) -> Result<()>;
 
@@ -108,8 +105,7 @@ pub trait StateMachine: Send + Sync + 'static {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included_index: u64,
-        last_included_term: u64,
+        last_included: LogId,
     ) -> Result<[u8; 32]>;
 
     fn save_hard_state(&self) -> Result<()>;

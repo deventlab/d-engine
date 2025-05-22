@@ -22,7 +22,7 @@ use super::CANDIDATE;
 use crate::alias::POF;
 use crate::proto::ClientResponse;
 use crate::proto::ErrorCode;
-use crate::proto::PurgeLogResponse;
+use crate::proto::LogId;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::ConsensusError;
@@ -42,14 +42,41 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 
+/// Candidate node's volatile state during leader election.
+///
+/// This transient state manages election timers and vote solicitation process.
+///
+/// # Type Parameters
+/// - `T`: Application-specific Raft type configuration
 #[derive(Clone)]
 pub struct CandidateState<T: TypeConfig> {
+    // -- Core State --
+    /// Shared cluster state with atomic access
     pub shared_state: SharedState,
 
+    // -- Log Compaction --
+    /// === Persistent State ===
+    /// Last physically purged log index (inclusive)
+    ///
+    /// Note:
+    /// Even though candidates don’t purge logs, they must keep last_purged_index from the follower.
+    /// Otherwise, the system may lose purge info and get into an inconsistent state.
+    pub(super) last_purged_index: Option<LogId>,
+
+    // -- Election Timing --
+    /// Election timeout manager
+    ///
+    /// Tracks:
+    /// - Randomized election timeout duration
+    /// - Remaining time before transitioning to new election
     pub(super) timer: ElectionTimer,
 
-    // Shared global node_config
+    // -- Cluster Configuration --
+    /// Immutable node configuration (shared reference)
     pub(super) node_config: Arc<RaftNodeConfig>,
+
+    // -- Type System Marker --
+    /// Phantom type for compile-time safety
     _marker: PhantomData<T>,
 }
 
@@ -350,15 +377,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
             }
 
-            RaftEvent::CreateSnapshot => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!("Candidate node {} attempted to create snapshot.", ctx.node_id),
-                }
-                .into())
-            }
-
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
@@ -372,35 +390,28 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
-                let leader_id = ctx.membership().current_leader();
-                match ctx
-                    .state_machine_handler()
-                    .handle_purge_request(my_term, leader_id, purchase_log_request, ctx.raft_log())
-                    .await
-                {
-                    Ok(response) => {
-                        debug!(?response, "RaftEvent::RaftLogCleanUp");
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error!(?e, "RaftEvent::RaftLogCleanUp");
-                        sender
-                            .send(Ok(PurgeLogResponse {
-                                term: my_term,
-                                success: false,
-                            }))
-                            .map_err(|e| {
-                                let error_str = format!("{:?}", e);
-                                error!("Failed to send: {}", error_str);
-                                NetworkError::SingalSendFailed(error_str)
-                            })?;
-                    }
+                warn!("Candidate should not receive RaftEvent::RaftLogCleanUp request from Leader");
+                sender
+                    .send(Err(Status::permission_denied("Not Follower or Learner. ")))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+            }
+
+            RaftEvent::CreateSnapshotEvent => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!("Candidate node {} attempted to create snapshot.", ctx.node_id),
                 }
-                return Ok(());
+                .into())
+            }
+
+            RaftEvent::LogPurgedEvent(log_id) => {
+                debug!(?log_id, "Receive LogPurgedEvent");
+                self.last_purged_index = Some(log_id);
             }
         }
         return Ok(());
@@ -477,6 +488,7 @@ impl<T: TypeConfig> CandidateState<T> {
             timer: ElectionTimer::new((1, 2)),
             node_config,
             _marker: PhantomData,
+            last_purged_index: None, //TODO
         }
     }
 }
@@ -491,6 +503,7 @@ impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
                 follower.node_config.raft.election.election_timeout_max,
             )),
             node_config: follower.node_config.clone(),
+            last_purged_index: follower.last_purged_index,
             _marker: PhantomData,
         }
     }

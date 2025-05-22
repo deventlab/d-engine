@@ -87,7 +87,7 @@ where T: TypeConfig
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         // Load last applied index from state machine
-        let last_applied_index = Some(storage.state_machine.last_applied().0);
+        let last_applied_index = Some(storage.state_machine.last_applied().index);
 
         let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
 

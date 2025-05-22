@@ -10,6 +10,7 @@ use crate::alias::ROF;
 use crate::convert::safe_kv;
 use crate::init_sled_storages;
 use crate::proto::Entry;
+use crate::proto::LogId;
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::{self};
@@ -448,7 +449,7 @@ fn test_purge_logs_up_to() {
     //..
     // assume we have generated snapshot until $last_applied,
     // now we can clean the local logs
-    let last_applied = 3;
+    let last_applied = LogId { index: 3, term: 1 };
     context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
 
     assert_eq!(9, context.raft_log.last_entry_id());
@@ -472,7 +473,7 @@ fn test_get_first_raft_log_entry_id_after_delete_entries() {
     }
     context.raft_log.insert_batch(entries).expect("should succeed");
 
-    let last_applied = 4;
+    let last_applied = LogId { index: 4, term: 1 };
     context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
     assert_eq!(10, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.get_entry_by_index(3));
@@ -497,7 +498,7 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
     }
     context.raft_log.insert_batch(entries).expect("should succeed");
 
-    let last_applied = 4;
+    let last_applied = LogId { index: 4, term: 1 };
     context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
     assert_eq!(10, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.get_entry_by_index(3));
@@ -506,7 +507,7 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
 
     assert_eq!(
         context.raft_log.span_between_first_entry_and_last_entry(),
-        10 - last_applied
+        10 - last_applied.index
     );
 }
 
@@ -701,7 +702,7 @@ async fn test_insert_batch_logs_case2() {
         .expect("should succeed");
 
     // 4. Simulate snapshot compaction
-    let last_applied = 3;
+    let last_applied = LogId { index: 3, term: 1 };
     old_leader.purge_logs_up_to(last_applied).expect("should succeed");
 
     // 5. New leader appends higher term logs

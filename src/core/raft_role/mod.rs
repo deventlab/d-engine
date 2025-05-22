@@ -74,8 +74,10 @@ pub struct HardState {
 pub struct SharedState {
     pub node_id: u32,
 
+    /// === Persistent State (MUST be on disk)
     pub hard_state: HardState,
-    /// Volatile state on all servers:
+
+    /// === Volatile state on all servers:
     /// index of highest log entry known to be committed (initialized to 0,
     /// increases monotonically)
     pub commit_index: u64,
