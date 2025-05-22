@@ -24,7 +24,8 @@ use crate::TypeConfig;
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
@@ -40,7 +41,8 @@ where T: TypeConfig
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     async fn run(&mut self) -> Result<()> {
         let mut batch_counter = 0;
@@ -113,7 +115,8 @@ where T: TypeConfig
 }
 
 impl<T> DefaultCommitHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub(crate) fn new(
         state_machine_handler: Arc<SMHOF<T>>,

@@ -352,28 +352,34 @@ async fn test_build_append_request_case() {
 
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
-    entries_per_peer.insert(peer2_id, vec![Entry {
-        index: 3,
-        term: 1,
-        command: vec![1; 8],
-    }]);
-    entries_per_peer.insert(peer3_id, vec![
-        Entry {
-            index: 1,
-            term: 1,
-            command: vec![1; 8],
-        },
-        Entry {
-            index: 2,
-            term: 1,
-            command: vec![1; 8],
-        },
-        Entry {
+    entries_per_peer.insert(
+        peer2_id,
+        vec![Entry {
             index: 3,
             term: 1,
             command: vec![1; 8],
-        },
-    ]);
+        }],
+    );
+    entries_per_peer.insert(
+        peer3_id,
+        vec![
+            Entry {
+                index: 1,
+                term: 1,
+                command: vec![1; 8],
+            },
+            Entry {
+                index: 2,
+                term: 1,
+                command: vec![1; 8],
+            },
+            Entry {
+                index: 3,
+                term: 1,
+                command: vec![1; 8],
+            },
+        ],
+    );
 
     let data = ReplicationData {
         leader_last_index_before: 3,
@@ -999,42 +1005,57 @@ async fn test_handle_client_proposal_in_batch_case6() {
             let updates = &append_result.peer_updates;
 
             // follower_a (success)
-            assert_eq!(updates[&2], PeerUpdate {
-                match_index: 10,
-                next_index: 11,
-                success: true
-            });
+            assert_eq!(
+                updates[&2],
+                PeerUpdate {
+                    match_index: 10,
+                    next_index: 11,
+                    success: true
+                }
+            );
 
             // follower_b (conflict at term 4 index 5)
-            assert_eq!(updates[&3], PeerUpdate {
-                match_index: 4, // 5-1
-                next_index: 5,
-                success: false
-            });
+            assert_eq!(
+                updates[&3],
+                PeerUpdate {
+                    match_index: 4, // 5-1
+                    next_index: 5,
+                    success: false
+                }
+            );
 
             // follower_c (success)
-            assert_eq!(updates[&4], PeerUpdate {
-                match_index: 10,
-                next_index: 11,
-                success: true
-            });
+            assert_eq!(
+                updates[&4],
+                PeerUpdate {
+                    match_index: 10,
+                    next_index: 11,
+                    success: true
+                }
+            );
 
             // follower_d (higher term) - no update (error handled)
             assert!(!updates.contains_key(&5));
 
             // follower_e (conflict at term 4 index 6)
-            assert_eq!(updates[&6], PeerUpdate {
-                match_index: 5, // 6-1
-                next_index: 6,
-                success: false
-            });
+            assert_eq!(
+                updates[&6],
+                PeerUpdate {
+                    match_index: 5, // 6-1
+                    next_index: 6,
+                    success: false
+                }
+            );
 
             // follower_f (conflict at term 2 index 4)
-            assert_eq!(updates[&7], PeerUpdate {
-                match_index: 3, // 4-1
-                next_index: 4,
-                success: false
-            });
+            assert_eq!(
+                updates[&7],
+                PeerUpdate {
+                    match_index: 3, // 4-1
+                    next_index: 4,
+                    success: false
+                }
+            );
         }
         Err(e) => {
             // Verify higher term error from follower_d

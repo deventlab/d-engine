@@ -45,7 +45,8 @@ use crate::FOLLOWER;
 use crate::LEADER;
 
 pub struct RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
@@ -55,7 +56,8 @@ where T: TypeConfig
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn get_followers_candidates_channel_and_role(
         &self,
@@ -241,7 +243,8 @@ where T: TypeConfig
 }
 
 impl<T> RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Creates a new `RaftMembership` instance.
     pub fn new(
