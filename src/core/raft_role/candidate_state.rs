@@ -416,6 +416,17 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         }
         return Ok(());
     }
+
+    /// Candidates are only responsible for the election process and do not participate in log management
+    fn can_purge_logs(
+        &self,
+        _index: u64,
+        _last_included: Option<LogId>,
+    ) -> bool {
+        error!("Candidates are only responsible for the election process and do not participate in log management");
+
+        false
+    }
 }
 
 impl<T: TypeConfig> CandidateState<T> {

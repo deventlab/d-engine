@@ -335,6 +335,26 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         }
         return Ok(());
     }
+
+    /// Determines if logs up to `index` can be safely purged.
+    ///
+    /// # Conditions
+    /// 1. The log at `index` must have been committed by the leader (guaranteed by AppendEntries)
+    /// 2. A snapshot containing this index must exist locally
+    /// 3. No pending purge operations are in progress
+    ///
+    /// # Safety
+    /// - Must only be called after verifying the leader's purge request validity
+    fn can_purge_logs(
+        &self,
+        index: u64,
+        last_included: Option<LogId>,
+    ) -> bool {
+        // Check all conditions
+        index <= self.commit_index()
+            && last_included.map_or(false, |lid| lid.index >= index)
+            && self.pending_purge.is_none()
+    }
 }
 
 impl<T: TypeConfig> LearnerState<T> {

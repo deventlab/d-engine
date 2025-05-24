@@ -17,6 +17,7 @@ use crate::proto::VoteRequest;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
+use crate::test_utils::node_config;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
 use crate::Error;
@@ -442,3 +443,4 @@ async fn test_handle_raft_event_case6() {
         Code::PermissionDenied
     );
 }
+

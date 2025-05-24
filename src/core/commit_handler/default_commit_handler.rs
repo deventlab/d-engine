@@ -13,11 +13,9 @@ use tracing::warn;
 use super::CommitHandler;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
-use crate::proto::SnapshotMetadata;
 use crate::utils::cluster::error;
 use crate::NewCommitData;
 use crate::RaftEvent;
-use crate::RaftLog;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
@@ -84,28 +82,8 @@ where
                         if self.state_machine_handler.should_snapshot(new_commit_data) {
                             info!("Listened a new commit and should generate snapshot now");
 
-                            match self.state_machine_handler.create_snapshot().await {
-                                Err(e) => {
-                                    error!(%e,"self.state_machine_handler.create_snapshot with error.");
-                                }
-                                Ok((SnapshotMetadata {
-                                    last_included: last_included_option,
-                                    checksum: _
-                                }, _final_path)) => {
-                                    info!("Purge Leader local raft logs");
-
-                                    if let Some(last_included) = last_included_option {
-                                        if let Err(e) = self.raft_log.purge_logs_up_to(last_included) {
-                                            error!(?e, ?last_included, "raft_log.purge_logs_up_to");
-                                        }
-                                        // Send LogPurgedEvent
-                                        if let Err(e) = self.event_tx.send(RaftEvent::LogPurgedEvent(
-                                            last_included
-                                        )).await {
-                                            error!(?e, "send RaftEvent::LogPurgedEvent failed");
-                                        }
-                                    }
-                                },
+                            if let Err(e) = self.event_tx.send(RaftEvent::CreateSnapshotEvent).await {
+                                error!(?e, "send RaftEvent::CreateSnapshotEvent failed");
                             }
                         }
                     }

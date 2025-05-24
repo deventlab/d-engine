@@ -37,6 +37,8 @@ use crate::proto::ClusterConfUpdateResponse;
 use crate::proto::ErrorCode;
 use crate::proto::LogId;
 use crate::proto::PurgeLogRequest;
+use crate::proto::PurgeLogResponse;
+use crate::proto::SnapshotMetadata;
 use crate::proto::VoteResponse;
 use crate::proto::VotedFor;
 use crate::utils::cluster::error;
@@ -103,7 +105,6 @@ pub struct LeaderState<T: TypeConfig> {
     /// Planned purge target (next log position to trigger compaction)
     ///
     /// This is the upper bound (exclusive) for the next scheduled log purge.
-    #[allow(dead_code)]
     pub(super) scheduled_purge_upto: Option<LogId>,
 
     /// === Persistent State (MUST be on disk) ===
@@ -118,16 +119,14 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// When present, indicates an asynchronous cleanup task is in progress
     /// targeting the specified log index.
-    #[allow(dead_code)]
     pub(super) pending_purge: Option<u64>,
 
     /// === Volatile State ===
-    /// Follower purge progress tracking for flow control
+    /// Peer purge progress tracking for flow control
     ///
-    /// Key: Follower node ID  
-    /// Value: Last confirmed purge index from follower
-    #[allow(dead_code)]
-    pub(super) follower_purge_progress: HashMap<u32, u64>,
+    /// Key: Peer node ID  
+    /// Value: Last confirmed purge index from peer
+    pub(super) peer_purge_progress: HashMap<u32, u64>,
 
     // -- Request Processing --
     /// Batched proposal buffer for client requests
@@ -600,51 +599,105 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     Err(e) => {
                         error!(%e,"self.state_machine_handler.create_snapshot with error.");
                     }
-                    Ok((snapshot_metadata, _final_path)) => {
+                    Ok((
+                        SnapshotMetadata {
+                            last_included: last_included_option,
+                            checksum,
+                        },
+                        _final_path,
+                    )) => {
                         info!("Purge Leader local raft logs");
 
-                        if let Some(last_included) = snapshot_metadata.last_included {
-                            // Purge Raft Logs
+                        if let Some(last_included) = last_included_option {
+                            // ----------------------
+                            // Phase 1: Purge Raft Logs
+                            // ----------------------
                             if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included) {
                                 error!(?e, ?last_included, "raft_log.purge_logs_up_to");
                             }
 
                             // ----------------------
-                            // Phase 1: Pre-Checks
+                            // Phase 2: Send Purge Log Event
+                            // ----------------------
+                            debug!(?last_included, "Receive LogPurgedEvent");
+                            self.last_purged_index = Some(last_included);
+
+                            // ----------------------
+                            // Phase 3: Pre-Checks
                             // ----------------------
                             let peers = ctx.voting_members(peer_channels);
                             if peers.is_empty() {
                                 warn!("no peer found for leader({})", my_id);
                                 return Err(MembershipError::NoPeersAvailable.into());
                             }
+
                             // ----------------------
-                            // Phase 2: Send Purge request to the other nodes
+                            // Phase 4: Send Purge request to the other nodes
                             // ----------------------
                             let transport = ctx.transport();
-                            transport
+                            match transport
                                 .send_purge_request(
                                     peers,
                                     PurgeLogRequest {
                                         term: my_term,
                                         leader_id: my_id,
                                         last_included: Some(last_included),
-                                        snapshot_checksum: snapshot_metadata.checksum.clone(),
+                                        snapshot_checksum: checksum.clone(),
                                         leader_commit: self.commit_index(),
                                     },
                                     &self.node_config.retry,
                                 )
-                                .await?;
+                                .await
+                            {
+                                Ok(PurgeLogResponse {
+                                    term,
+                                    success,
+                                    last_purged,
+                                }) => {
+                                    info!(%term,
+                                        %success,
+                                        ?last_purged, "receive PurgeLogResponse");
+
+                                    self.peer_purge_progress(last_purged);
+                                }
+                                Err(e) => {
+                                    error!(?e, "RaftEvent::CreateSnapshotEvent");
+                                    return Err(e);
+                                }
+                            }
                         }
                     }
                 }
             }
 
             RaftEvent::LogPurgedEvent(log_id) => {
-                debug!(?log_id, "Receive LogPurgedEvent");
-                self.last_purged_index = Some(log_id);
+                // debug!(?log_id, "Receive LogPurgedEvent");
+                // self.last_purged_index = Some(log_id);
+                error!(?log_id, "Should not receive log purge event");
             }
         }
         return Ok(());
+    }
+
+    /// Determines whether logs up to the given index can be safely purged.
+    ///
+    /// A log index is eligible for purging only if all of the following conditions are met:
+    /// a. The log has been committed (i.e., acknowledged by a majority of nodes).
+    /// b. A snapshot already includes this log (i.e., it is covered by the latest snapshot).
+    /// c. All peers have confirmed purge progress at or beyond this index.
+    fn can_purge_logs(
+        &self,
+        index: u64,
+        last_included: Option<LogId>,
+    ) -> bool {
+        // All the following conditions must be met:
+        // a. The log has been committed (confirmed by the majority of nodes)
+        // b. A snapshot already contains the log
+        // c. All Peer's purge progress >= target index
+        index <= self.commit_index()
+            && last_included.is_some_and(|lid| lid.index >= index)
+            && self.peer_purge_progress.values().all(|&v| v >= index)
+            && self.pending_purge.is_none()
     }
 }
 
@@ -945,6 +998,12 @@ impl<T: TypeConfig> LeaderState<T> {
         }
         Ok(())
     }
+
+    fn peer_purge_progress(
+        &self,
+        last_purged: Option<LogId>,
+    ) {
+    }
 }
 
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
@@ -976,7 +1035,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
-            follower_purge_progress: HashMap::new(),
+            peer_purge_progress: HashMap::new(),
             pending_purge: None,
         }
     }
@@ -1080,7 +1139,7 @@ impl<T: TypeConfig> LeaderState<T> {
             _marker: PhantomData,
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
-            follower_purge_progress: HashMap::new(),
+            peer_purge_progress: HashMap::new(),
             pending_purge: None,
         }
     }

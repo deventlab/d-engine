@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use tempfile::tempdir;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
@@ -23,6 +24,7 @@ use crate::proto::VotedFor;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
+use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
@@ -711,4 +713,76 @@ async fn test_handle_raft_event_case6_2() {
 
     let r = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(r.error, ErrorCode::Success as i32);
+}
+
+/// # Case 1: all_conditions_met
+#[test]
+fn test_can_purge_logs_case1() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 100;
+    state.pending_purge = None;
+
+    // Test index matches exactly
+    assert!(state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
+    // Test lower index
+    assert!(state.can_purge_logs(90, Some(LogId { index: 100, term: 1 })));
+}
+
+// # Case 2: Uncommitted index
+#[test]
+fn test_can_purge_logs_case2() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 50;
+    state.pending_purge = None;
+
+    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
+}
+
+/// # Case 3: Insufficient snapshot
+#[test]
+fn test_can_purge_logs_case3() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 100;
+    state.pending_purge = None;
+
+    // Subcase 3a: Snapshot index too low
+    assert!(!state.can_purge_logs(100, Some(LogId { index: 90, term: 1 })));
+
+    // Subcase 3b: No snapshot
+    assert!(!state.can_purge_logs(100, None));
+}
+
+/// # Case 4: Pending purge exists
+#[test]
+fn test_can_purge_logs_case4() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 100;
+    state.pending_purge = Some(100); // Ongoing purge
+
+    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
+}
+
+/// # Case 5: Edge case - minimum values
+#[test]
+fn test_can_purge_logs_case5() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 1;
+    state.pending_purge = None; // Ongoing purge
+
+    assert!(state.can_purge_logs(1, Some(LogId { index: 1, term: 1 })));
 }

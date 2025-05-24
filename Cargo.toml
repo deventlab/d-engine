@@ -94,6 +94,7 @@ vergen = { version = "8.1", features = ["git", "gitcl"] }
 opt-level = 1 # Main code is low-optimized to speed up compilation
 incremental = true # Enable incremental compilation (enabled by default, requires confirmation)
 codegen-units = 4 # Appropriately reduce parallel units to reduce memory usage
+lto = false
 
 [profile.dev.package."*"]
 opt-level = 3 # All dependency optimization levels

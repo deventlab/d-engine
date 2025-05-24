@@ -14,6 +14,7 @@ use super::StateSnapshot;
 use crate::alias::POF;
 use crate::proto::AppendEntriesRequest;
 use crate::proto::AppendEntriesResponse;
+use crate::proto::LogId;
 use crate::proto::VotedFor;
 use crate::utils::cluster::error;
 use crate::AppendResponseWithUpdates;
@@ -324,4 +325,12 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         }
         return Ok(());
     }
+
+    /// Determines whether logs up to the given index can be safely purged.
+    ///
+    fn can_purge_logs(
+        &self,
+        index: u64,
+        last_included: Option<LogId>,
+    ) -> bool;
 }
