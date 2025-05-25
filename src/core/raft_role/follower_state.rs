@@ -365,6 +365,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         error!(?e, "RaftEvent::RaftLogCleanUp");
                         sender
                             .send(Ok(PurgeLogResponse {
+                                node_id: self.shared_state.node_id,
                                 term: my_term,
                                 success: false,
                                 last_purged: purchase_log_request.last_included,

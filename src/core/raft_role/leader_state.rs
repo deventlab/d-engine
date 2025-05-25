@@ -610,17 +610,24 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                         if let Some(last_included) = last_included_option {
                             // ----------------------
-                            // Phase 1: Purge Raft Logs
+                            // Phase 1: Update the planned purge location
                             // ----------------------
-                            if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included) {
-                                error!(?e, ?last_included, "raft_log.purge_logs_up_to");
+
+                            // if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included) {
+                            //     error!(?e, ?last_included, "raft_log.purge_logs_up_to");
+                            // }
+                            if self.can_purge_logs(last_included.index, Some(last_included)) {
+                                self.scheduled_purge_upto = Some(LogId {
+                                    term: self.current_term(),
+                                    index: last_included.index,
+                                });
                             }
 
                             // ----------------------
                             // Phase 2: Send Purge Log Event
                             // ----------------------
-                            debug!(?last_included, "Receive LogPurgedEvent");
-                            self.last_purged_index = Some(last_included);
+                            // debug!(?last_included, "Receive LogPurgedEvent");
+                            // self.last_purged_index = Some(last_included);
 
                             // ----------------------
                             // Phase 3: Pre-Checks
@@ -636,7 +643,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             // ----------------------
                             let transport = ctx.transport();
                             match transport
-                                .send_purge_request(
+                                .send_purge_requests(
                                     peers,
                                     PurgeLogRequest {
                                         term: my_term,
@@ -649,16 +656,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 )
                                 .await
                             {
-                                Ok(PurgeLogResponse {
-                                    term,
-                                    success,
-                                    last_purged,
-                                }) => {
-                                    info!(%term,
-                                        %success,
-                                        ?last_purged, "receive PurgeLogResponse");
+                                Ok(result) => {
+                                    info!(?result, "receive PurgeLogResult");
 
-                                    self.peer_purge_progress(last_purged);
+                                    self.peer_purge_progress(result);
                                 }
                                 Err(e) => {
                                     error!(?e, "RaftEvent::CreateSnapshotEvent");
@@ -1001,8 +1002,16 @@ impl<T: TypeConfig> LeaderState<T> {
 
     fn peer_purge_progress(
         &self,
-        last_purged: Option<LogId>,
+        responses: Vec<Result<PurgeLogResponse>>,
     ) {
+        if responses.is_empty() {
+            return;
+        }
+        responses.iter().for_each(|res| {
+            if let Ok(r) = res {
+                // self.peer_purge_progress
+            }
+        });
     }
 }
 

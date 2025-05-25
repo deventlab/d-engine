@@ -53,9 +53,9 @@ use crate::API_SLO;
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
+    node_id: u32,
     // last_applied, as an application progress indicator, may fall under the responsibility of the
     // Handler, as it manages the application process.
     last_applied: AtomicU64,   // The last applied log index
@@ -81,8 +81,7 @@ pub(crate) struct CleanupSnapshotMeta {
 
 #[async_trait]
 impl<T> StateMachineHandler<T> for DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Update pending commit index
     fn update_pending(
@@ -419,6 +418,7 @@ where
         // Verification 1: Leader identity legitimacy
         if req.term < current_term || leader_id != Some(req.leader_id) {
             return Ok(PurgeLogResponse {
+                node_id: self.node_id,
                 term: current_term,
                 success: false,
                 last_purged,
@@ -428,6 +428,7 @@ where
         // Verification 2: Locally applied log index >= requested up_to_index
         if req.last_included.is_none() {
             return Ok(PurgeLogResponse {
+                node_id: self.node_id,
                 term: current_term,
                 success: false,
                 last_purged,
@@ -437,6 +438,7 @@ where
         if let Some(last_included) = req.last_included {
             if self.state_machine.last_applied().index < last_included.index {
                 return Ok(PurgeLogResponse {
+                    node_id: self.node_id,
                     term: current_term,
                     success: false,
                     last_purged,
@@ -448,6 +450,7 @@ where
         if let (_, Some(local_checksum)) = self.state_machine.last_included() {
             if req.snapshot_checksum != local_checksum {
                 return Ok(PurgeLogResponse {
+                    node_id: self.node_id,
                     term: current_term,
                     success: false,
                     last_purged,
@@ -456,6 +459,7 @@ where
         } else {
             // There is no corresponding snapshot locally, snapshot synchronization needs to be triggered
             return Ok(PurgeLogResponse {
+                node_id: self.node_id,
                 term: current_term,
                 success: false,
                 last_purged,
@@ -465,6 +469,7 @@ where
         // Perform physical deletion
         match raft_log.purge_logs_up_to(req.last_included.unwrap()) {
             Ok(_) => Ok(PurgeLogResponse {
+                node_id: self.node_id,
                 term: current_term,
                 success: true,
                 last_purged,
@@ -472,6 +477,7 @@ where
             Err(e) => {
                 error!(?e, "raft_log.purge_logs_up_to");
                 Ok(PurgeLogResponse {
+                    node_id: self.node_id,
                     term: current_term,
                     success: false,
                     last_purged,
@@ -482,10 +488,10 @@ where
 }
 
 impl<T> DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
+        node_id: u32,
         last_applied_index: u64,
         max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
@@ -493,6 +499,7 @@ where
         snapshot_policy: SNP<T>,
     ) -> Self {
         Self {
+            node_id,
             last_applied: AtomicU64::new(last_applied_index),
             pending_commit: AtomicU64::new(0),
             max_entries_per_chunk,

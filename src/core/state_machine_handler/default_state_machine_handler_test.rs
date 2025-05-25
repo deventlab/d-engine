@@ -70,6 +70,7 @@ fn test_update_pending_case1() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(state_machine_mock),
@@ -88,6 +89,7 @@ fn test_update_pending_case2() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(state_machine_mock),
@@ -106,6 +108,7 @@ async fn test_update_pending_case3() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(state_machine_mock),
@@ -130,6 +133,7 @@ fn test_pending_range_case1() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         1,
         Arc::new(state_machine_mock),
@@ -145,6 +149,7 @@ fn test_pending_range_case2() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         1,
         Arc::new(state_machine_mock),
@@ -162,6 +167,7 @@ fn test_pending_range_case3() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         1,
         Arc::new(state_machine_mock),
@@ -185,6 +191,7 @@ async fn test_apply_batch_case1() {
         .times(0)
         .returning(|_| vec![]);
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         1,
         Arc::new(state_machine_mock),
@@ -214,6 +221,7 @@ async fn test_apply_batch_case2() {
 
     let max_entries_per_chunk = 1;
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
@@ -252,6 +260,7 @@ async fn test_apply_batch_case3() {
 
     let max_entries_per_chunk = 1;
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         max_entries_per_chunk,
         Arc::new(state_machine_mock),
@@ -401,6 +410,7 @@ fn create_test_stream(chunks: Vec<SnapshotChunk>) -> tonic::Streaming<SnapshotCh
 fn create_test_handler(temp_dir: &Path) -> DefaultStateMachineHandler<MockTypeConfig> {
     let state_machine = MockStateMachine::new();
     DefaultStateMachineHandler::new(
+        1,
         0,
         1,
         Arc::new(state_machine),
@@ -422,6 +432,7 @@ async fn test_install_snapshot_chunk_case2() {
         .returning(|_, _| Ok(()));
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         10,
         1,
         Arc::new(state_machine_mock),
@@ -575,6 +586,7 @@ async fn test_create_snapshot_case1() {
         .returning(|_, _| Ok([0; 32]));
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(sm),
@@ -628,6 +640,7 @@ async fn test_create_snapshot_case2() {
     });
 
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(sm),
@@ -678,6 +691,7 @@ async fn test_create_snapshot_case3() {
     });
     let snapshot_dir = temp_dir.as_ref().to_path_buf();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         3, // Current version
         1,
         Arc::new(sm),
@@ -709,6 +723,7 @@ async fn test_create_snapshot_case4() {
         .returning(|_, _| Err(StorageError::Snapshot("test failure".into()).into()));
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(sm),
@@ -762,6 +777,7 @@ async fn test_cleanup_snapshot_case1() {
     create_test_dirs(&temp_dir, &[1, 2, 3]).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(sm),
@@ -787,6 +803,7 @@ async fn test_cleanup_snapshot_case2() {
     create_test_dirs(&temp_dir, &[3, 4]).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(sm),
@@ -817,6 +834,7 @@ async fn test_cleanup_snapshot_case3() {
     create_dir(&temp_dir, &format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX)).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         0,
         1,
         Arc::new(sm),
@@ -841,6 +859,7 @@ async fn test_handle_purge_request_case1() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         5, // last_applied
         100,
         Arc::new(sm),
@@ -872,6 +891,7 @@ async fn test_handle_purge_request_case2() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         5,
         100,
         Arc::new(sm),
@@ -904,6 +924,7 @@ async fn test_handle_purge_request_case3() {
     sm.expect_last_applied().returning(|| LogId { index: 3, term: 1 }); // last applied is 3
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         3,
         100,
         Arc::new(sm),
@@ -938,6 +959,7 @@ async fn test_handle_purge_request_case4() {
     create_test_snapshot(&mut sm, 5, 1, correct_checksum).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         5,
         100,
         Arc::new(sm),
@@ -973,6 +995,7 @@ async fn test_handle_purge_request_case5() {
     create_test_snapshot(&mut sm, 5, 1, expected_checksum).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         5,
         100,
         Arc::new(sm),
@@ -1015,6 +1038,7 @@ async fn test_handle_purge_request_case6() {
     create_test_snapshot(&mut sm, 5, 1, expected_checksum).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         5,
         100,
         Arc::new(sm),
@@ -1052,6 +1076,7 @@ async fn test_handle_purge_request_case7() {
     create_test_snapshot(&mut sm, 5, 1, [0_u8; 32]).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
         5,
         100,
         Arc::new(sm),

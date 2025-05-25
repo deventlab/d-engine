@@ -17,7 +17,7 @@
 //!
 //! ## Example
 //! ```ignore
-//!
+//! 
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
@@ -275,6 +275,7 @@ impl NodeBuilder {
 
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             Arc::new(DefaultStateMachineHandler::new(
+                node_id,
                 last_applied_index,
                 node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),

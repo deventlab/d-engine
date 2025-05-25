@@ -76,8 +76,7 @@ use crate::TypeConfig;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub id: u32,
 
@@ -189,6 +188,7 @@ pub fn setup_raft_components(
 
     let state_machine = Arc::new(sled_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
+        id,
         last_applied_pair.index,
         node_config.raft.commit_handler.max_entries_per_chunk,
         state_machine.clone(),

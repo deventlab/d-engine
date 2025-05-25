@@ -46,6 +46,10 @@ pub struct RetryPolicies {
     #[serde(default)]
     pub membership: BackoffPolicy,
 
+    /// Retry policy for purge log requests
+    #[serde(default)]
+    pub purge_log: BackoffPolicy,
+
     /// Retry policy for node health checks
     /// Optimized for frequent liveness detection with lower overhead
     #[serde(default)]
@@ -87,6 +91,13 @@ impl Default for RetryPolicies {
                 timeout_ms: 100,
                 base_delay_ms: 1000,
                 max_delay_ms: 10000,
+            },
+
+            purge_log: BackoffPolicy {
+                max_retries: 1,
+                timeout_ms: 100,
+                base_delay_ms: 50,
+                max_delay_ms: 1000,
             },
         }
     }
@@ -169,6 +180,12 @@ impl RetryPolicies {
 
     fn validate_healthcheck(&self) -> Result<()> {
         self.healthcheck.validate("healthcheck")?;
+
+        Ok(())
+    }
+
+    fn validate_purge_log(&self) -> Result<()> {
+        self.purge_log.validate("purge_log")?;
 
         Ok(())
     }

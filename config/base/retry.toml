@@ -26,3 +26,9 @@ max_retries = 10000  # Nearly infinite retries
 timeout_ms = 100     # Fast failure
 base_delay_ms = 1000 # 1 second interval check
 max_delay_ms = 10000 # Maximum 10 second interval
+
+[retry.purge_log]
+max_retries = 1     # Maximum number of retries (recommended: 3-5)
+timeout_ms = 100    # Single request timeout (recommended: 100-200ms)
+base_delay_ms = 50  # Initial backoff delay (recommended: 50-100ms)
+max_delay_ms = 1000 # Maximum backoff delay (recommended: <=1s)

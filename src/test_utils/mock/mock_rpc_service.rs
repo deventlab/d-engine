@@ -11,6 +11,7 @@ use tracing::info;
 use super::MockRpcService;
 use crate::proto::rpc_service_server::RpcServiceServer;
 use crate::proto::ClusterMembership;
+use crate::proto::PurgeLogResponse;
 use crate::proto::VoteResponse;
 use crate::ChannelWithAddress;
 use crate::Result;
@@ -23,6 +24,7 @@ pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60500;
 pub(crate) const MOCK_REPLICATION_HANDLER_PORT_BASE: u64 = 60600;
 pub(crate) const MOCK_MEMBERSHIP_PORT_BASE: u64 = 60700;
 pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
+pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60900;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
 pub struct MockNode;
@@ -111,6 +113,25 @@ impl MockNode {
         //prepare learner's channel address inside membership config
         let mock_service = MockRpcService {
             expected_vote_response: Some(Ok(response)),
+            ..Default::default()
+        };
+        let addr = match Self::mock_listener(mock_service, port, rx, true).await {
+            Ok(a) => a,
+            Err(e) => {
+                panic!("error: {:?}", e);
+            }
+        };
+        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
+    }
+
+    pub(crate) async fn simulate_purge_mock_server(
+        port: u64,
+        response: PurgeLogResponse,
+        rx: oneshot::Receiver<()>,
+    ) -> Result<ChannelWithAddress> {
+        //prepare learner's channel address inside membership config
+        let mock_service = MockRpcService {
+            expected_purge_log_response: Some(Ok(response)),
             ..Default::default()
         };
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {

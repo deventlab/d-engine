@@ -262,7 +262,7 @@ message SnapshotMetadata {
 }
   
 message SnapshotResponse {
-  uint64 term = 1; // Follower's current term (for Leader degradation detection)
+  uint64 term = 1; // Peer's current term (for Leader degradation detection)
   bool success = 2; // Whether the reception is successful
   uint32 next_chunk = 3; // If failed, specify the chunk index to be retransmitted
 }
@@ -270,15 +270,16 @@ message SnapshotResponse {
 message PurgeLogRequest {
   uint64 term = 1;
   uint32 leader_id = 2;
-  uint64 leader_commit = 3; // Leader's commit_index (for Follower verification)
+  uint64 leader_commit = 3; // Leader's commit_index (for Peer verification)
   LogId last_included = 4; // Maximum log index that can be deleted
   bytes snapshot_checksum = 5;
 }
   
 message PurgeLogResponse {
-  uint64 term = 1; // Follower's current term (for Leader abdication)
-  bool success = 2; // Whether to accept the request (non-asynchronous operation result)
-  LogId last_purged = 3; // Follower's current purged position (for Leader update progress)
+  uint32 node_id = 1;
+  uint64 term = 2; // Peer's current term (for Leader abdication)
+  bool success = 3; // Whether to accept the request (non-asynchronous operation result)
+  LogId last_purged = 4; // Peer's current purged position (for Leader update progress)
 }
 
   

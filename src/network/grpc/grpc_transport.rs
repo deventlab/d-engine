@@ -289,18 +289,87 @@ impl Transport for GrpcTransport {
         Ok(VoteResult { peer_ids, responses })
     }
 
-    #[allow(unused)]
-    async fn send_purge_request(
+    async fn send_purge_requests(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: PurgeLogRequest,
         retry: &RetryPolicies,
-    ) -> Result<PurgeLogResponse> {
-        Ok(PurgeLogResponse {
-            term: todo!(),
-            success: false,
-            last_purged: todo!(),
-        })
+    ) -> Result<Vec<Result<PurgeLogResponse>>> {
+        debug!("-------- send purge request --------");
+        if peers.is_empty() {
+            warn!("peers is empty.");
+            return Err(NetworkError::EmptyPeerList {
+                request_type: "send_purge_requests",
+            }
+            .into());
+        }
+        let mut tasks = FuturesUnordered::new();
+
+        // make sure the collection items are unique
+        let mut peer_ids = HashSet::new();
+
+        debug!("send_purge_requests: {:?}, to: {:?}", &req, &peers);
+
+        for peer in peers {
+            let peer_id = peer.id;
+
+            if peer_id == self.my_id {
+                error!(
+                    "myself({}) should not be passed into the send_purge_requests",
+                    self.my_id
+                );
+                continue;
+            }
+
+            if peer_ids.contains(&peer_id) {
+                error!("found duplicated peer which we have send append requests already");
+                continue;
+            }
+
+            peer_ids.insert(peer_id);
+
+            let peer_channel_with_addr = peer.channel_with_address;
+            let addr = peer_channel_with_addr.address;
+            let req_clone = req.clone();
+
+            let closure = move || {
+                let req = req_clone.clone();
+                let channel = peer_channel_with_addr.channel.clone();
+                let mut client = RpcServiceClient::new(channel)
+                    .send_compressed(CompressionEncoding::Gzip)
+                    .accept_compressed(CompressionEncoding::Gzip);
+                async move { client.purge_log(tonic::Request::new(req)).await }
+            };
+
+            let purge_log_backoff_policy = retry.purge_log;
+            let task_handle = task::spawn(async move {
+                match task_with_timeout_and_exponential_backoff(closure, purge_log_backoff_policy).await {
+                    Ok(response) => {
+                        debug!("resquest [peer({:?})] vote response: {:?}", &addr, response);
+                        let res = response.into_inner();
+                        Ok(res)
+                    }
+                    Err(e) => {
+                        warn!("Received RPC error: {}", e);
+                        Err(e)
+                    }
+                }
+            });
+            tasks.push(task_handle.boxed());
+        }
+
+        let mut responses = Vec::new();
+        while let Some(result) = tasks.next().await {
+            match result {
+                Ok(r) => responses.push(r),
+                Err(e) => {
+                    error!("Task failed with error: {:?}", &e);
+                    responses.push(Err(Error::from(NetworkError::TaskFailed(e))));
+                }
+            }
+        }
+
+        Ok(responses)
     }
 }
 

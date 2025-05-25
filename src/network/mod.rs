@@ -59,7 +59,6 @@ pub struct VoteResult {
     pub peer_ids: HashSet<u32>,
     pub responses: Vec<Result<VoteResponse>>,
 }
-
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct ClusterUpdateResult {
@@ -70,31 +69,27 @@ pub struct ClusterUpdateResult {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
-    /// Propagates cluster membership changes to all voting peers using Raft's joint consensus
-    /// mechanism.
+    /// Propagates cluster configuration changes to voting members using Raft's joint consensus.
     ///
-    /// Implements the membership change protocol from Raft §6. This must only be called by the
-    /// leader.
+    /// # Protocol
+    /// - Implements membership change protocol from Raft §6
+    /// - Leader-exclusive operation
+    /// - Automatically filters self-references and duplicates
     ///
-    /// # Arguments
-    /// * `peers` - List of cluster peers (excluding self) to receive configuration updates
-    /// * `req` - Configuration change request with joint consensus details
-    /// * `retry` - Backoff policy for transient network failures
+    /// # Parameters
+    /// - `peers`: Target voting members (excluding learners)
+    /// - `req`: Configuration change details with transition state
+    /// - `retry`: Network retry policy with exponential backoff
     ///
     /// # Errors
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is
-    ///   empty
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background
-    ///   task failures
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC
-    ///   transport errors
-    /// - Returns [`Error::Consensus(ConsensusError::NotLeader)`] if local node isn't leader
+    /// - `NetworkError::EmptyPeerList` if no peers provided
+    /// - `NetworkError::TaskFailed` for background execution failures
+    /// - `ConsensusError::NotLeader` if executed by non-leader
     ///
-    /// # Behavior
-    /// - Skips self-references (peer ID matching local node ID)
-    /// - Deduplicates peer list entries
-    /// - Uses compressed gRPC streams for efficient large config updates
-    /// - Maintains response order matching input peer list
+    /// # Implementation
+    /// - Uses compressed gRPC streams for efficiency
+    /// - Maintains response order matching input peers
+    /// - Concurrent request processing with ordered aggregation
     #[allow(dead_code)]
     async fn send_cluster_update(
         &self,
@@ -103,58 +98,51 @@ pub trait Transport: Send + Sync + 'static {
         retry: &RetryPolicies,
     ) -> Result<ClusterUpdateResult>;
 
-    /// Sends AppendEntries RPCs to multiple peers concurrently with retry mechanisms.
+    /// Replicates log entries to followers and learners.
     ///
-    /// This transport-layer function handles:
-    /// 1. Request distribution to multiple cluster peers
-    /// 2. Network retries with exponential backoff
-    /// 3. Timeout handling for individual requests
-    /// 4. Response collection and aggregation
+    /// # Protocol
+    /// - Implements log replication from Raft §5.3
+    /// - Leader-exclusive operation
+    /// - Handles log consistency checks automatically
     ///
     /// # Parameters
-    /// - `requests_with_peer_address`: A list of tuples containing the peer ID, communication
-    ///   channel, and the specific AppendEntries request
-    /// to be sent to each peer. Each tuple consists of:
-    ///     - `peer_id`: The unique identifier of the peer.
-    ///     - `channel`: The communication channel (e.g., network connection) to the peer.
-    ///     - `request`: The AppendEntries request tailored for the specific peer, as the log
-    ///       entries to be synced
-    ///   may differ for each peer based on their current log state.
+    /// - `requests_with_peer_address`: Target nodes with customized entries
+    /// - `retry`: Network retry configuration
     ///
-    /// - `retry`: Retry configuration parameters
+    /// # Errors
+    /// - `NetworkError::EmptyPeerList` for empty input
+    /// - `NetworkError::TaskFailed` for partial execution failures
     ///
-    /// # Returns
-    /// - `Result<AppendResult>`: Aggregated responses from peers
+    /// # Guarantees
+    /// - At-least-once delivery semantics
+    /// - Automatic deduplication of peer entries
+    /// - Non-blocking error handling
     async fn send_append_requests(
         &self,
         requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
         retry: &RetryPolicies,
     ) -> Result<AppendResult>;
 
-    /// Conducts leader election by sending VoteRequest RPCs to candidate/follower nodes.
+    /// Initiates leader election by requesting votes from cluster peers.
     ///
-    /// Implements the leader election mechanism from Raft §5.2. Must be called by candidates.
+    /// # Protocol
+    /// - Implements leader election from Raft §5.2
+    /// - Candidate-exclusive operation
+    /// - Validates log completeness requirements
     ///
-    /// # Arguments
-    /// * `peers` - Voting-eligible cluster members (excluding learners and self)
-    /// * `req` - Vote request containing candidate's term and log metadata
-    /// * `retry` - Election-specific retry strategy
+    /// # Parameters
+    /// - `peers`: Voting-eligible cluster members
+    /// - `req`: Election metadata with candidate's term and log state
+    /// - `retry`: Election-specific retry strategy
     ///
     /// # Errors
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is
-    ///   empty
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background
-    ///   task failures
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC
-    ///   transport errors
-    /// - Returns [`Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm))`] via
-    ///   response parsing
+    /// - `NetworkError::EmptyPeerList` for empty peer list
+    /// - `NetworkError::TaskFailed` for RPC execution failures
     ///
-    /// # Protocol Behavior
-    /// - Filters out self-references and duplicates
-    /// - Maintains compressed gRPC channel connections
-    /// - Aggregates responses while preserving peer order
-    /// - Continues processing even with partial failures
+    /// # Safety
+    /// - Automatic term validation in responses
+    /// - Strict candidate state enforcement
+    /// - Non-blocking partial failure handling
     async fn send_vote_requests(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
@@ -162,12 +150,32 @@ pub trait Transport: Send + Sync + 'static {
         retry: &RetryPolicies,
     ) -> Result<VoteResult>;
 
-    async fn send_purge_request(
+    /// Orchestrates log compaction across cluster peers after snapshot creation.
+    ///
+    /// # Protocol
+    /// - Implements log truncation from Raft §7
+    /// - Leader-exclusive operation
+    /// - Requires valid snapshot checksum
+    ///
+    /// # Parameters
+    /// - `peers`: Target followers and learners
+    /// - `req`: Snapshot metadata with truncation index
+    /// - `retry`: Purge-specific retry configuration
+    ///
+    /// # Errors
+    /// - `NetworkError::EmptyPeerList` for empty peer list
+    /// - `NetworkError::TaskFailed` for background execution errors
+    ///
+    /// # Guarantees
+    /// - At-least-once delivery
+    /// - Automatic progress tracking
+    /// - Crash-safe persistence requirements
+    async fn send_purge_requests(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
         req: PurgeLogRequest,
         retry: &RetryPolicies,
-    ) -> Result<PurgeLogResponse>;
+    ) -> Result<Vec<Result<PurgeLogResponse>>>;
 }
 
 // Module level utils
