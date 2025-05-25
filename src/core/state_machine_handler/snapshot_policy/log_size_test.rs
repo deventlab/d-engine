@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::SnapshotContext;
-use crate::proto::LogId;
+use crate::proto::common::LogId;
 use crate::LogSizePolicy;
 use crate::SnapshotPolicy;
 use crate::FOLLOWER;

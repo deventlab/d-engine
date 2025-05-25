@@ -6,7 +6,7 @@ use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;
 
-use crate::proto::ErrorCode;
+use crate::proto::error::ErrorCode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientApiError {

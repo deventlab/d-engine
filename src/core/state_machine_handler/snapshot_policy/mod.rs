@@ -11,7 +11,7 @@ pub(crate) use log_size::*;
 pub(crate) use time_based::*;
 
 use crate::cluster::is_leader;
-use crate::proto::LogId;
+use crate::proto::common::LogId;
 
 #[cfg(test)]
 mod log_size_test;

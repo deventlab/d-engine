@@ -25,8 +25,8 @@ use tracing::warn;
 
 use crate::convert::safe_kv;
 use crate::convert::vki;
-use crate::proto::Entry;
-use crate::proto::LogId;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::LocalLogBatch;
 use crate::RaftLog;

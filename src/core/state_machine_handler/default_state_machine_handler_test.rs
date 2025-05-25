@@ -32,15 +32,15 @@ use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::is_dir;
 use crate::init_sled_state_machine_db;
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::Entry;
-use crate::proto::LogId;
-use crate::proto::NodeMeta;
-use crate::proto::PurgeLogRequest;
-use crate::proto::SnapshotChunk;
-use crate::proto::SnapshotMetadata;
-use crate::proto::SnapshotResponse;
-use crate::proto::VotedFor;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::proto::election::VotedFor;
+use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
+use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::MockBuilder;
@@ -311,7 +311,7 @@ async fn test_install_snapshot_chunk_case1() {
 
     // 2. Crate RPC client
     let addr: SocketAddr = format!("[::]:{}", port).parse().unwrap();
-    let mut rpc_client = RpcServiceClient::connect(format!(
+    let mut rpc_client = SnapshotServiceClient::connect(format!(
         "grpc://localhost:{}",
         addr.to_string().split(':').next_back().unwrap()
     ))

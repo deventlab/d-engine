@@ -63,13 +63,13 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tracing::error;
 
-use crate::proto::client_command;
-use crate::proto::client_response::SuccessResult;
-use crate::proto::ClientCommand;
-use crate::proto::ClientResponse;
-use crate::proto::ClientResult;
-use crate::proto::ErrorCode;
-use crate::proto::ReadResults;
+use crate::proto::client::client_command;
+use crate::proto::client::client_response::SuccessResult;
+use crate::proto::client::ClientCommand;
+use crate::proto::client::ClientResponse;
+use crate::proto::client::ClientResult;
+use crate::proto::client::ReadResults;
+use crate::proto::error::ErrorCode;
 
 /// Main entry point for interacting with the d_engine cluster
 ///

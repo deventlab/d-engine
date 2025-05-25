@@ -17,22 +17,26 @@ use tracing::debug;
 use tracing::error;
 use tracing::warn;
 
-use crate::proto::rpc_service_server::RpcService;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClientResponse;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterConfUpdateResponse;
-use crate::proto::ClusterMembership;
-use crate::proto::MetadataRequest;
-use crate::proto::PurgeLogRequest;
-use crate::proto::PurgeLogResponse;
-use crate::proto::SnapshotChunk;
-use crate::proto::SnapshotResponse;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
+use crate::proto::client::raft_client_service_server::RaftClientService;
+use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientResponse;
+use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::election::raft_election_service_server::RaftElectionService;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::raft_replication_service_server::RaftReplicationService;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::snapshot_service_server::SnapshotService;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotResponse;
 use crate::MaybeCloneOneshot;
 use crate::Node;
 use crate::RaftEvent;
@@ -41,9 +45,8 @@ use crate::TypeConfig;
 use crate::API_SLO;
 
 #[tonic::async_trait]
-impl<T> RpcService for Node<T>
-where
-    T: TypeConfig,
+impl<T> RaftElectionService for Node<T>
+where T: TypeConfig
 {
     /// Handles RequestVote RPC calls from candidate nodes during leader elections
     /// # Raft Protocol Logic
@@ -69,7 +72,11 @@ where
         let timeout_duration = Duration::from_millis(self.node_config.raft.election.election_timeout_min);
         handle_rpc_timeout(resp_rx, timeout_duration, "request_vote").await
     }
-
+}
+#[tonic::async_trait]
+impl<T> RaftReplicationService for Node<T>
+where T: TypeConfig
+{
     /// Processes AppendEntries RPC calls from cluster leader
     /// # Raft Protocol Logic
     /// - Heartbeat mechanism (Section 5.2)
@@ -98,7 +105,59 @@ where
 
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }
+}
 
+#[tonic::async_trait]
+impl<T> SnapshotService for Node<T>
+where T: TypeConfig
+{
+    async fn install_snapshot(
+        &self,
+        request: tonic::Request<Streaming<SnapshotChunk>>,
+    ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
+        if !self.server_is_ready() {
+            warn!("install_snapshot: Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::InstallSnapshotChunk(Box::new(request.into_inner()), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
+    }
+
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
+    #[tracing::instrument]
+    async fn purge_log(
+        &self,
+        request: tonic::Request<PurgeLogRequest>,
+    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, Status> {
+        if !self.server_is_ready() {
+            warn!("purge_log: Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::RaftLogCleanUp(request.into_inner(), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "purge_log").await
+    }
+}
+
+#[tonic::async_trait]
+impl<T> ClusterManagementService for Node<T>
+where T: TypeConfig
+{
     /// Handles cluster membership changes (joint consensus)
     /// # Raft Protocol Logic
     /// - Implements cluster configuration changes (Section 6)
@@ -108,7 +167,7 @@ where
     #[tracing::instrument]
     async fn update_cluster_conf(
         &self,
-        request: tonic::Request<ClusteMembershipChangeRequest>,
+        request: tonic::Request<ClusterMembershipChangeRequest>,
     ) -> std::result::Result<Response<ClusterConfUpdateResponse>, Status> {
         if !self.server_is_ready() {
             warn!("[rpc|update_cluster_conf] Node-{} is not ready!", self.node_id);
@@ -125,6 +184,36 @@ where
         handle_rpc_timeout(resp_rx, timeout_duration, "update_cluster_conf").await
     }
 
+    /// Returns current cluster membership and state metadata
+    /// # Usage
+    /// - Administrative API for cluster inspection
+    /// - Provides snapshot of current configuration
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
+    #[tracing::instrument]
+    async fn get_cluster_metadata(
+        &self,
+        request: tonic::Request<MetadataRequest>,
+    ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
+        debug!("receive get_cluster_metadata");
+        if !self.server_is_ready() {
+            warn!("[rpc|get_cluster_metadata] Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        self.event_tx
+            .send(RaftEvent::ClusterConf(request.into_inner(), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
+    }
+}
+#[tonic::async_trait]
+impl<T> RaftClientService for Node<T>
+where T: TypeConfig
+{
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic
     /// - Entry point for client proposals (Section 7)
@@ -171,32 +260,6 @@ where
         with_cancellation_handler(request_future, cancellation_future).await
     }
 
-    /// Returns current cluster membership and state metadata
-    /// # Usage
-    /// - Administrative API for cluster inspection
-    /// - Provides snapshot of current configuration
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
-    async fn get_cluster_metadata(
-        &self,
-        request: tonic::Request<MetadataRequest>,
-    ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
-        debug!("receive get_cluster_metadata");
-        if !self.server_is_ready() {
-            warn!("[rpc|get_cluster_metadata] Node-{} is not ready!", self.node_id);
-            return Err(Status::unavailable("Service is not ready"));
-        }
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-        self.event_tx
-            .send(RaftEvent::ClusterConf(request.into_inner(), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
-
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
-    }
-
     /// Handles client read requests with linearizability guarantees
     /// # Raft Protocol Logic
     /// - Implements lease-based leader reads (Section 6.4)
@@ -221,48 +284,6 @@ where
 
         let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
-    }
-
-    async fn install_snapshot(
-        &self,
-        request: tonic::Request<Streaming<SnapshotChunk>>,
-    ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
-        if !self.server_is_ready() {
-            warn!("install_snapshot: Node-{} is not ready!", self.node_id);
-            return Err(Status::unavailable("Service is not ready"));
-        }
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.event_tx
-            .send(RaftEvent::InstallSnapshotChunk(Box::new(request.into_inner()), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
-
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
-    }
-
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
-    async fn purge_log(
-        &self,
-        request: tonic::Request<PurgeLogRequest>,
-    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, Status> {
-        if !self.server_is_ready() {
-            warn!("purge_log: Node-{} is not ready!", self.node_id);
-            return Err(Status::unavailable("Service is not ready"));
-        }
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.event_tx
-            .send(RaftEvent::RaftLogCleanUp(request.into_inner(), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
-
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "purge_log").await
     }
 }
 

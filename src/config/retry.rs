@@ -157,6 +157,7 @@ impl RetryPolicies {
         self.validate_election()?;
         self.validate_membership()?;
         self.validate_healthcheck()?;
+        self.validate_purge_log()?;
         Ok(())
     }
 

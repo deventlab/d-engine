@@ -7,17 +7,17 @@ use tonic::Status;
 
 use super::candidate_state::CandidateState;
 use crate::alias::POF;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::proto::ErrorCode;
-use crate::proto::MetadataRequest;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
-use crate::proto::VotedFor;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::error::ErrorCode;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::election::VotedFor;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock_election_core;
 use crate::test_utils::mock_peer_channels;
@@ -269,7 +269,7 @@ async fn test_handle_raft_event_case3() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ClusterConfUpdate(
-        ClusteMembershipChangeRequest {
+        ClusterMembershipChangeRequest {
             id: 1,
             term: 1,
             version: 1,

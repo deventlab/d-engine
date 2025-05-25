@@ -8,8 +8,8 @@ use tokio::time::Instant;
 use tokio::time::{self};
 
 use super::DefaultCommitHandler;
-use crate::proto::LogId;
-use crate::proto::SnapshotMetadata;
+use crate::proto::common::LogId;
+use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
 use crate::CommitHandler;

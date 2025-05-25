@@ -6,10 +6,10 @@ use tracing::error;
 use tracing::info;
 
 use super::ClientApiError;
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::ErrorCode;
-use crate::proto::MetadataRequest;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::error::ErrorCode;
 use crate::ClientConfig;
 
 /// Manages connections to cluster nodes
@@ -139,7 +139,7 @@ impl ConnectionPool {
         for addr in endpoints {
             match Self::create_channel(addr.clone(), config).await {
                 Ok(channel) => {
-                    let mut client = RpcServiceClient::new(channel);
+                    let mut client = ClusterManagementServiceClient::new(channel);
                     if config.enable_compression {
                         client = client
                             .send_compressed(CompressionEncoding::Gzip)

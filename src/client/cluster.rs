@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use super::ClientInner;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::NodeMeta;
 use crate::Result;
 
 /// Cluster administration interface

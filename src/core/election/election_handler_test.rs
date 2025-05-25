@@ -6,9 +6,9 @@ use tracing::debug;
 
 use crate::alias::ROF;
 use crate::alias::TROF;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
-use crate::proto::VotedFor;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::election::VotedFor;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;

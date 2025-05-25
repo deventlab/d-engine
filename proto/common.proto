@@ -1,0 +1,35 @@
+syntax = "proto3";
+package raft.common;
+
+// Basic definitions shared across modules
+message LogId {
+  uint64 term = 1;
+  uint64 index = 2;
+}
+
+message Entry {
+  uint64 index = 1;
+  uint64 term = 2;
+  bytes command = 3;
+}
+
+
+message SnapshotEntry {
+    bytes key = 1;
+    bytes value = 2;
+}
+  
+message SnapshotMeta {
+    uint64 versionHigh = 1;
+    uint64 versionLow = 2;
+    uint64 createdAtHigh = 3;
+    uint64 createdAtLow = 4;
+    uint32 authorId = 5;
+    LogId lastIncluded = 6;
+}
+
+message Snapshot {
+    SnapshotMeta meta = 1;
+    repeated SnapshotEntry data = 2;  
+}
+  

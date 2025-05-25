@@ -10,12 +10,12 @@ use tracing::debug;
 use tracing::error;
 
 use super::ClientInner;
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::ClientCommand;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClientResult;
-use crate::proto::ErrorCode;
+use crate::proto::client::raft_client_service_client::RaftClientServiceClient;
+use crate::proto::client::ClientCommand;
+use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientResult;
+use crate::proto::error::ErrorCode;
 use crate::ClientApiError;
 
 /// Key-value store client interface
@@ -185,11 +185,11 @@ impl KvClient {
         }
     }
 
-    async fn make_leader_client(&self) -> std::result::Result<RpcServiceClient<Channel>, ClientApiError> {
+    async fn make_leader_client(&self) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         let channel = client_inner.pool.get_leader();
-        let mut client = RpcServiceClient::new(channel);
+        let mut client = RaftClientServiceClient::new(channel);
         if client_inner.pool.config.enable_compression {
             client = client
                 .send_compressed(CompressionEncoding::Gzip)
@@ -199,7 +199,7 @@ impl KvClient {
         Ok(client)
     }
 
-    async fn make_client(&self) -> std::result::Result<RpcServiceClient<Channel>, ClientApiError> {
+    async fn make_client(&self) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         // Balance from read clients
@@ -207,7 +207,7 @@ impl KvClient {
         let channels = client_inner.pool.get_all_channels();
         let i = rng.gen_range(0..channels.len());
 
-        let mut client = RpcServiceClient::new(channels[i].clone());
+        let mut client = RaftClientServiceClient::new(channels[i].clone());
 
         if client_inner.pool.config.enable_compression {
             client = client

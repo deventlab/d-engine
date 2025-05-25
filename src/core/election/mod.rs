@@ -20,8 +20,8 @@ use tonic::async_trait;
 
 use crate::alias::ROF;
 use crate::alias::TROF;
-use crate::proto::VoteRequest;
-use crate::proto::VotedFor;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VotedFor;
 use crate::ChannelWithAddressAndRole;
 use crate::RaftNodeConfig;
 use crate::Result;

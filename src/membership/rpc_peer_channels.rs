@@ -34,7 +34,7 @@ use super::PeerChannelsFactory;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::NodeMeta;
 use crate::utils::net::address_str;
 use crate::MembershipError;
 use crate::NetworkConfig;

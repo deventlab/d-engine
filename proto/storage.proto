@@ -1,0 +1,52 @@
+syntax = "proto3";
+package raft.storage;
+
+import "proto/common.proto";
+
+message SnapshotChunk {
+    // Protocol header (repeated in each block)
+    fixed64 term = 1; // compact binary encoding
+    fixed64 leader_id = 2; // digital node ID
+
+    // Chunk metadata
+    fixed32 seq = 3; // Block sequence number starting from 0
+    fixed32 total = 4; // Total number of blocks
+    bytes checksum = 5; // 4-byte CRC32
+
+    // Metaeata
+    SnapshotMetadata metadata = 6;
+
+    // Payload data
+    bytes data = 7; // 4MB is recommended
+}
+
+message SnapshotMetadata {
+    raft.common.LogId last_included = 1; // The last log index included in the snapshot
+    bytes checksum = 2;             // SHA-256 checksum
+}
+
+message SnapshotResponse {
+    uint64 term = 1; // Peer's current term (for Leader degradation detection)
+    bool success = 2; // Whether the reception is successful
+    uint32 next_chunk = 3; // If failed, specify the chunk index to be retransmitted
+}
+
+message PurgeLogRequest {
+    uint64 term = 1;
+    uint32 leader_id = 2;
+    uint64 leader_commit = 3; // Leader's commit_index (for Peer verification)
+    raft.common.LogId last_included = 4; // Maximum log index that can be deleted
+    bytes snapshot_checksum = 5;
+}
+
+message PurgeLogResponse {
+    uint32 node_id = 1;
+    uint64 term = 2; // Peer's current term (for Leader abdication)
+    bool success = 3; // Whether to accept the request (non-asynchronous operation result)
+    raft.common.LogId last_purged = 4; // Peer's current purged position (for Leader update progress)
+}
+  
+service SnapshotService {
+  rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse);
+  rpc PurgeLog(PurgeLogRequest) returns (PurgeLogResponse);
+}

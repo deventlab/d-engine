@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::move_directory;
-use crate::proto::SnapshotMetadata;
+use crate::proto::storage::SnapshotMetadata;
 use crate::Result;
 use crate::StorageError;
 

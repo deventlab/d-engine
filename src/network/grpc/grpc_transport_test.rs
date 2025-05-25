@@ -3,15 +3,15 @@ use tonic::Status;
 
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::proto::LogId;
-use crate::proto::PurgeLogRequest;
-use crate::proto::PurgeLogResponse;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::common::LogId;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
@@ -61,7 +61,7 @@ async fn test_send_cluster_update_case1() {
     let my_id = 1;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case1");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 1,
         term: 1,
         version: 1,
@@ -89,7 +89,7 @@ async fn test_send_cluster_update_case2() {
     let my_id = 1;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case2");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 1,
         term: 1,
         version: 1,
@@ -140,7 +140,7 @@ async fn test_send_cluster_update_case3() {
     let peer2_id = 3;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case3");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 1,
         term: 1,
         version: 1,
@@ -202,7 +202,7 @@ async fn test_send_cluster_update_case4() {
     let peer2_id = 3;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case4");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 1,
         term: 1,
         version: 1,
@@ -1132,7 +1132,11 @@ async fn test_purge_requests_case4_mixed_responses() {
     match result {
         Ok(res) => {
             assert_eq!(res.len(), 2, "Should collect all responses");
-            let successes = res.iter().filter(|r| r.is_ok()).count();
+            let successes = res
+                .iter()
+                .filter_map(|r| r.as_ref().ok())
+                .filter(|resp| resp.success)
+                .count();
             assert_eq!(successes, 1, "Should handle partial success");
         }
         Err(e) => panic!("Unexpected error: {:?}", e),

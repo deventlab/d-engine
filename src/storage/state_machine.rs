@@ -10,9 +10,9 @@
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::proto::Entry;
-use crate::proto::LogId;
-use crate::proto::SnapshotMetadata;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::proto::storage::SnapshotMetadata;
 use crate::Error;
 use crate::Result;
 
@@ -79,7 +79,7 @@ pub trait StateMachine: Send + Sync + 'static {
 
     async fn apply_snapshot_from_file(
         &self,
-        metadata: &crate::proto::SnapshotMetadata,
+        metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
     ) -> Result<()>;
 

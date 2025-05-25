@@ -27,8 +27,8 @@ use tonic::async_trait;
 use tonic::transport::Channel;
 
 use crate::alias::POF;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterMembership;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
@@ -114,7 +114,7 @@ where
     async fn update_cluster_conf_from_leader(
         &self,
         my_current_term: u64,
-        cluster_conf_change_req: &ClusteMembershipChangeRequest,
+        cluster_conf_change_req: &ClusterMembershipChangeRequest,
     ) -> Result<()>;
 
     fn get_cluster_conf_version(&self) -> u64;

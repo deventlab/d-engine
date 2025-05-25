@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::proto::Entry;
+use crate::proto::common::Entry;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct LocalLogBatch {

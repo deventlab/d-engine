@@ -3,8 +3,8 @@ mod tests {
     use tempfile::tempdir;
     use tokio::fs::read;
 
-    use crate::proto::LogId;
-    use crate::proto::SnapshotMetadata;
+    use crate::proto::common::LogId;
+    use crate::proto::storage::SnapshotMetadata;
     use crate::SnapshotAssembler;
 
     #[tokio::test]

@@ -1,21 +1,21 @@
 use tonic::Status;
 
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClientResponse;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterConfUpdateResponse;
-use crate::proto::ClusterMembership;
-use crate::proto::LogId;
-use crate::proto::MetadataRequest;
-use crate::proto::PurgeLogRequest;
-use crate::proto::PurgeLogResponse;
-use crate::proto::SnapshotChunk;
-use crate::proto::SnapshotResponse;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
+use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotResponse;
+use crate::proto::client::ClientResponse;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::common::LogId;
+use crate::proto::cluster::MetadataRequest;
 use crate::MaybeCloneOneshotSender;
 
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ pub(crate) enum RaftEvent {
     ),
 
     ClusterConfUpdate(
-        ClusteMembershipChangeRequest,
+        ClusterMembershipChangeRequest,
         MaybeCloneOneshotSender<std::result::Result<ClusterConfUpdateResponse, Status>>,
     ),
 
@@ -96,7 +96,7 @@ pub(crate) enum TestEvent {
 
     ClusterConf(MetadataRequest),
 
-    ClusterConfUpdate(ClusteMembershipChangeRequest),
+    ClusterConfUpdate(ClusterMembershipChangeRequest),
 
     AppendEntries(AppendEntriesRequest),
 

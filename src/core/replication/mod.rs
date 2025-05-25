@@ -29,15 +29,15 @@ use tonic::Status;
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
-use crate::proto::append_entries_response;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientCommand;
-use crate::proto::ClientResponse;
-use crate::proto::ConflictResult;
-use crate::proto::Entry;
-use crate::proto::LogId;
-use crate::proto::SuccessResult;
+use crate::proto::client::ClientCommand;
+use crate::proto::client::ClientResponse;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::proto::replication::append_entries_response;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::replication::ConflictResult;
+use crate::proto::replication::SuccessResult;
 use crate::AppendResults;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
@@ -62,8 +62,7 @@ pub struct AppendResponseWithUpdates {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// As Leader, send replications to peers.
     /// (combined regular heartbeat and client proposals)

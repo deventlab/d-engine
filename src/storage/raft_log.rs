@@ -6,8 +6,8 @@ use mockall::automock;
 use sled::Subscriber;
 use tonic::async_trait;
 
-use crate::proto::Entry;
-use crate::proto::LogId;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
 use crate::Result;
 
 #[cfg_attr(test, automock)]

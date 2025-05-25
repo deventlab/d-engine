@@ -16,14 +16,14 @@ pub mod grpc;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterConfUpdateResponse;
-use crate::proto::PurgeLogRequest;
-use crate::proto::PurgeLogResponse;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
 use crate::BackoffPolicy;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
@@ -94,7 +94,7 @@ pub trait Transport: Send + Sync + 'static {
     async fn send_cluster_update(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
-        req: ClusteMembershipChangeRequest,
+        req: ClusterMembershipChangeRequest,
         retry: &RetryPolicies,
     ) -> Result<ClusterUpdateResult>;
 
@@ -255,7 +255,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::ClusterConfUpdateResponse;
+    use crate::proto::cluster::ClusterConfUpdateResponse;
 
     async fn async_ok(number: u64) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         sleep(Duration::from_millis(number)).await;

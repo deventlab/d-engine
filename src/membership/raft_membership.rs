@@ -31,9 +31,9 @@ use super::PeerChannels;
 use crate::alias::POF;
 use crate::cluster::is_candidate;
 use crate::cluster::is_follower;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::NodeMeta;
 use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
@@ -171,7 +171,7 @@ where
     async fn update_cluster_conf_from_leader(
         &self,
         my_current_term: u64,
-        cluster_conf_change_req: &ClusteMembershipChangeRequest,
+        cluster_conf_change_req: &ClusterMembershipChangeRequest,
     ) -> Result<()> {
         let leader_id = cluster_conf_change_req.id;
         debug!(

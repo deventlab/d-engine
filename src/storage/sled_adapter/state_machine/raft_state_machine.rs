@@ -31,12 +31,12 @@ use crate::convert::safe_kv;
 use crate::convert::safe_vk;
 use crate::file_io::compute_checksum_from_path;
 use crate::init_sled_state_machine_db;
-use crate::proto;
-use crate::proto::client_command::Command;
-use crate::proto::client_command::Insert;
-use crate::proto::ClientCommand;
-use crate::proto::Entry;
-use crate::proto::LogId;
+use crate::proto::client::client_command::Command;
+use crate::proto::client::client_command::Insert;
+use crate::proto::client::ClientCommand;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::proto::storage::SnapshotMetadata;
 use crate::Result;
 use crate::StateMachine;
 use crate::StateMachineIter;
@@ -347,7 +347,7 @@ impl StateMachine for RaftStateMachine {
 
     async fn apply_snapshot_from_file(
         &self,
-        metadata: &proto::SnapshotMetadata,
+        metadata: &SnapshotMetadata,
         snapshot_path: PathBuf,
     ) -> Result<()> {
         if let Some(last_included) = metadata.last_included {

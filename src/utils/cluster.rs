@@ -5,7 +5,7 @@ use std::time::UNIX_EPOCH;
 use dashmap::DashSet;
 use tracing::error;
 
-use crate::proto::Entry;
+use crate::proto::common::Entry;
 use crate::CANDIDATE;
 use crate::CLUSTER_FATAL_ERROR;
 use crate::FOLLOWER;

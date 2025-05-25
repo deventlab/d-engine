@@ -41,7 +41,7 @@ use super::RaftContext;
 use super::RaftEvent;
 use super::RoleEvent;
 use crate::alias::POF;
-use crate::proto::VotedFor;
+use crate::proto::election::VotedFor;
 use crate::Result;
 use crate::TypeConfig;
 

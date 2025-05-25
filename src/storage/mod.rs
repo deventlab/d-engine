@@ -137,8 +137,8 @@ mod tests {
     use super::*;
     use crate::convert::safe_kv;
     use crate::convert::skv;
-    use crate::proto::ClusterMembership;
-    use crate::proto::NodeMeta;
+    use crate::proto::cluster::ClusterMembership;
+    use crate::proto::cluster::NodeMeta;
     use crate::test_utils;
     use crate::FOLLOWER;
     use crate::LEARNER;

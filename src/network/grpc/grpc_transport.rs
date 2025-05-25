@@ -15,12 +15,15 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::PurgeLogRequest;
-use crate::proto::PurgeLogResponse;
-use crate::proto::VoteRequest;
+use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::election::raft_election_service_client::RaftElectionServiceClient;
+use crate::proto::election::VoteRequest;
+use crate::proto::replication::raft_replication_service_client::RaftReplicationServiceClient;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
 use crate::task_with_timeout_and_exponential_backoff;
 use crate::AppendResult;
 use crate::ChannelWithAddress;
@@ -45,7 +48,7 @@ impl Transport for GrpcTransport {
     async fn send_cluster_update(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
-        req: ClusteMembershipChangeRequest,
+        req: ClusterMembershipChangeRequest,
         retry: &RetryPolicies,
     ) -> Result<ClusterUpdateResult> {
         debug!("-------- send cluster_membership requests --------");
@@ -82,7 +85,7 @@ impl Transport for GrpcTransport {
 
             let closure = move || {
                 let channel = channel.clone();
-                let mut client = RpcServiceClient::new(channel)
+                let mut client = ClusterManagementServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
                 let req = req.clone();
@@ -162,7 +165,7 @@ impl Transport for GrpcTransport {
 
             let closure = move || {
                 let channel = channel.clone();
-                let mut client = RpcServiceClient::new(channel)
+                let mut client = RaftReplicationServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
                 let req = req.clone();
@@ -253,7 +256,7 @@ impl Transport for GrpcTransport {
 
             let closure = move || {
                 let channel = peer_channel_with_addr.channel.clone();
-                let mut client = RpcServiceClient::new(channel)
+                let mut client = RaftElectionServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
                 async move { client.request_vote(tonic::Request::new(req)).await }
@@ -335,7 +338,7 @@ impl Transport for GrpcTransport {
             let closure = move || {
                 let req = req_clone.clone();
                 let channel = peer_channel_with_addr.channel.clone();
-                let mut client = RpcServiceClient::new(channel)
+                let mut client = SnapshotServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
                 async move { client.purge_log(tonic::Request::new(req)).await }

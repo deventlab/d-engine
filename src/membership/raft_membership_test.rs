@@ -3,9 +3,9 @@ use tokio::sync::watch;
 
 use super::RaftMembership;
 use crate::cluster::is_follower;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::NodeMeta;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockNode;
 use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;
@@ -327,7 +327,7 @@ async fn test_update_cluster_conf_from_leader_case1() {
     ];
 
     // Prepare request
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 3,
         term: my_term - 1,
         version: 1,
@@ -377,7 +377,7 @@ async fn test_update_cluster_conf_from_leader_case2() {
 
     // Prepare request
     let request_cluster_conf_version = 1;
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 3,
         term: my_term,
         version: request_cluster_conf_version,
@@ -429,7 +429,7 @@ async fn test_update_cluster_conf_from_leader_case3() {
 
     // Prepare request
     let request_cluster_conf_version = 2;
-    let request = ClusteMembershipChangeRequest {
+    let request = ClusterMembershipChangeRequest {
         id: 3,
         term: my_term,
         version: request_cluster_conf_version,

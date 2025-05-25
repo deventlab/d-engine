@@ -8,17 +8,20 @@ use tonic::Code;
 use tonic::Request;
 
 use crate::convert::safe_kv;
-use crate::proto::rpc_service_server::RpcService;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientCommand;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::proto::LogId;
-use crate::proto::MetadataRequest;
-use crate::proto::VoteRequest;
+use crate::proto::client::raft_client_service_server::RaftClientService;
+use crate::proto::client::ClientCommand;
+use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::LogId;
+use crate::proto::election::raft_election_service_server::RaftElectionService;
+use crate::proto::election::VoteRequest;
+use crate::proto::replication::raft_replication_service_server::RaftReplicationService;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_node;
 use crate::test_utils::MockBuilder;
@@ -63,7 +66,7 @@ async fn test_handle_service_timeout() {
 
     // Update cluster conf request
     assert!(node
-        .update_cluster_conf(Request::new(ClusteMembershipChangeRequest {
+        .update_cluster_conf(Request::new(ClusterMembershipChangeRequest {
             id: 1,
             term: 1,
             version: 1,
@@ -134,7 +137,7 @@ async fn test_server_is_not_ready() {
 
     // Update cluster conf request
     let result = node
-        .update_cluster_conf(Request::new(ClusteMembershipChangeRequest {
+        .update_cluster_conf(Request::new(ClusterMembershipChangeRequest {
             id: 1,
             term: 1,
             version: 1,
@@ -271,7 +274,7 @@ async fn test_handle_rpc_services_successfully() {
             .is_ok());
 
         assert!(node
-            .update_cluster_conf(Request::new(ClusteMembershipChangeRequest {
+            .update_cluster_conf(Request::new(ClusterMembershipChangeRequest {
                 id: 1,
                 term: 1,
                 version: 1,

@@ -54,21 +54,21 @@ use tonic::async_trait;
 
 use super::NewCommitData;
 use crate::alias::ROF;
-use crate::proto::ClientCommand;
-use crate::proto::ClientResult;
-use crate::proto::LogId;
-use crate::proto::PurgeLogRequest;
-use crate::proto::PurgeLogResponse;
-use crate::proto::SnapshotChunk;
-use crate::proto::SnapshotMetadata;
+use crate::proto::client::ClientCommand;
+use crate::proto::client::ClientResult;
+use crate::proto::common::LogId;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
+use crate::proto::storage::SnapshotResponse;
 use crate::Result;
 use crate::TypeConfig;
 
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait StateMachineHandler<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn update_pending(
         &self,
@@ -89,7 +89,7 @@ where
         &self,
         current_term: u64,
         stream_request: Box<tonic::Streaming<SnapshotChunk>>,
-        sender: crate::MaybeCloneOneshotSender<std::result::Result<crate::proto::SnapshotResponse, tonic::Status>>,
+        sender: crate::MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
     ) -> Result<()>;
 
     /// Validate if should generate snapshot now

@@ -14,8 +14,8 @@ use crate::alias::TROF;
 use crate::cluster::is_majority;
 use crate::if_higher_term_found;
 use crate::is_target_log_more_recent;
-use crate::proto::VoteRequest;
-use crate::proto::VotedFor;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VotedFor;
 use crate::ChannelWithAddressAndRole;
 use crate::ElectionError;
 use crate::RaftLog;
@@ -34,8 +34,7 @@ pub struct ElectionHandler<T: TypeConfig> {
 
 #[async_trait]
 impl<T> ElectionCore<T> for ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
@@ -213,8 +212,7 @@ where
     }
 }
 impl<T> ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(my_id: u32) -> Self {
         Self {

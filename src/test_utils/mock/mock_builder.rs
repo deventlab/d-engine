@@ -11,8 +11,8 @@ use tracing::trace;
 
 use super::MockTypeConfig;
 use crate::grpc;
-use crate::proto::ClusterMembership;
-use crate::proto::LogId;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::common::LogId;
 use crate::ElectionConfig;
 use crate::MockElectionCore;
 use crate::MockMembership;

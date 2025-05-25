@@ -50,7 +50,7 @@ use tokio::sync::watch;
 use super::enable_logger;
 use super::node_config;
 use super::MockTypeConfig;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::NodeMeta;
 use crate::Node;
 use crate::Raft;
 use crate::RaftContext;

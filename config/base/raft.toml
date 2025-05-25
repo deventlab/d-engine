@@ -39,4 +39,4 @@ max_log_entries_before_snapshot = 1000
 cleanup_retain_count = 2
 
 [raft.membership]
-cluster_healthcheck_probe_service_name = "rpc_service.RpcService"
+cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"

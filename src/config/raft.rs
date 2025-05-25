@@ -240,7 +240,7 @@ impl Default for MembershipConfig {
     }
 }
 fn default_probe_service() -> String {
-    "rpc_service.RpcService".to_string()
+    "raft.cluster.ClusterManagementService".to_string()
 }
 
 impl MembershipConfig {

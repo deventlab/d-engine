@@ -3,14 +3,14 @@ use std::sync::Arc;
 
 use crate::alias::ROF;
 use crate::convert::safe_kv;
-use crate::proto::Entry;
+use crate::proto::common::Entry;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     use prost::Message;
 
-    use crate::proto::ClientCommand;
+    use crate::proto::client::ClientCommand;
 
     let mut buffer = Vec::new();
 
@@ -29,7 +29,7 @@ pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
     use prost::Message;
 
-    use crate::proto::ClientCommand;
+    use crate::proto::client::ClientCommand;
 
     let mut buffer = Vec::new();
 

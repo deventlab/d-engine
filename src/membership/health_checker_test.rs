@@ -50,7 +50,7 @@ async fn test_check_peer_is_ready_case1() {
     let r = HealthChecker::check_peer_is_ready(
         MockNode::tcp_addr_to_http_addr(peer_addr.to_string()),
         settings,
-        "rpc_service.RpcService".to_string(),
+        "raft.cluster.ClusterManagementService".to_string(),
     )
     .await;
     assert!(r.is_err());
@@ -97,7 +97,7 @@ async fn test_check_peer_is_ready_case2() {
     let r = HealthChecker::check_peer_is_ready(
         MockNode::tcp_addr_to_http_addr(peer_addr.to_string()),
         settings,
-        "rpc_service.RpcService".to_string(),
+        "raft.cluster.ClusterManagementService".to_string(),
     )
     .await;
     assert!(r.is_ok());

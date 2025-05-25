@@ -1,21 +1,15 @@
-{
-  "rust-analyzer.server.extraEnv": {
-    // 增加内存限制（根据系统调整）
-    "RA_LOG": "info",
-    "RA_FILES_LOAD_CONCURRENCY": "4" // 降低并发文件加载数
-  },
-  "rust-analyzer.cargo.loadOutDirsFromCheck": true, // 减少重复分析
-  "rust-analyzer.checkOnSave.command": "clippy", // 避免重复检查
-  "rust-analyzer.procMacro.enable": false, // 禁用过程宏（临时测试）
-  "files.watcherExclude": {
-    "**/target/**": true,
-    "**/.git/**": true
-  },
-  "rust-analyzer.files.excludeDirs": [
-    "benches",
-    "examples"
-  ],
-  "rust-analyzer.checkOnSave.overrideCommand": true,
-  "rust-analyzer.diagnostics.enable": false, // 临时关闭诊断以测试性能
-  "rust-analyzer.trace.server": "verbose"
-}
+// {
+//   "rust-analyzer.server.extraEnv": {
+//     // 增加内存限制（根据系统调整）
+//     "RA_LOG": "info",
+//     "RA_FILES_LOAD_CONCURRENCY": "4" // 降低并发文件加载数
+//   },
+//   "rust-analyzer.procMacro.enable": false, // 禁用过程宏（临时测试）
+//   "files.watcherExclude": {
+//     "**/target/**": true,
+//     "**/.git/**": true
+//   },
+//   "rust-analyzer.diagnostics.enable": false, // 临时关闭诊断以测试性能
+//   "rust-analyzer.trace.server": "verbose",
+//   "rust-analyzer.checkOnSave": false,
+// }

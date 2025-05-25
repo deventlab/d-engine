@@ -1,5 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -9,10 +10,14 @@ use tonic_health::server::health_reporter;
 use tracing::info;
 
 use super::MockRpcService;
-use crate::proto::rpc_service_server::RpcServiceServer;
-use crate::proto::ClusterMembership;
-use crate::proto::PurgeLogResponse;
-use crate::proto::VoteResponse;
+use crate::proto::client::raft_client_service_server::RaftClientServiceServer;
+use crate::proto::cluster::cluster_management_service_server::ClusterManagementServiceServer;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::election::raft_election_service_server::RaftElectionServiceServer;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::raft_replication_service_server::RaftReplicationServiceServer;
+use crate::proto::storage::snapshot_service_server::SnapshotServiceServer;
+use crate::proto::storage::PurgeLogResponse;
 use crate::ChannelWithAddress;
 use crate::Result;
 
@@ -38,20 +43,65 @@ impl MockNode {
     ) -> io::Result<SocketAddr> {
         let (mut health_reporter, health_service) = health_reporter();
         if is_ready {
-            health_reporter.set_serving::<RpcServiceServer<MockNode>>().await;
+            health_reporter.set_serving::<RaftClientServiceServer<MockNode>>().await;
+            health_reporter
+                .set_serving::<RaftElectionServiceServer<MockNode>>()
+                .await;
+            health_reporter
+                .set_serving::<RaftReplicationServiceServer<MockNode>>()
+                .await;
+            health_reporter
+                .set_serving::<ClusterManagementServiceServer<MockNode>>()
+                .await;
+            health_reporter.set_serving::<SnapshotServiceServer<MockNode>>().await;
             info!("set service is serving");
         } else {
-            health_reporter.set_not_serving::<RpcServiceServer<MockNode>>().await;
+            health_reporter
+                .set_not_serving::<RaftClientServiceServer<MockNode>>()
+                .await;
+            health_reporter
+                .set_not_serving::<RaftElectionServiceServer<MockNode>>()
+                .await;
+            health_reporter
+                .set_not_serving::<RaftReplicationServiceServer<MockNode>>()
+                .await;
+            health_reporter
+                .set_not_serving::<ClusterManagementServiceServer<MockNode>>()
+                .await;
+            health_reporter
+                .set_not_serving::<SnapshotServiceServer<MockNode>>()
+                .await;
             info!("set service is not serving");
         }
 
         let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await.unwrap();
         let addr = listener.local_addr();
+        let mock_service = Arc::new(mock_service);
         let _r = tokio::spawn(async move {
             tonic::transport::Server::builder()
                 .add_service(health_service)
                 .add_service(
-                    RpcServiceServer::new(mock_service)
+                    RaftClientServiceServer::from_arc(mock_service.clone())
+                        .accept_compressed(CompressionEncoding::Gzip)
+                        .send_compressed(CompressionEncoding::Gzip),
+                )
+                .add_service(
+                    RaftElectionServiceServer::from_arc(mock_service.clone())
+                        .accept_compressed(CompressionEncoding::Gzip)
+                        .send_compressed(CompressionEncoding::Gzip),
+                )
+                .add_service(
+                    RaftReplicationServiceServer::from_arc(mock_service.clone())
+                        .accept_compressed(CompressionEncoding::Gzip)
+                        .send_compressed(CompressionEncoding::Gzip),
+                )
+                .add_service(
+                    ClusterManagementServiceServer::from_arc(mock_service.clone())
+                        .accept_compressed(CompressionEncoding::Gzip)
+                        .send_compressed(CompressionEncoding::Gzip),
+                )
+                .add_service(
+                    SnapshotServiceServer::from_arc(mock_service)
                         .accept_compressed(CompressionEncoding::Gzip)
                         .send_compressed(CompressionEncoding::Gzip),
                 )

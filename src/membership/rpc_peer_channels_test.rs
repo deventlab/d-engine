@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use tokio::task;
 
 use super::ChannelWithAddress;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::NodeMeta;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
@@ -124,7 +124,7 @@ async fn test_connect_with_peers_case2() {
 /// Case 1: test failed to connect with peers
 #[tokio::test]
 async fn test_check_cluster_is_ready_case1() {
-    let mut node_config = node_config("/tmp/test_check_cluster_is_ready_case2");
+    let mut node_config = node_config("/tmp/test_check_cluster_is_ready_case1");
     node_config.retry.membership.max_retries = 1;
 
     let peer2_id = 2;

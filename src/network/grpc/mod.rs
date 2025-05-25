@@ -37,7 +37,11 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::proto::rpc_service_server::RpcServiceServer;
+use crate::proto::client::raft_client_service_server::RaftClientServiceServer;
+use crate::proto::cluster::cluster_management_service_server::ClusterManagementServiceServer;
+use crate::proto::election::raft_election_service_server::RaftElectionServiceServer;
+use crate::proto::replication::raft_replication_service_server::RaftReplicationServiceServer;
+use crate::proto::storage::snapshot_service_server::SnapshotServiceServer;
 use crate::Node;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -61,7 +65,17 @@ where
     let (mut health_reporter, health_service) = health_reporter();
 
     // Set the initial health status to SERVING
-    health_reporter.set_serving::<RpcServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<RaftClientServiceServer<Node<T>>>().await;
+    health_reporter
+        .set_serving::<RaftElectionServiceServer<Node<T>>>()
+        .await;
+    health_reporter
+        .set_serving::<RaftReplicationServiceServer<Node<T>>>()
+        .await;
+    health_reporter
+        .set_serving::<ClusterManagementServiceServer<Node<T>>>()
+        .await;
+    health_reporter.set_serving::<SnapshotServiceServer<Node<T>>>().await;
 
     let mut server_builder = tonic::transport::Server::builder()
         .concurrency_limit_per_connection(config.network.concurrency_limit_per_connection)
@@ -111,7 +125,27 @@ where
     if let Err(e) = server_builder
         .add_service(health_service)
         .add_service(
-            RpcServiceServer::from_arc(node)
+            RaftClientServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            RaftElectionServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            RaftReplicationServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            ClusterManagementServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            SnapshotServiceServer::from_arc(node)
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
         )
