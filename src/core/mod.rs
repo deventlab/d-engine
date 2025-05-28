@@ -1,19 +1,18 @@
 mod commit_handler;
 mod election;
 mod event;
+mod purge;
 mod raft;
 mod raft_context;
 mod raft_role;
-
 mod replication;
-
 mod state_machine_handler;
-
 mod timer;
 
 pub(crate) use commit_handler::*;
 pub(crate) use election::*;
 pub(crate) use event::*;
+pub(crate) use purge::*;
 pub(crate) use raft::*;
 pub(crate) use raft_context::*;
 #[doc(hidden)]

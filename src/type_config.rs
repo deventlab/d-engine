@@ -5,6 +5,7 @@ use crate::ElectionCore;
 use crate::Membership;
 use crate::PeerChannels;
 use crate::PeerChannelsFactory;
+use crate::PurgeExecutor;
 use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::SnapshotPolicy;
@@ -37,6 +38,8 @@ pub trait TypeConfig:
     type SMH: StateMachineHandler<Self> + Debug;
 
     type SNP: SnapshotPolicy + Debug;
+
+    type PE: PurgeExecutor + Send + Sync + 'static;
 }
 
 pub mod alias {
@@ -63,4 +66,6 @@ pub mod alias {
     pub type SMHOF<T> = <T as TypeConfig>::SMH;
 
     pub type SNP<T> = <T as TypeConfig>::SNP;
+
+    pub type PE<T> = <T as TypeConfig>::PE;
 }

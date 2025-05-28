@@ -20,13 +20,11 @@ use super::StateSnapshot;
 use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::client::ClientResponse;
-use crate::proto::error::ErrorCode;
 use crate::proto::common::LogId;
-use crate::proto::storage::PurgeLogResponse;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
+use crate::proto::error::ErrorCode;
 use crate::ConsensusError;
-use crate::Membership;
 use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -53,21 +51,6 @@ pub struct LearnerState<T: TypeConfig> {
     // -- Core State --
     /// Shared cluster state with concurrency control
     pub shared_state: SharedState,
-
-    // -- Log Compaction --
-    /// === Persistent State ===
-    /// - Last actually purged log position (inclusive)
-    ///
-    /// Represents the latest log index that has been physically removed
-    /// from storage after successful compaction.
-    pub(super) last_purged_index: Option<LogId>,
-
-    /// === Volatile State ===
-    /// - Asynchronous log cleanup task status
-    ///
-    /// When set to `Some(index)`, indicates there's an ongoing background task
-    /// attempting to purge logs up to the specified index.
-    pub(super) pending_purge: Option<u64>,
 
     // -- Cluster Configuration --
     /// Cached Raft node configuration (immutable shared reference)
@@ -281,43 +264,14 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
-                let leader_id = ctx.membership().current_leader();
-                match ctx
-                    .state_machine_handler()
-                    .handle_purge_request(
-                        my_term,
-                        leader_id,
-                        self.last_purged_index,
-                        &purchase_log_request,
-                        ctx.raft_log(),
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        debug!(?response, "RaftEvent::RaftLogCleanUp");
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error!(?e, "RaftEvent::RaftLogCleanUp");
-                        sender
-                            .send(Ok(PurgeLogResponse {
-                                node_id: self.shared_state.node_id,
-                                term: my_term,
-                                success: false,
-                                last_purged: purchase_log_request.last_included,
-                            }))
-                            .map_err(|e| {
-                                let error_str = format!("{:?}", e);
-                                error!("Failed to send: {}", error_str);
-                                NetworkError::SingalSendFailed(error_str)
-                            })?;
-                    }
-                }
-                return Ok(());
+                warn!(%self.shared_state.node_id, "Learner should not receive RaftEvent::RaftLogCleanUp request from Leader");
+                sender
+                    .send(Err(Status::permission_denied("Not Follower")))
+                    .map_err(|e| {
+                        let error_str = format!("{:?}", e);
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
             }
 
             RaftEvent::CreateSnapshotEvent => {
@@ -329,32 +283,17 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 .into())
             }
 
-            RaftEvent::LogPurgedEvent(log_id) => {
-                debug!(?log_id, "Receive LogPurgedEvent");
-                self.last_purged_index = Some(log_id);
+            RaftEvent::StartScheduledPurgeLogEvent => {
+                // if let Some(scheduled) = self.scheduled_purge_upto {
+                //     if let Err(e) = ctx.raft_log().purge_logs_up_to(scheduled) {
+                //         error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
+                //     }
+                //     debug!(?scheduled, "Receive StartScheduledPurgeLogEvent");
+                //     self.last_purged_index = Some(scheduled);
+                // }
             }
         }
         return Ok(());
-    }
-
-    /// Determines if logs up to `index` can be safely purged.
-    ///
-    /// # Conditions
-    /// 1. The log at `index` must have been committed by the leader (guaranteed by AppendEntries)
-    /// 2. A snapshot containing this index must exist locally
-    /// 3. No pending purge operations are in progress
-    ///
-    /// # Safety
-    /// - Must only be called after verifying the leader's purge request validity
-    fn can_purge_logs(
-        &self,
-        index: u64,
-        last_included: Option<LogId>,
-    ) -> bool {
-        // Check all conditions
-        index <= self.commit_index()
-            && last_included.map_or(false, |lid| lid.index >= index)
-            && self.pending_purge.is_none()
     }
 }
 
@@ -379,8 +318,8 @@ impl<T: TypeConfig> LearnerState<T> {
             shared_state: SharedState::new(node_id, None, None),
             node_config,
             _marker: PhantomData,
-            last_purged_index: None, //TODO
-            pending_purge: None,
+            // last_purged_index: None, //TODO
+            // scheduled_purge_upto: None,
         }
     }
 }
@@ -389,8 +328,8 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
         Self {
             shared_state: follower_state.shared_state.clone(),
             node_config: follower_state.node_config.clone(),
-            last_purged_index: follower_state.last_purged_index,
-            pending_purge: follower_state.pending_purge,
+            // last_purged_index: follower_state.last_purged_index,
+            // scheduled_purge_upto: follower_state.scheduled_purge_upto,
             _marker: PhantomData,
         }
     }
@@ -400,8 +339,8 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
         Self {
             shared_state: candidate_state.shared_state.clone(),
             node_config: candidate_state.node_config.clone(),
-            last_purged_index: candidate_state.last_purged_index,
-            pending_purge: None,
+            // last_purged_index: candidate_state.last_purged_index,
+            // scheduled_purge_upto: None,
             _marker: PhantomData,
         }
     }

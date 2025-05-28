@@ -30,15 +30,15 @@ use crate::alias::SNP;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::move_directory;
 use crate::file_io::validate_checksum;
-use crate::proto::client::ClientCommand;
 use crate::proto::client::client_command::Command;
-use crate::proto::storage::PurgeLogRequest;
-use crate::proto::storage::PurgeLogResponse;
-use crate::proto::storage::SnapshotMetadata;
-use crate::proto::storage::SnapshotResponse;
+use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientResult;
 use crate::proto::common::LogId;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
+use crate::proto::storage::SnapshotResponse;
 use crate::utils::cluster::error;
 use crate::MaybeCloneOneshotSender;
 use crate::NewCommitData;
@@ -289,11 +289,11 @@ where T: TypeConfig
 
     async fn create_snapshot(&self) -> Result<(SnapshotMetadata, PathBuf)> {
         // 0. Create a guard (automatically manage state)
-        let _guard = SnapshotGuard::new(&self.snapshot_in_progress)?;
+        let _guard1 = SnapshotGuard::new(&self.snapshot_in_progress)?;
 
         // 1: Get write lock
         debug!("create_snapshot 1: Get write lock");
-        let _guard = self.snapshot_lock.write().await;
+        let _guard2 = self.snapshot_lock.write().await;
 
         // 2: Prepare temp snapshot file and final snapshot file
         debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
@@ -405,6 +405,41 @@ where T: TypeConfig
             }
         }
         Ok(())
+    }
+
+    async fn validate_purge_request(
+        &self,
+        current_term: u64,
+        leader_id: Option<u32>,
+        req: &PurgeLogRequest,
+    ) -> Result<bool> {
+        // Verification 1: Leader identity legitimacy
+        if req.term < current_term || leader_id != Some(req.leader_id) {
+            return Ok(false);
+        }
+
+        // Verification 2: Locally applied log index >= requested up_to_index
+        if req.last_included.is_none() {
+            return Ok(false);
+        }
+
+        if let Some(last_included) = req.last_included {
+            if self.state_machine.last_applied().index < last_included.index {
+                return Ok(false);
+            }
+        }
+
+        // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
+        if let (_, Some(local_checksum)) = self.state_machine.last_included() {
+            if req.snapshot_checksum != local_checksum {
+                return Ok(false);
+            }
+        } else {
+            // There is no corresponding snapshot locally, snapshot synchronization needs to be triggered
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     async fn handle_purge_request(

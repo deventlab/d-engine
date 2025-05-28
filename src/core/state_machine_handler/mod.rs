@@ -117,6 +117,14 @@ where T: TypeConfig
         snapshot_dir: &std::path::Path,
     ) -> crate::Result<()>;
 
+    /// Validate if purge request from Leader is legal or not
+    async fn validate_purge_request(
+        &self,
+        current_term: u64,
+        leader_id: Option<u32>,
+        req: &PurgeLogRequest,
+    ) -> Result<bool>;
+
     /// Function for none Leader nodes
     async fn handle_purge_request(
         &self,

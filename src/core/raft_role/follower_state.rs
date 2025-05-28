@@ -22,17 +22,18 @@ use super::SharedState;
 use super::StateSnapshot;
 use super::FOLLOWER;
 use crate::alias::POF;
-use crate::proto::error::ErrorCode;
 use crate::proto::client::ClientResponse;
 use crate::proto::common::LogId;
-use crate::proto::storage::PurgeLogResponse;
 use crate::proto::election::VoteResponse;
+use crate::proto::error::ErrorCode;
+use crate::proto::storage::PurgeLogResponse;
 use crate::utils::cluster::error;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionTimer;
 use crate::Membership;
 use crate::NetworkError;
+use crate::PurgeExecutor;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -54,17 +55,10 @@ pub struct FollowerState<T: TypeConfig> {
     /// Shared cluster state with mutex protection
     pub shared_state: SharedState,
 
-    // -- Log Compaction --
+    // -- Log Compaction & Purge --
     /// === Persistent State ===
     /// Last physically purged log index (inclusive)
     pub(super) last_purged_index: Option<LogId>,
-
-    /// === Volatile State ===
-    /// Background log purge task status
-    ///
-    /// When present, indicates an asynchronous cleanup task is in progress
-    /// targeting the specified log index.
-    pub(super) pending_purge: Option<u64>,
 
     // -- Cluster Configuration --
     /// Node configuration (shared immutable reference)
@@ -342,19 +336,55 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
                 let leader_id = ctx.membership().current_leader();
+
+                // ----------------------
+                // Phase 1: Validate Leader purge log request
+                // ----------------------
                 match ctx
                     .state_machine_handler()
-                    .handle_purge_request(
-                        my_term,
-                        leader_id,
-                        self.last_purged_index,
-                        &purchase_log_request,
-                        ctx.raft_log(),
-                    )
+                    .validate_purge_request(my_term, leader_id, &purchase_log_request)
                     .await
                 {
-                    Ok(response) => {
-                        debug!(?response, "RaftEvent::RaftLogCleanUp");
+                    Ok(success) => {
+                        debug!(
+                            ?success,
+                            "state_machine_handler()
+                    .validate_purge_request"
+                        );
+
+                        let mut success = false;
+                        // let mut last_purged = self.last_purged_index;
+
+                        let current_term = self.current_term();
+                        let node_id = self.shared_state.node_id;
+
+                        if success {
+                            if let Some(last_purged_in_request) = purchase_log_request.last_included {
+                                // ----------------------
+                                // Phase 2: Validate Leader purge log request
+                                // ----------------------
+                                if self.can_purge_logs(self.last_purged_index, last_purged_in_request) {
+                                    // ----------------------
+                                    // Phase 3: Execute scheduled purge task
+                                    // ----------------------
+                                    match ctx.purge_executor().execute_purge(last_purged_in_request).await {
+                                        Ok(_) => {
+                                            success = true;
+                                            self.last_purged_index = Some(last_purged_in_request);
+                                        }
+                                        Err(e) => {
+                                            error!(?e, "raft_log.purge_logs_up_to");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let response = PurgeLogResponse {
+                            node_id,
+                            term: current_term,
+                            success,
+                            last_purged: self.last_purged_index,
+                        };
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{:?}", e);
                             error!("Failed to send: {}", error_str);
@@ -368,7 +398,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                                 node_id: self.shared_state.node_id,
                                 term: my_term,
                                 success: false,
-                                last_purged: purchase_log_request.last_included,
+                                last_purged: self.last_purged_index,
                             }))
                             .map_err(|e| {
                                 let error_str = format!("{:?}", e);
@@ -389,33 +419,18 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 .into())
             }
 
-            RaftEvent::LogPurgedEvent(log_id) => {
-                debug!(?log_id, "Receive LogPurgedEvent");
-                self.last_purged_index = Some(log_id);
+            RaftEvent::StartScheduledPurgeLogEvent => {
+                // if let Some(scheduled) = self.scheduled_purge_upto {
+                //     if let Err(e) = ctx.raft_log().purge_logs_up_to(scheduled) {
+                //         error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
+                //     }
+                //     debug!(?scheduled, "Receive StartScheduledPurgeLogEvent");
+                //     self.last_purged_index = Some(scheduled);
+                // }
             }
         }
 
         return Ok(());
-    }
-
-    /// Determines if logs up to `index` can be safely purged.
-    ///
-    /// # Conditions
-    /// 1. The log at `index` must have been committed by the leader (guaranteed by AppendEntries)
-    /// 2. A snapshot containing this index must exist locally
-    /// 3. No pending purge operations are in progress
-    ///
-    /// # Safety
-    /// - Must only be called after verifying the leader's purge request validity
-    fn can_purge_logs(
-        &self,
-        index: u64,
-        last_included: Option<LogId>,
-    ) -> bool {
-        // Check all conditions
-        index <= self.commit_index()
-            && last_included.is_some_and(|lid| lid.index >= index)
-            && self.pending_purge.is_none()
     }
 }
 
@@ -436,8 +451,8 @@ impl<T: TypeConfig> FollowerState<T> {
             )),
             node_config,
             _marker: PhantomData,
-            last_purged_index: None, //TODO
-            pending_purge: None,
+            last_purged_index: None, /*TODO
+                                      * scheduled_purge_upto: None, */
         }
     }
 
@@ -451,6 +466,43 @@ impl<T: TypeConfig> FollowerState<T> {
             commit_index: self.commit_index(),
         }
     }
+
+    /// Determines if logs prior to `last_included_in_request` can be safely discarded.
+    ///
+    /// Implements the critical log compaction safety check from Raft paper §7.2:
+    /// > "Raft never commits log entries from previous terms by counting replicas"
+    ///
+    /// # Invariants (MUST ALL hold)
+    /// 1. Leader-guaranteed stability: `last_included_in_request.index` < self.commit_index
+    ///    - Ensures we never truncate uncommitted entries (gap prevents Figure 8 bugs)
+    ///    - Leader must have replicated this index to a quorum before sending purge
+    ///
+    /// 2. Monotonic advancement: `last_purge_index` < last_included_in_request.index
+    ///    - Prevents out-of-order purge operations
+    ///    - Maintains purge sequence strictly increasing
+    ///
+    /// 3. State machine safety:
+    ///    - A valid snapshot covering `last_included_in_request` must exist
+    ///    - Verified before entering this function via snapshot integrity checks
+    ///
+    /// # Gap Design Intent
+    /// The `index < commit_index` (not ≤) ensures:
+    /// - At least one committed entry remains after purge
+    /// - Critical for follower's log matching property during reelections
+    /// - Prevents "phantom entries" when combined with §5.4.2 election restriction
+    pub(super) fn can_purge_logs(
+        &self,
+        last_purge_index: Option<LogId>,
+        last_included_in_request: LogId,
+    ) -> bool {
+        let commit_check = last_included_in_request.index < self.commit_index();
+
+        let monotonic_check = last_purge_index
+            .map(|lid| lid.index < last_included_in_request.index)
+            .unwrap_or(true);
+
+        commit_check && monotonic_check
+    }
 }
 impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
     fn from(candidate_state: &CandidateState<T>) -> Self {
@@ -462,7 +514,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
             )),
             node_config: candidate_state.node_config.clone(),
             last_purged_index: candidate_state.last_purged_index,
-            pending_purge: None,
+            // scheduled_purge_upto: None,
             _marker: PhantomData,
         }
     }
@@ -477,7 +529,7 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
             )),
             node_config: leader_state.node_config.clone(),
             last_purged_index: leader_state.last_purged_index,
-            pending_purge: None,
+            // scheduled_purge_upto: None,
             _marker: PhantomData,
         }
     }
@@ -492,8 +544,8 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
                 learner_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: learner_state.node_config.clone(),
-            last_purged_index: learner_state.last_purged_index,
-            pending_purge: learner_state.pending_purge,
+            last_purged_index: None, //TODO
+            // scheduled_purge_upto: learner_state.scheduled_purge_upto,
             _marker: PhantomData,
         }
     }

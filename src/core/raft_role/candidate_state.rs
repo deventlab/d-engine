@@ -21,10 +21,10 @@ use super::StateSnapshot;
 use super::CANDIDATE;
 use crate::alias::POF;
 use crate::proto::client::ClientResponse;
-use crate::proto::error::ErrorCode;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
+use crate::proto::error::ErrorCode;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionError;
@@ -390,9 +390,9 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
-                warn!("Candidate should not receive RaftEvent::RaftLogCleanUp request from Leader");
+                warn!(%self.shared_state.node_id, "Candidate should not receive RaftEvent::RaftLogCleanUp request from Leader");
                 sender
-                    .send(Err(Status::permission_denied("Not Follower or Learner. ")))
+                    .send(Err(Status::permission_denied("Not Follower")))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);
@@ -409,23 +409,21 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 .into())
             }
 
-            RaftEvent::LogPurgedEvent(log_id) => {
-                debug!(?log_id, "Receive LogPurgedEvent");
-                self.last_purged_index = Some(log_id);
+            RaftEvent::StartScheduledPurgeLogEvent => {
+                error!("Candidate should not receive StartScheduledPurgeLogEvent");
+
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!(
+                        "Candidate node {} should not receive StartScheduledPurgeLogEvent event.",
+                        ctx.node_id
+                    ),
+                }
+                .into());
             }
         }
         return Ok(());
-    }
-
-    /// Candidates are only responsible for the election process and do not participate in log management
-    fn can_purge_logs(
-        &self,
-        _index: u64,
-        _last_included: Option<LogId>,
-    ) -> bool {
-        error!("Candidates are only responsible for the election process and do not participate in log management");
-
-        false
     }
 }
 

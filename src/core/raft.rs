@@ -20,6 +20,7 @@ use super::RaftRole;
 use super::RaftStorageHandles;
 use super::RoleEvent;
 use crate::alias::MOF;
+use crate::alias::PE;
 use crate::alias::POF;
 use crate::alias::TROF;
 use crate::Membership;
@@ -33,8 +34,7 @@ use crate::StateStorage;
 use crate::TypeConfig;
 
 pub struct Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) node_id: u32,
     pub(crate) role: RaftRole<T>,
@@ -75,8 +75,7 @@ pub(crate) struct SignalParams {
 }
 
 impl<T> Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         node_id: u32,
@@ -84,13 +83,22 @@ where
         transport: TROF<T>,
         handlers: RaftCoreHandlers<T>,
         membership: Arc<MOF<T>>,
+        purge_executor: PE<T>,
         signal_params: SignalParams,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         // Load last applied index from state machine
         let last_applied_index = Some(storage.state_machine.last_applied().index);
 
-        let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
+        let ctx = Self::build_context(
+            node_id,
+            storage,
+            transport,
+            membership,
+            handlers,
+            purge_executor,
+            node_config.clone(),
+        );
 
         // let ctx = Box::new(ctx);
         let role = RaftRole::Follower(Box::new(FollowerState::new(
@@ -130,6 +138,7 @@ where
         transport: TROF<T>,
         membership: Arc<MOF<T>>,
         handlers: RaftCoreHandlers<T>,
+        purge_executor: PE<T>,
         node_config: Arc<RaftNodeConfig>,
     ) -> RaftContext<T> {
         RaftContext {
@@ -138,6 +147,7 @@ where
             transport: Arc::new(transport),
             membership,
             handlers,
+            purge_executor,
 
             node_config,
         }
@@ -363,8 +373,7 @@ where
 }
 
 impl<T> Drop for Raft<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn drop(&mut self) {
         info!("Raft been dropped.");

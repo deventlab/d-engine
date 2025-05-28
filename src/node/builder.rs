@@ -45,6 +45,7 @@ use tracing::info;
 use super::RaftTypeConfig;
 use crate::alias::COF;
 use crate::alias::MOF;
+use crate::alias::PE;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
@@ -60,6 +61,7 @@ use crate::metrics;
 use crate::ClusterConfig;
 use crate::CommitHandler;
 use crate::DefaultCommitHandler;
+use crate::DefaultPurgeExecutor;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::LogSizePolicy;
@@ -93,6 +95,7 @@ pub struct NodeBuilder {
     pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
     pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
     pub(super) snapshot_policy: Option<SNP<RaftTypeConfig>>,
+    pub(super) purge_executor: Option<PE<RaftTypeConfig>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
 
     pub(super) node: Option<Arc<Node<RaftTypeConfig>>>,
@@ -159,6 +162,7 @@ impl NodeBuilder {
             state_machine_handler: None,
             snapshot_policy: None,
             node: None,
+            purge_executor: None,
         }
     }
 
@@ -288,6 +292,12 @@ impl NodeBuilder {
             .take()
             .unwrap_or_else(|| RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone()));
 
+        let raft_log = Arc::new(raft_log);
+        let purge_executor = self
+            .purge_executor
+            .take()
+            .unwrap_or_else(|| DefaultPurgeExecutor::new(raft_log.clone()));
+
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
         let event_tx_clone = event_tx.clone(); // used in commit handler
@@ -297,7 +307,7 @@ impl NodeBuilder {
         let mut raft_core = Raft::<RaftTypeConfig>::new(
             node_id,
             RaftStorageHandles::<RaftTypeConfig> {
-                raft_log: Arc::new(raft_log),
+                raft_log,
                 state_machine: state_machine.clone(),
                 state_storage: Box::new(state_storage),
             },
@@ -308,6 +318,7 @@ impl NodeBuilder {
                 state_machine_handler: state_machine_handler.clone(),
             },
             Arc::new(membership),
+            purge_executor,
             SignalParams {
                 role_tx,
                 role_rx,
@@ -362,6 +373,15 @@ impl NodeBuilder {
                 }
             }
         });
+    }
+
+    /// Add Purge executor configuration method
+    pub fn with_purge_executor<E>(
+        mut self,
+        executor: PE<RaftTypeConfig>,
+    ) -> Self {
+        self.purge_executor = Some(executor);
+        self
     }
 
     pub fn set_snapshot_policy(

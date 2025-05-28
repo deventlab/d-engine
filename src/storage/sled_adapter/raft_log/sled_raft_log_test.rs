@@ -459,6 +459,45 @@ fn test_purge_logs_up_to() {
 }
 
 #[test]
+fn test_purge_logs_up_to_concurrent_purge() {
+    let context = setup("/tmp/test_purge_logs_up_to_concurrent_purge");
+    context.raft_log.reset().expect("reset failed");
+
+    // Insert test logs
+    let entries: Vec<_> = (1..=10)
+        .map(|i| Entry {
+            index: i,
+            term: 1,
+            command: vec![],
+        })
+        .collect();
+    context.raft_log.insert_batch(entries).unwrap();
+
+    // Concurrent purge calls
+    let handles: Vec<_> = vec![1, 2, 3, 4, 5, 6, 7]
+        .into_iter()
+        .map(|cutoff| {
+            let raft_log = context.raft_log.clone();
+            std::thread::spawn(move || {
+                raft_log.purge_logs_up_to(LogId { index: cutoff, term: 1 }).unwrap();
+            })
+        })
+        .collect();
+
+    // Wait for all threads
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // Verify final state
+    assert_eq!(10, context.raft_log.last_entry_id());
+
+    // The highest successful purge should win
+    assert!(context.raft_log.get_entry_by_index(7).is_none());
+    assert!(context.raft_log.get_entry_by_index(8).is_some());
+}
+
+#[test]
 fn test_get_first_raft_log_entry_id_after_delete_entries() {
     let context = setup("/tmp/test_get_first_raft_log_entry_id_after_delete_entries");
 
@@ -747,14 +786,11 @@ async fn test_insert_batch_logs_case2() {
     // }
 
     // 7. Validate final log state
-    validate_log_continuity(
-        &old_leader,
-        &[
-            (7, 1),  // Original term 1 entry
-            (8, 2),  // Overwritten entry
-            (10, 2), // New highest entry
-        ],
-    )
+    validate_log_continuity(&old_leader, &[
+        (7, 1),  // Original term 1 entry
+        (8, 2),  // Overwritten entry
+        (10, 2), // New highest entry
+    ])
     .await;
 }
 

@@ -101,34 +101,6 @@ where T: TypeConfig
 }
 
 // If param `restart` is true, we will not reset dbs
-#[allow(dead_code)]
-pub(crate) fn setup_context(
-    db_path: &str,
-    peers_meta_option: Option<Vec<NodeMeta>>,
-    restart: bool,
-) -> RaftContext<RaftTypeConfig> {
-    let components = setup_raft_components(db_path, peers_meta_option, restart);
-    RaftContext::<RaftTypeConfig> {
-        node_id: components.id,
-        storage: RaftStorageHandles {
-            raft_log: components.raft_log,
-            state_machine: components.state_machine,
-            state_storage: components.state_storage,
-        },
-
-        transport: components.transport,
-
-        handlers: RaftCoreHandlers {
-            election_handler: components.election_handler,
-            replication_handler: components.replication_handler,
-            state_machine_handler: Arc::new(components.state_machine_handler),
-        },
-
-        membership: components.membership,
-        node_config: components.arc_node_config,
-    }
-}
-// If param `restart` is true, we will not reset dbs
 pub fn setup_raft_components(
     db_path: &str,
     peers_meta_option: Option<Vec<NodeMeta>>,

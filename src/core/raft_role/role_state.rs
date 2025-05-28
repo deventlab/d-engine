@@ -6,16 +6,17 @@ use tonic::async_trait;
 use tonic::Status;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 use tracing::warn;
 
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
-use crate::proto::replication::AppendEntriesRequest;
-use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
 use crate::utils::cluster::error;
 use crate::AppendResponseWithUpdates;
 use crate::MaybeCloneOneshotSender;
@@ -325,12 +326,4 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         }
         return Ok(());
     }
-
-    /// Determines whether logs up to the given index can be safely purged.
-    ///
-    fn can_purge_logs(
-        &self,
-        index: u64,
-        last_included: Option<LogId>,
-    ) -> bool;
 }

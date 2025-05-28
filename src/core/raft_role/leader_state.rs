@@ -31,16 +31,16 @@ use crate::alias::SMHOF;
 use crate::constants::INTERNAL_CLIENT_ID;
 use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
+use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
+use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotMetadata;
-use crate::proto::replication::AppendEntriesResponse;
-use crate::proto::client::ClientResponse;
-use crate::proto::common::LogId;
-use crate::proto::election::VotedFor;
 use crate::utils::cluster::error;
 use crate::AppendResults;
 use crate::BatchBuffer;
@@ -53,6 +53,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
+use crate::PurgeExecutor;
 use crate::QuorumStatus;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -102,24 +103,26 @@ pub struct LeaderState<T: TypeConfig> {
 
     // -- Log Compaction & Purge --
     /// === Volatile State ===
-    /// Planned purge target (next log position to trigger compaction)
+    /// The upper bound (exclusive) of log entries scheduled for asynchronous physical deletion.
     ///
-    /// This is the upper bound (exclusive) for the next scheduled log purge.
+    /// This value is set immediately after a new snapshot is successfully created.
+    /// It represents the next log position that will trigger compaction.
+    ///
+    /// The actual log purge is performed by a background task, which may be delayed
+    /// due to resource constraints or retry mechanisms.
     pub(super) scheduled_purge_upto: Option<LogId>,
 
     /// === Persistent State (MUST be on disk) ===
-    /// Last actually purged log position (inclusive)
+    /// The last log position that has been **physically removed** from stable storage.
     ///
-    /// This represents the latest log index that has been physically removed
-    /// from storage after successful compaction.
+    /// This value is atomically updated when:
+    /// 1. A new snapshot is persisted (marking logs up to `last_included_index` as purgeable)
+    /// 2. The background purge task completes successfully
+    ///
+    /// Raft safety invariant:
+    /// Any log entry with index ≤ `last_purged_index` is guaranteed to be
+    /// reflected in the latest snapshot.
     pub(super) last_purged_index: Option<LogId>,
-
-    /// === Volatile State ===
-    /// Background log purge task status
-    ///
-    /// When present, indicates an asynchronous cleanup task is in progress
-    /// targeting the specified log index.
-    pub(super) pending_purge: Option<u64>,
 
     /// === Volatile State ===
     /// Peer purge progress tracking for flow control
@@ -410,7 +413,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 if my_term < vote_request.term {
                     self.update_current_term(vote_request.term);
                     // Step down as Follower
-                    self.send_become_follower_event(&role_tx)?;
+                    self.send_become_follower_event(None, &role_tx)?;
 
                     info!("Leader will not process Vote request, it should let Follower do it.");
                     self.send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
@@ -489,13 +492,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     // Step down as Follower as new Leader found
                     info!("my({}) term < request one, now I will step down to Follower", my_id);
 
-                    role_tx
-                        .send(RoleEvent::BecomeFollower(Some(append_entries_request.leader_id)))
-                        .map_err(|e| {
-                            let error_str = format!("{:?}", e);
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
-                        })?;
+                    // role_tx
+                    //     .send(RoleEvent::BecomeFollower(Some(append_entries_request.leader_id)))
+                    //     .map_err(|e| {
+                    //         let error_str = format!("{:?}", e);
+                    //         error!("Failed to send: {}", error_str);
+                    //         NetworkError::SingalSendFailed(error_str)
+                    //     })?;
+                    self.send_become_follower_event(Some(append_entries_request.leader_id), &role_tx)?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
                     self.send_replay_raft_event(&role_tx, RaftEvent::AppendEntries(append_entries_request, sender))?;
@@ -610,27 +614,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                         if let Some(last_included) = last_included_option {
                             // ----------------------
-                            // Phase 1: Update the planned purge location
+                            // Phase 1: Update the scheduled purge state
                             // ----------------------
-
-                            // if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included) {
-                            //     error!(?e, ?last_included, "raft_log.purge_logs_up_to");
-                            // }
-                            if self.can_purge_logs(last_included.index, Some(last_included)) {
-                                self.scheduled_purge_upto = Some(LogId {
-                                    term: self.current_term(),
-                                    index: last_included.index,
-                                });
+                            if self.can_purge_logs(self.last_purged_index, last_included) {
+                                self.scheduled_purge_upto(last_included);
                             }
 
                             // ----------------------
-                            // Phase 2: Send Purge Log Event
-                            // ----------------------
-                            // debug!(?last_included, "Receive LogPurgedEvent");
-                            // self.last_purged_index = Some(last_included);
-
-                            // ----------------------
-                            // Phase 3: Pre-Checks
+                            // Phase 2.1: Pre-Checks before sending Purge request
                             // ----------------------
                             let peers = ctx.voting_members(peer_channels);
                             if peers.is_empty() {
@@ -639,7 +630,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             }
 
                             // ----------------------
-                            // Phase 4: Send Purge request to the other nodes
+                            // Phase 2.2: Send Purge request to the other nodes
                             // ----------------------
                             let transport = ctx.transport();
                             match transport
@@ -659,46 +650,34 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 Ok(result) => {
                                     info!(?result, "receive PurgeLogResult");
 
-                                    self.peer_purge_progress(result);
+                                    self.peer_purge_progress(result, &role_tx)?;
                                 }
                                 Err(e) => {
                                     error!(?e, "RaftEvent::CreateSnapshotEvent");
                                     return Err(e);
                                 }
                             }
+
+                            // ----------------------
+                            // Phase 3: Execute scheduled purge task
+                            // ----------------------
+                            debug!(?last_included, "Execute scheduled purge task");
+                            if let Some(scheduled) = self.scheduled_purge_upto {
+                                if let Err(e) = ctx.purge_executor().execute_purge(scheduled).await {
+                                    error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
+                                }
+                                self.last_purged_index = Some(scheduled);
+                            }
                         }
                     }
                 }
             }
 
-            RaftEvent::LogPurgedEvent(log_id) => {
-                // debug!(?log_id, "Receive LogPurgedEvent");
-                // self.last_purged_index = Some(log_id);
-                error!(?log_id, "Should not receive log purge event");
+            RaftEvent::StartScheduledPurgeLogEvent => {
+                warn!("Leader should not receive StartScheduledPurgeLogEvent.");
             }
         }
         return Ok(());
-    }
-
-    /// Determines whether logs up to the given index can be safely purged.
-    ///
-    /// A log index is eligible for purging only if all of the following conditions are met:
-    /// a. The log has been committed (i.e., acknowledged by a majority of nodes).
-    /// b. A snapshot already includes this log (i.e., it is covered by the latest snapshot).
-    /// c. All peers have confirmed purge progress at or beyond this index.
-    fn can_purge_logs(
-        &self,
-        index: u64,
-        last_included: Option<LogId>,
-    ) -> bool {
-        // All the following conditions must be met:
-        // a. The log has been committed (confirmed by the majority of nodes)
-        // b. A snapshot already contains the log
-        // c. All Peer's purge progress >= target index
-        index <= self.commit_index()
-            && last_included.is_some_and(|lid| lid.index >= index)
-            && self.peer_purge_progress.values().all(|&v| v >= index)
-            && self.pending_purge.is_none()
     }
 }
 
@@ -721,17 +700,6 @@ impl<T: TypeConfig> LeaderState<T> {
             match_index: self.match_index.clone(),
             noop_log_id: self.noop_log_id,
         }
-    }
-
-    fn send_become_follower_event(
-        &self,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-            let error_str = format!("{:?}", e);
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str).into()
-        })
     }
 
     fn send_replay_raft_event(
@@ -918,8 +886,11 @@ impl<T: TypeConfig> LeaderState<T> {
                         warn!("found higher term");
                         self.update_current_term(higher_term);
 
-                        if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(None)) {
-                            error!("Send conflict leader signal failed with error: {:?}", e);
+                        // if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(None)) {
+                        //     error!("Send conflict leader signal failed with error: {:?}", e);
+                        // }
+                        if let Err(e) = self.send_become_follower_event(None, role_tx) {
+                            error!(?e, "Send conflict leader signal failed.");
                         }
                     }
                     _ => {
@@ -1000,18 +971,110 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    fn peer_purge_progress(
-        &self,
-        responses: Vec<Result<PurgeLogResponse>>,
+    fn scheduled_purge_upto(
+        &mut self,
+        received_last_included: LogId,
     ) {
-        if responses.is_empty() {
-            return;
-        }
-        responses.iter().for_each(|res| {
-            if let Ok(r) = res {
-                // self.peer_purge_progress
+        if let Some(existing) = self.scheduled_purge_upto {
+            if existing.index >= received_last_included.index {
+                warn!(
+                    ?received_last_included,
+                    ?existing,
+                    "Will not update scheduled_purge_upto, received invalid last_included log"
+                );
+                return;
             }
-        });
+        }
+        info!(?self.scheduled_purge_upto, ?received_last_included, "Updte scheduled_purge_upto.");
+        self.scheduled_purge_upto = Some(received_last_included);
+    }
+
+    fn peer_purge_progress(
+        &mut self,
+        responses: Vec<Result<PurgeLogResponse>>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        if responses.is_empty() {
+            return Ok(());
+        }
+        for res in responses.iter() {
+            if let Ok(r) = res {
+                if r.term > self.current_term() {
+                    self.send_become_follower_event(None, role_tx)?;
+                }
+
+                if let Some(last_purged) = r.last_purged {
+                    self.peer_purge_progress
+                        .entry(r.node_id)
+                        .and_modify(|v| *v = last_purged.index)
+                        .or_insert(last_purged.index);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn send_become_follower_event(
+        &self,
+        new_leader_id: Option<u32>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        info!(?new_leader_id, "Leader is going to step down as Follower...");
+        role_tx.send(RoleEvent::BecomeFollower(new_leader_id)).map_err(|e| {
+            let error_str = format!("{:?}", e);
+            error!("Failed to send: {}", error_str);
+            NetworkError::SingalSendFailed(error_str)
+        })?;
+
+        Ok(())
+    }
+
+    /// Determines if logs prior to `last_included_in_snapshot` can be permanently discarded.
+    ///
+    /// Implements Leader-side log compaction safety checks per Raft paper §7.2:
+    /// > "The leader uses a new RPC called InstallSnapshot to send snapshots to followers that are
+    /// > too far behind"
+    ///
+    /// # Safety Invariants (ALL must hold)
+    ///
+    /// 1. **Committed Entry Guarantee**   `last_included_in_snapshot.index < self.commit_index`
+    ///    - Ensures we never discard uncommitted entries (Raft §5.4.2)
+    ///    - Maintains at least one committed entry after purge for log matching property
+    ///
+    /// 2. **Monotonic Snapshot Advancement**   `last_purge_index < last_included_in_snapshot.index`
+    ///    - Enforces snapshot indices strictly increase (prevents rollback attacks)
+    ///    - Maintains sequential purge ordering (FSM safety requirement)
+    ///
+    /// 3. **Cluster-wide Progress Validation**   `peer_purge_progress.values().all(≥
+    ///    snapshot.index)`
+    ///    - Ensures ALL followers have confirmed ability to reach this snapshot
+    ///    - Prevents leadership changes from causing log inconsistencies
+    ///
+    /// 4. **Operation Atomicity**   `pending_purge.is_none()`
+    ///    - Ensures only one concurrent purge operation
+    ///    - Critical for linearizable state machine semantics
+    ///
+    /// # Implementation Notes
+    /// - Leader must maintain `peer_purge_progress` through AppendEntries responses
+    /// - Actual log discard should be deferred until storage confirms snapshot persistence
+    /// - Design differs from followers by requiring full cluster confirmation (Raft extension for
+    ///   enhanced durability)
+    pub(super) fn can_purge_logs(
+        &self,
+        last_purge_index: Option<LogId>,
+        last_included_in_snapshot: LogId,
+    ) -> bool {
+        let monotonic_check = last_purge_index
+            .map(|lid| lid.index < last_included_in_snapshot.index)
+            .unwrap_or(true);
+
+        last_included_in_snapshot.index < self.commit_index()
+            && monotonic_check
+            && self
+                .peer_purge_progress
+                .values()
+                .all(|&v| v >= last_included_in_snapshot.index)
     }
 }
 
@@ -1045,7 +1108,6 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
             peer_purge_progress: HashMap::new(),
-            pending_purge: None,
         }
     }
 }
@@ -1149,7 +1211,6 @@ impl<T: TypeConfig> LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
             peer_purge_progress: HashMap::new(),
-            pending_purge: None,
         }
     }
 }

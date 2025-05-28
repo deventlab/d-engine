@@ -10,18 +10,18 @@ use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::alias::POF;
 use crate::convert::safe_kv;
-use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::error::ErrorCode;
-use crate::proto::common::LogId;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
+use crate::proto::error::ErrorCode;
+use crate::proto::replication::AppendEntriesRequest;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
@@ -101,22 +101,16 @@ async fn setup_test_case(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -770,22 +764,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 3,
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 4,
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 3,
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 4,
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -916,92 +904,102 @@ fn test_state_size() {
     assert!(size_of::<LeaderState<RaftTypeConfig>>() < 312);
 }
 
-/// # Case 1: can_purge_all_conditions_met
+/// # Case 1: Valid purge conditions with cluster consensus
 #[test]
 fn test_can_purge_logs_case1() {
     let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_case1"));
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-    // Set state
+    // Setup per Raft paper §7.2 requirements
     state.shared_state.commit_index = 100;
-    state.peer_purge_progress.insert(2, 100);
-    state.peer_purge_progress.insert(3, 100);
-    state.pending_purge = None;
+    state.peer_purge_progress.insert(2, 100); // Follower 2
+    state.peer_purge_progress.insert(3, 100); // Follower 3
 
-    // Test case: All conditions satisfied
-    assert!(state.can_purge_logs(100, Some(LogId { index: 100, term: 1 }))); // Exact match
-    assert!(state.can_purge_logs(90, Some(LogId { index: 100, term: 1 }))); // Lower index
+    // Valid purge window (last_purge=90 < snapshot=99 < commit=100)
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }), // last_purge_index
+        LogId { index: 99, term: 1 }        // last_included_in_snapshot
+    ));
+
+    // Boundary check: 99 == commit_index - 1 (valid gap)
+    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
+
+    // Violate gap rule: 100 not < 100
+    assert!(!state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 100, term: 1 }));
 }
 
-/// # Case 2: reject_uncommitted_index
+/// # Case 2: Reject uncommitted purge (Raft §5.4.2)
 #[test]
 fn test_can_purge_logs_case2() {
     let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_case2"));
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-    // Set state
+
     state.shared_state.commit_index = 50;
     state.peer_purge_progress.insert(2, 100);
-    state.pending_purge = None;
 
-    // index(100) > commit_index(50) → Condition (a) fails
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
+    // Attempt to purge beyond commit index
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 40, term: 1 }),
+        LogId { index: 51, term: 1 } // 51 > commit_index(50)
+    ));
+
+    // Boundary violation: 50 == commit_index (requires <)
+    assert!(!state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId { index: 50, term: 1 }));
 }
 
-/// # Case 3: reject_insufficient_snapshot
+/// # Case 3: Enforce purge sequence monotonicity (Raft §7.2)
 #[test]
 fn test_can_purge_logs_case3() {
     let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_case3"));
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-    // Set state
-    state.shared_state.commit_index = 100;
-    state.peer_purge_progress.insert(2, 100);
-    state.pending_purge = None;
 
-    // last_included.index(90) < purge index(100) → Condition (b) fails
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 90, term: 1 })));
+    state.shared_state.commit_index = 200;
+    state.peer_purge_progress.insert(2, 200);
+    state.peer_purge_progress.insert(3, 200);
 
-    // No snapshot → Condition (b) fails
-    assert!(!state.can_purge_logs(100, None));
+    // Valid sequence: 100 → 150 → 199
+    assert!(state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 199, term: 1 }));
+
+    // Invalid backward purge (150 → 120)
+    assert!(!state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 120, term: 1 }));
+
+    // Same index purge attempt
+    assert!(!state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 150, term: 1 }));
 }
 
-/// # Case 4: reject_lagging_peers
+/// # Case 4: Cluster progress verification (Enhanced durability check)
 #[test]
 fn test_can_purge_logs_case4() {
     let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_case4"));
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-    // Set state
-    state.shared_state.commit_index = 100;
-    state.pending_purge = None;
 
-    // Peer 2 is lagging → Condition (c) fails
-    state.peer_purge_progress.insert(2, 90);
+    state.shared_state.commit_index = 100;
+
+    // Single lagging peer (index 99 < 100)
+    state.peer_purge_progress.insert(2, 99);
     state.peer_purge_progress.insert(3, 100);
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
+    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
+
+    // All peers at required index
+    state.peer_purge_progress.insert(2, 100);
+    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
 }
 
-/// # Case 5: reject_pending_purge
+/// # Case 5: Initial purge state validation
 #[test]
 fn test_can_purge_logs_case5() {
-    let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_case5"));
-    let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-    // Set state
-    state.shared_state.commit_index = 100;
-    state.peer_purge_progress.insert(2, 100);
-    state.pending_purge = Some(100); // Ongoing purge
-
-    // pending_purge is Some → Condition (d) fails
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
-}
-
-/// # Case 6: edge_case_min_acceptable
-#[test]
-fn test_can_purge_logs_case6() {
     let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_case6"));
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-    // Set state
-    state.shared_state.commit_index = 1;
-    state.peer_purge_progress.insert(2, 1);
-    state.pending_purge = None;
 
-    // Minimum valid values
-    assert!(state.can_purge_logs(1, Some(LogId { index: 1, term: 1 })));
+    state.shared_state.commit_index = 100;
+    state.peer_purge_progress.insert(2, 100);
+    state.peer_purge_progress.insert(3, 100);
+
+    // First purge (last_purge_index = None)
+    assert!(state.can_purge_logs(None, LogId { index: 99, term: 1 }));
+
+    // Must still respect commit_index gap
+    assert!(!state.can_purge_logs(
+        None,
+        LogId { index: 100, term: 1 } // 100 not < 100
+    ));
 }

@@ -17,6 +17,7 @@ use crate::ElectionConfig;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPeerChannels;
+use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachine;
@@ -41,6 +42,7 @@ pub struct MockBuilder {
     pub state_storage: Option<MockStateStorage>,
     pub transport: Option<MockTransport>,
     pub membership: Option<Arc<MockMembership<MockTypeConfig>>>,
+    pub purge_executor: Option<MockPurgeExecutor>,
     pub election_handler: Option<MockElectionCore<MockTypeConfig>>,
     pub replication_handler: Option<MockReplicationCore<MockTypeConfig>>,
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
@@ -65,6 +67,7 @@ impl MockBuilder {
             state_storage: None,
             transport: None,
             membership: None,
+            purge_executor: None,
             election_handler: None,
             replication_handler: None,
             state_machine_handler: None,
@@ -90,6 +93,7 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
             membership,
+            purge_executor,
             node_config,
         ) = (
             Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
@@ -101,6 +105,7 @@ impl MockBuilder {
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
+            self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
         );
@@ -115,7 +120,7 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
         };
-        mock_raft_context_internal(1, storage, transport, membership, handlers, node_config)
+        mock_raft_context_internal(1, storage, transport, membership, purge_executor, handlers, node_config)
     }
 
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
@@ -132,6 +137,7 @@ impl MockBuilder {
             state_machine_handler,
             membership,
             peer_channels,
+            purge_executor,
             node_config,
             role_tx,
             role_rx,
@@ -149,6 +155,7 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.peer_channels.unwrap_or_else(mock_peer_channels),
+            self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
             self.role_tx.unwrap_or(role_tx),
@@ -184,6 +191,7 @@ impl MockBuilder {
                 state_machine_handler,
             },
             membership,
+            purge_executor,
             SignalParams {
                 role_tx,
                 role_rx,
@@ -388,6 +396,11 @@ pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     state_machine_handler
 }
 
+pub fn mock_purge_exewcutor() -> MockPurgeExecutor {
+    let mut purge_exewcutor = MockPurgeExecutor::new();
+    purge_exewcutor.expect_execute_purge().returning(|_| Ok(()));
+    purge_exewcutor
+}
 pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     let mut membership = MockMembership::new();
     membership.expect_voting_members().returning(|_| vec![]);
@@ -415,6 +428,7 @@ fn mock_raft_context_internal(
     storage: RaftStorageHandles<MockTypeConfig>,
     transport: Arc<MockTransport>,
     membership: Arc<MockMembership<MockTypeConfig>>,
+    purge_executor: MockPurgeExecutor,
     handlers: RaftCoreHandlers<MockTypeConfig>,
     node_config: RaftNodeConfig,
 ) -> RaftContext<MockTypeConfig> {
@@ -424,6 +438,8 @@ fn mock_raft_context_internal(
 
         transport,
         membership,
+
+        purge_executor,
 
         handlers,
 

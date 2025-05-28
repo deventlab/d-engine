@@ -178,3 +178,49 @@ sequenceDiagram
 
 #### Cleaning up old snapshots:
 [**StateMachineHandler**] automatically maintains old snapshots according to version policies, while the **StateMachine** is not aware of it.
+
+## **Purge Log Design**
+
+### Leader Purge Log State Management
+
+```mermaid
+sequenceDiagram
+    participant Leader
+    participant StateMachine
+    participant Storage
+
+    Leader->>StateMachine: create_snapshot()
+    StateMachine->>Leader: SnapshotMeta(last_included_index=100)
+    
+    Note over Leader,Storage: Critical Atomic Operation
+    Leader->>Storage: persist_last_purged(100) # 1. Update in-memory last_purged_index<br/>2. Flush to disk atomically
+    
+    Leader->>Leader: scheduled_purge_upto = Some(100) # Schedule async task
+    Leader->>Background: trigger purge_task(100)
+    
+    Background->>Storage: physical_delete_logs(0..100)
+    Storage->>Leader: notify_purge_complete(100)
+    Leader->>Storage: verify_last_purged(100) # Optional consistency check
+
+```
+
+### Follower Purge Log State Management
+```mermaid
+sequenceDiagram
+    participant Leader
+    participant Follower
+    participant FollowerStorage
+
+    Leader->>Follower: InstallSnapshot RPC (last_included=100)
+    
+    Note over Follower,FollowerStorage: Protocol-Required Atomic Update
+    Follower->>FollowerStorage: 1. Apply snapshot to state machine<br/>2. persist_last_purged(100)
+    
+    Follower->>Follower: last_purged_index = Some(100) # Volatile state update
+    Follower->>Follower: pending_purge = Some(100) # Mark background task
+    
+    Follower->>Background: schedule_log_purge(100)
+    Background->>FollowerStorage: delete_logs(0..100)
+    FollowerStorage->>Follower: purge_complete(100)
+    Follower->>Follower: pending_purge = None # Clear task status
+```

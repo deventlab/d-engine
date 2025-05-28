@@ -2,8 +2,11 @@ use tonic::Status;
 
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::MetadataRequest;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::replication::AppendEntriesRequest;
@@ -12,10 +15,6 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
-use crate::proto::client::ClientResponse;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
-use crate::proto::common::LogId;
-use crate::proto::cluster::MetadataRequest;
 use crate::MaybeCloneOneshotSender;
 
 #[derive(Debug, Clone)]
@@ -85,7 +84,7 @@ pub(crate) enum RaftEvent {
     CreateSnapshotEvent,
 
     // Event after log been purged successfully
-    LogPurgedEvent(LogId),
+    StartScheduledPurgeLogEvent,
 }
 
 #[cfg(test)]
@@ -112,7 +111,7 @@ pub(crate) enum TestEvent {
     CreateSnapshotEvent,
 
     // Event after log been purged successfully
-    LogPurgedEvent(LogId),
+    StartScheduledPurgeLogEvent,
 }
 
 #[cfg(test)]
@@ -127,6 +126,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
-        RaftEvent::LogPurgedEvent(log_id) => TestEvent::LogPurgedEvent(*log_id),
+        RaftEvent::StartScheduledPurgeLogEvent => TestEvent::StartScheduledPurgeLogEvent,
     }
 }

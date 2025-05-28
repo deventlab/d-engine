@@ -9,18 +9,18 @@ use tonic::Status;
 use super::follower_state::FollowerState;
 use super::HardState;
 use crate::alias::POF;
-use crate::proto::replication::AppendEntriesRequest;
-use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::error::ErrorCode;
-use crate::proto::common::LogId;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
+use crate::proto::error::ErrorCode;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
@@ -715,23 +715,30 @@ async fn test_handle_raft_event_case6_2() {
     assert_eq!(r.error, ErrorCode::Success as i32);
 }
 
-/// # Case 1: all_conditions_met
+/// # Case 1: Valid purge conditions with gap enforcement
 #[test]
 fn test_can_purge_logs_case1() {
     let dir = tempdir().unwrap();
     let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
     let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
 
-    state.shared_state.commit_index = 100;
-    state.pending_purge = None;
+    // Setup state matching Raft paper's log compaction rules
+    state.shared_state.commit_index = 100; // Last committed entry at 100
 
-    // Test index matches exactly
-    assert!(state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
-    // Test lower index
-    assert!(state.can_purge_logs(90, Some(LogId { index: 100, term: 1 })));
+    // Test valid purge range (90 < 99 < 100)
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }), // last_purge_index
+        LogId { index: 99, term: 1 }        // last_included_in_request
+    ));
+
+    // Edge case: 99 == commit_index - 1 (per gap rule)
+    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
+
+    // Violate gap rule: 100 not < 100
+    assert!(!state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 100, term: 1 }));
 }
 
-// # Case 2: Uncommitted index
+// # Case 2: Reject uncommitted index (Raft §5.4.2)
 #[test]
 fn test_can_purge_logs_case2() {
     let dir = tempdir().unwrap();
@@ -739,29 +746,37 @@ fn test_can_purge_logs_case2() {
     let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
 
     state.shared_state.commit_index = 50;
-    state.pending_purge = None;
 
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
+    // Leader tries to purge beyond commit index
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 40, term: 1 }),
+        LogId { index: 51, term: 1 } // 51 > commit_index(50)
+    ));
+
+    // Boundary check: 50 == commit_index (violates <)
+    assert!(!state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId { index: 50, term: 1 }));
 }
 
-/// # Case 3: Insufficient snapshot
+/// # Case 3: Ensure purge monotonicity (Raft §7.2)
 #[test]
 fn test_can_purge_logs_case3() {
     let dir = tempdir().unwrap();
     let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
     let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
 
-    state.shared_state.commit_index = 100;
-    state.pending_purge = None;
+    state.shared_state.commit_index = 200;
 
-    // Subcase 3a: Snapshot index too low
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 90, term: 1 })));
+    // Valid sequence: 100 → 150 → 199
+    assert!(state.can_purge_logs(Some(LogId { index: 100, term: 1 }), LogId { index: 150, term: 1 }));
 
-    // Subcase 3b: No snapshot
-    assert!(!state.can_purge_logs(100, None));
+    // Invalid: Attempt to purge backwards (150 → 120)
+    assert!(!state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 120, term: 1 }));
+
+    // Same index purge attempt
+    assert!(!state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 150, term: 1 }));
 }
 
-/// # Case 4: Pending purge exists
+/// # Case 4: Handle initial purge state (no previous purge)
 #[test]
 fn test_can_purge_logs_case4() {
     let dir = tempdir().unwrap();
@@ -769,20 +784,16 @@ fn test_can_purge_logs_case4() {
     let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
 
     state.shared_state.commit_index = 100;
-    state.pending_purge = Some(100); // Ongoing purge
 
-    assert!(!state.can_purge_logs(100, Some(LogId { index: 100, term: 1 })));
-}
+    // First ever purge (last_purge_index = None)
+    assert!(state.can_purge_logs(
+        None, // No previous purge
+        LogId { index: 99, term: 1 }
+    ));
 
-/// # Case 5: Edge case - minimum values
-#[test]
-fn test_can_purge_logs_case5() {
-    let dir = tempdir().unwrap();
-    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
-    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
-
-    state.shared_state.commit_index = 1;
-    state.pending_purge = None; // Ongoing purge
-
-    assert!(state.can_purge_logs(1, Some(LogId { index: 1, term: 1 })));
+    // First purge must still obey commit_index gap
+    assert!(!state.can_purge_logs(
+        None,
+        LogId { index: 100, term: 1 } // 100 not < 100
+    ));
 }

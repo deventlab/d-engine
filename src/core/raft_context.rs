@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::alias::EOF;
 use crate::alias::MOF;
+use crate::alias::PE;
 use crate::alias::POF;
 use crate::alias::REPOF;
 use crate::alias::ROF;
@@ -28,8 +29,7 @@ pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
 }
 
 pub(crate) struct RaftContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) node_id: u32,
 
@@ -45,13 +45,15 @@ where
     // Handlers
     pub(crate) handlers: RaftCoreHandlers<T>,
 
+    // Raft Log Purge Executor
+    pub(crate) purge_executor: PE<T>,
+
     // RaftNodeConfig
     pub(crate) node_config: Arc<RaftNodeConfig>,
 }
 
 impl<T> RaftContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn raft_log(&self) -> &Arc<ROF<T>> {
         &self.storage.raft_log
@@ -88,6 +90,10 @@ where
         self.membership.clone()
     }
 
+    pub fn purge_executor(&self) -> &PE<T> {
+        &self.purge_executor
+    }
+
     pub fn membership_ref(&self) -> &Arc<MOF<T>> {
         &self.membership
     }
@@ -117,8 +123,7 @@ where
 }
 
 impl<T> Debug for RaftContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn fmt(
         &self,

@@ -1,5 +1,6 @@
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::DefaultCommitHandler;
+use crate::DefaultPurgeExecutor;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::LogSizePolicy;
@@ -36,4 +37,6 @@ impl TypeConfig for RaftTypeConfig {
     type SMH = DefaultStateMachineHandler<Self>;
 
     type SNP = LogSizePolicy;
+
+    type PE = DefaultPurgeExecutor<Self>;
 }
