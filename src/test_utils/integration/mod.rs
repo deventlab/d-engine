@@ -37,9 +37,11 @@
 //! - Cluster formation and interaction tests
 //! - Failure scenario testing with real component interactions
 
+mod snapshot;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub(crate) use snapshot::*;
 use tokio::sync::watch;
 
 use super::generate_insert_commands;
@@ -58,14 +60,11 @@ use crate::test_utils::MockTypeConfig;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::LogSizePolicy;
-use crate::RaftContext;
-use crate::RaftCoreHandlers;
 use crate::RaftLog;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStateMachine;
-use crate::RaftStorageHandles;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
 use crate::SledRaftLog;

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -331,10 +331,10 @@ impl MockBuilder {
 
     pub fn with_db_path(
         mut self,
-        db_root_dir: &str,
+        db_root_dir: impl AsRef<Path>,
     ) -> Self {
         let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-        node_config.cluster.db_root_dir = PathBuf::from(db_root_dir);
+        node_config.cluster.db_root_dir = db_root_dir.as_ref().to_path_buf();
         self.node_config = Some(node_config);
         self
     }

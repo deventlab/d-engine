@@ -7,23 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::BufMut;
-use bytes::BytesMut;
-use crc32fast::Hasher;
-use futures::stream;
-use futures::TryStreamExt;
-use http_body::Frame;
-use http_body_util::BodyExt;
-use http_body_util::StreamBody;
 use mockall::predicate::eq;
 use mockall::Sequence;
-use prost::Message;
 use tempfile::tempdir;
 use tempfile::TempDir;
 use tokio::sync::watch;
 use tokio::time;
-use tonic::Code;
-use tonic::Status;
 use tracing::debug;
 
 use super::DefaultStateMachineHandler;
@@ -39,8 +28,9 @@ use crate::proto::election::VotedFor;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::SnapshotChunk;
-use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
+use crate::test_utils::crate_test_snapshot_stream;
+use crate::test_utils::create_test_chunk;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::MockBuilder;
@@ -275,13 +265,6 @@ async fn test_apply_batch_case3() {
     assert_eq!(handler.last_applied(), 21);
 }
 
-/// Helper to compute CRC32 checksum for test data
-fn compute_checksum(data: &[u8]) -> Vec<u8> {
-    let mut hasher = Hasher::new();
-    hasher.update(data);
-    hasher.finalize().to_be_bytes().to_vec()
-}
-
 fn listen_addr(port: u64) -> SocketAddr {
     format!("127.0.0.1:{}", port).parse().unwrap()
 }
@@ -352,61 +335,6 @@ async fn test_install_snapshot_chunk_case1() {
     raft_handle.await.expect("should succeed");
 }
 
-/// Helper to create valid test chunk
-fn create_test_chunk(
-    seq: u32,
-    data: &[u8],
-    term: u64,
-    leader_id: u64,
-    total: u32,
-) -> SnapshotChunk {
-    SnapshotChunk {
-        term,
-        leader_id,
-        seq,
-        total,
-        checksum: compute_checksum(data),
-        metadata: Some(SnapshotMetadata {
-            last_included: Some(LogId { index: 100, term }),
-            checksum: vec![],
-        }),
-        data: data.to_vec(),
-    }
-}
-
-fn create_test_stream(chunks: Vec<SnapshotChunk>) -> tonic::Streaming<SnapshotChunk> {
-    // Convert chunks to encoded byte streams
-    let byte_stream = stream::iter(chunks.into_iter().map(|chunk| {
-        let mut buf = Vec::new();
-
-        chunk
-            .encode(&mut buf)
-            .map_err(|e| Status::new(Code::Internal, format!("Encoding failed: {}", e)))?;
-
-        // Add Tonic frame header
-        let mut frame = BytesMut::new();
-        frame.put_u8(0); // No compression
-        debug!("buf.len()={}", buf.len());
-
-        frame.put_u32(buf.len() as u32); // Message length
-        frame.extend_from_slice(&buf);
-
-        Ok(frame.freeze())
-    }));
-
-    let body = StreamBody::new(
-        byte_stream
-            .map_ok(Frame::data)
-            .map_err(|e: Status| Status::new(Code::Internal, format!("Stream error: {}", e))),
-    );
-    tonic::Streaming::new_request(
-        SnapshotChunkDecoder,
-        body.boxed_unsync(),
-        None,
-        Some(1024 * 1024 * 1024),
-    )
-}
-
 fn create_test_handler(temp_dir: &Path) -> DefaultStateMachineHandler<MockTypeConfig> {
     let state_machine = MockStateMachine::new();
     DefaultStateMachineHandler::new(
@@ -453,7 +381,7 @@ async fn test_install_snapshot_chunk_case2() {
         ));
     }
 
-    let streaming_request = create_test_stream(chunks);
+    let streaming_request = crate_test_snapshot_stream(chunks);
     let (sender, receiver) = MaybeCloneOneshot::new();
     let result = handler
         .install_snapshot_chunk(1, Box::new(streaming_request), sender)
@@ -480,7 +408,7 @@ async fn test_install_snapshot_chunk_case3() {
     bad_chunk.checksum = vec![0xde, 0xad, 0xbe, 0xef]; // Corrupt checksum
 
     let (sender, receiver) = MaybeCloneOneshot::new();
-    let stream = create_test_stream(vec![bad_chunk]);
+    let stream = crate_test_snapshot_stream(vec![bad_chunk]);
     handler
         .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
         .await
@@ -504,7 +432,7 @@ async fn test_install_snapshot_chunk_case4() {
     ];
 
     let (sender, receiver) = MaybeCloneOneshot::new();
-    let stream = create_test_stream(chunks);
+    let stream = crate_test_snapshot_stream(chunks);
     handler
         .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
         .await
@@ -523,7 +451,7 @@ async fn test_install_snapshot_chunk_case5() {
 
     // Create stream that returns error after first chunk
     let chunks = vec![create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2)];
-    let stream = create_test_stream(chunks);
+    let stream = crate_test_snapshot_stream(chunks);
 
     let (sender, receiver) = MaybeCloneOneshot::new();
     handler
@@ -547,7 +475,7 @@ async fn test_install_snapshot_chunk_case6() {
     invalid_chunk.metadata = None;
 
     let (sender, receiver) = MaybeCloneOneshot::new();
-    let stream = create_test_stream(vec![invalid_chunk]);
+    let stream = crate_test_snapshot_stream(vec![invalid_chunk]);
     handler
         .install_snapshot_chunk(TEST_TERM, Box::new(stream), sender)
         .await
@@ -1245,25 +1173,4 @@ fn mock_node_with_rpc_service(
         .with_state_machine_handler(mock_state_machine_handler)
         .turn_on_election(is_leader)
         .build_node_with_rpc_server()
-}
-
-// Create a custom Decoder implementation
-struct SnapshotChunkDecoder;
-impl tonic::codec::Decoder for SnapshotChunkDecoder {
-    type Item = SnapshotChunk;
-    type Error = Status;
-    fn decode(
-        &mut self,
-        buf: &mut tonic::codec::DecodeBuf<'_>,
-    ) -> Result<Option<Self::Item>, Self::Error> {
-        debug!(?buf, "SnapshotChunkDecoder");
-
-        match SnapshotChunk::decode(buf) {
-            Ok(chunk) => Ok(Some(chunk)),
-            Err(e) => Err(Status::new(Code::Internal, format!("Decode error: {}", e))),
-        }
-    }
-    fn buffer_settings(&self) -> tonic::codec::BufferSettings {
-        tonic::codec::BufferSettings::new(4 * 1024 * 1024, 4 * 1024 * 1025)
-    }
 }

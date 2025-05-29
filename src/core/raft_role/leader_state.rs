@@ -15,6 +15,7 @@ use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
@@ -491,14 +492,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 } else {
                     // Step down as Follower as new Leader found
                     info!("my({}) term < request one, now I will step down to Follower", my_id);
-
-                    // role_tx
-                    //     .send(RoleEvent::BecomeFollower(Some(append_entries_request.leader_id)))
-                    //     .map_err(|e| {
-                    //         let error_str = format!("{:?}", e);
-                    //         error!("Failed to send: {}", error_str);
-                    //         NetworkError::SingalSendFailed(error_str)
-                    //     })?;
+                    //TODO: if there is a bug?  self.update_current_term(vote_request.term);
                     self.send_become_follower_event(Some(append_entries_request.leader_id), &role_tx)?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
@@ -577,6 +571,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
+
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Leader",
+                    required_role: "None Leader",
+                    context: format!("Leader node {} receives RaftEvent::InstallSnapshotChunk", ctx.node_id),
+                }
+                .into());
             }
 
             RaftEvent::RaftLogCleanUp(_purchase_log_request, sender) => {
@@ -971,6 +972,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     fn scheduled_purge_upto(
         &mut self,
         received_last_included: LogId,
@@ -1000,6 +1002,7 @@ impl<T: TypeConfig> LeaderState<T> {
         for res in responses.iter() {
             if let Ok(r) = res {
                 if r.term > self.current_term() {
+                    self.update_current_term(r.term);
                     self.send_become_follower_event(None, role_tx)?;
                 }
 
@@ -1060,6 +1063,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// - Actual log discard should be deferred until storage confirms snapshot persistence
     /// - Design differs from followers by requiring full cluster confirmation (Raft extension for
     ///   enhanced durability)
+    #[instrument(skip(self))]
     pub(super) fn can_purge_logs(
         &self,
         last_purge_index: Option<LogId>,

@@ -5,8 +5,8 @@
 //! Implementations can control how log entries are physically removed from storage while
 //! maintaining Raft's safety guarantees.
 
-mod executor;
-pub(crate) use executor::*;
+mod default_executor;
+pub(crate) use default_executor::*;
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;

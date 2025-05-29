@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use mockall::predicate::eq;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
@@ -22,14 +24,22 @@ use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::error::ErrorCode;
 use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotMetadata;
+use crate::test_utils::crate_test_snapshot_stream;
+use crate::test_utils::create_test_chunk;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
+use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
+use crate::test_utils::MOCK_ROLE_STATE_PORT_BASE;
 use crate::AppendResults;
+use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
@@ -37,9 +47,11 @@ use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::MembershipError;
 use crate::MockMembership;
+use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
+use crate::MockTransport;
 use crate::NewCommitData;
 use crate::PeerUpdate;
 use crate::RaftContext;
@@ -48,6 +60,8 @@ use crate::RaftOneshot;
 use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
+use crate::StorageError;
+use crate::FOLLOWER;
 
 struct TestContext {
     state: LeaderState<MockTypeConfig>,
@@ -373,7 +387,7 @@ fn setup_handle_raft_event_case1_params(
     resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
     term: u64,
 ) -> (RaftEvent, Arc<POF<MockTypeConfig>>) {
-    let raft_event = crate::RaftEvent::ReceiveVoteRequest(
+    let raft_event = RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term,
             candidate_id: 1,
@@ -480,7 +494,7 @@ async fn test_handle_raft_event_case2() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
 
     assert!(state
@@ -511,7 +525,7 @@ async fn test_handle_raft_event_case3_1() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+    let raft_event = RaftEvent::ClusterConfUpdate(
         ClusterMembershipChangeRequest {
             id: 1,
             term: 1,
@@ -553,7 +567,7 @@ async fn test_handle_raft_event_case3_2() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+    let raft_event = RaftEvent::ClusterConfUpdate(
         ClusterMembershipChangeRequest {
             id: 1,
             term: 1,
@@ -595,7 +609,7 @@ async fn test_handle_raft_event_case4_1() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
@@ -646,7 +660,7 @@ async fn test_handle_raft_event_case4_2() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -676,7 +690,7 @@ async fn test_handle_raft_event_case5_1() {
 
     // Handle raft event
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientPropose(
+    let raft_event = RaftEvent::ClientPropose(
         ClientProposeRequest {
             client_id: 1,
             commands: vec![],
@@ -727,7 +741,7 @@ async fn test_handle_raft_event_case6_1() {
         commands,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     state
@@ -801,7 +815,7 @@ async fn test_handle_raft_event_case6_2() {
         commands,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     state
@@ -879,7 +893,7 @@ async fn test_handle_raft_event_case6_3() {
         commands,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     state
@@ -897,6 +911,509 @@ async fn test_handle_raft_event_case6_3() {
 
     // Validation criteria 3: resp_rx receives Err(e)
     assert!(resp_rx.recv().await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn test_handle_raft_event_case7() {
+    // Initializing Shutdown Signal
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_handle_raft_event_case7")
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+
+    let stream = crate_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
+    let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    // Validation criteria 1: The response should return an error
+    // Assert that resp_rx receives permission_denied
+    let e = resp_rx.recv().await.unwrap().unwrap_err();
+    assert!(matches!(e.code(), Code::PermissionDenied));
+
+    // Validation criteria 2: No role event should be triggered
+    assert!(role_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_handle_raft_event_case8() {
+    // Initializing Shutdown Signal
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_handle_raft_event_case8")
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+
+    let raft_event = RaftEvent::RaftLogCleanUp(
+        PurgeLogRequest {
+            term: 1,
+            leader_id: 1,
+            leader_commit: 1,
+            last_included: None,
+            snapshot_checksum: vec![],
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    // Validation criteria 1: The response should return an error
+    let e = resp_rx.recv().await.unwrap().unwrap_err();
+    assert!(matches!(e.code(), Code::PermissionDenied));
+
+    // Validation criteria 2: No role event should be triggered
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case 1: test handle create_snapshot with transport error
+#[tokio::test]
+async fn test_handle_raft_event_case9_1() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_2");
+
+    // Setup
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler
+    let mut state_machine = MockStateMachineHandler::new();
+    state_machine.expect_create_snapshot().returning(move || {
+        Ok((
+            SnapshotMetadata {
+                last_included: Some(LogId { term: 3, index: 100 }),
+                checksum: "checksum".into(),
+            },
+            case_path.to_path_buf(),
+        ))
+    });
+    context.handlers.state_machine_handler = Arc::new(state_machine);
+
+    // Prepare leader peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 1, rx1, true)
+        .await
+        .expect("should succeed");
+
+    // Prepare AppendResults
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
+    context.membership = Arc::new(membership);
+
+    let mut transport = MockTransport::new();
+    transport
+        .expect_send_purge_requests()
+        .times(1)
+        .returning(|_, _, _| Err(Error::Fatal("Mock transport error".to_string())));
+    context.transport = Arc::new(transport);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_err());
+
+    // Validation criteria 2: No role event should be triggered
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case2: test handle create_snapshot successful
+#[tokio::test]
+async fn test_handle_raft_event_case9_2() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_2");
+
+    // Setup
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler
+    let mut state_machine = MockStateMachineHandler::new();
+    state_machine.expect_create_snapshot().returning(move || {
+        Ok((
+            SnapshotMetadata {
+                last_included: Some(LogId { term: 3, index: 100 }),
+                checksum: "checksum".into(),
+            },
+            case_path.to_path_buf(),
+        ))
+    });
+    context.handlers.state_machine_handler = Arc::new(state_machine);
+
+    // Mock peer configuration
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 2, rx1, true)
+        .await
+        .expect("should succeed");
+
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
+    context.membership = Arc::new(membership);
+
+    // Mock transport with successful response
+    let mut transport = MockTransport::new();
+    transport.expect_send_purge_requests().times(1).returning(|_, _, _| {
+        Ok(vec![Ok(PurgeLogResponse {
+            node_id: 2,
+            term: 3,
+            success: true,
+            last_purged: Some(LogId { term: 3, index: 100 }),
+        })])
+    });
+    context.transport = Arc::new(transport);
+
+    // Mock purge executor
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor
+        .expect_execute_purge()
+        .with(eq(LogId { term: 3, index: 100 }))
+        .times(1)
+        .returning(|_| Ok(()));
+    context.purge_executor = purge_executor;
+
+    // Prepare leader state
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150; // Commit index > snapshot index
+    state.last_purged_index = Some(LogId { term: 2, index: 80 });
+    state.peer_purge_progress.insert(2, 100); // Peer has progressed beyond snapshot
+
+    // Trigger event
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should succeed");
+
+    // Validate state updates
+    assert_eq!(state.scheduled_purge_upto, Some(LogId { term: 3, index: 100 }));
+    assert_eq!(state.last_purged_index, Some(LogId { term: 3, index: 100 }));
+    assert_eq!(state.peer_purge_progress.get(&2), Some(&100));
+}
+
+/// # Case3: Test snapshot creation failure scenario
+#[tokio::test]
+async fn test_handle_raft_event_case9_3() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_3");
+
+    // Setup
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to return error
+    let mut state_machine = MockStateMachineHandler::new();
+    state_machine
+        .expect_create_snapshot()
+        .returning(move || Err(StorageError::Snapshot("Test failure".to_string()).into()));
+    context.handlers.state_machine_handler = Arc::new(state_machine);
+
+    // Prepare leader state
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150;
+
+    // Trigger event
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Execute and validate error is handled gracefully
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should handle error without crashing");
+
+    // Validate no state changes occurred
+    assert!(state.scheduled_purge_upto.is_none());
+    assert_eq!(state.last_purged_index, None);
+    assert!(state.peer_purge_progress.is_empty());
+}
+
+/// # Case4: Test higher term response triggering leader step-down
+#[tokio::test]
+async fn test_handle_raft_event_case9_4() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_4");
+
+    // Setup
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler
+    let mut state_machine = MockStateMachineHandler::new();
+    state_machine.expect_create_snapshot().returning(move || {
+        Ok((
+            SnapshotMetadata {
+                last_included: Some(LogId { term: 3, index: 100 }),
+                checksum: "checksum".into(),
+            },
+            case_path.to_path_buf(),
+        ))
+    });
+    context.handlers.state_machine_handler = Arc::new(state_machine);
+
+    // Mock peer configuration
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 4, rx1, true)
+        .await
+        .expect("should succeed");
+
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
+    context.membership = Arc::new(membership);
+
+    // Mock transport with higher term response
+    let mut transport = MockTransport::new();
+    transport.expect_send_purge_requests().times(1).returning(|_, _, _| {
+        Ok(vec![Ok(PurgeLogResponse {
+            node_id: 2,
+            term: 4, // Higher than current term (3)
+            success: true,
+            last_purged: Some(LogId { term: 3, index: 100 }),
+        })])
+    });
+    context.transport = Arc::new(transport);
+
+    // Prepare leader state
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150;
+    state.last_purged_index = Some(LogId { term: 2, index: 80 });
+    state.peer_purge_progress.insert(2, 100);
+
+    // Trigger event
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should handle higher term response");
+
+    // Validate leader stepped down
+    let event = role_rx.try_recv().expect("Should receive step down event");
+    assert!(matches!(event, RoleEvent::BecomeFollower(None)));
+
+    // Validate term was updated
+    assert_eq!(state.current_term(), 4);
+}
+
+/// # Case5: Test purge preconditions not met (commit index < snapshot index)
+#[tokio::test]
+async fn test_handle_raft_event_case9_5() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_5");
+
+    // Setup
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler
+    let mut state_machine = MockStateMachineHandler::new();
+    state_machine.expect_create_snapshot().returning(move || {
+        Ok((
+            SnapshotMetadata {
+                last_included: Some(LogId { term: 3, index: 100 }),
+                checksum: "checksum".into(),
+            },
+            case_path.to_path_buf(),
+        ))
+    });
+    context.handlers.state_machine_handler = Arc::new(state_machine);
+
+    // Mock peer configuration
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 5, rx1, true)
+        .await
+        .expect("should succeed");
+
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
+    context.membership = Arc::new(membership);
+
+    // Mock transport with successful response
+    let mut transport = MockTransport::new();
+    transport.expect_send_purge_requests().times(1).returning(|_, _, _| {
+        Ok(vec![Ok(PurgeLogResponse {
+            node_id: 2,
+            term: 3,
+            success: true,
+            last_purged: Some(LogId { term: 3, index: 100 }),
+        })])
+    });
+    context.transport = Arc::new(transport);
+
+    // Prepare leader state where commit index < snapshot index
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    state.update_current_term(3);
+    state.shared_state.commit_index = 90; // Commit index < snapshot index (100)
+    state.last_purged_index = Some(LogId { term: 2, index: 80 });
+    state.peer_purge_progress.insert(2, 100);
+
+    // Trigger event
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should skip purge");
+
+    // Validate scheduled_purge_upto was NOT set
+    assert!(state.scheduled_purge_upto.is_none());
+}
+
+/// # Case6: Test peer purge progress tracking
+#[tokio::test]
+async fn test_handle_raft_event_case9_6() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_6");
+
+    // Setup
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler
+    let mut state_machine = MockStateMachineHandler::new();
+    state_machine.expect_create_snapshot().returning(move || {
+        Ok((
+            SnapshotMetadata {
+                last_included: Some(LogId { term: 3, index: 100 }),
+                checksum: "checksum".into(),
+            },
+            case_path.to_path_buf(),
+        ))
+    });
+    context.handlers.state_machine_handler = Arc::new(state_machine);
+
+    // Mock peer configuration (multiple peers)
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 6, rx1, true)
+        .await
+        .expect("should succeed");
+
+    let (_tx2, rx2) = oneshot::channel::<()>();
+    let addr2 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 7, rx2, true)
+        .await
+        .expect("should succeed");
+
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![
+            ChannelWithAddressAndRole {
+                id: 2,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+            ChannelWithAddressAndRole {
+                id: 3,
+                channel_with_address: addr2.clone(),
+                role: FOLLOWER,
+            },
+        ]
+    });
+    context.membership = Arc::new(membership);
+
+    // Mock transport with mixed responses
+    let mut transport = MockTransport::new();
+    transport.expect_send_purge_requests().times(1).returning(|_, _, _| {
+        Ok(vec![
+            Ok(PurgeLogResponse {
+                node_id: 2,
+                term: 3,
+                success: true,
+                last_purged: Some(LogId { term: 3, index: 100 }),
+            }),
+            Ok(PurgeLogResponse {
+                node_id: 3,
+                term: 3,
+                success: true,
+                last_purged: Some(LogId { term: 3, index: 95 }), // Different purge index
+            }),
+        ])
+    });
+    context.transport = Arc::new(transport);
+
+    // Prepare leader state
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150;
+    state.last_purged_index = Some(LogId { term: 2, index: 80 });
+
+    // Trigger event
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should succeed");
+
+    // Validate peer purge progress tracking
+    assert_eq!(state.peer_purge_progress.get(&2), Some(&100));
+    assert_eq!(state.peer_purge_progress.get(&3), Some(&95));
 }
 
 #[test]
