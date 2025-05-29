@@ -282,16 +282,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
                 .into())
             }
-
-            RaftEvent::StartScheduledPurgeLogEvent => {
-                // if let Some(scheduled) = self.scheduled_purge_upto {
-                //     if let Err(e) = ctx.raft_log().purge_logs_up_to(scheduled) {
-                //         error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
-                //     }
-                //     debug!(?scheduled, "Receive StartScheduledPurgeLogEvent");
-                //     self.last_purged_index = Some(scheduled);
-                // }
-            }
         }
         return Ok(());
     }

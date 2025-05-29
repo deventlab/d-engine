@@ -673,10 +673,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     }
                 }
             }
-
-            RaftEvent::StartScheduledPurgeLogEvent => {
-                warn!("Leader should not receive StartScheduledPurgeLogEvent.");
-            }
         }
         return Ok(());
     }

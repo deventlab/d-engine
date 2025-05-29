@@ -408,20 +408,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
                 .into())
             }
-
-            RaftEvent::StartScheduledPurgeLogEvent => {
-                error!("Candidate should not receive StartScheduledPurgeLogEvent");
-
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} should not receive StartScheduledPurgeLogEvent event.",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
         }
         return Ok(());
     }

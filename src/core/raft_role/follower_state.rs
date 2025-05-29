@@ -9,6 +9,7 @@ use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
@@ -345,12 +346,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     .validate_purge_request(my_term, leader_id, &purchase_log_request)
                     .await
                 {
-                    Ok(success) => {
-                        debug!(
-                            ?success,
-                            "state_machine_handler()
-                    .validate_purge_request"
-                        );
+                    Ok(is_valid) => {
+                        debug!(?is_valid, "state_machine_handler.validate_purge_request");
 
                         let mut success = false;
                         // let mut last_purged = self.last_purged_index;
@@ -358,7 +355,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         let current_term = self.current_term();
                         let node_id = self.shared_state.node_id;
 
-                        if success {
+                        if is_valid {
                             if let Some(last_purged_in_request) = purchase_log_request.last_included {
                                 // ----------------------
                                 // Phase 2: Validate Leader purge log request
@@ -417,16 +414,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     context: format!("Follower node {} attempted to create snapshot.", ctx.node_id),
                 }
                 .into())
-            }
-
-            RaftEvent::StartScheduledPurgeLogEvent => {
-                // if let Some(scheduled) = self.scheduled_purge_upto {
-                //     if let Err(e) = ctx.raft_log().purge_logs_up_to(scheduled) {
-                //         error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
-                //     }
-                //     debug!(?scheduled, "Receive StartScheduledPurgeLogEvent");
-                //     self.last_purged_index = Some(scheduled);
-                // }
             }
         }
 
@@ -490,6 +477,7 @@ impl<T: TypeConfig> FollowerState<T> {
     /// - At least one committed entry remains after purge
     /// - Critical for follower's log matching property during reelections
     /// - Prevents "phantom entries" when combined with §5.4.2 election restriction
+    #[instrument]
     pub(super) fn can_purge_logs(
         &self,
         last_purge_index: Option<LogId>,

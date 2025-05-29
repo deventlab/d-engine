@@ -984,7 +984,7 @@ async fn test_handle_raft_event_case9_1() {
     enable_logger();
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let case_path = temp_dir.path().join("test_handle_raft_event_case9_2");
+    let case_path = temp_dir.path().join("test_handle_raft_event_case9_1");
 
     // Setup
     let (_graceful_tx, graceful_rx) = watch::channel(());

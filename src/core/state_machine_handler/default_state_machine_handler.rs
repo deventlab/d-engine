@@ -18,6 +18,7 @@ use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::instrument;
 use tracing::warn;
 
 use super::SnapshotAssembler;
@@ -407,6 +408,7 @@ where T: TypeConfig
         Ok(())
     }
 
+    #[instrument]
     async fn validate_purge_request(
         &self,
         current_term: u64,

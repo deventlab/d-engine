@@ -82,9 +82,6 @@ pub(crate) enum RaftEvent {
     // None RPC event
     #[allow(dead_code)]
     CreateSnapshotEvent,
-
-    // Event after log been purged successfully
-    StartScheduledPurgeLogEvent,
 }
 
 #[cfg(test)]
@@ -109,9 +106,6 @@ pub(crate) enum TestEvent {
 
     // None RPC event
     CreateSnapshotEvent,
-
-    // Event after log been purged successfully
-    StartScheduledPurgeLogEvent,
 }
 
 #[cfg(test)]
@@ -126,6 +120,5 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
-        RaftEvent::StartScheduledPurgeLogEvent => TestEvent::StartScheduledPurgeLogEvent,
     }
 }
