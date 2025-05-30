@@ -379,7 +379,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
-                    .send(Err(Status::permission_denied("Not Follower or Learner. ")))
+                    .send(Err(Status::permission_denied("Not Follower or Learner.")))
                     .map_err(|e| {
                         let error_str = format!("{:?}", e);
                         error!("Failed to send: {}", error_str);

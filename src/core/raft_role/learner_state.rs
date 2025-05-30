@@ -20,7 +20,6 @@ use super::StateSnapshot;
 use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::client::ClientResponse;
-use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;

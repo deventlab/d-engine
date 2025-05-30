@@ -14,16 +14,19 @@ use crate::proto::election::VoteRequest;
 use crate::proto::error::ErrorCode;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::NewCommitData;
+use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
 
@@ -60,7 +63,7 @@ async fn test_handle_raft_event_case1() {
     let requet_term = state.current_term() + 10;
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ReceiveVoteRequest(
+    let raft_event = RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term: requet_term,
             candidate_id: 1,
@@ -95,7 +98,7 @@ async fn test_handle_raft_event_case2() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
 
     assert!(state
@@ -118,7 +121,7 @@ async fn test_handle_raft_event_case3() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+    let raft_event = RaftEvent::ClusterConfUpdate(
         ClusterMembershipChangeRequest {
             id: 1,
             term: 1,
@@ -207,7 +210,7 @@ async fn test_handle_raft_event_case4_1() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -284,7 +287,7 @@ async fn test_handle_raft_event_case4_2() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -361,7 +364,7 @@ async fn test_handle_raft_event_case4_3() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
     let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -395,7 +398,7 @@ async fn test_handle_raft_event_case5() {
 
     // Handle raft event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientPropose(
+    let raft_event = RaftEvent::ClientPropose(
         ClientProposeRequest {
             client_id: 1,
             commands: vec![],
@@ -429,11 +432,10 @@ async fn test_handle_raft_event_case6() {
         commands: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
         .await
         .is_ok());
 
@@ -441,4 +443,68 @@ async fn test_handle_raft_event_case6() {
         resp_rx.recv().await.unwrap().unwrap_err().code(),
         Code::PermissionDenied
     );
+}
+
+/// Test handling RaftLogCleanUp event by LearnerState
+#[tokio::test]
+async fn test_handle_raft_event_case8() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    // Step 1: Setup the test environment
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case8", graceful_rx, None);
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the RaftLogCleanUp event
+    let request = PurgeLogRequest {
+        term: 1,
+        leader_id: 1,
+        leader_commit: 1,
+        last_included: Some(LogId { term: 1, index: 1 }),
+        snapshot_checksum: vec![1, 2, 3],
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state
+        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
+        .await;
+
+    // Step 4: Verify the response
+    // Should return Ok since we're just sending a response
+    assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await;
+
+    assert!(response.is_ok(), "Expected response to be sent");
+    let status = response.unwrap();
+    assert!(status.is_err(), "Expected an error response");
+    let err = status.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(err.code(), Code::PermissionDenied);
+    assert_eq!(err.message(), "Not Follower");
+}
+
+/// Test handling CreateSnapshotEvent event by LearnerState
+#[tokio::test]
+async fn test_handle_raft_event_case9() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case9", graceful_rx, None);
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the CreateSnapshotEvent
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+
+    // Step 3: Call handle_raft_event
+    let e = state
+        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
+        .await
+        .unwrap_err();
+
+    // Step 4: Verify the error response
+    assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
 }

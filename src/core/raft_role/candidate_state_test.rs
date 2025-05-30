@@ -7,18 +7,22 @@ use tonic::Status;
 
 use super::candidate_state::CandidateState;
 use crate::alias::POF;
-use crate::proto::replication::AppendEntriesRequest;
-use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::error::ErrorCode;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
+use crate::proto::error::ErrorCode;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
+use crate::test_utils::crate_test_snapshot_stream;
+use crate::test_utils::create_test_chunk;
 use crate::test_utils::mock_election_core;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
@@ -624,4 +628,106 @@ fn test_send_replay_raft_event() {
 
     assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::BecomeFollower(None)));
     assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
+}
+
+// filepath: [candidate_state_test.rs](http://_vscodecontentref_/3)
+
+/// Test handling InstallSnapshotChunk event by CandidateState
+#[tokio::test]
+async fn test_handle_raft_event_case7() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case7", graceful_rx, None);
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the InstallSnapshotChunk event
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let stream = crate_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
+    let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state
+        .handle_raft_event(
+            raft_event,
+            Arc::new(mock_peer_channels()),
+            &context,
+            mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    // Step 4: Verify the response
+    assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await.expect("Response should be received");
+    assert!(response.is_err(), "Expected an error response");
+    let status = response.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert_eq!(status.message(), "Not Follower or Learner.");
+}
+
+/// Test handling RaftLogCleanUp event by CandidateState
+#[tokio::test]
+async fn test_handle_raft_event_case8() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case8", graceful_rx, None);
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the RaftLogCleanUp event
+    let request = PurgeLogRequest {
+        term: 1,
+        leader_id: 1,
+        leader_commit: 1,
+        last_included: Some(LogId { term: 1, index: 1 }),
+        snapshot_checksum: vec![1, 2, 3],
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state
+        .handle_raft_event(
+            raft_event,
+            Arc::new(mock_peer_channels()),
+            &context,
+            mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    // Step 4: Verify the response
+    assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await.expect("Response should be received");
+    assert!(response.is_err(), "Expected an error response");
+    let status = response.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert_eq!(status.message(), "Not Follower");
+}
+
+/// Test handling CreateSnapshotEvent event by CandidateState
+#[tokio::test]
+async fn test_handle_raft_event_case9() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case9", graceful_rx, None);
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the CreateSnapshotEvent
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::CreateSnapshotEvent;
+
+    // Step 3: Call handle_raft_event
+    let e = state
+        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
+        .await
+        .unwrap_err();
+
+    // Step 4: Verify the error response
+    assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
 }
