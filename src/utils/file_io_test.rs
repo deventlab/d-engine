@@ -3,10 +3,13 @@ use std::os::fd::AsRawFd;
 
 use nix::libc::flock;
 use nix::libc::LOCK_EX;
+use sha2::Digest;
+use sha2::Sha256;
 use tempfile::tempdir;
 use tempfile::NamedTempFile;
 
 use crate::file_io;
+use crate::file_io::compute_checksum_from_path;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
 use crate::file_io::move_directory;
@@ -230,4 +233,139 @@ async fn test_move_directory() {
     // Verify new directory exists and old is removed
     assert!(file_io::is_dir(&new_path).await.unwrap());
     assert!(!old_path.exists());
+}
+
+/// Test computing checksum for an empty directory
+#[tokio::test]
+async fn test_compute_checksum_from_path_empty_dir() {
+    let temp_dir = tempdir().unwrap();
+    let checksum = compute_checksum_from_path(temp_dir.path())
+        .await
+        .expect("Should compute checksum for empty dir");
+
+    // SHA-256 hash of empty data
+    let hasher = Sha256::new();
+    let expected: [u8; 32] = hasher.finalize().into();
+
+    assert_eq!(
+        checksum, expected,
+        "Checksum for empty directory should be SHA-256 of empty data"
+    );
+}
+
+/// Test computing checksum for a directory with a single file
+#[tokio::test]
+async fn test_compute_checksum_from_path_single_file() {
+    let temp_dir = tempdir().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    tokio::fs::write(&file_path, b"Hello, world!").await.unwrap();
+
+    let checksum = compute_checksum_from_path(temp_dir.path())
+        .await
+        .expect("Should compute checksum for directory with single file");
+
+    // Calculate expected SHA-256
+    let mut hasher = Sha256::new();
+    hasher.update(b"Hello, world!");
+    let expected: [u8; 32] = hasher.finalize().into();
+
+    assert_eq!(checksum, expected, "Checksum should match SHA-256 of file content");
+}
+
+/// Test computing checksum for a directory with multiple files
+#[tokio::test]
+async fn test_compute_checksum_from_path_multiple_files() {
+    let temp_dir = tempdir().unwrap();
+
+    // Create files with different content
+    tokio::fs::write(temp_dir.path().join("file1.txt"), b"Content 1")
+        .await
+        .unwrap();
+    tokio::fs::write(temp_dir.path().join("file2.txt"), b"Content 2")
+        .await
+        .unwrap();
+    tokio::fs::write(temp_dir.path().join("file3.txt"), b"Content 3")
+        .await
+        .unwrap();
+
+    let checksum = compute_checksum_from_path(temp_dir.path())
+        .await
+        .expect("Should compute checksum for directory with multiple files");
+
+    // Calculate expected SHA-256 (concatenated content of all files)
+    let mut hasher = Sha256::new();
+    hasher.update(b"Content 1");
+    hasher.update(b"Content 2");
+    hasher.update(b"Content 3");
+    let expected: [u8; 32] = hasher.finalize().into();
+
+    assert_eq!(
+        checksum, expected,
+        "Checksum should match SHA-256 of concatenated file contents"
+    );
+}
+
+/// Test that checksum ignores subdirectories and only processes files
+#[tokio::test]
+async fn test_compute_checksum_ignores_subdirectories() {
+    let temp_dir = tempdir().unwrap();
+
+    // Create a file and a subdirectory
+    tokio::fs::write(temp_dir.path().join("file.txt"), b"File content")
+        .await
+        .unwrap();
+    let sub_dir = temp_dir.path().join("subdir");
+    tokio::fs::create_dir(&sub_dir).await.unwrap();
+    tokio::fs::write(sub_dir.join("ignored.txt"), b"Ignored content")
+        .await
+        .unwrap();
+
+    let checksum = compute_checksum_from_path(temp_dir.path())
+        .await
+        .expect("Should compute checksum ignoring subdirectories");
+
+    // Calculate expected SHA-256 (only the top-level file)
+    let mut hasher = Sha256::new();
+    hasher.update(b"File content");
+    let expected: [u8; 32] = hasher.finalize().into();
+
+    assert_eq!(checksum, expected, "Checksum should only include top-level files");
+}
+
+/// Test error handling for non-existent directory
+#[tokio::test]
+async fn test_compute_checksum_nonexistent_dir() {
+    let temp_dir = tempdir().unwrap();
+    let non_existent_path = temp_dir.path().join("does_not_exist");
+
+    let result = compute_checksum_from_path(&non_existent_path).await;
+
+    assert!(result.is_err(), "Should return error for non-existent directory");
+    match result.unwrap_err() {
+        Error::System(SystemError::Storage(StorageError::IoError(_))) => {} // Expected
+        other => panic!("Expected IoError, got {:?}", other),
+    }
+}
+
+/// Test checksum consistency across multiple runs
+#[tokio::test]
+async fn test_compute_checksum_consistency() {
+    let temp_dir = tempdir().unwrap();
+    tokio::fs::write(temp_dir.path().join("data.bin"), b"Consistent data")
+        .await
+        .unwrap();
+
+    // Compute checksum twice
+    let checksum1 = compute_checksum_from_path(temp_dir.path())
+        .await
+        .expect("First computation should succeed");
+
+    let checksum2 = compute_checksum_from_path(temp_dir.path())
+        .await
+        .expect("Second computation should succeed");
+
+    assert_eq!(
+        checksum1, checksum2,
+        "Checksum should be consistent across multiple computations"
+    );
 }

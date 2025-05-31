@@ -5,6 +5,8 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use sha2::Digest;
+use sha2::Sha256;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
@@ -209,17 +211,46 @@ pub(crate) async fn is_dir(path: &Path) -> Result<bool> {
     Ok(metadata.is_dir())
 }
 
+/// Computes a SHA-256 checksum for a directory by hashing the contents of its files.
+///
+/// IMPORTANT: Files are processed in lexicographical order by filename. This is critical because:
+/// 1. File system enumeration order (via `read_dir`) is implementation-defined and
+///    non-deterministic
+/// 2. SHA-256 is order-sensitive: `hash(fileA + fileB) ≠ hash(fileB + fileA)`
+///
+/// The algorithm:
+/// 1. Collects all top-level files in the directory (ignores subdirectories and symlinks)
+/// 2. Sorts files by filename to ensure consistent processing order
+/// 3. Reads each file's content in sorted order
+/// 4. Updates hasher with each file's bytes sequentially
+/// 5. Finalizes and returns the SHA-256 hash
+///
+/// Notes:
+/// - Non-files (directories/symlinks) are silently ignored
+/// - Only top-level files are processed (no recursion into subdirectories)
+/// - File read order is determined by filename sort, not creation time or modification time
+/// - Empty directories will return the SHA-256 hash of empty data
 pub(crate) async fn compute_checksum_from_path(path: &Path) -> Result<[u8; 32]> {
-    use sha2::Digest;
-    use sha2::Sha256;
     let mut hasher = Sha256::new();
-
     let mut entries = fs::read_dir(path).await.map_err(StorageError::IoError)?;
+
+    // Collect files while preserving DirEntry information
+    let mut files = Vec::new();
     while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
         if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
-            let data = fs::read(entry.path()).await.map_err(StorageError::IoError)?;
-            hasher.update(data);
+            files.push(entry);
         }
+    }
+
+    // Critical sorting: Filenames compared as OsString but sorted by simple byte order.
+    // This matches lexical order for valid UTF-8 names, and provides consistent ordering
+    // for non-UTF names across platforms.
+    files.sort_by_key(|entry| entry.file_name());
+
+    // Process files in deterministic sorted order
+    for entry in files {
+        let data = fs::read(entry.path()).await.map_err(StorageError::IoError)?;
+        hasher.update(data);
     }
 
     Ok(hasher.finalize().into())

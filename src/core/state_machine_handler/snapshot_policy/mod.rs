@@ -14,7 +14,11 @@ use crate::cluster::is_leader;
 use crate::proto::common::LogId;
 
 #[cfg(test)]
+mod composite_test;
+#[cfg(test)]
 mod log_size_test;
+#[cfg(test)]
+mod time_based_test;
 
 #[cfg(test)]
 use mockall::automock;
@@ -25,6 +29,9 @@ pub trait SnapshotPolicy: Send + Sync {
         &self,
         ctx: &SnapshotContext,
     ) -> bool;
+
+    /// Should be called after the snapshot is created successfully
+    fn mark_snapshot_created(&mut self);
 }
 
 #[derive(Clone)]

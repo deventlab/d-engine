@@ -59,6 +59,10 @@ impl SnapshotPolicy for LogSizePolicy {
 
         should_trigger
     }
+
+    #[allow(unused)]
+    /// For sized based policy, no need to use this function.
+    fn mark_snapshot_created(&mut self) {}
 }
 
 impl LogSizePolicy {
