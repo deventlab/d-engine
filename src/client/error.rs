@@ -122,11 +122,9 @@ impl From<tonic::transport::Error> for ClientApiError {
                     Some(3000), // Retry after 3 seconds
                 )
             }
-            e if e.to_string().contains("invalid uri") => (
-                NetworkErrorType::InvalidAddress,
-                format!("Invalid address: {e}"),
-                None,
-            ),
+            e if e.to_string().contains("invalid uri") => {
+                (NetworkErrorType::InvalidAddress, format!("Invalid address: {e}"), None)
+            }
             _ => (
                 NetworkErrorType::ConnectionLost,
                 "Connection unexpectedly closed".into(),
