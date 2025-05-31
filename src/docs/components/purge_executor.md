@@ -2,7 +2,7 @@
 
 ## **Overview**
 
-The **`PurgeExecutor`** enables safe customization of log compaction while maintaining Raft protocol guarantees. Implement storage-specific purge validation without modifying core consensus logic.
+The **`PurgeExecutor`** enables safe customization of log compaction while maintaining Raft protocol guarantees. Implement storage-specific purge validation without modifying core consensus logic.
 
 ## Purge Validation Layers
 ## **Key Concepts**

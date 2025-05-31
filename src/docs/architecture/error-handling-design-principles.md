@@ -1,12 +1,12 @@
-This section outlines the core principles for distinguishing between **protocol logic errors** (expected business failures) and **system-level errors** (unrecoverable faults) across the entire project. Developers extending this codebase should strictly follow these guidelines to ensure consistency and reliability.
+This section outlines the core principles for distinguishing between **protocol logic errors** (expected business failures) and **system-level errors** (unrecoverable faults) across the entire project. Developers extending this codebase should strictly follow these guidelines to ensure consistency and reliability.
 
 ## **1. Core Principles**
 
 | **Error Type** | **Description** | **Handling Strategy** |
 | --- | --- | --- |
-| **Protocol Logic Errors** | Failures dictated by protocol rules (e.g., term mismatches, log inconsistencies). | - Return `Ok(())` with a protocol-compliant response (e.g., `success: false`). |
-| **System-Level Errors** | Critical failures (e.g., I/O errors, channel disconnections, state corruption). | - Return `Error` to halt normal operation.- Trigger recovery mechanisms (retry/alert). |
-| **Illegal Operation Errors** | Violations of the Raft state machine rules (e.g., invalid role transitions). | - Return `Error` immediately.- Indicates **bugs in code logic** and must be fixed. |
+| **Protocol Logic Errors** | Failures dictated by protocol rules (e.g., term mismatches, log inconsistencies). | - Return `Ok(())` with a protocol-compliant response (e.g., `success: false`). |
+| **System-Level Errors** | Critical failures (e.g., I/O errors, channel disconnections, state corruption). | - Return `Error` to halt normal operation.- Trigger recovery mechanisms (retry/alert). |
+| **Illegal Operation Errors** | Violations of the Raft state machine rules (e.g., invalid role transitions). | - Return `Error` immediately.- Indicates **bugs in code logic** and must be fixed. |
 
 ---
 
@@ -50,7 +50,7 @@ impl RaftRoleState for FollowerState {
 
 1. **Atomic State Changes**
     
-    Ensure critical operations (e.g., role transitions) are atomic. If a step fails after partial execution, return `Error` to avoid inconsistent states.
+    Ensure critical operations (e.g., role transitions) are atomic. If a step fails after partial execution, return `Error` to avoid inconsistent states.
     
 2. **Error Classification**
     
@@ -66,8 +66,8 @@ impl RaftRoleState for FollowerState {
     ```
     
 3. **Handle Illegal Operations Strictly**
-    - Log illegal operations at `error!` level.
-    - Add unit tests to ensure invalid transitions return `Error`.
+    - Log illegal operations at `error!` level.
+    - Add unit tests to ensure invalid transitions return `Error`.
     
     ```ignore
     #[test]
@@ -85,17 +85,17 @@ impl RaftRoleState for FollowerState {
 
 ### **4. Extending to the Entire Project**
 
-These principles apply to **all components**:
+These principles apply to **all components**:
 
 - **RPC Clients/Servers**:
-    - Treat invalid RPC sequences (e.g., duplicate requests) as **protocol errors** (`Ok` with response).
-    - Treat connection resets as **system errors** (`Error`).
+    - Treat invalid RPC sequences (e.g., duplicate requests) as **protocol errors** (`Ok` with response).
+    - Treat connection resets as **system errors** (`Error`).
 - **State Machines**:
-    - Invalid operations (e.g., applying non-committed logs) → **Protocol errors**.
-    - Disk write failures → **System errors**.
+    - Invalid operations (e.g., applying non-committed logs) → **Protocol errors**.
+    - Disk write failures → **System errors**.
 - **Cluster Management**:
-    - Node join conflicts (e.g., duplicate IDs) → **Protocol errors**.
-    - Invalid role transitions (e.g., Follower → Leader) → **Illegal Operation errors**.
+    - Node join conflicts (e.g., duplicate IDs) → **Protocol errors**.
+    - Invalid role transitions (e.g., Follower → Leader) → **Illegal Operation errors**.
 
 ---
 

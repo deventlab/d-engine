@@ -131,7 +131,7 @@ sequenceDiagram
 4. **Flow Control**: Dynamically adjust chunk size based on network conditions (e.g., 4MB–16MB chunks).
     
 
-#### **Stream<Chunk> vs. Direct Chunk (Even Chunk Size Is Controlled)**
+#### **Stream<Chunk> vs. Direct Chunk (Even Chunk Size Is Controlled)**
 
 | Criteria           | Stream<Chunk>                                    | Direct Chunk (One Chunk per Request)                       |
 |--------------------|--------------------------------------------------|------------------------------------------------------------|

@@ -1,4 +1,4 @@
-This project strictly follows the **Single Responsibility Principle (SRP)** to ensure modularity and maintainability. Developers extending the codebase **must** adhere to this principle to preserve clean separation of concerns. Below are key guidelines and examples.
+This project strictly follows the **Single Responsibility Principle (SRP)** to ensure modularity and maintainability. Developers extending the codebase **must** adhere to this principle to preserve clean separation of concerns. Below are key guidelines and examples.
 
 ---
 
@@ -6,17 +6,17 @@ This project strictly follows the **Single Responsibility Principle (SRP)** to
 
 - **Main Loop Responsibility**:
     
-    The `main_loop` (in `src/core/raft.rs`) **only orchestrates event routing**. It:
+    The `main_loop` (in `src/core/raft.rs`) **only orchestrates event routing**. It:
     
     1. Listens for events (e.g., RPCs, timers).
-    2. Delegates handling to the **current role** (e.g., `LeaderState`, `FollowerState`).
-    3. Manages role transitions (e.g., `Leader → Follower`).
+    2. Delegates handling to the **current role** (e.g., `LeaderState`, `FollowerState`).
+    3. Manages role transitions (e.g., `Leader → Follower`).
 - **Role-Specific Logic**:
     
-    Each role (`LeaderState`, `FollowerState`, etc.) **owns its state and behavior**. For example:
+    Each role (`LeaderState`, `FollowerState`, etc.) **owns its state and behavior**. For example:
     
-    - `LeaderState` handles log replication and heartbeat management.
-    - `FollowerState` processes leader requests and election timeouts.
+    - `LeaderState` handles log replication and heartbeat management.
+    - `FollowerState` processes leader requests and election timeouts.
 
 ---
 
@@ -24,9 +24,9 @@ This project strictly follows the **Single Responsibility Principle (SRP)** to
 
 ### **Rule 1: No Cross-Role Logic**
 
-A role **must never** directly modify another role’s state or handle its events.
+A role **must never** directly modify another role’s state or handle its events.
 
-**Bad Example** (Violates SRP):
+**Bad Example** (Violates SRP):
 
 ```ignore
 // ❌ LeaderState handling Follower-specific logic
@@ -59,7 +59,7 @@ impl LeaderState {
 
 ### **Rule 2: Atomic Role Transitions**
 
-When a role changes (e.g., `Leader → Follower`), the new role **immediately takes over** event handling.
+When a role changes (e.g., `Leader → Follower`), the new role **immediately takes over** event handling.
 
 **Example**:
 
@@ -81,7 +81,7 @@ loop {
 
 ### **Rule 3: State Isolation**
 
-Role-specific data (e.g., `LeaderState.next_index`) **must not** leak into other roles.
+Role-specific data (e.g., `LeaderState.next_index`) **must not** leak into other roles.
 
 **Bad Example**:
 
@@ -135,18 +135,18 @@ src/core/raft_role/
 When extending the project:
 
 1. **Identify Ownership**: Should the logic belong to a role, the main loop, or a utility module?
-2. **Avoid Hybrid Roles**: Never create a `LeaderFollowerHybridState`. Use role transitions instead.
+2. **Avoid Hybrid Roles**: Never create a `LeaderFollowerHybridState`. Use role transitions instead.
 3. **Example**: Adding a "Learner" role:
-    - Create `learner_state.rs` with Learner-specific logic.
-    - Update `main_loop` to handle `Role::Learner`.
-    - Add `RoleEvent::BecomeLearner` for transitions.
+    - Create `learner_state.rs` with Learner-specific logic.
+    - Update `main_loop` to handle `Role::Learner`.
+    - Add `RoleEvent::BecomeLearner` for transitions.
 
 ---
 
 ### **5. Why SRP Matters Here**
 
 - **Predictability**: Each role’s behavior is isolated and testable.
-- **Safer Changes**: Modifying `FollowerState` won’t accidentally break `LeaderState`.
+- **Safer Changes**: Modifying `FollowerState` won’t accidentally break `LeaderState`.
 - **Protocol Compliance**: Raft requires strict role separation; SRP enforces this naturally.
 
 By following these rules, your contributions will align with the project’s design philosophy.

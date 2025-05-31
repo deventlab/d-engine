@@ -46,9 +46,9 @@ where T: TypeConfig
     /// transport and evaluates collected responses.
     ///
     /// A vote can be granted only if all the following conditions are met:
-    /// •	The requests term is greater than the current_term.
-    /// •	The candidates log is sufficiently up-to-date.
-    /// •	The current node has not voted in the current term or has already
+    /// - The requests term is greater than the current_term.
+    /// - The candidates log is sufficiently up-to-date.
+    /// - The current node has not voted in the current term or has already
     /// voted for the candidate.
     async fn broadcast_vote_requests(
         &self,
