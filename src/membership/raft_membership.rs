@@ -31,8 +31,8 @@ use super::PeerChannels;
 use crate::alias::POF;
 use crate::cluster::is_candidate;
 use crate::cluster::is_follower;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
@@ -45,8 +45,7 @@ use crate::FOLLOWER;
 use crate::LEADER;
 
 pub struct RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
@@ -56,8 +55,7 @@ where
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn get_followers_candidates_channel_and_role(
         &self,
@@ -243,8 +241,7 @@ where
 }
 
 impl<T> RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Creates a new `RaftMembership` instance.
     pub fn new(

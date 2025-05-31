@@ -3,8 +3,8 @@ use tokio::sync::watch;
 
 use super::RaftMembership;
 use crate::cluster::is_follower;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockNode;

@@ -51,6 +51,11 @@ doc: ## Generate documentation
 fmt-check: ## Check formatting
 	@cargo fmt --all -- --check
 
+# Format Verification
+fmt-fix: ## Check formatting
+	@cargo fmt --all
+
+
 # Run Clippy
 clippy: ## Run Clippy
 	@cargo clippy --all-targets --all-features -- -D warnings

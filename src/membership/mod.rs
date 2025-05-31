@@ -27,8 +27,8 @@ use tonic::async_trait;
 use tonic::transport::Channel;
 
 use crate::alias::POF;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
@@ -70,8 +70,7 @@ pub trait PeerChannels: Sync + Send + 'static {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn voting_members(
         &self,

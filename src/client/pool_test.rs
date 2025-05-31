@@ -5,8 +5,8 @@ use tokio::sync::oneshot;
 use tonic::transport::Channel;
 
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::error::ErrorCode;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::error::ErrorCode;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
