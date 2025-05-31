@@ -385,6 +385,16 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
+
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Follower or Learner",
+                    context: format!(
+                        "Candidate node {} receives RaftEvent::InstallSnapshotChunk",
+                        ctx.node_id
+                    ),
+                }
+                .into());
             }
 
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {

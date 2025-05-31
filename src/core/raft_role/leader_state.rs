@@ -573,7 +573,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Leader",
-                    required_role: "None Leader",
+                    required_role: "Follower or Learner",
                     context: format!("Leader node {} receives RaftEvent::InstallSnapshotChunk", ctx.node_id),
                 }
                 .into());
