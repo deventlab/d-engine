@@ -994,19 +994,17 @@ impl<T: TypeConfig> LeaderState<T> {
         if responses.is_empty() {
             return Ok(());
         }
-        for res in responses.iter() {
-            if let Ok(r) = res {
-                if r.term > self.current_term() {
-                    self.update_current_term(r.term);
-                    self.send_become_follower_event(None, role_tx)?;
-                }
+        for r in responses.iter().flatten() {
+            if r.term > self.current_term() {
+                self.update_current_term(r.term);
+                self.send_become_follower_event(None, role_tx)?;
+            }
 
-                if let Some(last_purged) = r.last_purged {
-                    self.peer_purge_progress
-                        .entry(r.node_id)
-                        .and_modify(|v| *v = last_purged.index)
-                        .or_insert(last_purged.index);
-                }
+            if let Some(last_purged) = r.last_purged {
+                self.peer_purge_progress
+                    .entry(r.node_id)
+                    .and_modify(|v| *v = last_purged.index)
+                    .or_insert(last_purged.index);
             }
         }
 
