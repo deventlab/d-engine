@@ -33,7 +33,8 @@ use crate::StateStorage;
 use crate::TypeConfig;
 
 pub struct Raft<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub(crate) node_id: u32,
     pub(crate) role: RaftRole<T>,
@@ -74,7 +75,8 @@ pub(crate) struct SignalParams {
 }
 
 impl<T> Raft<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub(crate) fn new(
         node_id: u32,
@@ -361,7 +363,8 @@ where T: TypeConfig
 }
 
 impl<T> Drop for Raft<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn drop(&mut self) {
         info!("Raft been dropped.");

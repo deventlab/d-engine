@@ -54,7 +54,8 @@ use crate::API_SLO;
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     node_id: u32,
     // last_applied, as an application progress indicator, may fall under the responsibility of the
@@ -82,7 +83,8 @@ pub(crate) struct CleanupSnapshotMeta {
 
 #[async_trait]
 impl<T> StateMachineHandler<T> for DefaultStateMachineHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Update pending commit index
     fn update_pending(
@@ -525,7 +527,8 @@ where T: TypeConfig
 }
 
 impl<T> DefaultStateMachineHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn new(
         node_id: u32,

@@ -32,7 +32,8 @@ pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
 }
 
 pub(crate) struct RaftContext<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub(crate) node_id: u32,
 
@@ -53,7 +54,8 @@ where T: TypeConfig
 }
 
 impl<T> RaftContext<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn raft_log(&self) -> &Arc<ROF<T>> {
         &self.storage.raft_log
@@ -123,7 +125,8 @@ where T: TypeConfig
 }
 
 impl<T> Debug for RaftContext<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn fmt(
         &self,

@@ -115,16 +115,22 @@ async fn setup_test_case(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });
@@ -778,16 +784,22 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 3,
-                        next_index: 4,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 4,
-                        next_index: 5,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 3,
+                            next_index: 4,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 4,
+                            next_index: 5,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });
