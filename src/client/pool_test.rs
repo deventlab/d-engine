@@ -120,7 +120,7 @@ async fn test_connection_pool_creation() {
     let pool = match ConnectionPool::create(endpoints, config).await {
         Ok(p) => p,
         Err(e) => {
-            panic!("error: {:?}", e);
+            panic!("error: {e:?}",);
         }
     };
     // assert!(pool.is_ok());
@@ -139,8 +139,8 @@ async fn test_get_all_channels() {
     let port2 = MOCK_CLIENT_PORT_BASE + 5;
     mock_listener(port1, rx1, None).await;
     mock_listener(port2, rx2, None).await;
-    let addr1 = format!("http://localhost:{}", port1);
-    let addr2 = format!("http://localhost:{}", port2);
+    let addr1 = format!("http://localhost:{port1}",);
+    let addr2 = format!("http://localhost:{port2}",);
     let pool = ConnectionPool {
         leader_conn: Channel::from_shared(addr1.clone()).unwrap().connect().await.unwrap(),
         follower_conns: vec![Channel::from_shared(addr2.clone()).unwrap().connect().await.unwrap()],
@@ -177,7 +177,7 @@ async fn test_refresh_successful_leader_change() {
     let mut pool = match ConnectionPool::create(endpoints, config).await {
         Ok(p) => p,
         Err(e) => {
-            panic!("error: {:?}", e);
+            panic!("error: {e:?}");
         }
     };
     // Verify we have at least the leader connection

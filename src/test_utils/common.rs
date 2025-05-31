@@ -61,7 +61,7 @@ pub(crate) fn simulate_insert_proposal(
         entries.push(log);
     }
     if let Err(e) = raft_log.insert_batch(entries) {
-        panic!("error: {:?}", e);
+        panic!("error: {e:?}");
     }
 }
 
@@ -80,7 +80,7 @@ pub(crate) fn simulate_delete_proposal(
         entries.push(log);
     }
     if let Err(e) = raft_log.insert_batch(entries) {
-        panic!("error: {:?}", e);
+        panic!("error: {e:?}");
     }
 }
 

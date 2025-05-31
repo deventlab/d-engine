@@ -1095,9 +1095,5 @@ async fn test_raft_drop() {
     tokio::time::sleep(Duration::from_millis(2)).await;
 
     let result = raft_handle.await;
-    assert!(
-        matches!(result, Ok(Ok(()))),
-        "Expected Ok(Ok(())), but got {:?}",
-        result
-    );
+    assert!(matches!(result, Ok(Ok(()))), "Expected Ok(Ok(())), but got {result:?}");
 }

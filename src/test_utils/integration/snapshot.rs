@@ -22,7 +22,7 @@ pub(crate) fn crate_test_snapshot_stream(chunks: Vec<SnapshotChunk>) -> tonic::S
 
         chunk
             .encode(&mut buf)
-            .map_err(|e| Status::new(Code::Internal, format!("Encoding failed: {}", e)))?;
+            .map_err(|e| Status::new(Code::Internal, format!("Encoding failed: {e}")))?;
 
         // Add Tonic frame header
         let mut frame = BytesMut::new();
@@ -38,7 +38,7 @@ pub(crate) fn crate_test_snapshot_stream(chunks: Vec<SnapshotChunk>) -> tonic::S
     let body = StreamBody::new(
         byte_stream
             .map_ok(Frame::data)
-            .map_err(|e: Status| Status::new(Code::Internal, format!("Stream error: {}", e))),
+            .map_err(|e: Status| Status::new(Code::Internal, format!("Stream error: {e}"))),
     );
     tonic::Streaming::new_request(
         SnapshotChunkDecoder,
@@ -83,7 +83,7 @@ impl tonic::codec::Decoder for SnapshotChunkDecoder {
 
         match SnapshotChunk::decode(buf) {
             Ok(chunk) => Ok(Some(chunk)),
-            Err(e) => Err(Status::new(Code::Internal, format!("Decode error: {}", e))),
+            Err(e) => Err(Status::new(Code::Internal, format!("Decode error: {e}"))),
         }
     }
     fn buffer_settings(&self) -> tonic::codec::BufferSettings {

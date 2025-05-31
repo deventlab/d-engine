@@ -266,7 +266,7 @@ async fn test_apply_batch_case3() {
 }
 
 fn listen_addr(port: u64) -> SocketAddr {
-    format!("127.0.0.1:{}", port).parse().unwrap()
+    format!("127.0.0.1:{port}",).parse().unwrap()
 }
 
 /// Case1: Complete successful snapshot installation
@@ -293,7 +293,7 @@ async fn test_install_snapshot_chunk_case1() {
     });
 
     // 2. Crate RPC client
-    let addr: SocketAddr = format!("[::]:{}", port).parse().unwrap();
+    let addr: SocketAddr = format!("[::]:{port}",).parse().unwrap();
     let mut rpc_client = SnapshotServiceClient::connect(format!(
         "grpc://localhost:{}",
         addr.to_string().split(':').next_back().unwrap()
@@ -309,7 +309,7 @@ async fn test_install_snapshot_chunk_case1() {
         for seq in 0..total_chunks {
             let chunk = create_test_chunk(
                 seq,
-                &format!("chunk-{}", seq).into_bytes(),
+                &format!("chunk-{seq}",).into_bytes(),
                 3, // chunk term (higher than handler's current_term)
                 1, // leader_id
                 total_chunks,
@@ -374,7 +374,7 @@ async fn test_install_snapshot_chunk_case2() {
     for seq in 0..total_chunks {
         chunks.push(create_test_chunk(
             seq,
-            &format!("chunk-{}", seq).into_bytes(),
+            &format!("chunk-{seq}",).into_bytes(),
             3, // chunk term (higher than handler's current_term)
             1, // leader_id
             total_chunks,
@@ -532,7 +532,7 @@ async fn test_create_snapshot_case1() {
     assert!(final_path
         .to_str()
         .unwrap()
-        .contains(&format!("{}5-1", SNAPSHOT_DIR_PREFIX)));
+        .contains(&format!("{SNAPSHOT_DIR_PREFIX}5-1",)));
 
     assert!(is_dir(&final_path).await.unwrap());
     assert_eq!(metadata.last_included, Some(LogId { term: 1, index: 5 }));
@@ -757,9 +757,9 @@ async fn test_cleanup_snapshot_case3() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
     // Create valid and invalid directories
-    create_dir(&temp_dir, &format!("{}1-1", SNAPSHOT_DIR_PREFIX)).await;
+    create_dir(&temp_dir, &format!("{SNAPSHOT_DIR_PREFIX}1-1",)).await;
     create_dir(&temp_dir, "invalid_format").await;
-    create_dir(&temp_dir, &format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX)).await;
+    create_dir(&temp_dir, &format!("{SNAPSHOT_DIR_PREFIX}bad-2-2",)).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
@@ -777,8 +777,8 @@ async fn test_cleanup_snapshot_case3() {
     debug!(?remaining);
 
     assert!(remaining.contains(&"invalid_format".into()));
-    assert!(remaining.contains(&format!("{}bad-2-2", SNAPSHOT_DIR_PREFIX)));
-    assert!(remaining.contains(&format!("{}1-1", SNAPSHOT_DIR_PREFIX)));
+    assert!(remaining.contains(&format!("{SNAPSHOT_DIR_PREFIX}bad-2-2",)));
+    assert!(remaining.contains(&format!("{SNAPSHOT_DIR_PREFIX}1-1",)));
 }
 
 /// #Case 1: Reject stale term
@@ -1047,7 +1047,7 @@ async fn create_test_dirs(
     ids: &[u64],
 ) {
     for id in ids {
-        create_dir(temp_dir, &format!("{}{}-1", SNAPSHOT_DIR_PREFIX, id,)).await;
+        create_dir(temp_dir, &format!("{SNAPSHOT_DIR_PREFIX}{id}-1")).await;
     }
 }
 
@@ -1090,8 +1090,8 @@ fn mock_node_with_rpc_service(
     enable_logger();
 
     let mut node_config = node_config(db_path);
-    if peers_meta_option.is_some() {
-        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
 
     // Update listen address with passed one
@@ -1160,7 +1160,7 @@ fn mock_node_with_rpc_service(
                     success: true,
                     next_chunk: 0,
                 }))
-                .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
 
             Ok(())
         },

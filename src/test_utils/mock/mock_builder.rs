@@ -252,8 +252,8 @@ impl MockBuilder {
         let node_config = node_config.clone();
         tokio::spawn(async move {
             if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
-                eprintln!("RPC server stops. {:?}", e);
-                error!("RPC server stops. {:?}", e);
+                eprintln!("RPC server stops. {e:?}");
+                error!("RPC server stops. {e:?}");
             }
         });
 

@@ -18,7 +18,7 @@ async fn test_check_peer_is_ready_case1() {
     let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, is_ready).await {
         Ok(a) => a,
         Err(e) => {
-            panic!("error: {:?}", e);
+            panic!("error: {e:?}");
         }
     };
 
@@ -67,7 +67,7 @@ async fn test_check_peer_is_ready_case2() {
     let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, is_ready).await {
         Ok(a) => a,
         Err(e) => {
-            panic!("error: {:?}", e);
+            panic!("error: {e:?}");
         }
     };
     let peer_addr = addr.to_string();

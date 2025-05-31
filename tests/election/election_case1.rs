@@ -58,7 +58,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> std::result::Resu
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     for port in [port1, port2, port3] {
-        check_cluster_is_ready(&format!("127.0.0.1:{}", port), 10).await?;
+        check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
     }
 
     println!("Cluster started. Running tests...");

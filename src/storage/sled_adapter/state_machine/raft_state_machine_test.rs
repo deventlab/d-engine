@@ -544,7 +544,7 @@ async fn test_apply_snapshot_from_file_case4() {
 
     // Verify only one succeeds
     let results = futures::join!(handle1, handle2);
-    println!(" > {:?}", results);
+    println!(" > {results:?}",);
 
     match (results.0, results.1) {
         (Ok(Ok(_)), Ok(Err(_))) | (Ok(Err(_)), Ok(Ok(_))) => (), // Expected scenario

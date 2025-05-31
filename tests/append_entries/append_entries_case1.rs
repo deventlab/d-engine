@@ -79,16 +79,16 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     for port in [port1, port2, port3] {
-        check_cluster_is_ready(&format!("127.0.0.1:{}", port), 10).await?;
+        check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     println!("Cluster started. Running tests...");
 
     // 3. Trigger client request
     let bootstrap_urls: Vec<String> = vec![
-        format!("http://127.0.0.1:{}", port1),
-        format!("http://127.0.0.1:{}", port2),
-        format!("http://127.0.0.1:{}", port3),
+        format!("http://127.0.0.1:{port1}",),
+        format!("http://127.0.0.1:{port2}",),
+        format!("http://127.0.0.1:{port3}",),
     ];
 
     let mut client_manager = ClientManager::new(&bootstrap_urls).await?;

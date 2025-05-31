@@ -79,7 +79,7 @@ async fn setup_test_case(
     handle_client_proposal_in_batch_expect_times: usize,
     shutdown_signal: watch::Receiver<()>,
 ) -> TestContext {
-    let mut node_config = node_config(&format!("/tmp/{}", test_name));
+    let mut node_config = node_config(&format!("/tmp/{test_name}",));
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
     let mut raft_context = MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)
@@ -150,7 +150,7 @@ async fn setup_test_case(
 pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>) {
     match rx.recv().await {
         Ok(Ok(response)) => assert_eq!(ErrorCode::try_from(response.error).unwrap(), ErrorCode::Success),
-        Ok(Err(e)) => panic!("Unexpected error response: {:?}", e),
+        Ok(Err(e)) => panic!("Unexpected error response: {e:?}",),
         Err(_) => panic!("Response channel closed unexpectedly"),
     }
 }
@@ -461,7 +461,7 @@ async fn test_handle_raft_event_case1_2() {
     let r = state
         .handle_raft_event(raft_event, peer_channels, &context, role_tx)
         .await;
-    println!("r:{:?}", r);
+    println!("r:{r:?}");
     assert!(r.is_ok());
 
     // Step to Follower

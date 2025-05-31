@@ -75,7 +75,7 @@ impl MockNode {
             info!("set service is not serving");
         }
 
-        let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await.unwrap();
+        let listener = TcpListener::bind(&format!("127.0.0.1:{port}")).await.unwrap();
         let addr = listener.local_addr();
         let mock_service = Arc::new(mock_service);
         let _r = tokio::spawn(async move {
@@ -121,15 +121,15 @@ impl MockNode {
         address: String,
         port: u64,
     ) -> ChannelWithAddress {
-        let channel = match Channel::from_shared(format!("http://127.0.0.1:{}", port)) {
+        let channel = match Channel::from_shared(format!("http://127.0.0.1:{port}")) {
             Ok(c) => match c.connect().await {
                 Ok(c) => c,
                 Err(e) => {
-                    panic!("error: {:?}", e);
+                    panic!("error: {e:?}");
                 }
             },
             Err(e) => {
-                panic!("error: {:?}", e);
+                panic!("error: {e:?}");
             }
         };
 
@@ -137,7 +137,7 @@ impl MockNode {
     }
 
     pub(crate) fn tcp_addr_to_http_addr(addr: String) -> String {
-        format!("http://{}", addr)
+        format!("http://{addr}")
     }
 
     pub(crate) async fn simulate_mock_service_without_reps(
@@ -150,7 +150,7 @@ impl MockNode {
         let addr = match Self::mock_listener(mock_service, port, rx, server_is_ready).await {
             Ok(a) => a,
             Err(e) => {
-                panic!("error: {:?}", e);
+                panic!("error: {e:?}");
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
@@ -169,7 +169,7 @@ impl MockNode {
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {
             Ok(a) => a,
             Err(e) => {
-                panic!("error: {:?}", e);
+                panic!("error: {e:?}");
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
@@ -188,7 +188,7 @@ impl MockNode {
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {
             Ok(a) => a,
             Err(e) => {
-                panic!("error: {:?}", e);
+                panic!("error: {e:?}");
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
@@ -207,7 +207,7 @@ impl MockNode {
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {
             Ok(a) => a,
             Err(e) => {
-                panic!("error: {:?}", e);
+                panic!("error: {e:?}");
             }
         };
         Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)

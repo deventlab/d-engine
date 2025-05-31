@@ -222,7 +222,7 @@ pub(crate) fn insert_raft_log(
         entries.push(log);
     }
     if let Err(e) = raft_log.insert_batch(entries) {
-        panic!("error:{:?}", e);
+        panic!("error:{e:?}");
     }
 }
 pub(crate) fn insert_state_storage(
@@ -231,7 +231,7 @@ pub(crate) fn insert_state_storage(
 ) {
     for i in ids {
         if let Err(e) = state_storage.insert(safe_kv(i).to_vec(), safe_kv(i).to_vec()) {
-            panic!("error:{:?}", e);
+            panic!("error:{e:?}");
         }
     }
 }
@@ -251,7 +251,7 @@ pub(crate) fn insert_state_machine(
         entries.push(log);
     }
     if let Err(e) = state_machine.apply_chunk(entries) {
-        panic!("error: {:?}", e);
+        panic!("error: {e:?}");
     }
 }
 

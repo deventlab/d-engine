@@ -560,7 +560,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
 
     context.raft_log.reset().expect("reset successfully!");
     let start = context.raft_log.last_entry_id();
-    println!("start: {}", start);
+    println!("start: {start}",);
 
     let mut handles = Vec::new();
 
@@ -583,7 +583,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
     }
     let _results = join_all(handles).await;
     let end = context.raft_log.last_entry_id();
-    println!("end:{}", end);
+    println!("end:{end}",);
 
     assert_eq!(start + i * j, end);
 }
@@ -599,7 +599,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
 
     context.raft_log.reset().expect("reset successfully!");
     let start = context.raft_log.last_entry_id();
-    println!("start: {}", start);
+    println!("start: {start}",);
 
     let mut handles = Vec::new();
 
@@ -640,7 +640,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
     }
     let _results = join_all(handles).await;
     let end = context.raft_log.last_entry_id();
-    println!("end:{}", end);
+    println!("end:{end}",);
 
     assert_eq!(start + i * j, end);
     assert_eq!(
@@ -658,7 +658,7 @@ async fn test_insert_batch_logs_case1() {
 
     context.raft_log.reset().expect("reset successfully!");
     let start = context.raft_log.last_entry_id();
-    println!("start: {}", start);
+    println!("start: {start}",);
 
     let mut handles = Vec::new();
 
@@ -682,7 +682,7 @@ async fn test_insert_batch_logs_case1() {
     }
     let _results = join_all(handles).await;
     let end = context.raft_log.last_entry_id();
-    println!("end:{}", end);
+    println!("end:{end}",);
 
     assert_eq!(start + i * j, end);
 }
@@ -802,7 +802,7 @@ async fn validate_log_continuity(
     for (index, term) in expected {
         let entry = node
             .get_entry_by_index(*index)
-            .unwrap_or_else(|| panic!("Missing entry at index {}", index));
+            .unwrap_or_else(|| panic!("Missing entry at index {index}",));
         assert_eq!(
             entry.term, *term,
             "Term mismatch at index {}: expected {}, got {}",

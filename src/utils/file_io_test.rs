@@ -343,7 +343,7 @@ async fn test_compute_checksum_nonexistent_dir() {
     assert!(result.is_err(), "Should return error for non-existent directory");
     match result.unwrap_err() {
         Error::System(SystemError::Storage(StorageError::IoError(_))) => {} // Expected
-        other => panic!("Expected IoError, got {:?}", other),
+        other => panic!("Expected IoError, got {other:?}"),
     }
 }
 

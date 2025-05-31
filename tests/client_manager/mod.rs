@@ -160,13 +160,12 @@ impl ClientManager {
         expected_value: u64,
         iterations: u64,
     ) {
-        println!("read: {}", key);
+        println!("read: {key}",);
         for _ in 0..iterations {
             assert_eq!(
                 self.execute_command(ClientCommands::Lread, key, None).await.unwrap(),
                 expected_value,
-                "Linearizable read failed for key {}!",
-                key
+                "Linearizable read failed for key {key}!",
             );
         }
     }

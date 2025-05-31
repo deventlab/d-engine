@@ -43,7 +43,7 @@ async fn simulate_append_entries_mock_server(
     let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, true).await {
         Ok(a) => a,
         Err(e) => {
-            panic!("error: {:?}", e);
+            panic!("error: {e:?}");
         }
     };
     Ok(test_utils::MockNode::mock_channel_with_address(addr.to_string(), port).await)
@@ -930,8 +930,7 @@ async fn test_purge_requests_case1_empty_peers() {
                 e,
                 Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
             ),
-            "Unexpected error: {:?}",
-            e
+            "Unexpected error: {e:?}"
         ),
     }
 }
@@ -987,7 +986,7 @@ async fn test_purge_requests_case2_self_reference() {
             assert!(res.is_empty(), "Should filter self-reference");
             assert!(res.is_empty(), "Should have no responses");
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(e) => panic!("Unexpected error: {e:?}"),
     }
 }
 
@@ -1053,7 +1052,7 @@ async fn test_purge_requests_case3_duplicate_peers() {
         Ok(res) => {
             assert_eq!(res.len(), 2, "Should deduplicate peers");
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(e) => panic!("Unexpected error: {e:?}"),
     }
 }
 
@@ -1139,7 +1138,7 @@ async fn test_purge_requests_case4_mixed_responses() {
                 .count();
             assert_eq!(successes, 1, "Should handle partial success");
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(e) => panic!("Unexpected error: {e:?}"),
     }
 }
 
@@ -1203,6 +1202,6 @@ async fn test_purge_requests_case5_full_success() {
             assert_eq!(res.len(), 2, "Should process all peers");
             assert!(res.iter().all(|r| r.is_ok()), "All responses should succeed");
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(e) => panic!("Unexpected error: {e:?}"),
     }
 }

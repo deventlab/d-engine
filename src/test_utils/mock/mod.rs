@@ -63,8 +63,8 @@ pub(crate) fn mock_node(
     enable_logger();
 
     let mut node_config = node_config(db_path);
-    if peers_meta_option.is_some() {
-        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
     // Initializing Shutdown Signal
     // let (graceful_tx, graceful_rx) = watch::channel(());
@@ -83,8 +83,8 @@ pub(crate) fn mock_raft(
     let mut node_config = node_config(db_path);
     // Set batch_threshold=0, means the replication will be triggered immediatelly.
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = 0;
-    if peers_meta_option.is_some() {
-        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
 
     MockBuilder::new(shutdown_signal)
@@ -100,8 +100,8 @@ pub(crate) fn mock_raft_context(
     enable_logger();
 
     let mut node_config = node_config(db_path);
-    if peers_meta_option.is_some() {
-        node_config.cluster.initial_cluster = peers_meta_option.unwrap();
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
 
     MockBuilder::new(shutdown_signal)

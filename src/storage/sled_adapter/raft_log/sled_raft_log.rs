@@ -564,13 +564,13 @@ impl RaftLog for SledRaftLog {
             Ok(size) => {
                 // db_size_cache.size.store(size, Ordering::Release);
                 // db_size_cache.last_activity.insert(node_id, now);
-                debug!("retrieved the real db size: {}", size);
-                println!("retrieved the real db size: {}", size);
+                debug!("retrieved the real db size: {size}",);
+                println!("retrieved the real db size: {size}",);
                 Ok(size)
             }
             Err(e) => {
-                error!("db_size() failed: {:?}", e);
-                eprintln!("db_size() failed: {:?}", e);
+                error!("db_size() failed: {e:?}");
+                eprintln!("db_size() failed: {e:?}");
                 Err(e)
             }
         }

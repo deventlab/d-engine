@@ -149,7 +149,7 @@ pub fn prepare_raft_log(
     db_path: &str,
     last_applied_index: u64,
 ) -> SledRaftLog {
-    let raft_log_db_path = format!("{}/raft_log", db_path);
+    let raft_log_db_path = format!("{db_path}/raft_log",);
     let raft_log_db = sled::Config::default()
         .path(raft_log_db_path)
         .use_compression(true)
@@ -162,7 +162,7 @@ pub fn prepare_state_machine(
     node_id: u32,
     db_path: &str,
 ) -> RaftStateMachine {
-    let state_machine_db_path = format!("{}/state_machine", db_path);
+    let state_machine_db_path = format!("{db_path}/state_machine",);
     let state_machine_db = sled::Config::default()
         .path(state_machine_db_path)
         .use_compression(true)
@@ -172,7 +172,7 @@ pub fn prepare_state_machine(
     RaftStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
 }
 pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
-    let state_storage_db_path = format!("{}/state_storage", db_path);
+    let state_storage_db_path = format!("{db_path}/state_storage",);
     let state_storage_db = sled::Config::default()
         .path(state_storage_db_path)
         .use_compression(true)
@@ -229,8 +229,8 @@ pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 pub async fn reset(case_name: &str) -> std::result::Result<(), ClientApiError> {
     let root_path = get_root_path();
     // Define path
-    let logs_dir = format!("{}/logs/{}", root_path.display(), case_name);
-    let db_dir = format!("{}/db/{}", root_path.display(), case_name);
+    let logs_dir = format!("{}/logs/{case_name}", root_path.display(),);
+    let db_dir = format!("{}/db/{case_name}", root_path.display(),);
 
     // Make sure the parent directory exists
     fs::create_dir_all(&logs_dir).await?;
@@ -268,10 +268,7 @@ pub async fn check_cluster_is_ready(
     match result {
         Ok(_) => Ok(()),
         Err(_) => {
-            let err_msg = format!(
-                "Node({:?}) did not become ready within {} seconds.",
-                peer_addr, timeout_secs
-            );
+            let err_msg = format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg))
         }
     }

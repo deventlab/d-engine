@@ -32,7 +32,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     for port in [9081, 9082, 9083] {
-        check_cluster_is_ready(&format!("127.0.0.1:{}", port), 10).await?;
+        check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
     }
 
     // Perform test actions (e.g., CLI commands, cluster verification, etc.)
@@ -135,7 +135,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     for port in [19081, 19082, 19083] {
-        check_cluster_is_ready(&format!("127.0.0.1:{}", port), 10).await?;
+        check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
     }
     // T1: PUT and linearizable reads
     println!("------------------T1-----------------");
