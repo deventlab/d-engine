@@ -126,7 +126,7 @@ fn map_canonicalize_error(
     match error.kind() {
         std::io::ErrorKind::NotFound => FileDeleteError::NotFound(path.to_string()),
         std::io::ErrorKind::PermissionDenied => FileDeleteError::PermissionDenied(path.to_string()),
-        _ => FileDeleteError::InvalidPath(format!("{}: {}", path, error)),
+        _ => FileDeleteError::InvalidPath(format!("{path}: {error}")),
     }
 }
 
@@ -138,7 +138,7 @@ fn map_metadata_error(
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => FileDeleteError::PermissionDenied(path.to_string()),
         std::io::ErrorKind::NotFound => FileDeleteError::NotFound(path.to_string()),
-        _ => FileDeleteError::UnknownIo(format!("{}: {}", path, error)),
+        _ => FileDeleteError::UnknownIo(format!("{path}: {error}")),
     }
 }
 
@@ -151,7 +151,7 @@ fn map_remove_error(
         std::io::ErrorKind::PermissionDenied => FileDeleteError::PermissionDenied(path.to_string()),
         std::io::ErrorKind::NotFound => FileDeleteError::NotFound(path.to_string()),
         std::io::ErrorKind::Other if is_file_busy(&error) => FileDeleteError::FileBusy(path.to_string()),
-        _ => FileDeleteError::UnknownIo(format!("{}: {}", path, error)),
+        _ => FileDeleteError::UnknownIo(format!("{path}: {error}")),
     }
 }
 

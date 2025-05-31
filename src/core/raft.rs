@@ -20,7 +20,6 @@ use super::RaftRole;
 use super::RaftStorageHandles;
 use super::RoleEvent;
 use crate::alias::MOF;
-use crate::alias::PE;
 use crate::alias::POF;
 use crate::alias::TROF;
 use crate::Membership;
@@ -83,22 +82,13 @@ where T: TypeConfig
         transport: TROF<T>,
         handlers: RaftCoreHandlers<T>,
         membership: Arc<MOF<T>>,
-        purge_executor: PE<T>,
         signal_params: SignalParams,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         // Load last applied index from state machine
         let last_applied_index = Some(storage.state_machine.last_applied().index);
 
-        let ctx = Self::build_context(
-            node_id,
-            storage,
-            transport,
-            membership,
-            handlers,
-            purge_executor,
-            node_config.clone(),
-        );
+        let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
 
         // let ctx = Box::new(ctx);
         let role = RaftRole::Follower(Box::new(FollowerState::new(
@@ -138,7 +128,6 @@ where T: TypeConfig
         transport: TROF<T>,
         membership: Arc<MOF<T>>,
         handlers: RaftCoreHandlers<T>,
-        purge_executor: PE<T>,
         node_config: Arc<RaftNodeConfig>,
     ) -> RaftContext<T> {
         RaftContext {
@@ -147,7 +136,6 @@ where T: TypeConfig
             transport: Arc::new(transport),
             membership,
             handlers,
-            purge_executor,
 
             node_config,
         }
@@ -267,7 +255,7 @@ where T: TypeConfig
                 {
                     info!("Verify leadership in new term failed. Now the node is going to step back to Follower...");
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -291,7 +279,7 @@ where T: TypeConfig
             RoleEvent::ReprocessEvent(raft_event) => {
                 info!("Replay the RaftEvent: {:?}", &raft_event);
                 self.event_tx.send(*raft_event).await.map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;

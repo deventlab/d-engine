@@ -45,7 +45,7 @@ impl HealthChecker {
             .await
             .map_err(|err| {
                 error!("connect to {} failed: {}", addr, err);
-                eprintln!("{:?}", err);
+                eprintln!("{err:?}");
                 NetworkError::ConnectError
             })?;
 

@@ -427,7 +427,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         last_log_term,
                     };
                     sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -439,7 +439,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
@@ -468,7 +468,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 debug!("[peer-{}] update_cluster_conf response: {:?}", my_id, &response);
                 sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
@@ -485,7 +485,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     let response = AppendEntriesResponse::higher_term(my_id, my_term);
 
                     sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -544,8 +544,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         ) {
                             warn!("ensure_state_machine_upto_commit_index failed for linear read request");
                             Err(tonic::Status::failed_precondition(format!(
-                                "ensure_state_machine_upto_commit_index failed: {:?}",
-                                e
+                                "ensure_state_machine_upto_commit_index failed: {e:?}"
                             )))
                         } else {
                             read_operation()
@@ -557,7 +556,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 debug!("Leader::ClientReadRequest is going to response: {:?}", &response);
                 sender.send(response).map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
@@ -567,7 +566,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
                     .map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -584,7 +583,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender
                     .send(Err(Status::permission_denied("Leader should not receive this event.")))
                     .map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -707,7 +706,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx
             .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
             .map_err(|e| {
-                let error_str = format!("{:?}", e);
+                let error_str = format!("{e:?}");
                 error!("Failed to send: {}", error_str);
                 NetworkError::SingalSendFailed(error_str).into()
             })
@@ -1021,7 +1020,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         info!(?new_leader_id, "Leader is going to step down as Follower...");
         role_tx.send(RoleEvent::BecomeFollower(new_leader_id)).map_err(|e| {
-            let error_str = format!("{:?}", e);
+            let error_str = format!("{e:?}");
             error!("Failed to send: {}", error_str);
             NetworkError::SingalSendFailed(error_str)
         })?;

@@ -118,13 +118,13 @@ impl From<tonic::transport::Error> for ClientApiError {
             {
                 (
                     NetworkErrorType::Timeout,
-                    format!("Connection timeout: {}", e),
+                    format!("Connection timeout: {e}"),
                     Some(3000), // Retry after 3 seconds
                 )
             }
             e if e.to_string().contains("invalid uri") => (
                 NetworkErrorType::InvalidAddress,
-                format!("Invalid address: {}", e),
+                format!("Invalid address: {e}"),
                 None,
             ),
             _ => (
@@ -209,7 +209,7 @@ impl From<Status> for ClientApiError {
             _ => Self::Business {
                 code: ErrorCode::Uncategorized as u32,
                 kind: BusinessErrorType::InvalidRequest,
-                message: format!("Unhandled status code: {:?}", code),
+                message: format!("Unhandled status code: {code:?}"),
                 required_action: None,
             },
         }

@@ -60,6 +60,10 @@ fmt-fix: ## Check formatting
 clippy: ## Run Clippy
 	@cargo clippy --all-targets --all-features -- -D warnings
 
+# Run Clippy fix
+clippy-fix: ## Run Clippy fix
+	@cargo clippy --fix
+
 # Test suite 
 test: ## Run test suite
 	@cargo test --lib -- --nocapture

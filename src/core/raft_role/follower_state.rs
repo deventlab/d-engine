@@ -174,7 +174,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         debug!("follower::start_election...");
 
         role_tx.send(RoleEvent::BecomeCandidate).map_err(|e| {
-            let error_str = format!("{:?}", e);
+            let error_str = format!("{e:?}");
             error!("Failed to send: {}", error_str);
             NetworkError::SingalSendFailed(error_str)
         })?;
@@ -229,7 +229,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         debug!("Response candidate_{:?} with response: {:?}", candidate_id, response);
 
                         sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
+                            let error_str = format!("{e:?}");
                             error!("Failed to send: {}", error_str);
                             NetworkError::SingalSendFailed(error_str)
                         })?;
@@ -242,7 +242,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             last_log_term,
                         };
                         sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
+                            let error_str = format!("{e:?}");
                             error!("Failed to send: {}", error_str);
                             NetworkError::SingalSendFailed(error_str)
                         })?;
@@ -257,7 +257,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 debug!("Follower receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
@@ -268,7 +268,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         "Not able to update cluster conf, as node is not Leader",
                     )))
                     .map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -289,7 +289,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 sender
                     .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
                     .map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -302,7 +302,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             "Not leader. Send linearizable read requet to Leader only.",
                         )))
                         .map_err(|e| {
-                            let error_str = format!("{:?}", e);
+                            let error_str = format!("{e:?}");
                             error!("Failed to send: {}", error_str);
                             NetworkError::SingalSendFailed(error_str)
                         })?;
@@ -319,7 +319,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     let response = ClientResponse::read_results(results);
                     debug!("handle_client_read response: {:?}", response);
                     sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{:?}", e);
+                        let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
@@ -383,7 +383,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             last_purged: self.last_purged_index,
                         };
                         sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{:?}", e);
+                            let error_str = format!("{e:?}");
                             error!("Failed to send: {}", error_str);
                             NetworkError::SingalSendFailed(error_str)
                         })?;
@@ -398,7 +398,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                                 last_purged: self.last_purged_index,
                             }))
                             .map_err(|e| {
-                                let error_str = format!("{:?}", e);
+                                let error_str = format!("{e:?}");
                                 error!("Failed to send: {}", error_str);
                                 NetworkError::SingalSendFailed(error_str)
                             })?;

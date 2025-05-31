@@ -72,6 +72,7 @@ pub trait PurgeExecutor: Send + Sync + 'static {
     /// - Releasing resource locks
     /// - Finalizing transactions
     /// - Triggering backups
+    #[allow(unused)]
     async fn post_purge(&self) -> Result<()> {
         Ok(())
     }

@@ -116,16 +116,14 @@ impl BackoffPolicy {
         // Validate retry limits
         if self.max_retries == 0 {
             return Err(Error::Config(ConfigError::Message(format!(
-                "{}: max_retries=0 means infinite retries - dangerous for {} operations",
-                policy_name, policy_name
+                "{policy_name}: max_retries=0 means infinite retries - dangerous for {policy_name} operations"
             ))));
         }
 
         // Validate timeout constraints
         if self.timeout_ms == 0 {
             return Err(Error::Config(ConfigError::Message(format!(
-                "{}: timeout_ms cannot be 0",
-                policy_name
+                "{policy_name}: timeout_ms cannot be 0"
             ))));
         }
 

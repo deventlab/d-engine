@@ -794,7 +794,7 @@ async fn test_handle_raft_event_case8_2() {
     // Mock purge executor to succeed
     let mut purge_executor = MockPurgeExecutor::new();
     purge_executor.expect_execute_purge().times(1).returning(|_| Ok(()));
-    context.purge_executor = purge_executor;
+    context.handlers.purge_executor = purge_executor;
 
     // Mock membership with current leader
     let mut membership = MockMembership::new();
@@ -1096,7 +1096,7 @@ async fn test_handle_raft_event_case8_7() {
         .expect_execute_purge()
         .times(1)
         .returning(|_| Err(StorageError::Snapshot("test".to_string()).into()));
-    context.purge_executor = purge_executor;
+    context.handlers.purge_executor = purge_executor;
 
     // Mock membership
     let mut membership = MockMembership::new();

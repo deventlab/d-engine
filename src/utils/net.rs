@@ -18,7 +18,7 @@ pub(crate) fn address_str(
             (ip, port)
                 .to_socket_addrs()
                 .map_err(|e| {
-                    panic!("Failed to resolve hostname {}: {:?}", ip, e);
+                    panic!("Failed to resolve hostname {ip}: {e:?}");
                 })
                 .unwrap()
                 .next()
@@ -26,7 +26,7 @@ pub(crate) fn address_str(
             // panic!("error to call Ipv4Addr::from_str({:?}), {:?}", ip, e);
         }
     };
-    format!("http://{}", addr)
+    format!("http://{addr}")
 }
 
 pub(crate) async fn is_server_ready(addr: &str) -> bool {

@@ -111,7 +111,7 @@ impl StateStorage for SledStateStorage {
             }
             Err(e) => {
                 error!("persistent_state_into_db: {}", e);
-                eprintln!("persistent_state_into_db: {}", e);
+                eprintln!("persistent_state_into_db: {e}");
                 return Err(StorageError::BincodeError(e).into());
             }
         }
@@ -144,7 +144,7 @@ impl SledStateStorage {
             },
             Err(e) => {
                 error!("Failed to open state machine db tree: {}", e);
-                panic!("failed to open sled tree: {}", e);
+                panic!("failed to open sled tree: {e}");
             }
         }
     }

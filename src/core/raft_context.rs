@@ -26,6 +26,9 @@ pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
     pub(crate) election_handler: EOF<T>,
     pub(crate) replication_handler: REPOF<T>,
     pub(crate) state_machine_handler: Arc<SMHOF<T>>,
+
+    // Raft Log Purge Executor
+    pub(crate) purge_executor: PE<T>,
 }
 
 pub(crate) struct RaftContext<T>
@@ -44,9 +47,6 @@ where T: TypeConfig
 
     // Handlers
     pub(crate) handlers: RaftCoreHandlers<T>,
-
-    // Raft Log Purge Executor
-    pub(crate) purge_executor: PE<T>,
 
     // RaftNodeConfig
     pub(crate) node_config: Arc<RaftNodeConfig>,
@@ -91,7 +91,7 @@ where T: TypeConfig
     }
 
     pub fn purge_executor(&self) -> &PE<T> {
-        &self.purge_executor
+        &self.handlers.purge_executor
     }
 
     pub fn membership_ref(&self) -> &Arc<MOF<T>> {

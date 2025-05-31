@@ -126,6 +126,7 @@ where T: TypeConfig
     ) -> Result<bool>;
 
     /// Function for none Leader nodes
+    #[allow(unused)]
     async fn handle_purge_request(
         &self,
         current_term: u64,

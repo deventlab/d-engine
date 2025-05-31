@@ -119,8 +119,9 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            purge_executor,
         };
-        mock_raft_context_internal(1, storage, transport, membership, purge_executor, handlers, node_config)
+        mock_raft_context_internal(1, storage, transport, membership, handlers, node_config)
     }
 
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
@@ -189,9 +190,9 @@ impl MockBuilder {
                 election_handler,
                 replication_handler,
                 state_machine_handler,
+                purge_executor,
             },
             membership,
-            purge_executor,
             SignalParams {
                 role_tx,
                 role_rx,
@@ -428,7 +429,6 @@ fn mock_raft_context_internal(
     storage: RaftStorageHandles<MockTypeConfig>,
     transport: Arc<MockTransport>,
     membership: Arc<MockMembership<MockTypeConfig>>,
-    purge_executor: MockPurgeExecutor,
     handlers: RaftCoreHandlers<MockTypeConfig>,
     node_config: RaftNodeConfig,
 ) -> RaftContext<MockTypeConfig> {
@@ -438,8 +438,6 @@ fn mock_raft_context_internal(
 
         transport,
         membership,
-
-        purge_executor,
 
         handlers,
 

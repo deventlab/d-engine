@@ -9,7 +9,7 @@ use super::SnapshotContext;
 use super::SnapshotPolicy;
 
 /// Time-based snapshot policy that triggers snapshots after a configured time interval
-#[allow(dead_code)]
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub(crate) struct TimeBasedPolicy {
     /// Time interval between snapshots
@@ -20,6 +20,7 @@ pub(crate) struct TimeBasedPolicy {
 
 impl TimeBasedPolicy {
     /// Creates a new TimeBasedPolicy with the specified interval in seconds
+    #[allow(unused)]
     pub(crate) fn new(interval: Duration) -> Self {
         Self {
             interval,
@@ -28,6 +29,7 @@ impl TimeBasedPolicy {
     }
 
     /// Resets the timer (typically called after a snapshot is taken)
+    #[allow(unused)]
     pub(crate) fn reset_timer(&mut self) {
         self.last_snapshot_time = Instant::now();
     }

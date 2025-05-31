@@ -6,14 +6,12 @@ use tonic::async_trait;
 use tonic::Status;
 use tracing::debug;
 use tracing::error;
-use tracing::info;
 use tracing::warn;
 
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
-use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
@@ -186,7 +184,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 current_term,
             }))
             .map_err(|e| {
-                let error_str = format!("{:?}", e);
+                let error_str = format!("{e:?}");
                 error!("Failed to send: {}", error_str);
                 NetworkError::SingalSendFailed(error_str)
             })?;
@@ -260,7 +258,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             debug!("AppendEntriesResponse: {:?}", response);
 
             sender.send(Ok(response)).map_err(|e| {
-                let error_str = format!("{:?}", e);
+                let error_str = format!("{e:?}");
                 error!("Failed to send: {}", error_str);
                 NetworkError::SingalSendFailed(error_str)
             })?;
@@ -302,7 +300,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 debug!("AppendEntriesResponse: {:?}", response);
 
                 sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
@@ -316,7 +314,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 debug!("AppendEntriesResponse: {:?}", response);
 
                 sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;

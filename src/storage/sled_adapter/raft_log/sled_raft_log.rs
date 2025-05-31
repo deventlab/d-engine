@@ -527,11 +527,11 @@ impl RaftLog for SledRaftLog {
         match self.db.flush() {
             Ok(bytes) => {
                 info!("Successfully flushed Local Log, bytes flushed: {}", bytes);
-                println!("Successfully flushed Local Log, bytes flushed: {}", bytes);
+                println!("Successfully flushed Local Log, bytes flushed: {bytes}");
             }
             Err(e) => {
                 error!("Failed to flush Local Log: {}", e);
-                eprintln!("Failed to flush Local Log: {}", e);
+                eprintln!("Failed to flush Local Log: {e}");
             }
         }
         Ok(())
@@ -658,7 +658,7 @@ impl SledRaftLog {
             Ok(raft_log_tree) => {
                 let disk_len = raft_log_tree.len() as u64;
                 debug!("RaftLog disk length: {}", disk_len);
-                println!("RaftLog disk length: {}", disk_len);
+                println!("RaftLog disk length: {disk_len}");
 
                 let l = SledRaftLog {
                     db: raft_log_db,
@@ -674,7 +674,7 @@ impl SledRaftLog {
             }
             Err(e) => {
                 error!("Failed to open logs db: {}", e);
-                panic!("failed to open sled tree: {}", e);
+                panic!("failed to open sled tree: {e}");
             }
         }
     }

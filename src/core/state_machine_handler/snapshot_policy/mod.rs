@@ -31,6 +31,7 @@ pub trait SnapshotPolicy: Send + Sync {
     ) -> bool;
 
     /// Should be called after the snapshot is created successfully
+    #[allow(unused)]
     fn mark_snapshot_created(&mut self);
 }
 

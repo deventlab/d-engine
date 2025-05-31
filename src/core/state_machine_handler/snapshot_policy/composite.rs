@@ -10,6 +10,7 @@ use super::SnapshotPolicy;
 use super::TimeBasedPolicy;
 
 /// Composite policy that triggers if either time-based or log-size policies require a snapshot
+#[allow(unused)]
 #[derive(Debug)]
 pub(crate) struct CompositePolicy {
     time_policy: TimeBasedPolicy,
@@ -18,6 +19,7 @@ pub(crate) struct CompositePolicy {
 
 impl CompositePolicy {
     /// Creates a new CompositePolicy with both time and size policies
+    #[allow(unused)]
     pub(crate) fn new(
         time_interval: Duration,
         log_size_threshold: u64,

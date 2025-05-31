@@ -1100,7 +1100,7 @@ async fn test_handle_raft_event_case9_2() {
         .with(eq(LogId { term: 3, index: 100 }))
         .times(1)
         .returning(|_| Ok(()));
-    context.purge_executor = purge_executor;
+    context.handlers.purge_executor = purge_executor;
 
     // Prepare leader state
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());

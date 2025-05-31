@@ -194,7 +194,7 @@ where T: TypeConfig
                 if chunk.term != *term || chunk.leader_id != *leader_id {
                     sender
                         .send(Err(Status::aborted("Leader changed")))
-                        .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                        .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
                     return Ok(());
                 }
             } else {
@@ -211,7 +211,7 @@ where T: TypeConfig
                         success: false,
                         next_chunk: chunk.seq,
                     }))
-                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
                 return Ok(());
             }
 
@@ -219,7 +219,7 @@ where T: TypeConfig
             if let Err(e) = assembler.write_chunk(chunk.seq, chunk.data).await {
                 sender
                     .send(Err(Status::internal(e.to_string())))
-                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
                 return Ok(());
             }
         }
@@ -234,7 +234,7 @@ where T: TypeConfig
                 ))))
                 .map_err(|e| {
                     warn!("Failed to send response: {:?}", e);
-                    StorageError::Snapshot(format!("Send snapshot error: {:?}", e))
+                    StorageError::Snapshot(format!("Send snapshot error: {e:?}"))
                 })?;
             return Ok(());
         }
@@ -246,7 +246,7 @@ where T: TypeConfig
                 )))
                 .map_err(|e| {
                     warn!("Failed to send response: {:?}", e);
-                    StorageError::Snapshot(format!("Send snapshot error: {:?}", e))
+                    StorageError::Snapshot(format!("Send snapshot error: {e:?}"))
                 })?;
             return Ok(());
         }
@@ -263,7 +263,7 @@ where T: TypeConfig
                 success: true,
                 next_chunk: 0,
             }))
-            .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {:?}", e)))?;
+            .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
 
         Ok(())
     }

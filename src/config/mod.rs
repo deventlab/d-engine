@@ -182,8 +182,7 @@ pub(super) fn validate_directory(
 ) -> Result<()> {
     if path.as_os_str().is_empty() {
         return Err(Error::Config(ConfigError::Message(format!(
-            "{} path cannot be empty",
-            name
+            "{name} path cannot be empty"
         ))));
     }
 

@@ -316,9 +316,9 @@ impl NodeBuilder {
                 election_handler: ElectionHandler::new(node_id),
                 replication_handler: ReplicationHandler::new(node_id),
                 state_machine_handler: state_machine_handler.clone(),
+                purge_executor,
             },
             Arc::new(membership),
-            purge_executor,
             SignalParams {
                 role_tx,
                 role_rx,
@@ -420,7 +420,7 @@ impl NodeBuilder {
             let node_config = self.node_config.clone();
             tokio::spawn(async move {
                 if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
-                    eprintln!("RPC server stops. {:?}", e);
+                    eprintln!("RPC server stops. {e:?}");
                     error!("RPC server stops. {:?}", e);
                 }
             });

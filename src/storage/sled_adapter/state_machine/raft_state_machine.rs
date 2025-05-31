@@ -277,11 +277,11 @@ impl StateMachine for RaftStateMachine {
         match db.flush() {
             Ok(bytes) => {
                 info!("Successfully flushed State Machine, bytes flushed: {}", bytes);
-                println!("Successfully flushed State Machine, bytes flushed: {}", bytes);
+                println!("Successfully flushed State Machine, bytes flushed: {bytes}");
             }
             Err(e) => {
                 error!("Failed to flush State Machine: {}", e);
-                eprintln!("Failed to flush State Machine: {}", e);
+                eprintln!("Failed to flush State Machine: {e}");
             }
         }
         Ok(())
@@ -510,5 +510,5 @@ fn new_tree(
     key: &str,
 ) -> Result<sled::Tree> {
     db.open_tree(key)
-        .map_err(|e| StorageError::Snapshot(format!("{:?}", e)).into())
+        .map_err(|e| StorageError::Snapshot(format!("{e:?}")).into())
 }
