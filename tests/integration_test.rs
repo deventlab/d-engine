@@ -3,6 +3,7 @@ mod client_manager;
 mod cluster_start_stop;
 mod common;
 mod election;
+mod snapshot;
 
 static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
     env_logger::init();

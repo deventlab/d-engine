@@ -382,6 +382,14 @@ pub enum MembershipError {
     /// No available peers found for request
     #[error("No reachable peers found in cluster membership")]
     NoPeersAvailable,
+
+    /// Node already been added into cluster config
+    #[error("Node({0}) already been added into cluster config.")]
+    NodeAlreadyExists(u32),
+
+    /// To be removed node is leader.
+    #[error("To be removed node({0}) is leader.")]
+    RemoveNodeIsLeader(u32),
 }
 
 // ============== Conversion Implementations ============== //

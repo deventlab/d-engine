@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::validate_directory;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::Error;
 use crate::Result;
 use crate::FOLLOWER;
@@ -127,9 +128,9 @@ fn default_node_id() -> u32 {
 fn default_initial_cluster() -> Vec<NodeMeta> {
     vec![NodeMeta {
         id: 1,
-        ip: "127.0.0.1".to_string(),
-        port: 8080,
+        address: "127.0.0.1:8080".to_string(),
         role: FOLLOWER,
+        status: NodeStatus::Active.into(),
     }]
 }
 fn default_listen_addr() -> SocketAddr {

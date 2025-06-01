@@ -22,6 +22,7 @@ use dashmap::DashMap;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
+use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
@@ -34,6 +35,7 @@ use crate::cluster::is_follower;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
@@ -43,6 +45,8 @@ use crate::TypeConfig;
 use crate::API_SLO;
 use crate::FOLLOWER;
 use crate::LEADER;
+use crate::LEARNER;
+use std::fmt::Debug;
 
 pub struct RaftMembership<T>
 where
@@ -52,6 +56,17 @@ where
     membership: DashMap<u32, NodeMeta>, //stores all members meta
     cluster_conf_version: AtomicU64,
     _phantom: PhantomData<T>,
+}
+
+impl<T: TypeConfig> Debug for RaftMembership<T> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("RaftMembership")
+            .field("node_id", &self.node_id)
+            .finish()
+    }
 }
 
 #[async_trait]
@@ -162,9 +177,11 @@ where
         None
     }
 
+    #[instrument]
     fn retrieve_cluster_membership_config(&self) -> ClusterMembership {
         let nodes: Vec<NodeMeta> = self.membership.iter().map(|entry| entry.clone()).collect();
-        ClusterMembership { nodes }
+        let version = self.cluster_conf_version.load(Ordering::Acquire);
+        ClusterMembership { version, nodes }
     }
 
     #[autometrics(objective = API_SLO)]
@@ -239,6 +256,80 @@ where
         new_version: u64,
     ) {
         self.cluster_conf_version.store(new_version, Ordering::Release);
+    }
+
+    fn auto_incr_cluster_conf_version(&self) {
+        self.cluster_conf_version.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Add a new learner node
+    #[autometrics(objective = API_SLO)]
+    async fn add_learner(
+        &self,
+        node_id: u32,
+        address: String,
+    ) -> Result<()> {
+        if self.contains_node(node_id) {
+            return Err(MembershipError::NodeAlreadyExists(node_id).into());
+        }
+
+        let new_node = NodeMeta {
+            id: node_id,
+            address,
+            role: LEARNER, // Defined as a learner
+            status: NodeStatus::Active.into(),
+        };
+
+        self.membership.insert(node_id, new_node);
+        self.auto_incr_cluster_conf_version();
+
+        Ok(())
+    }
+
+    /// Remove node
+    #[autometrics(objective = API_SLO)]
+    async fn remove_node(
+        &self,
+        node_id: u32,
+    ) -> Result<()> {
+        if !self.contains_node(node_id) {
+            return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
+        }
+
+        // If it is the leader, you need to transfer leadership first
+        if self.current_leader() == Some(node_id) {
+            return Err(MembershipError::RemoveNodeIsLeader(node_id).into());
+        }
+
+        self.membership.remove(&node_id);
+        self.auto_incr_cluster_conf_version();
+
+        Ok(())
+    }
+
+    async fn force_remove_node(
+        &self,
+        node_id: u32,
+    ) -> Result<()> {
+        if !self.contains_node(node_id) {
+            return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
+        }
+
+        self.membership.remove(&node_id);
+        self.auto_incr_cluster_conf_version();
+
+        Ok(())
+    }
+
+    fn contains_node(
+        &self,
+        node_id: u32,
+    ) -> bool {
+        self.membership.contains_key(&node_id)
+    }
+
+    fn get_all_nodes(&self) -> Vec<NodeMeta> {
+        self.membership.iter().map(|entry| entry.value().clone()).collect()
     }
 }
 

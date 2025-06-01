@@ -13,6 +13,7 @@ use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
+use crate::proto::cluster::cluster_membership_change_request::ChangeType;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
@@ -70,7 +71,11 @@ async fn test_handle_service_timeout() {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: Some(ClusterMembership { nodes: vec![] })
+            cluster_membership: Some(ClusterMembership {
+                version: 1,
+                nodes: vec![]
+            }),
+            change_type: ChangeType::AddVoter.into()
         }))
         .await
         .is_err());
@@ -141,7 +146,11 @@ async fn test_server_is_not_ready() {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: Some(ClusterMembership { nodes: vec![] }),
+            cluster_membership: Some(ClusterMembership {
+                version: 1,
+                nodes: vec![],
+            }),
+            change_type: ChangeType::AddVoter.into(),
         }))
         .await;
     assert!(result.is_err());
@@ -196,7 +205,10 @@ async fn test_handle_rpc_services_successfully() {
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership { nodes: vec![] });
+        .returning(|| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+        });
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_append_entries()
@@ -278,7 +290,11 @@ async fn test_handle_rpc_services_successfully() {
                 id: 1,
                 term: 1,
                 version: 1,
-                cluster_membership: Some(ClusterMembership { nodes: vec![] }),
+                cluster_membership: Some(ClusterMembership {
+                    version: 1,
+                    nodes: vec![]
+                }),
+                change_type: ChangeType::AddVoter.into()
             }))
             .await
             .is_err());

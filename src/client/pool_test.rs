@@ -6,6 +6,7 @@ use tonic::transport::Channel;
 
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::proto::error::ErrorCode;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
@@ -25,11 +26,12 @@ async fn mock_listener(
     let mock_service = MockRpcService {
         expected_metadata_response: Some(expected_metadata_response.unwrap_or_else(|| {
             Ok(ClusterMembership {
+                version: 1,
                 nodes: vec![NodeMeta {
                     id: 1,
                     role: LEADER,
-                    ip: "127.0.0.1".to_string(),
-                    port: port as u32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
                 }],
             })
         })),
@@ -44,14 +46,14 @@ async fn test_parse_cluster_metadata_success() {
         NodeMeta {
             id: 1,
             role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: 50051,
+            address: "127.0.0.1:50051".to_string(),
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 2,
             role: FOLLOWER,
-            ip: "127.0.0.1".to_string(),
-            port: 50052,
+            address: "127.0.0.1:50052".to_string(),
+            status: NodeStatus::Active.into(),
         },
     ];
 
@@ -65,8 +67,8 @@ async fn test_parse_cluster_metadata_no_leader() {
     let nodes = vec![NodeMeta {
         id: 1,
         role: FOLLOWER,
-        ip: "127.0.0.1".to_string(),
-        port: 50051,
+        address: "127.0.0.1:50051".to_string(),
+        status: NodeStatus::Active.into(),
     }];
 
     let result = ConnectionPool::parse_cluster_metadata(&nodes);
@@ -162,11 +164,12 @@ async fn test_refresh_successful_leader_change() {
     let (_tx, rx) = oneshot::channel::<()>();
     let port = MOCK_CLIENT_PORT_BASE + 6;
     let metadata = ClusterMembership {
+        version: 1,
         nodes: vec![NodeMeta {
             id: leader_id,
             role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: port as u32,
+            address: format!("127.0.0.1:{port}"),
+            status: NodeStatus::Active.into(),
         }],
     };
     mock_listener(port, rx, Some(Ok(metadata))).await;
@@ -189,11 +192,12 @@ async fn test_refresh_successful_leader_change() {
     let (_tx, rx) = oneshot::channel::<()>();
     let port = MOCK_CLIENT_PORT_BASE + 7;
     let metadata = ClusterMembership {
+        version: 1,
         nodes: vec![NodeMeta {
             id: new_leader_id,
             role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: port as u32,
+            address: format!("127.0.0.1:{port}"),
+            status: NodeStatus::Active.into(),
         }],
     };
     mock_listener(port, rx, Some(Ok(metadata))).await;

@@ -415,6 +415,25 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 }
                 .into())
             }
+
+            RaftEvent::JoinCluster(_join_request, sender) => {
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Follower should not receive JoinCluster event.",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!("Follower node {} receives RaftEvent::JoinCluster", ctx.node_id),
+                }
+                .into());
+            }
         }
 
         return Ok(());

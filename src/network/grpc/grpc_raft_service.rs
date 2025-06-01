@@ -25,6 +25,8 @@ use crate::proto::cluster::cluster_management_service_server::ClusterManagementS
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::election::raft_election_service_server::RaftElectionService;
 use crate::proto::election::VoteRequest;
@@ -212,6 +214,29 @@ where
 
         let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
+    }
+
+    // Request to join the cluster as a new learner node
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
+    #[tracing::instrument]
+    async fn join_cluster(
+        &self,
+        request: tonic::Request<JoinRequest>,
+    ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
+        debug!("receive join_cluster");
+        if !self.server_is_ready() {
+            warn!("[rpc|join_cluster] Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        self.event_tx
+            .send(RaftEvent::JoinCluster(request.into_inner(), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "join_cluster").await
     }
 }
 #[tonic::async_trait]

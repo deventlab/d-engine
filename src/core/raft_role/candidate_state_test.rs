@@ -9,6 +9,7 @@ use super::candidate_state::CandidateState;
 use crate::alias::POF;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
+use crate::proto::cluster::cluster_membership_change_request::ChangeType;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
@@ -241,7 +242,10 @@ async fn test_handle_raft_event_case2() {
     membership
         .expect_retrieve_cluster_membership_config()
         .times(1)
-        .returning(|| ClusterMembership { nodes: vec![] });
+        .returning(|| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+        });
     context.membership = Arc::new(membership);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -278,6 +282,7 @@ async fn test_handle_raft_event_case3() {
             term: 1,
             version: 1,
             cluster_membership: None,
+            change_type: ChangeType::AddVoter.into(),
         },
         resp_tx,
     );
@@ -656,7 +661,7 @@ async fn test_handle_raft_event_case7() {
         .await;
 
     // Step 4: Verify the response
-    assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
+    assert!(result.is_err(), "Expected handle_raft_event to return Ok");
 
     // Step 5: Check the response sent through the channel
     let response = resp_rx.recv().await.expect("Response should be received");

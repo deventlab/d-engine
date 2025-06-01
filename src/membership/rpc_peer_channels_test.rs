@@ -9,6 +9,7 @@ use tokio::task;
 
 use super::ChannelWithAddress;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
@@ -42,21 +43,21 @@ fn crate_peer_channes(
     node_config.cluster.initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: p2_id,
-            ip: "127.0.0.1".to_string(),
-            port: p2_port,
+            address: format!("127.0.0.1:{p2_port}"),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: p3_id,
-            ip: "127.0.0.1".to_string(),
-            port: p3_port,
+            address: format!("127.0.0.1:{p3_port}"),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
     ];
     RpcPeerChannels::create(my_id, Arc::new(node_config.clone()))
@@ -255,9 +256,9 @@ async fn test_connection_retry_mechanism() {
     let result = RpcPeerChannels::connect_with_retry(
         &NodeMeta {
             id: 2,
-            ip: "127.0.0.1".to_string(),
-            port: (MOCK_PEER_CHANNEL_PORT_BASE + 12) as u32,
+            address: format!("127.0.0.1:{}", MOCK_PEER_CHANNEL_PORT_BASE + 12),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         &node_config.retry,
         &node_config.network,

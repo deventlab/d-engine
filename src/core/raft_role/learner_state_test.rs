@@ -7,6 +7,7 @@ use tonic::Code;
 use crate::learner_state::LearnerState;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
+use crate::proto::cluster::cluster_membership_change_request::ChangeType;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
@@ -127,6 +128,7 @@ async fn test_handle_raft_event_case3() {
             term: 1,
             version: 1,
             cluster_membership: None,
+            change_type: ChangeType::AddVoter.into(),
         },
         resp_tx,
     );

@@ -3,6 +3,7 @@ use tonic::Status;
 
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
+use crate::proto::cluster::cluster_membership_change_request::ChangeType;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::common::LogId;
@@ -66,6 +67,7 @@ async fn test_send_cluster_update_case1() {
         term: 1,
         version: 1,
         cluster_membership: None,
+        change_type: ChangeType::AddVoter.into(),
     };
 
     let client = GrpcTransport { my_id };
@@ -94,11 +96,15 @@ async fn test_send_cluster_update_case2() {
         term: 1,
         version: 1,
         cluster_membership: None,
+        change_type: ChangeType::AddVoter.into(),
     };
 
     // Simulate RPC service
     let (_tx, rx) = oneshot::channel::<()>();
-    let response = ClusterMembership { nodes: vec![] };
+    let response = ClusterMembership {
+        version: 1,
+        nodes: vec![],
+    };
     let addr1 =
         MockNode::simulate_mock_service_with_cluster_conf_reps(MOCK_RPC_CLIENT_PORT_BASE + 50, Ok(response), rx)
             .await
@@ -145,11 +151,15 @@ async fn test_send_cluster_update_case3() {
         term: 1,
         version: 1,
         cluster_membership: None,
+        change_type: ChangeType::AddVoter.into(),
     };
 
     // Simulate RPC service
     let (_tx, rx) = oneshot::channel::<()>();
-    let response = ClusterMembership { nodes: vec![] };
+    let response = ClusterMembership {
+        version: 1,
+        nodes: vec![],
+    };
     let addr1 =
         MockNode::simulate_mock_service_with_cluster_conf_reps(MOCK_RPC_CLIENT_PORT_BASE + 52, Ok(response), rx)
             .await
@@ -207,6 +217,7 @@ async fn test_send_cluster_update_case4() {
         term: 1,
         version: 1,
         cluster_membership: None,
+        change_type: ChangeType::AddVoter.into(),
     };
 
     // Simulate RPC service

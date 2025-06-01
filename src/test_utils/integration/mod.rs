@@ -54,6 +54,7 @@ use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::proto::common::Entry;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
@@ -133,15 +134,15 @@ pub fn setup_raft_components(
         vec![
             NodeMeta {
                 id: 2,
-                ip: "127.0.0.1".to_string(),
-                port: 8080,
+                address: "127.0.0.1:8080".to_string(),
                 role: follower_role,
+                status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
-                ip: "127.0.0.1".to_string(),
-                port: 8080,
+                address: "127.0.0.1:8080".to_string(),
                 role: follower_role,
+                status: NodeStatus::Active.into(),
             },
         ]
     };

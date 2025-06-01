@@ -413,7 +413,10 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     membership.expect_mark_leader_id().returning(|_| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership { nodes: vec![] });
+        .returning(|| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+        });
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
 }

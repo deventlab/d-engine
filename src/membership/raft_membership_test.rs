@@ -3,9 +3,11 @@ use tokio::sync::watch;
 
 use super::RaftMembership;
 use crate::cluster::is_follower;
+use crate::proto::cluster::cluster_membership_change_request::ChangeType;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockNode;
 use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;
@@ -50,33 +52,33 @@ async fn test_get_peers_address_with_role_condition_case1() {
     let initial_cluster = vec![
         NodeMeta {
             id: 2,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: CANDIDATE,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: f1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: f2,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
@@ -117,33 +119,33 @@ async fn test_get_peers_address_with_role_condition_case2() {
     let initial_cluster = vec![
         NodeMeta {
             id: 2,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: CANDIDATE,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: f1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: f2,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
@@ -170,33 +172,33 @@ async fn test_mark_leader_id_case1() {
     let initial_cluster = vec![
         NodeMeta {
             id: old_leader_id,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEADER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
@@ -221,33 +223,33 @@ async fn test_mark_leader_id_case2() {
     let initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
@@ -262,33 +264,33 @@ fn test_retrieve_cluster_membership_config() {
     let initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
@@ -308,21 +310,21 @@ async fn test_update_cluster_conf_from_leader_case1() {
     let initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
     ];
 
@@ -332,8 +334,10 @@ async fn test_update_cluster_conf_from_leader_case1() {
         term: my_term - 1,
         version: 1,
         cluster_membership: Some(ClusterMembership {
+            version: 1,
             nodes: initial_cluster.clone(),
         }),
+        change_type: ChangeType::AddVoter.into(),
     };
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
@@ -357,21 +361,21 @@ async fn test_update_cluster_conf_from_leader_case2() {
     let initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
     ];
 
@@ -382,8 +386,10 @@ async fn test_update_cluster_conf_from_leader_case2() {
         term: my_term,
         version: request_cluster_conf_version,
         cluster_membership: Some(ClusterMembership {
+            version: 1,
             nodes: initial_cluster.clone(),
         }),
+        change_type: ChangeType::AddVoter.into(),
     };
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
@@ -409,21 +415,21 @@ async fn test_update_cluster_conf_from_leader_case3() {
     let initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
     ];
 
@@ -434,8 +440,10 @@ async fn test_update_cluster_conf_from_leader_case3() {
         term: my_term,
         version: request_cluster_conf_version,
         cluster_membership: Some(ClusterMembership {
+            version: 1,
             nodes: initial_cluster.clone(),
         }),
+        change_type: ChangeType::AddVoter.into(),
     };
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
@@ -460,33 +468,33 @@ fn test_get_peers_id_with_condition() {
     let initial_cluster = vec![
         NodeMeta {
             id: 1,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: CANDIDATE,
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
-            ip: "127.0.0.1".to_string(),
-            port: 10000,
+            address: "127.0.0.1:10000".to_string(),
             role: LEADER,
+            status: NodeStatus::Active.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);

@@ -6,6 +6,8 @@ use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
@@ -79,6 +81,11 @@ pub(crate) enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<PurgeLogResponse, Status>>,
     ),
 
+    JoinCluster(
+        JoinRequest,
+        MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
+    ),
+
     // None RPC event
     #[allow(dead_code)]
     CreateSnapshotEvent,
@@ -104,6 +111,8 @@ pub(crate) enum TestEvent {
 
     RaftLogCleanUp(PurgeLogRequest),
 
+    JoinCluster(JoinRequest),
+
     // None RPC event
     CreateSnapshotEvent,
 }
@@ -119,6 +128,7 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
+        RaftEvent::JoinCluster(join_cluster_request, _) => TestEvent::JoinCluster(join_cluster_request.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
     }
 }

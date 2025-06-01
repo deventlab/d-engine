@@ -224,9 +224,9 @@ impl RpcPeerChannels {
         let rpc_settings = rpc_settings.clone();
         task::spawn(async move {
             let channel = Self::connect_with_retry(&node_meta, &retry, &rpc_settings).await?;
-            let address = address_str(&node_meta.ip, node_meta.port as u16);
+            let address = address_str(&node_meta.address);
 
-            debug!("Successfully connected with ({}:{})", node_meta.ip, node_meta.port);
+            debug!("Successfully connected with ({})", &address);
             Ok((node_meta.id, ChannelWithAddress { address, channel }))
         })
     }
@@ -279,7 +279,8 @@ impl RpcPeerChannels {
         node_meta: NodeMeta,
         node_config: NetworkConfig,
     ) -> Result<Channel> {
-        let addr = address_str(&node_meta.ip, node_meta.port as u16);
+        let addr = address_str(&node_meta.address);
+
         Endpoint::try_from(addr.clone())?
             .connect_timeout(Duration::from_millis(node_config.connect_timeout_in_ms))
             .timeout(Duration::from_millis(node_config.request_timeout_in_ms))

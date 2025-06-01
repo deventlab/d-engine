@@ -93,9 +93,9 @@ fn environment_variables_should_have_highest_priority() {
         [cluster]
         node_id = 100
         initial_cluster = [
-            { id = 100, name = "n1", ip = "127.0.0.1", port = 9081, role = 1 },
-            { id = 200, name = "n2", ip = "127.0.0.1", port = 9082, role = 1 },
-            { id = 300, name = "n3", ip = "127.0.0.1", port = 9083, role = 1 },
+            { id = 100, name = "n1", address = "127.0.0.1:8081", role = 1, status = 0 },
+            { id = 200, name = "n2", address = "127.0.0.1:9082", role = 1, status = 0 },
+            { id = 300, name = "n3", address = "127.0.0.1:9083", role = 1, status = 0 },
         ]
         "#,
     )

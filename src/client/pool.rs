@@ -6,6 +6,7 @@ use tracing::error;
 use tracing::info;
 
 use super::ClientApiError;
+use crate::net::address_str;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::cluster::NodeMeta;
@@ -174,7 +175,7 @@ impl ConnectionPool {
         let mut followers = Vec::new();
 
         for node in nodes {
-            let addr = format!("http://{}:{}", node.ip, node.port);
+            let addr = address_str(&node.address);
             debug!("parse_cluster_metadata, addr: {:?}", &addr);
             if node.role == crate::LEADER {
                 leader_addr = Some(addr);

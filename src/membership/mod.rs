@@ -1,24 +1,20 @@
 mod health_checker;
 mod raft_membership;
 mod rpc_peer_channels;
-
 pub use raft_membership::*;
 pub use rpc_peer_channels::*;
-
-#[cfg(test)]
-mod rpc_peer_channels_test;
-
 #[cfg(test)]
 mod health_checker_test;
-
 #[cfg(test)]
 mod raft_membership_test;
-
-use std::sync::Arc;
+#[cfg(test)]
+mod rpc_peer_channels_test;
 
 use dashmap::DashMap;
 #[cfg(test)]
 use mockall::automock;
+use std::sync::Arc;
+
 ///-----------------------------------------------
 /// Membership behavior definition
 use tonic::async_trait;
@@ -123,4 +119,34 @@ where
         &self,
         new_version: u64,
     );
+
+    fn auto_incr_cluster_conf_version(&self);
+
+    /// Add a new node as a learner
+    async fn add_learner(
+        &self,
+        node_id: u32,
+        address: String,
+    ) -> Result<()>;
+
+    /// Check if the node already exists
+    fn contains_node(
+        &self,
+        node_id: u32,
+    ) -> bool;
+
+    /// Elegantly remove nodes
+    async fn remove_node(
+        &self,
+        node_id: u32,
+    ) -> Result<()>;
+
+    /// Forcefully remove faulty nodes
+    async fn force_remove_node(
+        &self,
+        node_id: u32,
+    ) -> Result<()>;
+
+    /// Get all node status
+    fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 }

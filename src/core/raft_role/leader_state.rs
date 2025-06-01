@@ -34,6 +34,8 @@ use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
@@ -581,7 +583,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::RaftLogCleanUp(_purchase_log_request, sender) => {
                 sender
-                    .send(Err(Status::permission_denied("Leader should not receive this event.")))
+                    .send(Err(Status::permission_denied(
+                        "Leader should not receive RaftLogCleanUp event.",
+                    )))
                     .map_err(|e| {
                         let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
@@ -671,6 +675,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         }
                     }
                 }
+            }
+
+            RaftEvent::JoinCluster(join_request, sender) => {
+                debug!(?join_request, "Leader::RaftEvent::JoinCluster");
+                self.handle_join_cluster(join_request, sender, ctx, peer_channels.clone(), &role_tx)
+                    .await?;
             }
         }
         return Ok(());
@@ -1073,43 +1083,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 .values()
                 .all(|&v| v >= last_included_in_snapshot.index)
     }
-}
 
-impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
-    fn from(candidate: &CandidateState<T>) -> Self {
-        let ReplicationConfig {
-            rpc_append_entries_in_batch_threshold,
-            rpc_append_entries_batch_process_delay_in_ms,
-            rpc_append_entries_clock_in_ms,
-            ..
-        } = candidate.node_config.raft.replication;
-
-        Self {
-            shared_state: candidate.shared_state.clone(),
-            timer: Box::new(ReplicationTimer::new(
-                rpc_append_entries_clock_in_ms,
-                rpc_append_entries_batch_process_delay_in_ms,
-            )),
-            next_index: HashMap::new(),
-            match_index: HashMap::new(),
-            noop_log_id: None,
-
-            batch_buffer: Box::new(BatchBuffer::new(
-                rpc_append_entries_in_batch_threshold,
-                Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
-            )),
-
-            node_config: candidate.node_config.clone(),
-            _marker: PhantomData,
-
-            scheduled_purge_upto: None,
-            last_purged_index: candidate.last_purged_index,
-            peer_purge_progress: HashMap::new(),
-        }
-    }
-}
-
-impl<T: TypeConfig> LeaderState<T> {
     /// Check leadership quorum verification Immidiatelly
     ///
     /// - Bypasses all queues with direct RPC transmission
@@ -1176,6 +1150,143 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
+    async fn handle_join_cluster(
+        &mut self,
+        join_request: JoinRequest,
+        sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // let node_id = join_request.node_id;
+        // let address = join_request.address;
+
+        // // 1. Validate join request
+        // if ctx.membership().contains_node(node_id) {
+        //     let error_msg = format!("Node {} already exists in cluster", node_id);
+        //     warn!(%error_msg);
+        //     return self
+        //         .send_join_error(sender, MembershipError::NodeAlreadyExists(node_id))
+        //         .await;
+        // }
+
+        // // 2. Create configuration change entry
+        // let config_change = ConfigurationChange::AddLearner {
+        //     node_id,
+        //     address: address.clone(),
+        // };
+        // let entry = LogEntry::new_config_change(config_change);
+
+        // // 3. Submit configuration change to Raft log
+        // let append_result = ctx.raft_log().append(entry).await;
+        // let log_index = match append_result {
+        //     Ok(index) => index,
+        //     Err(e) => {
+        //         error!("Failed to append join config: {:?}", e);
+        //         return self.send_join_error(sender, e.into()).await;
+        //     }
+        // };
+
+        // // 4. Wait for configuration to be committed
+        // match self.wait_for_commit(log_index, ctx, peer_channels, role_tx).await {
+        //     Ok(true) => {
+        //         info!("Join config committed for node {}", node_id);
+        //         self.send_join_success(node_id, address, sender, ctx).await
+        //     }
+        //     Ok(false) => {
+        //         warn!("Failed to commit join config for node {}", node_id);
+        //         self.send_join_error(sender, ConsensusError::CommitTimeout).await
+        //     }
+        //     Err(e) => {
+        //         error!("Error waiting for commit: {:?}", e);
+        //         self.send_join_error(sender, e).await
+        //     }
+        // }
+        Ok(())
+    }
+
+    async fn wait_for_commit(
+        &self,
+        log_index: u64,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
+        // let start = Instant::now();
+        // let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+
+        // while start.elapsed() < timeout_duration {
+        //     if self.commit_index() >= log_index {
+        //         return Ok(true);
+        //     }
+
+        //     // Trigger immediate replication
+        //     ctx.replication_handler()
+        //         .replicate_to_peers(
+        //             self.state_snapshot(),
+        //             self.leader_state_snapshot(),
+        //             ctx,
+        //             peer_channels.clone(),
+        //         )
+        //         .await?;
+
+        //     tokio::time::sleep(Duration::from_millis(10)).await;
+        // }
+
+        // warn!("Timeout waiting for commit of index {}", log_index);
+        Ok(false)
+    }
+
+    async fn send_join_success(
+        &self,
+        node_id: u32,
+        address: String,
+        sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        // // Determine if snapshot is needed
+        // let snapshot_needed = ctx.raft_log().last_index() > 0;
+        // let snapshot_metadata = if snapshot_needed {
+        //     ctx.state_machine_handler().get_latest_snapshot_metadata().await.ok()
+        // } else {
+        //     None
+        // };
+
+        // // Prepare response
+        // let response = JoinResponse {
+        //     success: true,
+        //     error: String::new(),
+        //     config: ctx.membership().retrieve_cluster_membership_config(),
+        //     config_version: ctx.membership().get_cluster_conf_version(),
+        //     snapshot_metadata,
+        //     leader_id: self.node_id(),
+        // };
+
+        // sender.send(Ok(response)).map_err(|e| {
+        //     error!("Failed to send join response: {:?}", e);
+        //     NetworkError::SingalSendFailed(format!("{e:?}"))
+        // })?;
+
+        // info!("Node {} ({}) successfully added as learner", node_id, address);
+        Ok(())
+    }
+
+    async fn send_join_error(
+        &self,
+        sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
+        error: impl Into<Error>,
+    ) -> Result<()> {
+        let error = error.into();
+        let status = Status::internal(error.to_string());
+
+        sender.send(Err(status)).map_err(|e| {
+            error!("Failed to send join error: {:?}", e);
+            NetworkError::SingalSendFailed(format!("{e:?}"))
+        })?;
+
+        Err(error)
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         node_id: u32,
@@ -1207,6 +1318,40 @@ impl<T: TypeConfig> LeaderState<T> {
             _marker: PhantomData,
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
+            peer_purge_progress: HashMap::new(),
+        }
+    }
+}
+
+impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
+    fn from(candidate: &CandidateState<T>) -> Self {
+        let ReplicationConfig {
+            rpc_append_entries_in_batch_threshold,
+            rpc_append_entries_batch_process_delay_in_ms,
+            rpc_append_entries_clock_in_ms,
+            ..
+        } = candidate.node_config.raft.replication;
+
+        Self {
+            shared_state: candidate.shared_state.clone(),
+            timer: Box::new(ReplicationTimer::new(
+                rpc_append_entries_clock_in_ms,
+                rpc_append_entries_batch_process_delay_in_ms,
+            )),
+            next_index: HashMap::new(),
+            match_index: HashMap::new(),
+            noop_log_id: None,
+
+            batch_buffer: Box::new(BatchBuffer::new(
+                rpc_append_entries_in_batch_threshold,
+                Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
+            )),
+
+            node_config: candidate.node_config.clone(),
+            _marker: PhantomData,
+
+            scheduled_purge_upto: None,
+            last_purged_index: candidate.last_purged_index,
             peer_purge_progress: HashMap::new(),
         }
     }
