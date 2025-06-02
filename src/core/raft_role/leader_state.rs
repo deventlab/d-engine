@@ -29,13 +29,13 @@ use super::LEADER;
 use crate::alias::POF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
-use crate::constants::INTERNAL_CLIENT_ID;
-use crate::proto::client::ClientCommand;
-use crate::proto::client::ClientProposeRequest;
+use crate::client_command_to_entry_payloads;
 use crate::proto::client::ClientResponse;
+use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
@@ -47,7 +47,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::utils::cluster::error;
 use crate::AppendResults;
 use crate::BatchBuffer;
-use crate::ClientRequestWithSignal;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
@@ -63,6 +62,7 @@ use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::RaftOneshot;
+use crate::RaftRequestWithSignal;
 use crate::ReplicationConfig;
 use crate::ReplicationCore;
 use crate::ReplicationError;
@@ -140,7 +140,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// Accumulates requests until either:
     /// 1. Batch reaches configured size limit
     /// 2. Explicit flush is triggered
-    batch_buffer: Box<BatchBuffer<ClientRequestWithSignal>>,
+    batch_buffer: Box<BatchBuffer<RaftRequestWithSignal>>,
 
     // -- Timing & Scheduling --
     /// Replication heartbeat timer manager
@@ -277,17 +277,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         debug!("verify_leadership_in_new_term...");
-        let command = ClientCommand::no_op();
-
-        let client_propose_request = ClientProposeRequest {
-            client_id: INTERNAL_CLIENT_ID,
-            commands: vec![command],
-        };
-
         let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
 
-        self.process_client_propose(client_propose_request, resp_tx, ctx, peer_channels, false, &role_tx)
-            .await?;
+        self.process_raft_request(
+            RaftRequestWithSignal {
+                id: nanoid!(),
+                payloads: vec![EntryPayload::noop()],
+                sender: resp_tx,
+            },
+            ctx,
+            peer_channels,
+            false,
+            &role_tx,
+        )
+        .await?;
         Ok(())
     }
 
@@ -448,32 +451,32 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender) => {
-                debug!(
-                    "Leader::update_cluster_conf::Received req: {:?}",
-                    cluste_membership_change_request
+                let current_conf_version = ctx.membership().get_cluster_conf_version();
+                debug!(%current_conf_version, ?cluste_membership_change_request,
+                    "handle_raft_event::RaftEvent::ClusterConfUpdate",
                 );
 
-                let my_id = self.node_id();
-                let my_current_term = self.current_term();
-                let success = ctx
-                    .membership()
-                    .update_cluster_conf_from_leader(my_current_term, &cluste_membership_change_request)
-                    .await
-                    .is_ok();
+                // Reject the fake Leader append entries request
+                if my_term >= cluste_membership_change_request.term {
+                    let response = ClusterConfUpdateResponse::higher_term(my_id, my_term, current_conf_version);
 
-                let response = ClusterConfUpdateResponse {
-                    id: my_id,
-                    term: my_current_term,
-                    version: ctx.membership().get_cluster_conf_version(),
-                    success,
-                };
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+                } else {
+                    // Step down as Follower as new Leader found
+                    info!("my({}) term < request one, now I will step down to Follower", my_id);
+                    //TODO: if there is a bug?  self.update_current_term(vote_request.term);
+                    self.send_become_follower_event(Some(cluste_membership_change_request.id), &role_tx)?;
 
-                debug!("[peer-{}] update_cluster_conf response: {:?}", my_id, &response);
-                sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+                    info!("Leader will not process append_entries_request, it should let Follower do it.");
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender),
+                    )?;
+                }
             }
 
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -502,12 +505,22 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
 
-            RaftEvent::ClientPropose(client_propose_request, sender) => {
+            RaftEvent::ClientPropose(client_write_request, sender) => {
                 if let Err(e) = self
-                    .process_client_propose(client_propose_request, sender, ctx, peer_channels, false, &role_tx)
+                    .process_raft_request(
+                        RaftRequestWithSignal {
+                            id: nanoid!(),
+                            payloads: client_command_to_entry_payloads(client_write_request.commands),
+                            sender,
+                        },
+                        ctx,
+                        peer_channels,
+                        false,
+                        &role_tx,
+                    )
                     .await
                 {
-                    error("Leader::process_client_propose", &e);
+                    error("Leader::process_raft_request", &e);
                     return Err(e);
                 }
             }
@@ -523,7 +536,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         let results = ctx
                             .handlers
                             .state_machine_handler
-                            .read_from_state_machine(client_read_request.commands)
+                            .read_from_state_machine(client_read_request.keys)
                             .unwrap_or_default();
                         debug!("handle_client_read results: {:?}", results);
                         Ok(ClientResponse::read_results(results))
@@ -725,32 +738,29 @@ impl<T: TypeConfig> LeaderState<T> {
     /// # Params
     /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
-    pub(crate) async fn process_client_propose(
+    pub(crate) async fn process_raft_request(
         &mut self,
-        client_propose_request: ClientProposeRequest,
-        sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+        raft_request_with_signal: RaftRequestWithSignal,
         ctx: &RaftContext<T>,
         peer_channels: Arc<POF<T>>,
         execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        debug!(
-            "Leader::process_client_propose, client_propose_request={:?}",
-            &client_propose_request
-        );
+        debug!(?raft_request_with_signal, "Leader::process_raft_request");
 
-        let push_result = self.batch_buffer.push(ClientRequestWithSignal {
-            id: nanoid!(),
-            commands: client_propose_request.commands,
-            sender,
-        });
+        // let push_result = self.batch_buffer.push(RaftRequestWithSignal {
+        //     id: nanoid!(),
+        //     payloads: client_command_to_entry_payloads(client_write_request.commands),
+        //     sender,
+        // });
 
+        let push_result = self.batch_buffer.push(raft_request_with_signal);
         // only buffer exceeds the max, the size will return
         if execute_now || push_result.is_some() {
             let batch = self.batch_buffer.take();
 
             trace!(
-                "replication_handler.handle_client_proposal_in_batch: batch size:{:?}",
+                "replication_handler.handle_raft_request_in_batch: batch size:{:?}",
                 batch.len()
             );
 
@@ -762,19 +772,19 @@ impl<T: TypeConfig> LeaderState<T> {
 
     async fn process_batch(
         &mut self,
-        batch: VecDeque<ClientRequestWithSignal>,
+        batch: VecDeque<RaftRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
         peer_channels: Arc<POF<T>>,
     ) -> Result<()> {
-        let commands: Vec<ClientCommand> = batch.iter().flat_map(|req| &req.commands).cloned().collect();
+        let entry_payloads: Vec<EntryPayload> = batch.iter().flat_map(|req| &req.payloads).cloned().collect();
 
-        trace!("process_batch.., commands:{:?}", &commands);
+        trace!("process_batch.., entry_payloads:{:?}", &entry_payloads);
 
         let append_result = ctx
             .replication_handler()
-            .handle_client_proposal_in_batch(
-                commands,
+            .handle_raft_request_in_batch(
+                entry_payloads,
                 self.state_snapshot(),
                 self.leader_state_snapshot(),
                 ctx,
@@ -782,9 +792,9 @@ impl<T: TypeConfig> LeaderState<T> {
             )
             .await;
 
-        debug!("process_client_proposal_in_batch_result: {:?}", &append_result);
+        debug!("process_raft_request_in_batch_result: {:?}", &append_result);
 
-        self.process_client_proposal_in_batch_result(batch, append_result, ctx.raft_log(), role_tx)?;
+        self.process_raft_request_in_batch_result(batch, append_result, ctx.raft_log(), role_tx)?;
 
         Ok(())
     }
@@ -808,9 +818,9 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// The `ReplicationHandler` remains focused on protocol mechanics, while
     /// state-aware result processing naturally belongs to the state owner.
-    pub(crate) fn process_client_proposal_in_batch_result(
+    pub(crate) fn process_raft_request_in_batch_result(
         &mut self,
-        batch: VecDeque<ClientRequestWithSignal>,
+        batch: VecDeque<RaftRequestWithSignal>,
         append_result: Result<AppendResults>,
         raft_log: &Arc<ROF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -900,7 +910,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         }
                     }
                     _ => {
-                        error("process_client_proposal_in_batch_result", &e);
+                        error("process_raft_request_in_batch_result", &e);
                     }
                 }
                 for r in batch {
@@ -942,13 +952,13 @@ impl<T: TypeConfig> LeaderState<T> {
         peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
-        let client_propose_request = ClientProposeRequest {
+        let client_write_request = ClientWriteRequest {
             client_id: self.node_config.raft.election.internal_rpc_client_request_id,
             commands: vec![],
         };
 
         let status = self
-            .check_leadership_quorum_immediate(client_propose_request, ctx, peer_channels, role_tx)
+            .check_leadership_quorum_immediate(client_write_request, ctx, peer_channels, role_tx)
             .await?;
         debug!("enforce_quorum_consensus:status = {:?}", status);
         match status {
@@ -1096,15 +1106,25 @@ impl<T: TypeConfig> LeaderState<T> {
     /// - `Err(_)`: Network or processing failure during real-time verification
     async fn check_leadership_quorum_immediate(
         &mut self,
-        request: ClientProposeRequest,
+        client_write_request: ClientWriteRequest,
         ctx: &RaftContext<T>,
         peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumStatus> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
-        self.process_client_propose(request, resp_tx, ctx, peer_channels, true, role_tx)
-            .await?;
+        self.process_raft_request(
+            RaftRequestWithSignal {
+                id: nanoid!(),
+                payloads: client_command_to_entry_payloads(client_write_request.commands),
+                sender: resp_tx,
+            },
+            ctx,
+            peer_channels,
+            true,
+            role_tx,
+        )
+        .await?;
 
         self.wait_quorum_response(
             resp_rx,

@@ -10,8 +10,10 @@ use crate::alias::ROF;
 use crate::convert::safe_kv;
 use crate::init_sled_storages;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
+use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::{self};
 use crate::RaftLog;
@@ -58,7 +60,7 @@ fn test_get_as_vec() {
     let value = Entry {
         index: 1,
         term: 1,
-        command: vec![1; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     };
 
     c.raft_log.insert_batch(vec![value.clone()]).expect("should succeed");
@@ -74,7 +76,7 @@ fn insert(
     let log = Entry {
         index: key,
         term: 7,
-        command: Vec::new(),
+        payload: None,
     };
     raft_log.insert_batch(vec![log]).expect("should succeed");
 }
@@ -86,7 +88,7 @@ fn test_get_range1() {
     let i2: u64 = 12;
     let i3: u64 = 13;
     let i4: u64 = 14;
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![i1, i2, i3, i4], 4);
+    test_utils::simulate_insert_command(&context.raft_log, vec![i1, i2, i3, i4], 4);
     let list = context.raft_log.get_entries_between(1..=2);
 
     // let mut list = Vec::<Entry>::new();
@@ -143,20 +145,20 @@ fn test_get_range2() {
 fn test_filter_out_conflicts_and_append_case1() {
     let context = setup("/tmp/test_filter_out_conflicts_and_append_case1");
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![2, 3], 2);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![4], 4);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2);
+    test_utils::simulate_insert_command(&context.raft_log, vec![4], 4);
 
     //case 1
     let l1 = Entry {
         index: 2,
         term: 2,
-        command: Vec::new(),
+        payload: None,
     };
     let l2 = Entry {
         index: 3,
         term: 3,
-        command: Vec::new(),
+        payload: None,
     };
     let new_ones = vec![l1, l2];
     let prev_log_index = 1;
@@ -176,20 +178,20 @@ fn test_filter_out_conflicts_and_append() {
     let context = setup("/tmp/test_filter_out_conflicts_and_append");
     // let state = &context.s;
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![2, 3], 2);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![4], 4);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2);
+    test_utils::simulate_insert_command(&context.raft_log, vec![4], 4);
 
     //case 1
     let l1 = Entry {
         index: 2,
         term: 2,
-        command: Vec::new(),
+        payload: None,
     };
     let l2 = Entry {
         index: 3,
         term: 3,
-        command: Vec::new(),
+        payload: None,
     };
     let new_ones = vec![l1, l2];
     let prev_log_index = 1;
@@ -208,7 +210,7 @@ fn test_filter_out_conflicts_and_append() {
     let l3 = Entry {
         index: 4,
         term: 2,
-        command: Vec::new(),
+        payload: None,
     };
     let new_ones = vec![l3];
     let prev_log_index = 1;
@@ -228,7 +230,7 @@ fn test_retrieve_one_entry_for_this_follower_case1() {
     let context = setup("/tmp/test_retrieve_one_entry_for_this_follower_case1");
     let follower_id = 1;
     let next_id = 1;
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
 
     let entries = context
         .raft_log
@@ -243,7 +245,7 @@ fn test_retrieve_one_entry_for_this_follower_case2() {
     let follower_id = 1;
     let next_id = 2;
 
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
 
     let entries = context
         .raft_log
@@ -260,13 +262,13 @@ fn test_get_last_raft_log() {
     for id in 1..300 {
         vec_1.push(id);
     }
-    test_utils::simulate_insert_proposal(&context.raft_log, vec_1, 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec_1, 1);
 
     let mut vec_2 = Vec::new();
     for id in 1..3 {
         vec_2.push(id);
     }
-    test_utils::simulate_insert_proposal(&context.raft_log, vec_2, 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec_2, 1);
     if let Some(last) = context.raft_log.last() {
         assert_eq!(last.index, 301);
     }
@@ -276,7 +278,7 @@ fn test_get_last_raft_log() {
 fn test_sled_last() {
     let context = setup("/tmp/test_sled_last");
 
-    test_utils::simulate_insert_proposal(&context.raft_log, (1..=300).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, (1..=300).collect(), 1);
 
     let l = context.raft_log.last().unwrap();
     let last = l.index;
@@ -289,7 +291,7 @@ fn test_sled_last_max() {
     let context = setup("/tmp/test_sled_last_max");
 
     let max = u64::MAX; //max of u64
-    test_utils::simulate_insert_proposal(&context.raft_log, ((max - 1)..max).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, ((max - 1)..max).collect(), 1);
 
     let l = context.raft_log.last().unwrap();
     assert_eq!(l.index, 1);
@@ -308,7 +310,7 @@ fn test_insert_one_client_command() {
     for i in 1..2001 {
         v.push(i);
     }
-    test_utils::simulate_insert_proposal(&context.raft_log, v, 1);
+    test_utils::simulate_insert_command(&context.raft_log, v, 1);
 
     let mut count = 900;
     for entry in context.raft_log.get_entries_between(900..=2000) {
@@ -327,7 +329,7 @@ fn test_get_raft_log_entry_between() {
     for i in 1..2001 {
         v.push(i);
     }
-    test_utils::simulate_insert_proposal(&context.raft_log, v, 1);
+    test_utils::simulate_insert_command(&context.raft_log, v, 1);
 
     let log_len = context.raft_log.last_entry_id();
     let result = context.raft_log.get_entries_between(900..=log_len);
@@ -367,14 +369,14 @@ fn test_insert_one_client_command_dup_case() {
     for i in 1..10 {
         v.push(i);
     }
-    test_utils::simulate_insert_proposal(&context.raft_log, v, 1);
+    test_utils::simulate_insert_command(&context.raft_log, v, 1);
 
     let len = context.raft_log.last_entry_id();
     let mut v = Vec::new();
     for i in 1..10 {
         v.push(i + len);
     }
-    test_utils::simulate_insert_proposal(&context.raft_log, v, 2);
+    test_utils::simulate_insert_command(&context.raft_log, v, 2);
 
     assert_eq!(context.raft_log.last_entry_id(), 18);
     let last = context.raft_log.last().unwrap();
@@ -391,14 +393,14 @@ fn test_client_proposal_insert_delete() {
 
     context.raft_log.reset().expect("reset successfully!");
 
-    test_utils::simulate_insert_proposal(&context.raft_log, (1..=10).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, (1..=10).collect(), 1);
     assert_eq!(context.raft_log.last_entry_id(), 10);
 
-    test_utils::simulate_delete_proposal(&context.raft_log, 1..=3, 1);
+    test_utils::simulate_delete_command(&context.raft_log, 1..=3, 1);
     assert_eq!(context.raft_log.last_entry_id(), 13);
     assert_eq!(context.raft_log.len(), 13);
 
-    test_utils::simulate_insert_proposal(&context.raft_log, (11..=20).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, (11..=20).collect(), 1);
 
     assert_eq!(context.raft_log.last_entry_id(), 23);
     assert_eq!(context.raft_log.len(), 23);
@@ -415,7 +417,7 @@ fn test_load_uncommitted_from_db_to_cache() {
         entries.push(Entry {
             index: i,
             term: 1,
-            command: vec![],
+            payload: None,
         });
     }
     context.raft_log.insert_batch(entries).expect("should succeed");
@@ -441,7 +443,7 @@ fn test_purge_logs_up_to() {
         entries.push(Entry {
             index: i,
             term: 1,
-            command: vec![],
+            payload: None,
         });
     }
     context.raft_log.insert_batch(entries).expect("should succeed");
@@ -468,7 +470,7 @@ fn test_purge_logs_up_to_concurrent_purge() {
         .map(|i| Entry {
             index: i,
             term: 1,
-            command: vec![],
+            payload: None,
         })
         .collect();
     context.raft_log.insert_batch(entries).unwrap();
@@ -507,7 +509,7 @@ fn test_get_first_raft_log_entry_id_after_delete_entries() {
         entries.push(Entry {
             index: i,
             term: 1,
-            command: vec![],
+            payload: None,
         });
     }
     context.raft_log.insert_batch(entries).expect("should succeed");
@@ -532,7 +534,7 @@ fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
         entries.push(Entry {
             index: i,
             term: 1,
-            command: vec![],
+            payload: None,
         });
     }
     context.raft_log.insert_batch(entries).expect("should succeed");
@@ -574,7 +576,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: safe_kv(i).to_vec(),
+                    payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
             cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
@@ -616,7 +618,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: safe_kv(i).to_vec(),
+                    payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
         });
@@ -631,7 +633,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: safe_kv(i).to_vec(),
+                    payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
             cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
@@ -673,7 +675,7 @@ async fn test_insert_batch_logs_case1() {
                 entries.push(Entry {
                     index: cloned_raft_log.pre_allocate_raft_logs_next_index(),
                     term: 1,
-                    command: safe_kv(i).to_vec(),
+                    payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
             cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
@@ -723,7 +725,7 @@ async fn test_insert_batch_logs_case2() {
         entries.push(Entry {
             index: old_leader.pre_allocate_raft_logs_next_index(),
             term: 1,
-            command: safe_kv(i).to_vec(),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
         });
     }
 
@@ -736,7 +738,7 @@ async fn test_insert_batch_logs_case2() {
         .insert_batch(vec![Entry {
             index: old_leader.pre_allocate_raft_logs_next_index(),
             term: 1,
-            command: safe_kv(8).to_vec(),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![8]))),
         }])
         .expect("should succeed");
 
@@ -751,7 +753,7 @@ async fn test_insert_batch_logs_case2() {
         new_leader_entries.push(Entry {
             index: new_leader.pre_allocate_raft_logs_next_index(),
             term: 2,
-            command: safe_kv(i).to_vec(),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
         });
     }
     let cloned_new_leader_entries = new_leader_entries.clone();
@@ -840,8 +842,8 @@ fn test_prev_log_ok_case_1_2() {
 
     context.raft_log.reset().expect("reset successfully!");
     // so its locallog is not empty, it contains some log (log-1,log-2)
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![3], 2);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![3], 2);
     // prev_log index > 0
     let prev_log_index = 2;
     let prev_log_term = 1;
@@ -860,8 +862,8 @@ fn test_prev_log_ok_case_1_3() {
 
     context.raft_log.reset().expect("reset successfully!");
     // so its locallog is not empty, it contains some log (log-1,log-2)
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![3], 2);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![3], 2);
     // prev_log index > 0
     let prev_log_index = 3;
     let prev_log_term = 1;
@@ -880,8 +882,8 @@ fn test_prev_log_ok_case_1_4() {
 
     context.raft_log.reset().expect("reset successfully!");
     // so its locallog is not empty, it contains some log (log-1,log-2)
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![3], 2);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![3], 2);
     // prev_log index > 0
     let prev_log_index = 3;
     let prev_log_term = 3;
@@ -911,7 +913,7 @@ fn test_prev_log_ok_case_2_4() {
 
     let last_applied = 10;
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
     let prev_log_index = 11;
     let prev_log_term = 1;
     assert!(!context
@@ -923,7 +925,7 @@ fn test_apply_and_then_get_last() {
     let context = setup("/tmp/test_apply_and_then_get_last");
 
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_proposal(&context.raft_log, vec![1, 2], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
     assert_eq!(2, context.raft_log.last_entry_id());
 }
 
@@ -938,7 +940,7 @@ fn test_new_case1() {
         println!("Test setup ...");
         let commit_index = 0;
         let raft_log = init(p, commit_index);
-        test_utils::simulate_insert_proposal(&raft_log, vec![1, 2], 1);
+        test_utils::simulate_insert_command(&raft_log, vec![1, 2], 1);
 
         assert_eq!(raft_log.cached_mapped_entries_len(), 2);
         assert_eq!(raft_log.cached_length(), 2);
@@ -977,8 +979,8 @@ fn test_calculate_majority_matched_index_case0() {
     let current_term = 2;
     let commit_index = 2;
 
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&raft_log, vec![2, 3], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![2, 3], 2);
 
     assert_eq!(
         Some(3),
@@ -999,8 +1001,8 @@ fn test_calculate_majority_matched_index_case1() {
     let ct = 3;
     let ci = 4;
 
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2]));
 }
 
@@ -1015,9 +1017,9 @@ fn test_calculate_majority_matched_index_case2() {
     let ct = 3;
     let ci = 2;
 
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
-    test_utils::simulate_insert_proposal(&raft_log, vec![3], 3);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![3], 3);
     assert_eq!(Some(3), raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2]));
 }
 
@@ -1030,8 +1032,8 @@ fn test_calculate_majority_matched_index_case3() {
     // while log(3) term is 2, return None
     let ct = 3;
     let ci = 2;
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
 
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2]));
 }
@@ -1047,8 +1049,8 @@ fn test_calculate_majority_matched_index_case4() {
     let ct = 3;
     let ci = 2;
 
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_proposal(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
 
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2]));
 }
@@ -1074,7 +1076,7 @@ fn test_calculate_majority_matched_index_case5() {
     let peer2_match = 98000;
 
     let raft_log_entry_ids: Vec<u64> = (1..=raft_log_length).collect();
-    test_utils::simulate_insert_proposal(&raft_log, raft_log_entry_ids, 1);
+    test_utils::simulate_insert_command(&raft_log, raft_log_entry_ids, 1);
 
     let now = Instant::now();
     assert_eq!(
@@ -1092,7 +1094,7 @@ fn test_raft_log_insert() {
     let c = setup("/tmp/test_raft_log_insert");
     let raft_log = c.raft_log.clone();
 
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
     assert_eq!(1, raft_log.last_entry_id());
 }
 
@@ -1110,7 +1112,7 @@ fn test_has_log_at_case1() {
 fn test_has_log_at_case2() {
     let c = setup("/tmp/test_has_log_at_case2");
     let raft_log = c.raft_log.clone();
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
 
     assert!(!raft_log.has_log_at(0, 0));
 }
@@ -1129,7 +1131,7 @@ fn test_is_empty_case1() {
 fn test_is_empty_case2() {
     let c = setup("/tmp/test_is_empty_case2");
     let raft_log = c.raft_log.clone();
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
 
     assert!(!raft_log.is_empty());
 }
@@ -1147,7 +1149,7 @@ fn test_get_last_entry_metadata_case1() {
 fn test_get_last_entry_metadata_case2() {
     let c = setup("/tmp/test_get_last_entry_metadata_case2");
     let raft_log = c.raft_log.clone();
-    test_utils::simulate_insert_proposal(&raft_log, vec![1], 11);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 11);
 
     assert_eq!((1, 11), raft_log.get_last_entry_metadata());
 }
@@ -1162,7 +1164,7 @@ async fn test_raft_log_drop() {
         let raft_log = Arc::new(SledRaftLog::new(db.clone(), 0));
 
         // Insert test data
-        test_utils::simulate_insert_proposal(&raft_log, vec![1], 1);
+        test_utils::simulate_insert_command(&raft_log, vec![1], 1);
 
         // Explicitly drop to trigger flush
         drop(raft_log);

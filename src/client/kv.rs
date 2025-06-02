@@ -11,10 +11,10 @@ use tracing::error;
 
 use super::ClientInner;
 use crate::proto::client::raft_client_service_client::RaftClientServiceClient;
-use crate::proto::client::ClientCommand;
-use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResult;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::WriteCommand;
 use crate::proto::error::ErrorCode;
 use crate::ClientApiError;
 
@@ -46,17 +46,17 @@ impl KvClient {
 
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = ClientCommand::insert(key, value);
+        let client_command_insert = WriteCommand::insert(key, value);
         commands.push(client_command_insert);
 
-        let request = ClientProposeRequest {
+        let request = ClientWriteRequest {
             client_id: client_inner.client_id,
             commands,
         };
 
         let mut client = self.make_leader_client().await?;
         // Send write request
-        match client.handle_client_propose(request).await {
+        match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:KvClient:write] response: {:?}", response);
                 let client_response = response.get_ref();
@@ -87,10 +87,10 @@ impl KvClient {
         let client_inner = self.client_inner.load();
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = ClientCommand::delete(key);
+        let client_command_insert = WriteCommand::delete(key);
         commands.push(client_command_insert);
 
-        let request = ClientProposeRequest {
+        let request = ClientWriteRequest {
             client_id: client_inner.client_id,
             commands,
         };
@@ -98,7 +98,7 @@ impl KvClient {
         let mut client = self.make_leader_client().await?;
 
         // Send delete request
-        match client.handle_client_propose(request).await {
+        match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:KvClient:delete] response: {:?}", response);
                 let client_response = response.get_ref();
@@ -151,10 +151,10 @@ impl KvClient {
     ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         let client_inner = self.client_inner.load();
         // Convert keys to commands
-        let commands: Vec<ClientCommand> = keys.into_iter().map(|k| ClientCommand::get(k.as_ref())).collect();
+        let keys: Vec<Vec<u8>> = keys.into_iter().map(|k| k.as_ref().to_vec()).collect();
 
         // Validate at least one key
-        if commands.is_empty() {
+        if keys.is_empty() {
             return Err(ErrorCode::InvalidRequest.into());
         }
 
@@ -169,7 +169,7 @@ impl KvClient {
         let request = ClientReadRequest {
             client_id: client_inner.client_id,
             linear,
-            commands,
+            keys,
         };
 
         // Execute request

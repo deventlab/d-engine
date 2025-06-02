@@ -2,25 +2,32 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use prost::Message;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 use super::ReplicationCore;
 use super::ReplicationData;
 use super::ReplicationHandler;
+use crate::client_command_to_entry_payloads;
 use crate::convert::safe_kv;
-use crate::proto::client::ClientCommand;
+use crate::proto::client::write_command::Insert;
+use crate::proto::client::write_command::Operation;
+use crate::proto::client::WriteCommand;
+use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::replication::append_entries_response;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::replication::ConflictResult;
 use crate::proto::replication::SuccessResult;
+use crate::test_utils::generate_insert_commands;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
-use crate::test_utils::simulate_insert_proposal;
+use crate::test_utils::simulate_insert_command;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_REPLICATION_HANDLER_PORT_BASE;
@@ -56,7 +63,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case1() {
     let new_entries = vec![Entry {
         index: 1,
         term: 1,
-        command: vec![1; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let leader_last_index_before_inserting_new_entries = 10;
     let max_entries = 100;
@@ -89,14 +96,14 @@ fn test_retrieve_to_be_synced_logs_for_peers_case2() {
 
     // Simulate one entry in local raft log
     let raft_log = context.raft_log;
-    simulate_insert_proposal(&raft_log, vec![1], 1);
+    simulate_insert_command(&raft_log, vec![1], 1);
 
     let my_id = 1;
     let peer3_id = 3;
     let new_entries = vec![Entry {
         index: 2,
         term: 1,
-        command: vec![1; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let leader_last_index_before_inserting_new_entries = 1;
     let max_entries = 100;
@@ -131,7 +138,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case3() {
 
     // Simulate one entry in local raft log
     let raft_log = context.raft_log;
-    simulate_insert_proposal(&raft_log, vec![1], 1);
+    simulate_insert_command(&raft_log, vec![1], 1);
 
     let my_id = 1;
     let peer3_id = 3;
@@ -174,7 +181,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
     let max_legacy_entries_per_peer = 2;
     let leader_last_index_before_inserting_new_entries = 3;
     let raft_log = context.raft_log;
-    simulate_insert_proposal(
+    simulate_insert_command(
         &raft_log,
         (1..=leader_last_index_before_inserting_new_entries).collect(),
         1,
@@ -183,7 +190,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
     let new_entries = vec![Entry {
         index: 3,
         term: 1,
-        command: vec![1; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let peer_next_indices = HashMap::from([(peer3_id, peer3_next_id)]);
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
@@ -223,7 +230,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
     let max_legacy_entries_per_peer = 0;
     let leader_last_index_before_inserting_new_entries = 3;
     let raft_log = context.raft_log;
-    simulate_insert_proposal(
+    simulate_insert_command(
         &raft_log,
         (1..=leader_last_index_before_inserting_new_entries).collect(),
         1,
@@ -232,7 +239,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
     let new_entries = vec![Entry {
         index: 3,
         term: 1,
-        command: vec![1; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let peer_next_indices = HashMap::from([(peer3_id, peer3_next_id)]);
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
@@ -260,7 +267,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case5() {
     let new_entries = vec![Entry {
         index: 1,
         term: 1,
-        command: vec![1; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let leader_last_index_before_inserting_new_entries = 10;
     let max_entries = 100;
@@ -309,11 +316,15 @@ fn test_generate_new_entries_case2() {
     let my_id = 1;
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
-    let commands = vec![ClientCommand::get(safe_kv(1))];
+    let commands = vec![WriteCommand::delete(safe_kv(1))];
     let current_term = 1;
     assert_eq!(
         handler
-            .generate_new_entries(commands, current_term, &context.raft_log)
+            .generate_new_entries(
+                client_command_to_entry_payloads(commands),
+                current_term,
+                &context.raft_log
+            )
             .unwrap()
             .len(),
         1
@@ -357,7 +368,7 @@ async fn test_build_append_request_case() {
         vec![Entry {
             index: 3,
             term: 1,
-            command: vec![1; 8],
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
         }],
     );
     entries_per_peer.insert(
@@ -366,17 +377,17 @@ async fn test_build_append_request_case() {
             Entry {
                 index: 1,
                 term: 1,
-                command: vec![1; 8],
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
             },
             Entry {
                 index: 2,
                 term: 1,
-                command: vec![1; 8],
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
             },
             Entry {
                 index: 3,
                 term: 1,
-                command: vec![1; 8],
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
             },
         ],
     );
@@ -397,9 +408,9 @@ async fn test_build_append_request_case() {
 /// ## Validation Criteria
 /// 1. Return Error::AppendEntriesNoPeerFound
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case1() {
+async fn test_handle_raft_request_in_batch_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case1", graceful_rx, None);
+    let context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case1", graceful_rx, None);
     let my_id = 1;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -419,7 +430,7 @@ async fn test_handle_client_proposal_in_batch_case1() {
 
     let peer_channels = Arc::new(mock_peer_channels());
     let e = handler
-        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -452,9 +463,9 @@ async fn test_handle_client_proposal_in_batch_case1() {
 /// ## Validation Criteria
 /// - function returns Ok
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case2_1() {
+async fn test_handle_raft_request_in_batch_case2_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case2_1", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case2_1", graceful_rx, None);
 
     let my_id = 1;
     let peer2_id = 2;
@@ -515,7 +526,7 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
 
     assert!(
         handler
-            .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
             .await
             .unwrap()
             .commit_quorum_achieved
@@ -544,9 +555,9 @@ async fn test_handle_client_proposal_in_batch_case2_1() {
 /// ## Validation Criteria
 /// - function returns Error
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case2_2() {
+async fn test_handle_raft_request_in_batch_case2_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case2_2", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case2_2", graceful_rx, None);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -599,7 +610,7 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
     let peer_channels = Arc::new(mock_peer_channels());
 
     let e = handler
-        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await
         .unwrap_err();
 
@@ -614,9 +625,9 @@ async fn test_handle_client_proposal_in_batch_case2_2() {
 /// - Responses with term < leader's current term are ignored
 /// - Success counter remains unchanged, no peer updates
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case3() {
+async fn test_handle_raft_request_in_batch_case3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case3", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case3", graceful_rx, None);
 
     let my_id = 1;
     let peer2_id = 2;
@@ -673,7 +684,7 @@ async fn test_handle_client_proposal_in_batch_case3() {
     let peer_channels = Arc::new(mock_peer_channels());
 
     let result = handler
-        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await;
 
     assert!(result.is_ok());
@@ -686,9 +697,9 @@ async fn test_handle_client_proposal_in_batch_case3() {
 /// ## Validation Criteria
 /// - HigherTerm response with term > leader's term returns error
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case4() {
+async fn test_handle_raft_request_in_batch_case4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case4", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case4", graceful_rx, None);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -739,7 +750,7 @@ async fn test_handle_client_proposal_in_batch_case4() {
     let peer_channels = Arc::new(mock_peer_channels());
 
     let result = handler
-        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
         .await;
 
     assert!(matches!(
@@ -754,9 +765,9 @@ async fn test_handle_client_proposal_in_batch_case4() {
 /// - For each peer, entries in AppendEntries start exactly at their `next_index`.
 /// - New commands are only included in the first replication attempt.
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case5() {
+async fn test_handle_raft_request_in_batch_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case5", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case5", graceful_rx, None);
     let my_id = 1;
     let peer2_id = 2;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -774,8 +785,8 @@ async fn test_handle_client_proposal_in_batch_case5() {
 
     // New commands submitted by the client generate logs with index=6~7
     let commands = vec![
-        ClientCommand::insert(safe_kv(100), safe_kv(100)),
-        ClientCommand::insert(safe_kv(200), safe_kv(200)),
+        WriteCommand::insert(safe_kv(100), safe_kv(100)),
+        WriteCommand::insert(safe_kv(200), safe_kv(200)),
     ];
 
     // Leader status snapshot
@@ -835,7 +846,13 @@ async fn test_handle_client_proposal_in_batch_case5() {
     let peer_channels = Arc::new(mock_peer_channels());
 
     let _ = handler
-        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            client_command_to_entry_payloads(commands),
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            peer_channels,
+        )
         .await;
 
     // ----------------------
@@ -874,15 +891,15 @@ async fn test_handle_client_proposal_in_batch_case5() {
 /// - follower_e: next_index=6 (term regression)
 /// - follower_f: next_index=4 (deep conflict)
 #[tokio::test]
-async fn test_handle_client_proposal_in_batch_case6() {
+async fn test_handle_raft_request_in_batch_case6() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_client_proposal_in_batch_case6", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case6", graceful_rx, None);
     let my_id = 1;
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     // Prepare client commands (new entries to replicate)
     let commands = vec![
-        ClientCommand::insert(safe_kv(300), safe_kv(300)), // Will create log index 11
+        WriteCommand::insert(safe_kv(300), safe_kv(300)), // Will create log index 11
     ];
 
     // Initialize leader state
@@ -992,7 +1009,13 @@ async fn test_handle_client_proposal_in_batch_case6() {
 
     // Execute test
     let result = handler
-        .handle_client_proposal_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            client_command_to_entry_payloads(commands),
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            peer_channels,
+        )
         .await;
 
     // Verify results
@@ -1074,7 +1097,7 @@ fn mk_log(
     Entry {
         index,
         term,
-        command: vec![0; 8],
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }
 }
 #[test]
@@ -1253,7 +1276,7 @@ fn test_virtual_log_with_non_empty_log() {
         entries: vec![Entry {
             term: 2,
             index: 1,
-            command: vec![1; 8],
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
         }],
         leader_commit_index: 5,
         leader_id: 2,
@@ -1399,4 +1422,60 @@ fn test_handle_success_response_case5() {
         .handle_success_response(2, responder_term, success_result, 3)
         .unwrap();
     assert_eq!(update.next_index, 1); // Ensure next_index is at least 1
+}
+
+#[test]
+fn test_client_command_to_entry_payloads_case1() {
+    // Create test commands
+    let commands = vec![
+        WriteCommand {
+            operation: Some(Operation::Insert(Insert {
+                key: b"key1".to_vec(),
+                value: b"value1".to_vec(),
+            })),
+        },
+        WriteCommand {
+            operation: Some(Operation::Insert(Insert {
+                key: b"key2".to_vec(),
+                value: b"value2".to_vec(),
+            })),
+        },
+    ];
+
+    // Convert commands to entry payloads
+    let payloads = client_command_to_entry_payloads(commands);
+
+    // Verify the conversion
+    assert_eq!(payloads.len(), 2, "Should produce one payload per command");
+
+    // Check first payload
+    if let Some(Payload::Command(bytes)) = &payloads[0].payload {
+        let decoded = WriteCommand::decode(bytes.as_slice()).unwrap();
+        assert!(matches!(
+            decoded.operation,
+            Some(Operation::Insert(Insert { key, value }))
+            if key == b"key1" && value == b"value1"
+        ));
+    } else {
+        panic!("First payload should be Command variant");
+    }
+
+    // Check second payload
+    if let Some(Payload::Command(bytes)) = &payloads[1].payload {
+        let decoded = WriteCommand::decode(bytes.as_slice()).unwrap();
+        assert!(matches!(
+            decoded.operation,
+            Some(Operation::Insert(Insert { key, value }))
+            if key == b"key2" && value == b"value2"
+        ));
+    } else {
+        panic!("Second payload should be Command variant");
+    }
+}
+
+#[test]
+fn test_test_client_command_to_entry_payloads_case2_empty_input() {
+    // Test with empty command vector
+    let payloads = client_command_to_entry_payloads(vec![]);
+    assert!(payloads.is_empty(), "Should return empty vector for empty input");
 }

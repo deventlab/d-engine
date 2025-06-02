@@ -7,10 +7,45 @@ message LogId {
   uint64 index = 2;
 }
 
+// Raft log entry
 message Entry {
   uint64 index = 1;
   uint64 term = 2;
-  bytes command = 3;
+  EntryPayload payload = 3; 
+}
+
+// Log entry payload
+message EntryPayload {
+  oneof payload {
+    Noop noop = 1;       // No operation (internal to the protocol)
+    bytes command = 2;    // Business write operation
+    MembershipChange config = 3;  // Cluster configuration change
+  }
+}
+
+// Internal operation of the protocol
+message Noop {} // Empty structure
+
+// Cluster configuration change
+message MembershipChange {
+  oneof change { 
+    AddNode add_node = 1; 
+    RemoveNode remove_node = 2; 
+    PromoteLearner promote = 3; 
+  }
+}
+
+message AddNode { 
+  uint32 node_id = 1; 
+  string address = 2; 
+}
+
+message RemoveNode { 
+  uint32 node_id = 1;
+}
+
+message PromoteLearner { 
+  uint32 node_id = 1;
 }
 
 

@@ -29,9 +29,9 @@ use tonic::Status;
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
-use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientResponse;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::replication::append_entries_response;
 use crate::proto::replication::AppendEntriesRequest;
@@ -43,11 +43,11 @@ use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::TypeConfig;
 
-/// Client request with response channel
+/// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]
-pub struct ClientRequestWithSignal {
+pub struct RaftRequestWithSignal {
     pub id: String,
-    pub commands: Vec<ClientCommand>,
+    pub payloads: Vec<EntryPayload>,
     pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
 }
 
@@ -68,7 +68,7 @@ where
     /// As Leader, send replications to peers.
     /// (combined regular heartbeat and client proposals)
     ///
-    /// Each time handle_client_proposal_in_batch is called, perform peer
+    /// Each time handle_raft_request_in_batch is called, perform peer
     /// synchronization check
     /// 1. Verify if any peer's next_id <= leader's commit_index
     /// 2. For non-synced peers meeting this condition: a. Retrieve all unsynced log entries b.
@@ -77,9 +77,9 @@ where
     ///    pushed
     ///
     /// Leader state will be updated by LeaderState only(follows SRP).
-    async fn handle_client_proposal_in_batch(
+    async fn handle_raft_request_in_batch(
         &self,
-        commands: Vec<ClientCommand>,
+        entry_payloads: Vec<EntryPayload>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &crate::RaftContext<T>,

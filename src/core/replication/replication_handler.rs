@@ -1,24 +1,11 @@
-use std::cmp;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use dashmap::DashMap;
-use prost::Message;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::trace;
-use tracing::warn;
-
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::POF;
 use crate::alias::ROF;
-use crate::proto::client::ClientCommand;
+use crate::proto::client::WriteCommand;
+use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::replication::append_entries_response;
 use crate::proto::replication::AppendEntriesRequest;
@@ -39,6 +26,19 @@ use crate::StateSnapshot;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use dashmap::DashMap;
+use prost::Message;
+use std::cmp;
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::trace;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
@@ -54,16 +54,16 @@ impl<T> ReplicationCore<T> for ReplicationHandler<T>
 where
     T: TypeConfig,
 {
-    async fn handle_client_proposal_in_batch(
+    async fn handle_raft_request_in_batch(
         &self,
-        commands: Vec<ClientCommand>,
+        entry_payloads: Vec<EntryPayload>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &RaftContext<T>,
         peer_channels: Arc<POF<T>>,
     ) -> Result<AppendResults> {
-        debug!("-------- handle_client_proposal_in_batch --------");
-        trace!("commands: {:?}", &commands);
+        debug!("-------- handle_raft_request_in_batch --------");
+        trace!("entry_payloads: {:?}", &entry_payloads);
 
         // ----------------------
         // Phase 1: Pre-Checks
@@ -82,7 +82,7 @@ where
         let raft_log = ctx.raft_log();
         let leader_last_index_before = raft_log.last_entry_id();
 
-        let new_entries = self.generate_new_entries(commands, state_snapshot.current_term, raft_log)?;
+        let new_entries = self.generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)?;
 
         // ----------------------
         // Phase 3: Prepare Replication Data
@@ -454,20 +454,20 @@ where
     ///     including insert them into local raft log
     pub(super) fn generate_new_entries(
         &self,
-        commands: Vec<ClientCommand>,
+        entry_payloads: Vec<EntryPayload>,
         current_term: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<Vec<Entry>> {
-        let mut entries = Vec::with_capacity(commands.len());
+        let mut entries = Vec::with_capacity(entry_payloads.len());
 
-        for command in commands {
+        for payload in entry_payloads {
             let index = raft_log.pre_allocate_raft_logs_next_index();
             debug!("Allocated log index: {}", index);
 
             entries.push(Entry {
                 index,
                 term: current_term,
-                command: command.encode_to_vec(),
+                payload: Some(payload),
             });
         }
 
@@ -550,4 +550,27 @@ where
             .field("my_id", &self.my_id)
             .finish()
     }
+}
+
+/// Converts a vector of client WriteCommands into a vector of EntryPayloads.
+/// Each WriteCommand is serialized into bytes and wrapped in an EntryPayload::Command variant.
+///
+/// # Arguments
+/// * `commands` - A vector of WriteCommand to be converted
+///
+/// # Returns
+/// A vector of EntryPayload containing the serialized commands
+pub(crate) fn client_command_to_entry_payloads(commands: Vec<WriteCommand>) -> Vec<EntryPayload> {
+    commands
+        .into_iter()
+        .map(|cmd| {
+            // Serialize each WriteCommand to bytes
+            let bytes = cmd.encode_to_vec();
+
+            // Create EntryPayload with Command variant containing the serialized bytes
+            EntryPayload {
+                payload: Some(Payload::Command(bytes)),
+            }
+        })
+        .collect()
 }

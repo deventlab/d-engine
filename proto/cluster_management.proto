@@ -1,10 +1,12 @@
 syntax = "proto3";
 package raft.cluster;
 
+import "proto/common.proto"; 
 import "proto/storage.proto";
 
+
 //Configuration change request specifies the operation type
-message ClusterMembershipChangeRequest {
+message ClusterConfChangeRequest {
     // the request sender id, (might be fake leader or real leader)
     uint32 id = 1;
 
@@ -16,15 +18,11 @@ message ClusterMembershipChangeRequest {
     // value is timestamp by default.
     uint64 version = 3;
   
-    ClusterMembership cluster_membership = 4;
-
-    enum ChangeType {
-      ADD_VOTER = 0; // Add as Learner
-      PROMOTE_NODE = 1; // Promote to Voter
-      REMOVE_NODE = 2;
+    oneof change {
+      raft.common.AddNode add_node = 4;
+      raft.common.RemoveNode remove_node = 5;
+      raft.common.PromoteLearner promote_learner = 6;
     }
-
-    ChangeType change_type = 5;
   }
   
   message ClusterConfUpdateResponse {
@@ -98,7 +96,7 @@ message JoinResponse {
 }
 
 service ClusterManagementService {
-  rpc UpdateClusterConf (ClusterMembershipChangeRequest) returns (ClusterConfUpdateResponse);
+  rpc UpdateClusterConf (ClusterConfChangeRequest) returns (ClusterConfUpdateResponse);
   rpc GetClusterMetadata (MetadataRequest) returns (ClusterMembership);
 
   // Request to join the cluster as a new learner node

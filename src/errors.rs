@@ -198,6 +198,10 @@ pub enum StorageError {
     /// File delete errors
     #[error("Delete file failed")]
     FileDelete(#[from] FileDeleteError),
+
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -390,6 +394,12 @@ pub enum MembershipError {
     /// To be removed node is leader.
     #[error("To be removed node({0}) is leader.")]
     RemoveNodeIsLeader(u32),
+
+    #[error("Cannot promote node {node_id}: current role is {role} (expected LEARNER)")]
+    InvalidPromotion { node_id: u32, role: i32 },
+
+    #[error("Invalid membership change request")]
+    InvalidChangeRequest,
 }
 
 // ============== Conversion Implementations ============== //

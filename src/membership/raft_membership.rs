@@ -32,8 +32,9 @@ use super::PeerChannels;
 use crate::alias::POF;
 use crate::cluster::is_candidate;
 use crate::cluster::is_follower;
+use crate::proto::cluster::cluster_conf_change_request::Change;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
 use crate::ChannelWithAddressAndRole;
@@ -188,7 +189,7 @@ where
     async fn update_cluster_conf_from_leader(
         &self,
         my_current_term: u64,
-        cluster_conf_change_req: &ClusterMembershipChangeRequest,
+        cluster_conf_change_req: &ClusterConfChangeRequest,
     ) -> Result<()> {
         let leader_id = cluster_conf_change_req.id;
         debug!(
@@ -213,34 +214,56 @@ where
         // Step 2: compare configure version
         if self.get_cluster_conf_version() > cluster_conf_change_req.version {
             warn!(
-                "[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}",
+                "[update_cluster_conf_from_leader] current conf version ({}) is higher than cluster request one:{}",
+                self.get_cluster_conf_version(),
                 cluster_conf_change_req.version
             );
 
             return Err(Error::Consensus(ConsensusError::Membership(
                 MembershipError::UpdateFailed(format!(
-                    "[update_cluster_conf_from_leader] currenter conf version than cluster request one:{:?}",
+                    "[update_cluster_conf_from_leader] current conf version ({}) is higher than cluster request one:{}",
+                    self.get_cluster_conf_version(),
                     cluster_conf_change_req.version
                 )),
             )));
         }
 
-        // Step 3: install latest configure and update configure version
-        debug!("success! going to update cluster role and myself one");
-        if let Some(new_cluster_metadata) = &cluster_conf_change_req.cluster_membership {
-            for node in &new_cluster_metadata.nodes {
-                let received_node_role = node.role;
-
-                if let Err(e) = self.update_node_role(node.id, received_node_role) {
-                    error!(
-                        "failed to update_node_role({}, {:?}): {:?}",
-                        node.id, received_node_role, e
-                    );
-                    return Err(e);
+        // Step 3: Handle specific change type
+        match &cluster_conf_change_req.change {
+            Some(Change::AddNode(add_node)) => {
+                self.add_learner(add_node.node_id, add_node.address.clone()).await?;
+            }
+            Some(Change::RemoveNode(remove_node)) => {
+                self.remove_node(remove_node.node_id).await?;
+            }
+            Some(Change::PromoteLearner(promote_learner)) => {
+                let node_id = promote_learner.node_id;
+                if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
+                    if node_meta.role == LEARNER {
+                        node_meta.role = FOLLOWER;
+                    } else {
+                        warn!(
+                            "Cannot promote node {}: current role is {} (expected LEARNER)",
+                            node_id, node_meta.role
+                        );
+                        return Err(MembershipError::InvalidPromotion {
+                            node_id,
+                            role: node_meta.role,
+                        }
+                        .into());
+                    }
+                } else {
+                    return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
                 }
             }
-            self.update_cluster_conf_version(cluster_conf_change_req.version);
+            None => {
+                warn!("No change specified in ClusterConfChangeRequest");
+                return Err(MembershipError::InvalidChangeRequest.into());
+            }
         }
+
+        // Step 4: Update cluster configuration version
+        self.update_cluster_conf_from_leader_version(cluster_conf_change_req.version);
 
         Ok(())
     }
@@ -251,7 +274,7 @@ where
     }
 
     #[autometrics(objective = API_SLO)]
-    fn update_cluster_conf_version(
+    fn update_cluster_conf_from_leader_version(
         &self,
         new_version: u64,
     ) {
@@ -382,6 +405,14 @@ where
                 })
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_role_by_node_id(
+        &self,
+        node_id: u32,
+    ) -> Option<i32> {
+        Some(self.membership.get(&node_id)?.role)
     }
 }
 

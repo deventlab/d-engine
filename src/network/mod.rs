@@ -17,7 +17,7 @@ use mockall::automock;
 use tonic::async_trait;
 
 use crate::proto::cluster::ClusterConfUpdateResponse;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::replication::AppendEntriesRequest;
@@ -94,7 +94,7 @@ pub trait Transport: Send + Sync + 'static {
     async fn send_cluster_update(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
-        req: ClusterMembershipChangeRequest,
+        req: ClusterConfChangeRequest,
         retry: &RetryPolicies,
     ) -> Result<ClusterUpdateResult>;
 

@@ -1,10 +1,3 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use prost::Message;
-use sled::Batch;
-
 use super::*;
 use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
 use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
@@ -16,10 +9,11 @@ use crate::convert::safe_vk;
 use crate::file_io::compute_checksum_from_path;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
-use crate::proto::client::ClientCommand;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
+use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::{self};
@@ -28,6 +22,10 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
 use crate::COMMITTED_LOG_METRIC;
+use sled::Batch;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[test]
 fn test_start_stop() {
@@ -56,7 +54,7 @@ fn test_apply_committed_raft_logs_in_batch() {
         let log = Entry {
             index: id,
             term: 1,
-            command: generate_insert_commands(vec![id]),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }
@@ -136,7 +134,7 @@ fn test_last_entry_detection() {
         let log = Entry {
             index: id,
             term: 1,
-            command: generate_insert_commands(vec![id]),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }
@@ -193,12 +191,12 @@ async fn test_apply_chunk_functionality() {
     let test_entries = vec![
         Entry {
             index: 1,
-            command: ClientCommand::insert(safe_kv(1), safe_kv(2)).encode_to_vec(),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![1, 2]))),
             term: 1,
         },
         Entry {
             index: 2,
-            command: ClientCommand::delete(safe_kv(1)).encode_to_vec(),
+            payload: Some(EntryPayload::command(generate_delete_commands(1..=1))),
             term: 1,
         },
     ];
@@ -218,7 +216,7 @@ fn test_metrics_integration() {
     let sm = context.state_machine.clone();
     let test_entry = Entry {
         index: 1,
-        command: ClientCommand::insert(safe_kv(1), safe_kv(2)).encode_to_vec(),
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1, 2]))),
         term: 1,
     };
 

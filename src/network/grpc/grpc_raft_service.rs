@@ -18,13 +18,13 @@ use tracing::error;
 use tracing::warn;
 
 use crate::proto::client::raft_client_service_server::RaftClientService;
-use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
+use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::MetadataRequest;
@@ -173,10 +173,13 @@ where
     #[tracing::instrument]
     async fn update_cluster_conf(
         &self,
-        request: tonic::Request<ClusterMembershipChangeRequest>,
+        request: tonic::Request<ClusterConfChangeRequest>,
     ) -> std::result::Result<Response<ClusterConfUpdateResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[rpc|update_cluster_conf] Node-{} is not ready!", self.node_id);
+            warn!(
+                "[rpc|update_cluster_conf_from_leader] Node-{} is not ready!",
+                self.node_id
+            );
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -187,7 +190,7 @@ where
             .map_err(|_| Status::internal("Event channel closed"))?;
 
         let timeout_duration = Duration::from_millis(self.node_config.retry.membership.timeout_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "update_cluster_conf").await
+        handle_rpc_timeout(resp_rx, timeout_duration, "update_cluster_conf_from_leader").await
     }
 
     /// Returns current cluster membership and state metadata
@@ -251,12 +254,12 @@ where
     /// - Ensures linearizable writes through log replication
     #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[tracing::instrument]
-    async fn handle_client_propose(
+    async fn handle_client_write(
         &self,
-        request: tonic::Request<ClientProposeRequest>,
+        request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[handle_client_propose] Node-{} is not ready!", self.node_id);
+            warn!("[handle_client_write] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -265,7 +268,7 @@ where
         let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
 
         let request_future = async move {
-            let req: ClientProposeRequest = request.into_inner();
+            let req: ClientWriteRequest = request.into_inner();
             // Extract request and validate
             if req.commands.is_empty() {
                 return Err(Status::invalid_argument("Commands cannot be empty"));
@@ -277,7 +280,7 @@ where
                 .await
                 .map_err(|_| Status::internal("Event channel closed"))?;
 
-            handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_propose").await
+            handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write").await
         };
 
         let cancellation_future = async move {

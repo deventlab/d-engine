@@ -21,6 +21,8 @@ pub(crate) use replication::*;
 pub(crate) use state_machine_handler::*;
 pub(crate) use timer::*;
 
+use crate::proto::common::{entry_payload::Payload, membership_change::Change, EntryPayload, MembershipChange, Noop};
+
 #[cfg(test)]
 mod raft_oneshot_test;
 #[cfg(test)]
@@ -70,4 +72,23 @@ pub enum QuorumStatus {
     Confirmed,    // Confirmed by the majority of nodes
     LostQuorum,   // Unable to obtain majority
     NetworkError, // Network problem (can be retried)
+}
+
+impl EntryPayload {
+    pub fn command(command: Vec<u8>) -> Self {
+        Self {
+            payload: Some(Payload::Command(command)),
+        }
+    }
+    pub fn noop() -> Self {
+        Self {
+            payload: Some(Payload::Noop(Noop {})),
+        }
+    }
+
+    pub fn config(change: Change) -> Self {
+        Self {
+            payload: Some(Payload::Config(MembershipChange { change: Some(change) })),
+        }
+    }
 }

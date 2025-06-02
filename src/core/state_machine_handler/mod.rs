@@ -54,7 +54,6 @@ use tonic::async_trait;
 
 use super::NewCommitData;
 use crate::alias::ROF;
-use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientResult;
 use crate::proto::common::LogId;
 use crate::proto::storage::PurgeLogRequest;
@@ -83,7 +82,7 @@ where
 
     fn read_from_state_machine(
         &self,
-        client_command: Vec<ClientCommand>,
+        keys: Vec<Vec<u8>>,
     ) -> Option<Vec<ClientResult>>;
 
     async fn install_snapshot_chunk(

@@ -63,12 +63,12 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tracing::error;
 
-use crate::proto::client::client_command;
 use crate::proto::client::client_response::SuccessResult;
-use crate::proto::client::ClientCommand;
+use crate::proto::client::write_command;
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientResult;
 use crate::proto::client::ReadResults;
+use crate::proto::client::WriteCommand;
 use crate::proto::error::ErrorCode;
 
 /// Main entry point for interacting with the d_engine cluster
@@ -157,17 +157,7 @@ impl Client {
     }
 }
 
-impl ClientCommand {
-    /// Create read command for specified key
-    ///
-    /// # Parameters
-    /// - `key`: Byte array representing data key
-    pub fn get(key: impl AsRef<[u8]>) -> Self {
-        Self {
-            command: Some(client_command::Command::Get(key.as_ref().to_vec())),
-        }
-    }
-
+impl WriteCommand {
     /// Create write command for key-value pair
     ///
     /// # Parameters
@@ -177,12 +167,12 @@ impl ClientCommand {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Self {
-        let insert_cmd = client_command::Insert {
+        let cmd = write_command::Insert {
             key: key.as_ref().to_vec(),
             value: value.as_ref().to_vec(),
         };
         Self {
-            command: Some(client_command::Command::Insert(insert_cmd)),
+            operation: Some(write_command::Operation::Insert(cmd)),
         }
     }
 
@@ -191,18 +181,11 @@ impl ClientCommand {
     /// # Parameters
     /// - `key`: Byte array of key to delete
     pub fn delete(key: impl AsRef<[u8]>) -> Self {
+        let cmd = write_command::Delete {
+            key: key.as_ref().to_vec(),
+        };
         Self {
-            command: Some(client_command::Command::Delete(key.as_ref().to_vec())),
-        }
-    }
-
-    /// Create empty operation command for heartbeat detection
-    ///
-    /// # Usage
-    /// Maintains connection activity without data operation
-    pub(crate) fn no_op() -> Self {
-        Self {
-            command: Some(client_command::Command::NoOp(true)),
+            operation: Some(write_command::Operation::Delete(cmd)),
         }
     }
 }

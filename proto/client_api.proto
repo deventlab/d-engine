@@ -3,29 +3,29 @@ package raft.client;
 
 import "proto/error.proto";
 
-message ClientCommand {
-oneof command {
-    bytes get = 1;            // Key for GET
-    Insert insert = 2;        // Key+Value for INSERT
-    bytes delete = 3;         // Key for DELETE
-    bool no_op = 4;           // Simple flag for NO_OP
+// Write operation-specific command
+message WriteCommand {
+    message Insert {
+        bytes key = 1;
+        bytes value = 2;
+    }
+    message Delete {
+        bytes key = 1;
+    }
+    oneof operation {
+        Insert insert = 1;
+        Delete delete = 2;
+    }
 }
-
-message Insert {
-    bytes key = 1;
-    bytes value = 2;
-}
-}
-
-message ClientProposeRequest {
+message ClientWriteRequest {
     uint32 client_id = 1;
-    repeated ClientCommand commands = 2;
+    repeated WriteCommand commands = 2;
 }
 
 message ClientReadRequest {
     uint32 client_id = 1;
     bool linear = 2;
-    repeated ClientCommand commands = 3;
+    repeated bytes keys = 3; // Key list to be read
 }
 
 message ClientResponse {
@@ -50,6 +50,6 @@ message ReadResults {
   
 
 service RaftClientService {
-  rpc HandleClientPropose (ClientProposeRequest) returns (ClientResponse);
+  rpc HandleClientWrite (ClientWriteRequest) returns (ClientResponse);
   rpc HandleClientRead (ClientReadRequest) returns (ClientResponse);
 }

@@ -1,24 +1,13 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use mockall::predicate::eq;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::alias::POF;
+use crate::client_command_to_entry_payloads;
 use crate::convert::safe_kv;
-use crate::proto::client::ClientCommand;
-use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
-use crate::proto::cluster::cluster_membership_change_request::ChangeType;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
@@ -58,11 +47,21 @@ use crate::PeerUpdate;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftOneshot;
+use crate::RaftRequestWithSignal;
 use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
 use crate::StorageError;
 use crate::FOLLOWER;
+use mockall::predicate::eq;
+use nanoid::nanoid;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
 
 struct TestContext {
     state: LeaderState<MockTypeConfig>,
@@ -77,7 +76,7 @@ struct TestContext {
 async fn setup_test_case(
     test_name: &str,
     batch_threshold: usize,
-    handle_client_proposal_in_batch_expect_times: usize,
+    handle_raft_request_in_batch_expect_times: usize,
     shutdown_signal: watch::Receiver<()>,
 ) -> TestContext {
     let mut node_config = node_config(&format!("/tmp/{test_name}",));
@@ -110,8 +109,8 @@ async fn setup_test_case(
 
     //Configure mock behavior
     replication_handler
-        .expect_handle_client_proposal_in_batch()
-        .times(handle_client_proposal_in_batch_expect_times)
+        .expect_handle_raft_request_in_batch()
+        .times(handle_raft_request_in_batch_expect_times)
         .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
@@ -162,7 +161,7 @@ pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::resul
     }
 }
 
-/// # Case 1.1: Test process_client_propose by simulating client proposal request
+/// # Case 1.1: Test process_raft_request by simulating client proposal request
 /// Validates leader behavior when replicating new client proposals with
 /// partially synchronized cluster
 ///
@@ -190,14 +189,14 @@ pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::resul
 ///    - Peer2, next_index: 6
 /// 4. Receiver Ok(ClientResponse::write_success) signal
 #[tokio::test]
-async fn test_process_client_propose_case1_1() {
+async fn test_process_raft_request_case1_1() {
     // Initialize the test environment (threshold = 0 means immediate execution)
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_1", 0, 1, graceful_rx).await;
+    let mut test_context = setup_test_case("/tmp/test_process_raft_request_case1_1", 0, 1, graceful_rx).await;
 
     // Prepare test request
-    let request = ClientProposeRequest {
+    let request = ClientWriteRequest {
         client_id: 0,
         commands: vec![],
     };
@@ -207,7 +206,17 @@ async fn test_process_client_propose_case1_1() {
     // Execute test operation
     let result = test_context
         .state
-        .process_client_propose(request, tx, &test_context.raft_context, peer_channels, false, &role_tx)
+        .process_raft_request(
+            RaftRequestWithSignal {
+                id: nanoid!(),
+                payloads: client_command_to_entry_payloads(request.commands),
+                sender: tx,
+            },
+            &test_context.raft_context,
+            peer_channels,
+            false,
+            &role_tx,
+        )
         .await;
 
     // Verify the result
@@ -226,7 +235,7 @@ async fn test_process_client_propose_case1_1() {
     assert_client_response(rx).await;
 }
 
-/// # Case 1.2: Test process_client_propose by simulating client proposal request
+/// # Case 1.2: Test process_raft_request by simulating client proposal request
 /// Validates two client proposal responses will be returned
 ///
 /// ## Scenario Setup
@@ -253,13 +262,13 @@ async fn test_process_client_propose_case1_1() {
 ///    - Peer2, next_index: 6
 /// 4. Receiver two Ok(ClientResponse::write_success) signal
 #[tokio::test]
-async fn test_process_client_propose_case1_2() {
+async fn test_process_raft_request_case1_2() {
     // Initialize the test environment (threshold = 0 means immediate execution)
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case1_2", 0, 2, graceful_rx).await;
+    let mut test_context = setup_test_case("/tmp/test_process_raft_request_case1_2", 0, 2, graceful_rx).await;
 
     // Prepare test request
-    let request = ClientProposeRequest {
+    let request = ClientWriteRequest {
         client_id: 0,
         commands: vec![],
     };
@@ -271,9 +280,12 @@ async fn test_process_client_propose_case1_2() {
     // Execute test operation
     let result1 = test_context
         .state
-        .process_client_propose(
-            request.clone(),
-            tx1,
+        .process_raft_request(
+            RaftRequestWithSignal {
+                id: nanoid!(),
+                payloads: client_command_to_entry_payloads(request.commands.clone()),
+                sender: tx1,
+            },
             &test_context.raft_context,
             peer_channels.clone(),
             true,
@@ -283,7 +295,17 @@ async fn test_process_client_propose_case1_2() {
 
     let result2 = test_context
         .state
-        .process_client_propose(request, tx2, &test_context.raft_context, peer_channels, true, &role_tx)
+        .process_raft_request(
+            RaftRequestWithSignal {
+                id: nanoid!(),
+                payloads: client_command_to_entry_payloads(request.commands),
+                sender: tx2,
+            },
+            &test_context.raft_context,
+            peer_channels,
+            true,
+            &role_tx,
+        )
         .await;
 
     // Verify the result
@@ -305,7 +327,7 @@ async fn test_process_client_propose_case1_2() {
     assert_client_response(rx2).await;
 }
 
-/// # Case 2: Test process_client_propose by client propose request
+/// # Case 2: Test process_raft_request by client propose request
 ///
 /// ## Setup
 /// - execute_now = false
@@ -314,13 +336,13 @@ async fn test_process_client_propose_case1_2() {
 /// ## Criterias
 /// - return Ok()
 #[tokio::test]
-async fn test_process_client_propose_case2() {
-    // let context = setup_raft_components("/tmp/test_process_client_propose_case2", None, false);
+async fn test_process_raft_request_case2() {
+    // let context = setup_raft_components("/tmp/test_process_raft_request_case2", None, false);
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context = setup_test_case("/tmp/test_process_client_propose_case2", 100, 0, graceful_rx).await;
+    let mut test_context = setup_test_case("/tmp/test_process_raft_request_case2", 100, 0, graceful_rx).await;
 
     // 1. Prepare mocks
-    let client_propose_request = ClientProposeRequest {
+    let client_propose_request = ClientWriteRequest {
         client_id: 0,
         commands: vec![],
     };
@@ -332,9 +354,12 @@ async fn test_process_client_propose_case2() {
     let peer_channels = Arc::new(mock_peer_channels());
     assert!(test_context
         .state
-        .process_client_propose(
-            client_propose_request,
-            resp_tx,
+        .process_raft_request(
+            RaftRequestWithSignal {
+                id: nanoid!(),
+                payloads: client_command_to_entry_payloads(client_propose_request.commands),
+                sender: resp_tx,
+            },
             &test_context.raft_context,
             peer_channels,
             false,
@@ -536,12 +561,11 @@ async fn test_handle_raft_event_case3_1() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = RaftEvent::ClusterConfUpdate(
-        ClusterMembershipChangeRequest {
+        ClusterConfChangeRequest {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: None,
-            change_type: ChangeType::AddVoter.into(),
+            change: None,
         },
         resp_tx,
     );
@@ -579,12 +603,11 @@ async fn test_handle_raft_event_case3_2() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = RaftEvent::ClusterConfUpdate(
-        ClusterMembershipChangeRequest {
+        ClusterConfChangeRequest {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: None,
-            change_type: ChangeType::AddVoter.into(),
+            change: None,
         },
         resp_tx,
     );
@@ -691,7 +714,7 @@ async fn test_handle_raft_event_case4_2() {
 }
 
 /// # Case 5.1: Test handle client propose request
-///     if process_client_propose returns Ok()
+///     if process_raft_request returns Ok()
 #[tokio::test]
 async fn test_handle_raft_event_case5_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -703,7 +726,7 @@ async fn test_handle_raft_event_case5_1() {
     // Handle raft event
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientPropose(
-        ClientProposeRequest {
+        ClientWriteRequest {
             client_id: 1,
             commands: vec![],
         },
@@ -718,7 +741,7 @@ async fn test_handle_raft_event_case5_1() {
 }
 
 /// # Case 5.1: Test handle client propose request
-///     if process_client_propose returns Err()
+///     if process_raft_request returns Err()
 #[tokio::test]
 async fn test_handle_raft_event_case5_2() {}
 
@@ -731,7 +754,7 @@ async fn test_handle_raft_event_case6_1() {
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .times(1)
         .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
 
@@ -745,12 +768,12 @@ async fn test_handle_raft_event_case6_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let commands = vec![ClientCommand::get(safe_kv(1))];
+    let keys = vec![safe_kv(1).to_vec()];
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
-        commands,
+        keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
@@ -771,7 +794,7 @@ async fn test_handle_raft_event_case6_1() {
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
 /// 2. calculate_majority_matched_index return Some(3), 3 is new commit index
-/// 3. handle_client_proposal_in_batch returns Ok(AppendResults{})
+/// 3. handle_raft_request_in_batch returns Ok(AppendResults{})
 ///
 /// ## Validation criterias:
 /// 1. Leader commit should be updated to: 3(new commit index)
@@ -784,7 +807,7 @@ async fn test_handle_raft_event_case6_2() {
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .times(1)
         .returning(|_, _, _, _, _| {
             Ok(AppendResults {
@@ -826,11 +849,11 @@ async fn test_handle_raft_event_case6_2() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let commands = vec![ClientCommand::get(safe_kv(1))];
+    let keys = vec![safe_kv(1).to_vec()];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
-        commands,
+        keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
@@ -867,7 +890,7 @@ async fn test_handle_raft_event_case6_2() {
 /// ## Preparaiton setup
 /// 1. Leader current commit is 1
 /// 2. calculate_majority_matched_index return Some(3), 3 is new commit index
-/// 3. handle_client_proposal_in_batch returns Err(Error::HigherTermFoundError)
+/// 3. handle_raft_request_in_batch returns Err(Error::HigherTermFoundError)
 ///
 /// ## Validation criterias:
 /// 1. Leader commit should still be: 1(new commit index)
@@ -879,7 +902,7 @@ async fn test_handle_raft_event_case6_3() {
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .times(1)
         .returning(move |_, _, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
@@ -904,11 +927,11 @@ async fn test_handle_raft_event_case6_3() {
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
-    let commands = vec![ClientCommand::get(safe_kv(1))];
+    let keys = vec![safe_kv(1).to_vec()];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
-        commands,
+        keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);

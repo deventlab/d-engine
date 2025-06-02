@@ -1,11 +1,11 @@
 use tonic::Status;
 
-use crate::proto::client::ClientProposeRequest;
+use crate::proto::client::ClientWriteRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::MetadataRequest;
@@ -52,7 +52,7 @@ pub(crate) enum RaftEvent {
     ),
 
     ClusterConfUpdate(
-        ClusterMembershipChangeRequest,
+        ClusterConfChangeRequest,
         MaybeCloneOneshotSender<std::result::Result<ClusterConfUpdateResponse, Status>>,
     ),
 
@@ -62,7 +62,7 @@ pub(crate) enum RaftEvent {
     ),
 
     ClientPropose(
-        ClientProposeRequest,
+        ClientWriteRequest,
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
 
@@ -99,11 +99,11 @@ pub(crate) enum TestEvent {
 
     ClusterConf(MetadataRequest),
 
-    ClusterConfUpdate(ClusterMembershipChangeRequest),
+    ClusterConfUpdate(ClusterConfChangeRequest),
 
     AppendEntries(AppendEntriesRequest),
 
-    ClientPropose(ClientProposeRequest),
+    ClientPropose(ClientWriteRequest),
 
     ClientReadRequest(ClientReadRequest),
 

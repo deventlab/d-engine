@@ -31,9 +31,11 @@ use crate::convert::safe_kv;
 use crate::convert::safe_vk;
 use crate::file_io::compute_checksum_from_path;
 use crate::init_sled_state_machine_db;
-use crate::proto::client::client_command::Command;
-use crate::proto::client::client_command::Insert;
-use crate::proto::client::ClientCommand;
+use crate::proto::client::write_command::Delete;
+use crate::proto::client::write_command::Insert;
+use crate::proto::client::write_command::Operation;
+use crate::proto::client::WriteCommand;
+use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
@@ -170,10 +172,10 @@ impl StateMachine for RaftStateMachine {
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch = Batch::default();
         for entry in chunk {
-            if entry.command.is_empty() {
-                warn!("why entry command is empty?");
-                continue;
+            if entry.payload.is_none() {
+                panic!("Entry payload should not be None!");
             }
+
             if let Some(log_id) = highest_index_entry {
                 if entry.index > log_id.index {
                     highest_index_entry = Some(LogId {
@@ -189,33 +191,39 @@ impl StateMachine for RaftStateMachine {
                     term: entry.term,
                 });
             }
-
-            debug!("[ConverterEngine] prepare to insert entry({:?})", entry);
-            let req = match ClientCommand::decode(entry.command.as_slice()) {
-                Ok(r) => r,
-                Err(e) => {
-                    error!("ClientCommand::decode failed: {:?}", e);
-                    continue;
+            match entry.payload.unwrap().payload {
+                Some(Payload::Noop(_)) => {
+                    debug!("Handling NOOP command at index {}", entry.index);
                 }
-            };
-            match req.command {
-                Some(Command::Insert(Insert { key, value })) => {
-                    debug!("Handling INSERT command: {:?}", key);
-                    batch.insert(key, value);
+                Some(Payload::Command(data)) => {
+                    // Business write operation - deserialize and apply
+                    match WriteCommand::decode(&data[..]) {
+                        Ok(write_cmd) => match write_cmd.operation {
+                            Some(Operation::Insert(Insert { key, value })) => {
+                                debug!("Applying INSERT command at index {}: {:?}", entry.index, key);
+                                batch.insert(key, value);
+                            }
+                            Some(Operation::Delete(Delete { key })) => {
+                                debug!("Applying DELETE command at index {}: {:?}", entry.index, key);
+                                batch.remove(key);
+                            }
+                            None => {
+                                warn!("WriteCommand without operation at index {}", entry.index);
+                            }
+                        },
+                        Err(e) => {
+                            error!("Failed to decode WriteCommand at index {}: {:?}", entry.index, e);
+                            return Err(StorageError::SerializationError(e.to_string()).into());
+                        }
+                    }
                 }
-                Some(Command::Delete(key)) => {
-                    // Handle DELETE command
-                    debug!("Handling DELETE command: {:?}", key);
-                    batch.remove(key);
+                Some(Payload::Config(config_change)) => {
+                    debug!("Storing config change at index {}", entry.index);
+                    let config_key = b"__raft_config__".to_vec();
+                    let config_value = config_change.encode_to_vec();
+                    batch.insert(config_key, config_value);
                 }
-                Some(Command::NoOp(true)) => {
-                    // Handle NOOP command
-                    info!("Handling NOOP command. Do Nothing.");
-                }
-                _ => {
-                    // Handle the case where no command is set
-                    warn!("Can not identify which command it is.");
-                }
+                None => panic!("Entry payload variant should not be None!"),
             }
 
             let msg_id = entry.index.to_string();
@@ -224,16 +232,13 @@ impl StateMachine for RaftStateMachine {
             info!("[{}]- COMMITTED_LOG_METRIC: {} ", self.node_id, &msg_id);
         }
 
-        if let Err(e) = self.apply_batch(batch) {
-            error!("local insert commit entry into kv store failed: {:?}", e);
-            Err(e)
-        } else {
-            debug!("[ConverterEngine] convert bath successfully! ");
-            if let Some(log_id) = highest_index_entry {
-                self.update_last_applied(log_id);
-            }
-            Ok(())
+        // Apply batch and update last applied index
+        self.apply_batch(batch)?;
+        if let Some(log_id) = highest_index_entry {
+            self.update_last_applied(log_id);
         }
+
+        Ok(())
     }
 
     fn save_hard_state(&self) -> Result<()> {

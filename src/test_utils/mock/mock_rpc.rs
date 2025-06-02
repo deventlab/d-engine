@@ -1,13 +1,13 @@
 use tonic::Streaming;
 
 use crate::proto::client::raft_client_service_server::RaftClientService;
-use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
+use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::MetadataRequest;
@@ -68,7 +68,7 @@ impl RaftReplicationService for MockRpcService {
 impl ClusterManagementService for MockRpcService {
     async fn update_cluster_conf(
         &self,
-        _request: tonic::Request<ClusterMembershipChangeRequest>,
+        _request: tonic::Request<ClusterConfChangeRequest>,
     ) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         match &self.expected_update_cluster_conf_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
@@ -102,14 +102,14 @@ impl ClusterManagementService for MockRpcService {
 
 #[tonic::async_trait]
 impl RaftClientService for MockRpcService {
-    async fn handle_client_propose(
+    async fn handle_client_write(
         &self,
-        _request: tonic::Request<ClientProposeRequest>,
+        _request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         match &self.expected_client_propose_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock handle_client_propose response set")),
+            None => Err(tonic::Status::unknown("No mock handle_client_write response set")),
         }
     }
 

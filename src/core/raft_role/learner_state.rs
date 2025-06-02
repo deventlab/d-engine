@@ -20,10 +20,10 @@ use super::StateSnapshot;
 use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::client::ClientResponse;
+use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
-use crate::ConsensusError;
 use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -34,6 +34,7 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use crate::{ConsensusError, Membership};
 
 /// Learner node's state in Raft cluster.
 ///
@@ -209,16 +210,36 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
             }
-            RaftEvent::ClusterConfUpdate(_cluste_membership_change_request, sender) => {
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Not able to update cluster conf, as node is not Leader",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+            RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender) => {
+                let current_conf_version = ctx.membership().get_cluster_conf_version();
+
+                debug!(%current_conf_version, ?cluste_membership_change_request,
+                    "Learner receive ClusterConfUpdate"
+                );
+
+                let my_id = self.node_id();
+                let success = ctx
+                    .membership()
+                    .update_cluster_conf_from_leader(my_term, &cluste_membership_change_request)
+                    .await
+                    .is_ok();
+
+                let response = ClusterConfUpdateResponse {
+                    id: my_id,
+                    term: my_term,
+                    version: current_conf_version,
+                    success,
+                };
+
+                debug!(
+                    "[peer-{}] update_cluster_conf_from_leader response: {:?}",
+                    my_id, &response
+                );
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{e:?}");
+                    error!("Failed to send: {}", error_str);
+                    NetworkError::SingalSendFailed(error_str)
+                })?;
             }
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 self.handle_append_entries_request_workflow(

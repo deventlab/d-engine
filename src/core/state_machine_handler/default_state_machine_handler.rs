@@ -31,8 +31,6 @@ use crate::alias::SNP;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::move_directory;
 use crate::file_io::validate_checksum;
-use crate::proto::client::client_command::Command;
-use crate::proto::client::ClientCommand;
 use crate::proto::client::ClientResult;
 use crate::proto::common::LogId;
 use crate::proto::storage::PurgeLogRequest;
@@ -141,19 +139,12 @@ where
     #[autometrics(objective = API_SLO)]
     fn read_from_state_machine(
         &self,
-        client_command: Vec<ClientCommand>,
+        keys: Vec<Vec<u8>>,
     ) -> Option<Vec<ClientResult>> {
         let mut result = Vec::new();
-        for c in client_command {
-            match c.command {
-                Some(Command::Get(key)) => {
-                    if let Ok(Some(value)) = self.state_machine.get(&key) {
-                        result.push(ClientResult { key, value });
-                    }
-                }
-                _ => {
-                    error!("might be a bug while receiving none GET command, ignore.")
-                }
+        for key in keys {
+            if let Ok(Some(value)) = self.state_machine.get(&key) {
+                result.push(ClientResult { key, value });
             }
         }
 

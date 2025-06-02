@@ -851,7 +851,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     //Configure mock behavior
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
@@ -937,7 +937,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
 
     //Configure mock behavior
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
@@ -985,7 +985,7 @@ async fn test_handle_role_event_state_update_case1_5_1() {
     let mut raft = mock_raft("/tmp/test_handle_role_event_state_update_case1_5_1", graceful_rx, None);
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .returning(move |_, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     let mut raft_log = MockRaftLog::new();

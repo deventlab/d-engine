@@ -16,7 +16,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::election::raft_election_service_client::RaftElectionServiceClient;
 use crate::proto::election::VoteRequest;
 use crate::proto::replication::raft_replication_service_client::RaftReplicationServiceClient;
@@ -48,7 +48,7 @@ impl Transport for GrpcTransport {
     async fn send_cluster_update(
         &self,
         peers: Vec<ChannelWithAddressAndRole>,
-        req: ClusterMembershipChangeRequest,
+        req: ClusterConfChangeRequest,
         retry: &RetryPolicies,
     ) -> Result<ClusterUpdateResult> {
         debug!("-------- send cluster_membership requests --------");

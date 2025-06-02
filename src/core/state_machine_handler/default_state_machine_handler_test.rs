@@ -23,6 +23,7 @@ use crate::file_io::is_dir;
 use crate::init_sled_state_machine_db;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
@@ -32,6 +33,7 @@ use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::enable_logger;
+use crate::test_utils::generate_insert_commands;
 use crate::test_utils::node_config;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
@@ -205,7 +207,7 @@ async fn test_apply_batch_case2() {
         vec![Entry {
             index: 1,
             term: 1,
-            command: vec![1; 8],
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
         }]
     });
 
@@ -242,7 +244,7 @@ async fn test_apply_batch_case3() {
             entries.push(Entry {
                 index: i,
                 term: 1,
-                command: vec![1; 8],
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
             });
         }
         entries
@@ -1105,7 +1107,7 @@ fn mock_node_with_rpc_service(
     // Initializing Shutdown Signal
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,

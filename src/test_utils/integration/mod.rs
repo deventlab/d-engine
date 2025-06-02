@@ -56,6 +56,7 @@ use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
 use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
 use crate::DefaultStateMachineHandler;
@@ -219,7 +220,7 @@ pub(crate) fn insert_raft_log(
         let log = Entry {
             index: raft_log.pre_allocate_raft_logs_next_index(),
             term,
-            command: generate_insert_commands(vec![id]),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }
@@ -248,7 +249,7 @@ pub(crate) fn insert_state_machine(
         let log = Entry {
             index: id,
             term,
-            command: generate_insert_commands(vec![id]),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }

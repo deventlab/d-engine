@@ -7,11 +7,10 @@ use tonic::Status;
 
 use super::candidate_state::CandidateState;
 use crate::alias::POF;
-use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
-use crate::proto::cluster::cluster_membership_change_request::ChangeType;
+use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
@@ -277,12 +276,11 @@ async fn test_handle_raft_event_case3() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ClusterConfUpdate(
-        ClusterMembershipChangeRequest {
+        ClusterConfChangeRequest {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: None,
-            change_type: ChangeType::AddVoter.into(),
+            change: None,
         },
         resp_tx,
     );
@@ -531,7 +529,7 @@ async fn test_handle_raft_event_case5() {
     // Handle raft event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientPropose(
-        ClientProposeRequest {
+        ClientWriteRequest {
             client_id: 1,
             commands: vec![],
         },
@@ -559,7 +557,7 @@ async fn test_handle_raft_event_case6_1() {
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
-        commands: vec![],
+        keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
@@ -592,7 +590,7 @@ async fn test_handle_raft_event_case6_2() {
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: false,
-        commands: vec![],
+        keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);

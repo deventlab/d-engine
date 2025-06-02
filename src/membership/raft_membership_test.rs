@@ -3,15 +3,21 @@ use tokio::sync::watch;
 
 use super::RaftMembership;
 use crate::cluster::is_follower;
-use crate::proto::cluster::cluster_membership_change_request::ChangeType;
-use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
+use crate::proto::cluster::cluster_conf_change_request::Change;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
+use crate::proto::common::AddNode;
+use crate::proto::common::PromoteLearner;
+use crate::proto::common::RemoveNode;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockNode;
+use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;
+use crate::ConsensusError;
+use crate::Error;
 use crate::Membership;
+use crate::MembershipError;
 use crate::PeerChannelsFactory;
 use crate::RaftTypeConfig;
 use crate::RpcPeerChannels;
@@ -300,160 +306,139 @@ fn test_retrieve_cluster_membership_config() {
     assert!(!r.nodes.iter().any(|n| n.role == LEADER));
 }
 
-/// # Case 1: Test cluster conf update from Leader
-///     with Error, my term is higher than request one
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case1() {
-    let my_term = 10;
-
-    // Prepare cluster membership
-    let initial_cluster = vec![
-        NodeMeta {
-            id: 1,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 3,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 4,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-    ];
-
-    // Prepare request
-    let request = ClusterMembershipChangeRequest {
-        id: 3,
-        term: my_term - 1,
-        version: 1,
-        cluster_membership: Some(ClusterMembership {
-            version: 1,
-            nodes: initial_cluster.clone(),
-        }),
-        change_type: ChangeType::AddVoter.into(),
+    // Test AddNode operation
+    let membership = RaftMembership::<MockTypeConfig>::new(1, vec![]);
+    let req = ClusterConfChangeRequest {
+        id: 2,
+        term: 1,
+        version: 0,
+        change: Some(Change::AddNode(AddNode {
+            node_id: 3,
+            address: "127.0.0.1:8080".to_string(),
+        })),
     };
-    let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    assert!(membership
-        .update_cluster_conf_from_leader(my_term, &request)
-        .await
-        .is_err());
+    assert!(membership.update_cluster_conf_from_leader(1, &req).await.is_ok());
+    assert!(membership.contains_node(3));
+    assert_eq!(membership.get_cluster_conf_version(), 0); // Version from request
 }
 
-/// # Case 2: Test cluster conf update from Leader
-///     with Error, because my cluster conf version is higher than request one
-///
-/// # Setup:
-/// 1. my term is equal with request one
-/// 2. my cluster conf version is higher than request one
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case2() {
-    let my_term = 10;
-
-    // Prepare cluster membership
-    let initial_cluster = vec![
-        NodeMeta {
-            id: 1,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
+    // Test RemoveNode operation
+    let membership = RaftMembership::<MockTypeConfig>::new(
+        1,
+        vec![NodeMeta {
             id: 3,
-            address: "127.0.0.1:10000".to_string(),
+            address: "127.0.0.1:8080".to_string(),
             role: FOLLOWER,
             status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 4,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-    ];
-
-    // Prepare request
-    let request_cluster_conf_version = 1;
-    let request = ClusterMembershipChangeRequest {
-        id: 3,
-        term: my_term,
-        version: request_cluster_conf_version,
-        cluster_membership: Some(ClusterMembership {
-            version: 1,
-            nodes: initial_cluster.clone(),
-        }),
-        change_type: ChangeType::AddVoter.into(),
+        }],
+    );
+    let req = ClusterConfChangeRequest {
+        id: 2,
+        term: 1,
+        version: 1,
+        change: Some(Change::RemoveNode(RemoveNode { node_id: 3 })),
     };
-    let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    // Prepare my cluster conf version is higher than request one
-    membership.update_cluster_conf_version(request_cluster_conf_version + 1);
-    assert!(membership
-        .update_cluster_conf_from_leader(my_term, &request)
-        .await
-        .is_err());
+    assert!(membership.update_cluster_conf_from_leader(1, &req).await.is_ok());
+    assert!(!membership.contains_node(3));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
 }
 
-/// # Case 3: Test cluster conf update from Leader
-///     with Ok()
-///
-/// # Setup:
-/// 1. my term is equal with request one
-/// 2. my cluster conf version is smaller than request one
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case3() {
-    let my_term = 10;
-
-    // Prepare cluster membership
-    let initial_cluster = vec![
-        NodeMeta {
-            id: 1,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
+    // Test PromoteLearner operation
+    let membership = RaftMembership::<MockTypeConfig>::new(
+        1,
+        vec![NodeMeta {
             id: 3,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
+            address: "127.0.0.1:8080".to_string(),
+            role: LEARNER,
             status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 4,
-            address: "127.0.0.1:10000".to_string(),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
-    ];
-
-    // Prepare request
-    let request_cluster_conf_version = 2;
-    let request = ClusterMembershipChangeRequest {
-        id: 3,
-        term: my_term,
-        version: request_cluster_conf_version,
-        cluster_membership: Some(ClusterMembership {
-            version: 1,
-            nodes: initial_cluster.clone(),
-        }),
-        change_type: ChangeType::AddVoter.into(),
+        }],
+    );
+    let req = ClusterConfChangeRequest {
+        id: 2,
+        term: 1,
+        version: 1,
+        change: Some(Change::PromoteLearner(PromoteLearner { node_id: 3 })),
     };
-    let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    // Prepare my cluster conf version is higher than request one
-    membership.update_cluster_conf_version(request_cluster_conf_version - 1);
-    assert!(membership
-        .update_cluster_conf_from_leader(my_term, &request)
-        .await
-        .is_ok());
-    assert_eq!(membership.get_cluster_conf_version(), request_cluster_conf_version);
+    assert!(membership.update_cluster_conf_from_leader(1, &req).await.is_ok());
+    assert_eq!(membership.get_role_by_node_id(3).unwrap(), FOLLOWER);
+    assert_eq!(membership.get_cluster_conf_version(), 1);
+}
+
+// Add these new tests to cover edge cases
+
+#[tokio::test]
+async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
+    // Try to promote non-learner node
+    let membership = RaftMembership::<MockTypeConfig>::new(
+        1,
+        vec![NodeMeta {
+            id: 3,
+            address: "127.0.0.1:8080".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active.into(),
+        }],
+    );
+    let req = ClusterConfChangeRequest {
+        id: 2,
+        term: 1,
+        version: 1,
+        change: Some(Change::PromoteLearner(PromoteLearner { node_id: 3 })),
+    };
+
+    let result = membership.update_cluster_conf_from_leader(1, &req).await;
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Membership(MembershipError::InvalidPromotion { .. }))
+    ));
+}
+
+#[tokio::test]
+async fn test_update_cluster_conf_from_leader_case5_conf_missing_change() {
+    // Test missing change type
+    let membership = RaftMembership::<MockTypeConfig>::new(1, vec![]);
+    let req = ClusterConfChangeRequest {
+        id: 2,
+        term: 1,
+        version: 0,
+        change: None,
+    };
+
+    let result = membership.update_cluster_conf_from_leader(1, &req).await;
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Membership(MembershipError::InvalidChangeRequest))
+    ));
+}
+
+#[tokio::test]
+async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
+    // Test version mismatch
+    let membership = RaftMembership::<MockTypeConfig>::new(1, vec![]);
+    membership.update_cluster_conf_from_leader_version(5); // Set current version to 5
+
+    let req = ClusterConfChangeRequest {
+        id: 2,
+        term: 1,
+        version: 4, // Older version
+        change: Some(Change::AddNode(AddNode {
+            node_id: 3,
+            address: "127.0.0.1:8080".to_string(),
+        })),
+    };
+
+    let result = membership.update_cluster_conf_from_leader(1, &req).await;
+    assert!(result.is_err());
 }
 
 /// This test covers:

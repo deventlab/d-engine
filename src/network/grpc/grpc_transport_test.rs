@@ -3,9 +3,8 @@ use tonic::Status;
 
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::proto::cluster::cluster_membership_change_request::ChangeType;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
@@ -62,12 +61,11 @@ async fn test_send_cluster_update_case1() {
     let my_id = 1;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case1");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusterMembershipChangeRequest {
+    let request = ClusterConfChangeRequest {
         id: 1,
         term: 1,
         version: 1,
-        cluster_membership: None,
-        change_type: ChangeType::AddVoter.into(),
+        change: None,
     };
 
     let client = GrpcTransport { my_id };
@@ -91,12 +89,11 @@ async fn test_send_cluster_update_case2() {
     let my_id = 1;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case2");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusterMembershipChangeRequest {
+    let request = ClusterConfChangeRequest {
         id: 1,
         term: 1,
         version: 1,
-        cluster_membership: None,
-        change_type: ChangeType::AddVoter.into(),
+        change: None,
     };
 
     // Simulate RPC service
@@ -146,12 +143,11 @@ async fn test_send_cluster_update_case3() {
     let peer2_id = 3;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case3");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusterMembershipChangeRequest {
+    let request = ClusterConfChangeRequest {
         id: 1,
         term: 1,
         version: 1,
-        cluster_membership: None,
-        change_type: ChangeType::AddVoter.into(),
+        change: None,
     };
 
     // Simulate RPC service
@@ -212,12 +208,11 @@ async fn test_send_cluster_update_case4() {
     let peer2_id = 3;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case4");
     node_config.retry.membership.max_retries = 1;
-    let request = ClusterMembershipChangeRequest {
+    let request = ClusterConfChangeRequest {
         id: 1,
         term: 1,
         version: 1,
-        cluster_membership: None,
-        change_type: ChangeType::AddVoter.into(),
+        change: None,
     };
 
     // Simulate RPC service

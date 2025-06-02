@@ -23,8 +23,9 @@ use tonic::async_trait;
 use tonic::transport::Channel;
 
 use crate::alias::POF;
+use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
@@ -110,12 +111,12 @@ where
     async fn update_cluster_conf_from_leader(
         &self,
         my_current_term: u64,
-        cluster_conf_change_req: &ClusterMembershipChangeRequest,
+        cluster_conf_change_req: &ClusterConfChangeRequest,
     ) -> Result<()>;
 
     fn get_cluster_conf_version(&self) -> u64;
 
-    fn update_cluster_conf_version(
+    fn update_cluster_conf_from_leader_version(
         &self,
         new_version: u64,
     );
@@ -149,4 +150,34 @@ where
 
     /// Get all node status
     fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+}
+
+impl ClusterConfUpdateResponse {
+    /// Generate a successful response (full success)
+    pub(crate) fn success(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: true,
+        }
+    }
+
+    /// Generate a conflict response (Higher term found)
+    pub(crate) fn higher_term(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+        }
+    }
 }

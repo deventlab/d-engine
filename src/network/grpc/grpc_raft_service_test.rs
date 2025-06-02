@@ -1,21 +1,11 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::Duration;
-
-use tokio::sync::watch;
-use tokio::time;
-use tonic::Code;
-use tonic::Request;
-
 use crate::convert::safe_kv;
 use crate::proto::client::raft_client_service_server::RaftClientService;
-use crate::proto::client::ClientCommand;
-use crate::proto::client::ClientProposeRequest;
 use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::WriteCommand;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
-use crate::proto::cluster::cluster_membership_change_request::ChangeType;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterMembershipChangeRequest;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::raft_election_service_server::RaftElectionService;
@@ -34,6 +24,13 @@ use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::RaftNodeConfig;
 use crate::StateUpdate;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+use tokio::sync::watch;
+use tokio::time;
+use tonic::Code;
+use tonic::Request;
 
 /// # Case: Test RPC services timeout
 #[tokio::test]
@@ -67,22 +64,18 @@ async fn test_handle_service_timeout() {
 
     // Update cluster conf request
     assert!(node
-        .update_cluster_conf(Request::new(ClusterMembershipChangeRequest {
+        .update_cluster_conf(Request::new(ClusterConfChangeRequest {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: Some(ClusterMembership {
-                version: 1,
-                nodes: vec![]
-            }),
-            change_type: ChangeType::AddVoter.into()
+            change: None
         }))
         .await
         .is_err());
 
     // Client Propose request
     assert!(node
-        .handle_client_propose(Request::new(ClientProposeRequest {
+        .handle_client_write(Request::new(ClientWriteRequest {
             commands: vec![],
             client_id: 1,
         }))
@@ -100,7 +93,7 @@ async fn test_handle_service_timeout() {
         .handle_client_read(Request::new(ClientReadRequest {
             client_id: 1,
             linear: true,
-            commands: vec![]
+            keys: vec![]
         }))
         .await
         .is_err());
@@ -142,15 +135,11 @@ async fn test_server_is_not_ready() {
 
     // Update cluster conf request
     let result = node
-        .update_cluster_conf(Request::new(ClusterMembershipChangeRequest {
+        .update_cluster_conf(Request::new(ClusterConfChangeRequest {
             id: 1,
             term: 1,
             version: 1,
-            cluster_membership: Some(ClusterMembership {
-                version: 1,
-                nodes: vec![],
-            }),
-            change_type: ChangeType::AddVoter.into(),
+            change: None,
         }))
         .await;
     assert!(result.is_err());
@@ -158,7 +147,7 @@ async fn test_server_is_not_ready() {
 
     // Client Propose request
     let result = node
-        .handle_client_propose(Request::new(ClientProposeRequest {
+        .handle_client_write(Request::new(ClientWriteRequest {
             client_id: 1,
             commands: vec![],
         }))
@@ -176,7 +165,7 @@ async fn test_server_is_not_ready() {
         .handle_client_read(Request::new(ClientReadRequest {
             client_id: 1,
             linear: true,
-            commands: vec![],
+            keys: vec![],
         }))
         .await;
     assert!(result.is_err());
@@ -219,7 +208,7 @@ async fn test_handle_rpc_services_successfully() {
             })
         });
     replication_handler
-        .expect_handle_client_proposal_in_batch()
+        .expect_handle_raft_request_in_batch()
         .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
@@ -286,23 +275,19 @@ async fn test_handle_rpc_services_successfully() {
             .is_ok());
 
         assert!(node
-            .update_cluster_conf(Request::new(ClusterMembershipChangeRequest {
+            .update_cluster_conf(Request::new(ClusterConfChangeRequest {
                 id: 1,
                 term: 1,
                 version: 1,
-                cluster_membership: Some(ClusterMembership {
-                    version: 1,
-                    nodes: vec![]
-                }),
-                change_type: ChangeType::AddVoter.into()
+                change: None
             }))
             .await
             .is_err());
 
         assert!(node
-            .handle_client_propose(Request::new(ClientProposeRequest {
+            .handle_client_write(Request::new(ClientWriteRequest {
                 client_id: 1,
-                commands: vec![ClientCommand::get(safe_kv(1))],
+                commands: vec![WriteCommand::delete(safe_kv(1))],
             }))
             .await
             .is_ok());
@@ -316,7 +301,7 @@ async fn test_handle_rpc_services_successfully() {
             .handle_client_read(Request::new(ClientReadRequest {
                 client_id: 1,
                 linear: false,
-                commands: vec![],
+                keys: vec![],
             }))
             .await
             .is_ok());
