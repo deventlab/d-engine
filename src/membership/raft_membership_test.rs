@@ -4,6 +4,7 @@ use tokio::sync::watch;
 use super::RaftMembership;
 use crate::cluster::is_follower;
 use crate::proto::cluster::cluster_conf_change_request::Change;
+use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
@@ -320,7 +321,16 @@ async fn test_update_cluster_conf_from_leader_case1() {
         })),
     };
 
-    assert!(membership.update_cluster_conf_from_leader(1, &req).await.is_ok());
+    assert!(membership
+        .update_cluster_conf_from_leader(
+            1,       // my_id
+            1,       // my_current_term
+            0,       // current_conf_version
+            Some(2), // current_leader_id
+            &req,
+        )
+        .await
+        .is_ok());
     assert!(membership.contains_node(3));
     assert_eq!(membership.get_cluster_conf_version(), 0); // Version from request
 }
@@ -344,7 +354,16 @@ async fn test_update_cluster_conf_from_leader_case2() {
         change: Some(Change::RemoveNode(RemoveNode { node_id: 3 })),
     };
 
-    assert!(membership.update_cluster_conf_from_leader(1, &req).await.is_ok());
+    assert!(membership
+        .update_cluster_conf_from_leader(
+            1,       // my_id
+            1,       // my_current_term
+            0,       // current_conf_version
+            Some(2), // current_leader_id
+            &req,
+        )
+        .await
+        .is_ok());
     assert!(!membership.contains_node(3));
     assert_eq!(membership.get_cluster_conf_version(), 1);
 }
@@ -368,12 +387,21 @@ async fn test_update_cluster_conf_from_leader_case3() {
         change: Some(Change::PromoteLearner(PromoteLearner { node_id: 3 })),
     };
 
-    assert!(membership.update_cluster_conf_from_leader(1, &req).await.is_ok());
+    let response = membership
+        .update_cluster_conf_from_leader(
+            1,       // my_id
+            1,       // my_current_term
+            0,       // current_conf_version
+            Some(2), // current_leader_id
+            &req,
+        )
+        .await
+        .expect("should succeed");
+
+    assert!(response.success);
     assert_eq!(membership.get_role_by_node_id(3).unwrap(), FOLLOWER);
     assert_eq!(membership.get_cluster_conf_version(), 1);
 }
-
-// Add these new tests to cover edge cases
 
 #[tokio::test]
 async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
@@ -394,7 +422,16 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
         change: Some(Change::PromoteLearner(PromoteLearner { node_id: 3 })),
     };
 
-    let result = membership.update_cluster_conf_from_leader(1, &req).await;
+    let result = membership
+        .update_cluster_conf_from_leader(
+            1,       // my_id
+            1,       // my_current_term
+            0,       // current_conf_version
+            Some(2), // current_leader_id
+            &req,
+        )
+        .await;
+
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -413,7 +450,16 @@ async fn test_update_cluster_conf_from_leader_case5_conf_missing_change() {
         change: None,
     };
 
-    let result = membership.update_cluster_conf_from_leader(1, &req).await;
+    let result = membership
+        .update_cluster_conf_from_leader(
+            1,       // my_id
+            1,       // my_current_term
+            0,       // current_conf_version
+            Some(2), // current_leader_id
+            &req,
+        )
+        .await;
+
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -437,8 +483,19 @@ async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
         })),
     };
 
-    let result = membership.update_cluster_conf_from_leader(1, &req).await;
-    assert!(result.is_err());
+    let response = membership
+        .update_cluster_conf_from_leader(
+            1,       // my_id
+            1,       // my_current_term
+            5,       // current_conf_version
+            Some(2), // current_leader_id
+            &req,
+        )
+        .await
+        .expect("should return response");
+
+    assert!(!response.success);
+    assert_eq!(response.error_code, ErrorCode::VersionConflict as i32);
 }
 
 /// This test covers:

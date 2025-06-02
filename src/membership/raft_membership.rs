@@ -34,12 +34,11 @@ use crate::cluster::is_candidate;
 use crate::cluster::is_follower;
 use crate::proto::cluster::cluster_conf_change_request::Change;
 use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
 use crate::ChannelWithAddressAndRole;
-use crate::ConsensusError;
-use crate::Error;
 use crate::MembershipError;
 use crate::Result;
 use crate::TypeConfig;
@@ -188,27 +187,39 @@ where
     #[autometrics(objective = API_SLO)]
     async fn update_cluster_conf_from_leader(
         &self,
+        my_id: u32,
         my_current_term: u64,
+        current_conf_version: u64,
+        current_leader_id: Option<u32>,
         cluster_conf_change_req: &ClusterConfChangeRequest,
-    ) -> Result<()> {
+    ) -> Result<ClusterConfUpdateResponse> {
         let leader_id = cluster_conf_change_req.id;
         debug!(
             "[update_cluster_conf_from_leader] receive cluster_conf_change_req({:?}) from leader_id({})",
             cluster_conf_change_req, leader_id,
         );
 
-        // Step 1: compare term
+        // Step 1: validate leader ID matches current known leader
+        if current_leader_id.is_some() && current_leader_id.unwrap() != cluster_conf_change_req.id {
+            warn!("Rejecting config change from non-leader");
+            return Ok(ClusterConfUpdateResponse::not_leader(
+                my_id,
+                my_current_term,
+                current_conf_version,
+            ));
+        }
+
+        // Step 2: compare term
         if my_current_term > cluster_conf_change_req.term {
             warn!(
                 "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
                 my_current_term, cluster_conf_change_req.term
             );
-            return Err(Error::Consensus(ConsensusError::Membership(
-                MembershipError::UpdateFailed(format!(
-                    "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
-                    my_current_term, cluster_conf_change_req.term
-                )),
-            )));
+            return Ok(ClusterConfUpdateResponse::higher_term(
+                my_id,
+                my_current_term,
+                current_conf_version,
+            ));
         }
 
         // Step 2: compare configure version
@@ -219,13 +230,11 @@ where
                 cluster_conf_change_req.version
             );
 
-            return Err(Error::Consensus(ConsensusError::Membership(
-                MembershipError::UpdateFailed(format!(
-                    "[update_cluster_conf_from_leader] current conf version ({}) is higher than cluster request one:{}",
-                    self.get_cluster_conf_version(),
-                    cluster_conf_change_req.version
-                )),
-            )));
+            return Ok(ClusterConfUpdateResponse::version_conflict(
+                my_id,
+                my_current_term,
+                current_conf_version,
+            ));
         }
 
         // Step 3: Handle specific change type
@@ -253,6 +262,7 @@ where
                         .into());
                     }
                 } else {
+                    warn!("No metadata found for node({node_id})");
                     return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
                 }
             }
@@ -265,7 +275,11 @@ where
         // Step 4: Update cluster configuration version
         self.update_cluster_conf_from_leader_version(cluster_conf_change_req.version);
 
-        Ok(())
+        return Ok(ClusterConfUpdateResponse::success(
+            my_id,
+            my_current_term,
+            current_conf_version,
+        ));
     }
 
     #[autometrics(objective = API_SLO)]

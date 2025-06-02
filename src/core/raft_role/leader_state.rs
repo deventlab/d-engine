@@ -1,24 +1,3 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-
-use autometrics::autometrics;
-use nanoid::nanoid;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
-
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
 use super::LeaderStateSnapshot;
@@ -75,6 +54,25 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use nanoid::nanoid;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+use tracing::warn;
 
 /// Leader node's state in Raft consensus algorithm.
 ///
@@ -450,14 +448,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 })?;
             }
 
-            RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender) => {
+            RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version();
-                debug!(%current_conf_version, ?cluste_membership_change_request,
+                debug!(%current_conf_version, ?cluste_conf_change_request,
                     "handle_raft_event::RaftEvent::ClusterConfUpdate",
                 );
 
                 // Reject the fake Leader append entries request
-                if my_term >= cluste_membership_change_request.term {
+                if my_term >= cluste_conf_change_request.term {
                     let response = ClusterConfUpdateResponse::higher_term(my_id, my_term, current_conf_version);
 
                     sender.send(Ok(response)).map_err(|e| {
@@ -469,12 +467,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     // Step down as Follower as new Leader found
                     info!("my({}) term < request one, now I will step down to Follower", my_id);
                     //TODO: if there is a bug?  self.update_current_term(vote_request.term);
-                    self.send_become_follower_event(Some(cluste_membership_change_request.id), &role_tx)?;
+                    self.send_become_follower_event(Some(cluste_conf_change_request.id), &role_tx)?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
                     self.send_replay_raft_event(
                         &role_tx,
-                        RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender),
+                        RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender),
                     )?;
                 }
             }

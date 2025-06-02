@@ -5,6 +5,7 @@ use crate::proto::client::ClientWriteRequest;
 use crate::proto::client::WriteCommand;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
 use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
@@ -190,7 +191,7 @@ async fn test_handle_rpc_services_successfully() {
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
         .expect_update_cluster_conf_from_leader()
-        .returning(|_, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(ClusterConfUpdateResponse::success(1, 1, 1)));
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership
         .expect_retrieve_cluster_membership_config()
@@ -198,6 +199,7 @@ async fn test_handle_rpc_services_successfully() {
             version: 1,
             nodes: vec![],
         });
+    membership.expect_current_leader().returning(|| None);
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_append_entries()
@@ -282,7 +284,7 @@ async fn test_handle_rpc_services_successfully() {
                 change: None
             }))
             .await
-            .is_err());
+            .is_ok());
 
         assert!(node
             .handle_client_write(Request::new(ClientWriteRequest {
@@ -310,6 +312,7 @@ async fn test_handle_rpc_services_successfully() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let (_, service_response) = tokio::join!(raft_handle, service_handler,);
+    println!("{:?}", service_response);
 
     // Assert if the handle client propose result is ok.
     assert!(service_response.is_ok());

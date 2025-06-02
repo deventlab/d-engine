@@ -26,11 +26,21 @@ message ClusterConfChangeRequest {
   }
   
   message ClusterConfUpdateResponse {
+    enum ErrorCode {
+      NONE = 0;
+      NOT_LEADER = 1;          // Request sent to non-leader
+      VERSION_CONFLICT = 2;    // Stale configuration version
+      TERM_OUTDATED = 3;       // Stale leader term
+      INVALID_CHANGE = 4;      // Malformed change request
+      INTERNAL_ERROR = 5;      // Server-side processing error
+    }
+
     // record down the response owner id
     uint32 id = 1;
     uint64 term = 2;
     uint64 version = 3;
     bool success = 4;
+    ErrorCode error_code = 5;
   }
 
 message MetadataRequest {

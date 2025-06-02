@@ -541,84 +541,86 @@ async fn test_handle_raft_event_case2() {
     assert_eq!(m.nodes, vec![]);
 }
 
-/// # Case 3.1: Receive ClusterConfUpdate Event
-///  and update successfully
+/// # Test reject_stale_term
 #[tokio::test]
-async fn test_handle_raft_event_case3_1() {
+async fn test_handle_raft_event_case3_1_reject_stale_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_1", graceful_rx, None);
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_raft_event_case3_1_reject_stale_term",
+        graceful_rx,
+        None,
+    );
+    // Mock membership to return success
     let mut membership = MockMembership::new();
-    membership
-        .expect_update_cluster_conf_from_leader()
-        .times(1)
-        .returning(|_, _| Ok(()));
-    membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
+    membership.expect_get_cluster_conf_version().returning(|| 1);
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(5);
 
-    // Prepare function params
+    let request = ClusterConfChangeRequest {
+        id: 2,
+        term: 3, // Lower than leader's term (5)
+        version: 1,
+        change: None,
+    };
+
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConfUpdate(
-        ClusterConfChangeRequest {
-            id: 1,
-            term: 1,
-            version: 1,
-            change: None,
-        },
-        resp_tx,
-    );
-    let peer_channels = Arc::new(mock_peer_channels());
+    let raft_event = RaftEvent::ClusterConfUpdate(request, resp_tx);
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+    state
+        .handle_raft_event(
+            raft_event,
+            Arc::new(mock_peer_channels()),
+            &context,
+            mpsc::unbounded_channel().0,
+        )
         .await
-        .is_ok());
+        .unwrap();
 
-    assert!(resp_rx.recv().await.unwrap().unwrap().success);
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert!(response.is_higher_term());
+    assert_eq!(response.term, 5);
 }
 
-/// # Case 3.2: Receive ClusterConfUpdate Event
-///  and update failed
+/// # Test update_step_down
 #[tokio::test]
-async fn test_handle_raft_event_case3_2() {
+async fn test_handle_raft_event_case3_2_update_step_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_2", graceful_rx, None);
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_raft_event_case3_2_update_step_down",
+        graceful_rx,
+        None,
+    );
+    // Mock membership to return success
     let mut membership = MockMembership::new();
-    membership
-        .expect_update_cluster_conf_from_leader()
-        .times(1)
-        .returning(|_, _| {
-            Err(Error::Consensus(ConsensusError::Membership(
-                MembershipError::UpdateFailed("".to_string()),
-            )))
-        });
-    membership.expect_get_cluster_conf_version().times(1).returning(|| 1);
+    membership.expect_get_cluster_conf_version().returning(|| 1);
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(3);
 
-    // Prepare function params
+    let request = ClusterConfChangeRequest {
+        id: 2,
+        term: 5, // Higher than leader's term (3)
+        version: 1,
+        change: None,
+    };
+
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConfUpdate(
-        ClusterConfChangeRequest {
-            id: 1,
-            term: 1,
-            version: 1,
-            change: None,
-        },
-        resp_tx,
-    );
-    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::ClusterConfUpdate(request, resp_tx);
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+    state
+        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
         .await
-        .is_ok());
+        .unwrap();
 
-    assert!(!resp_rx.recv().await.unwrap().unwrap().success);
+    // Verify step down to follower
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(Some(2)))));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::ReprocessEvent(_))));
+    assert!(resp_rx.recv().await.is_err()); // Original sender should not get response
 }
 
 /// # Case 4.1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request

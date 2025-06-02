@@ -22,10 +22,12 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
 use crate::COMMITTED_LOG_METRIC;
+use prometheus::Registry;
 use sled::Batch;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 
 #[test]
 fn test_start_stop() {
@@ -209,9 +211,16 @@ async fn test_apply_chunk_functionality() {
     assert_eq!(sm.last_applied(), LogId { index: 2, term: 1 });
 }
 
+fn create_test_registry() -> Registry {
+    let registry = Registry::new();
+    registry.register(Box::new(COMMITTED_LOG_METRIC.clone())).unwrap();
+    registry
+}
+
 #[test]
 fn test_metrics_integration() {
-    let root_path = "/tmp/test_metrics_integration";
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root_path = temp_dir.path().to_str().unwrap();
     let context = setup_raft_components(root_path, None, false);
     let sm = context.state_machine.clone();
     let test_entry = Entry {
@@ -221,6 +230,7 @@ fn test_metrics_integration() {
     };
 
     // Verify metric increment
+    let _registry = create_test_registry();
     COMMITTED_LOG_METRIC.reset();
     let initial = COMMITTED_LOG_METRIC.with_label_values(&["1", "1"]).get();
 

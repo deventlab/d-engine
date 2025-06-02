@@ -11,8 +11,10 @@ use super::HardState;
 use crate::alias::POF;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
-use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::cluster_conf_update_response;
 use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
@@ -31,9 +33,11 @@ use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
+use crate::MembershipError;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
@@ -348,11 +352,29 @@ async fn test_handle_raft_event_case2() {
     assert_eq!(m.nodes, vec![]);
 }
 
-/// # Case 3: Receive ClusterConfUpdate Event
+/// # Case3_1: Successful configuration update
 #[tokio::test]
-async fn test_handle_raft_event_case3() {
+async fn test_handle_raft_event_case3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_1", graceful_rx, None);
+
+    // Mock membership to return success
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: true,
+                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
@@ -361,7 +383,7 @@ async fn test_handle_raft_event_case3() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ClusterConfUpdate(
         ClusterConfChangeRequest {
-            id: 1,
+            id: 2, // Leader ID
             term: 1,
             version: 1,
             change: None,
@@ -375,8 +397,276 @@ async fn test_handle_raft_event_case3() {
         .await
         .is_ok());
 
-    let s = resp_rx.recv().await.unwrap().unwrap_err();
-    assert_eq!(s.code(), Code::PermissionDenied);
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::None as i32
+    );
+}
+
+/// # Case3_2: Reject configuration change from non-leader
+#[tokio::test]
+async fn test_handle_raft_event_case3_2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_2", graceful_rx, None);
+
+    // Mock membership to return NOT_LEADER error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::NotLeader.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader().returning(|| Some(2)); // Actual leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 3, // Non-leader ID
+            term: 1,
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::NotLeader as i32
+    );
+}
+
+/// # Case3_3: Reject configuration change with version conflict
+#[tokio::test]
+async fn test_handle_raft_event_case3_3() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_3", graceful_rx, None);
+
+    // Mock membership to return VERSION_CONFLICT error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 5, // Current version
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::VersionConflict.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 5); // Current version is 5
+    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 2, // Leader ID
+            term: 1,
+            version: 4, // Stale version
+            change: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::VersionConflict as i32
+    );
+    assert_eq!(response.version, 5);
+}
+
+/// # Case3_4: Reject configuration change with outdated term
+#[tokio::test]
+async fn test_handle_raft_event_case3_4() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_4", graceful_rx, None);
+
+    // Mock membership to return TERM_OUTDATED error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 5, // Current term
+                version: 1,
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::TermOutdated.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(5); // Follower has higher term
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 2,   // Leader ID
+            term: 4, // Stale term
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::TermOutdated as i32
+    );
+    assert_eq!(response.term, 5);
+}
+
+/// # Case3_5: Handle internal error during configuration update
+#[tokio::test]
+async fn test_handle_raft_event_case3_5() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_5", graceful_rx, None);
+
+    // Mock membership to return internal error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Membership(
+                MembershipError::UpdateFailed("test".to_string()),
+            )))
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 2, // Leader ID
+            term: 1,
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::InternalError as i32
+    );
+}
+
+/// # Case3_6: Reject configuration change when no leader is known
+#[tokio::test]
+async fn test_handle_raft_event_case3_6() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_6", graceful_rx, None);
+
+    // Mock membership to return NOT_LEADER error with no known leader
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::NotLeader.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader().returning(|| None); // No known leader
+    context.membership = Arc::new(membership);
+
+    let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 3, // Non-leader ID
+            term: 1,
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+    let peer_channels = Arc::new(mock_peer_channels());
+
+    assert!(state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::NotLeader as i32
+    );
 }
 
 /// # Case 4.1: As follower, if I receive append request from Leader,

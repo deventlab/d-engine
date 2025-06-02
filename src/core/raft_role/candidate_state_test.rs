@@ -9,8 +9,10 @@ use super::candidate_state::CandidateState;
 use crate::alias::POF;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
-use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::cluster_conf_update_response;
 use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
@@ -264,11 +266,29 @@ async fn test_handle_raft_event_case2() {
     assert_eq!(m.nodes, vec![]);
 }
 
-/// # Case 3: Receive ClusterConfUpdate Event
+/// # Case3: Successful configuration update
 #[tokio::test]
 async fn test_handle_raft_event_case3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
+
+    // Mock membership to return success
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: true,
+                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
@@ -277,7 +297,7 @@ async fn test_handle_raft_event_case3() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ClusterConfUpdate(
         ClusterConfChangeRequest {
-            id: 1,
+            id: 2, // Leader ID
             term: 1,
             version: 1,
             change: None,
@@ -291,8 +311,12 @@ async fn test_handle_raft_event_case3() {
         .await
         .is_ok());
 
-    let e = resp_rx.recv().await.unwrap().unwrap_err();
-    assert!(matches!(e.code(), Code::PermissionDenied));
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::None as i32
+    );
 }
 
 /// # Case 4.1: As candidate, if I receive append request from Leader,

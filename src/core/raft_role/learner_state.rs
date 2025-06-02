@@ -210,25 +210,33 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
             }
-            RaftEvent::ClusterConfUpdate(cluste_membership_change_request, sender) => {
+
+            RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version();
 
-                debug!(%current_conf_version, ?cluste_membership_change_request,
+                let current_leader_id = ctx.membership().current_leader();
+
+                debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Learner receive ClusterConfUpdate"
                 );
 
                 let my_id = self.node_id();
-                let success = ctx
+                let response = match ctx
                     .membership()
-                    .update_cluster_conf_from_leader(my_term, &cluste_membership_change_request)
+                    .update_cluster_conf_from_leader(
+                        my_id,
+                        my_term,
+                        current_conf_version,
+                        current_leader_id,
+                        &cluste_conf_change_request,
+                    )
                     .await
-                    .is_ok();
-
-                let response = ClusterConfUpdateResponse {
-                    id: my_id,
-                    term: my_term,
-                    version: current_conf_version,
-                    success,
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        error!(?e, "update_cluster_conf_from_leader");
+                        ClusterConfUpdateResponse::internal_error(my_id, my_term, current_conf_version)
+                    }
                 };
 
                 debug!(
@@ -241,6 +249,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     NetworkError::SingalSendFailed(error_str)
                 })?;
             }
+
             RaftEvent::AppendEntries(append_entries_request, sender) => {
                 self.handle_append_entries_request_workflow(
                     append_entries_request,

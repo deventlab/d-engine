@@ -23,6 +23,7 @@ use tonic::async_trait;
 use tonic::transport::Channel;
 
 use crate::alias::POF;
+use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
@@ -110,9 +111,12 @@ where
     /// invoked when receive requests from Leader
     async fn update_cluster_conf_from_leader(
         &self,
+        my_id: u32,
         my_current_term: u64,
+        current_conf_version: u64,
+        current_leader_id: Option<u32>,
         cluster_conf_change_req: &ClusterConfChangeRequest,
-    ) -> Result<()>;
+    ) -> Result<ClusterConfUpdateResponse>;
 
     fn get_cluster_conf_version(&self) -> u64;
 
@@ -164,10 +168,11 @@ impl ClusterConfUpdateResponse {
             term,
             version,
             success: true,
+            error_code: ErrorCode::None.into(),
         }
     }
 
-    /// Generate a conflict response (Higher term found)
+    /// Generate a failed response (Stale leader term)
     pub(crate) fn higher_term(
         node_id: u32,
         term: u64,
@@ -178,6 +183,71 @@ impl ClusterConfUpdateResponse {
             term,
             version,
             success: false,
+            error_code: ErrorCode::TermOutdated.into(),
         }
+    }
+
+    /// Generate a failed response (Request sent to non-leader or an out-dated leader)
+    pub(crate) fn not_leader(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::NotLeader.into(),
+        }
+    }
+
+    /// Generate a failed response (Stale configuration version)
+    pub(crate) fn version_conflict(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::VersionConflict.into(),
+        }
+    }
+
+    /// Generate a failed response (Malformed change request)
+    pub(crate) fn invalid_change(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::InvalidChange.into(),
+        }
+    }
+
+    /// Generate a failed response (Server-side processing error)
+    pub(crate) fn internal_error(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::InternalError.into(),
+        }
+    }
+
+    pub(crate) fn is_higher_term(&self) -> bool {
+        self.error_code == <ErrorCode as Into<i32>>::into(ErrorCode::TermOutdated)
     }
 }
