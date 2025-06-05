@@ -65,18 +65,42 @@ pub trait ReplicationCore<T>: Send + Sync + 'static
 where
     T: TypeConfig,
 {
-    /// As Leader, send replications to peers.
-    /// (combined regular heartbeat and client proposals)
+    /// As Leader, send replications to peers (combines regular heartbeats and client proposals).
     ///
-    /// Each time handle_raft_request_in_batch is called, perform peer
-    /// synchronization check
-    /// 1. Verify if any peer's next_id <= leader's commit_index
-    /// 2. For non-synced peers meeting this condition: a. Retrieve all unsynced log entries b.
-    ///    Buffer these entries before processing real entries
-    /// 3. Ensure unsynced entries are prepended to the entries queue before actual entries get
-    ///    pushed
+    /// Performs peer synchronization checks:
+    /// 1. Verifies if any peer's next_id <= leader's commit_index
+    /// 2. For non-synced peers: retrieves unsynced logs and buffers them
+    /// 3. Prepends unsynced entries to the entries queue
     ///
-    /// Leader state will be updated by LeaderState only(follows SRP).
+    /// # Returns
+    /// - `Ok(AppendResults)` with aggregated replication outcomes
+    /// - `Err` for unrecoverable errors
+    ///
+    /// # Return Result Semantics
+    /// 1. **Insufficient Quorum**:  
+    ///    Returns `Ok(AppendResults)` with `commit_quorum_achieved = false` when:  
+    ///    - Responses received from all nodes but majority acceptance not achieved  
+    ///    - Partial timeouts reduce successful responses below majority  
+    ///
+    /// 2. **Timeout Handling**:  
+    ///    - Partial timeouts: Returns `Ok` with `commit_quorum_achieved = false`  
+    ///    - Complete timeout: Returns `Ok` with `commit_quorum_achieved = false`  
+    ///    - Timeout peers are EXCLUDED from `peer_updates`  
+    ///
+    /// 3. **Error Conditions**:  
+    ///    Returns `Err` ONLY for:  
+    ///    - Empty voting members (`ReplicationError::NoPeerFound`)  
+    ///    - Log generation failures (`generate_new_entries` errors)  
+    ///    - Higher term detected in peer response (`ReplicationError::HigherTerm`)  
+    ///    - Critical response handling errors  
+    ///
+    /// # Guarantees
+    /// - Only peers with successful responses appear in `peer_updates`
+    /// - Timeouts never cause top-level `Err` (handled as failed responses)
+    /// - Leader self-vote always counted in quorum calculation
+    ///
+    /// # Note
+    /// - Leader state should be updated by LeaderState only(follows SRP).
     async fn handle_raft_request_in_batch(
         &self,
         entry_payloads: Vec<EntryPayload>,

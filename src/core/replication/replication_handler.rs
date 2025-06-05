@@ -118,6 +118,7 @@ where
         let leader_current_term = state_snapshot.current_term;
         let mut successes = 1; // Include leader itself
         let mut peer_updates = HashMap::new();
+
         match ctx
             .transport()
             .send_append_requests(requests, &ctx.node_config.retry)
@@ -129,6 +130,7 @@ where
                         Ok(append_response) => {
                             // Skip responses from stale terms
                             if append_response.term < leader_current_term {
+                                warn!(%append_response.term, %leader_current_term, "append_response.term < leader_current_term");
                                 continue;
                             }
 
@@ -168,7 +170,8 @@ where
                             }
                         }
                         Err(e) => {
-                            error!("send_append_requests error: {:?}", e);
+                            // Timeouts and network errors are logged but not added to peer_updates
+                            warn!("Peer request failed: {:?}", e);
                         }
                     }
                 }
