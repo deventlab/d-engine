@@ -19,7 +19,6 @@ where
     F: Fn() -> T,                               // The type of the async function
     T: std::future::Future<Output = Result<P>>, // The future returned by the async function
 {
-    // let max_retries = 5;
     let mut retries = 0;
     let mut current_delay = Duration::from_millis(policy.base_delay_ms);
     let timeout_duration = Duration::from_millis(policy.timeout_ms);

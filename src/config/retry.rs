@@ -54,6 +54,11 @@ pub struct RetryPolicies {
     /// Optimized for frequent liveness detection with lower overhead
     #[serde(default)]
     pub healthcheck: BackoffPolicy,
+
+    /// Retry policy for internal quorum verification
+    /// Used to confirm leadership status through internal consensus checks
+    #[serde(default)]
+    pub internal_quorum: BackoffPolicy,
 }
 
 impl Debug for RetryPolicies {
@@ -95,6 +100,14 @@ impl Default for RetryPolicies {
 
             purge_log: BackoffPolicy {
                 max_retries: 1,
+                timeout_ms: 100,
+                base_delay_ms: 50,
+                max_delay_ms: 1000,
+            },
+
+            internal_quorum: BackoffPolicy {
+                // Minimum must be 3: the first quorum check may fail if the leader is newly elected and followers haven't yet advanced their next_index
+                max_retries: 3,
                 timeout_ms: 100,
                 base_delay_ms: 50,
                 max_delay_ms: 1000,

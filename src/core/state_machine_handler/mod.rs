@@ -135,4 +135,15 @@ where
         req: &PurgeLogRequest,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<PurgeLogResponse>;
+
+    /// Retrieves metadata of the latest available snapshot
+    ///
+    /// # Implementation Notes
+    /// - Should return `Some` only if a valid snapshot exists
+    /// - Snapshot metadata must include:
+    ///   - `last_included_index`: highest log index included in snapshot
+    ///   - `last_included_term`: term of the last included index
+    ///   - `checksum`: cryptographic hash of snapshot data
+    /// - For non-leader nodes, this should reflect the last applied snapshot
+    fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata>;
 }

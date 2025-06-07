@@ -38,7 +38,9 @@ enum ErrorCode {
     RATE_LIMITED = 4004; 
     CLUSTER_UNAVAILABLE = 4005; 
     PROPOSE_FAILED = 4006;
-
+    TERM_OUTDATED = 4007;
+    RETRY_REQUIRED = 4008;
+    
     // ======================
     // Unclassified error
     // ======================

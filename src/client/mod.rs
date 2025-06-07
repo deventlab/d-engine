@@ -202,6 +202,15 @@ impl ClientResponse {
         }
     }
 
+    /// Check if the write operation was successful
+    ///
+    /// # Returns
+    /// - `true` if the response indicates a successful write operation
+    /// - `false` if the response indicates a failed write operation or is not a write response
+    pub fn is_write_success(&self) -> bool {
+        self.error == ErrorCode::Success as i32 && matches!(self.success_result, Some(SuccessResult::WriteAck(true)))
+    }
+
     /// Build success response for read operations
     ///
     /// # Parameters
@@ -273,5 +282,58 @@ impl ClientResponse {
             ErrorCode::Success => Ok(()),
             e => Err(e.into()),
         }
+    }
+
+    /// Check if this response indicates the leader's term is outdated
+    pub fn is_term_outdated(&self) -> bool {
+        ErrorCode::try_from(self.error)
+            .map(|e| e.is_term_outdated())
+            .unwrap_or(false)
+    }
+
+    /// Check if this response indicates a quorum timeout or failure to receive majority responses
+    pub fn is_quorum_timeout_or_failure(&self) -> bool {
+        ErrorCode::try_from(self.error)
+            .map(|e| e.is_quorum_timeout_or_failure())
+            .unwrap_or(false)
+    }
+
+    /// Check if this response indicates a failure to receive majority responses
+    pub fn is_propose_failure(&self) -> bool {
+        ErrorCode::try_from(self.error)
+            .map(|e| e.is_propose_failure())
+            .unwrap_or(false)
+    }
+
+    /// Check if this response indicates a a retry required
+    pub fn is_retry_required(&self) -> bool {
+        ErrorCode::try_from(self.error)
+            .map(|e| e.is_retry_required())
+            .unwrap_or(false)
+    }
+}
+
+impl ErrorCode {
+    /// Check if this error indicates the leader's term is outdated
+    pub(crate) fn is_term_outdated(&self) -> bool {
+        matches!(self, ErrorCode::TermOutdated)
+    }
+
+    /// Check if this error indicates a quorum timeout or failure to receive majority responses
+    pub(crate) fn is_quorum_timeout_or_failure(&self) -> bool {
+        matches!(
+            self,
+            ErrorCode::ConnectionTimeout | ErrorCode::ProposeFailed | ErrorCode::ClusterUnavailable
+        )
+    }
+
+    /// Check if this error indicates a failure to receive majority responses
+    pub(crate) fn is_propose_failure(&self) -> bool {
+        matches!(self, ErrorCode::ProposeFailed)
+    }
+
+    /// Check if this error indicates a retry required
+    pub(crate) fn is_retry_required(&self) -> bool {
+        matches!(self, ErrorCode::RetryRequired)
     }
 }

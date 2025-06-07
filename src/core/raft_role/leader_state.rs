@@ -937,6 +937,8 @@ impl<T: TypeConfig> LeaderState<T> {
         // 2. Execute the copy
         let replication_members = ctx.voting_members(peer_channels);
         let cluster_size = replication_members.len() + 1;
+        trace!(%cluster_size);
+
         let result = ctx
             .replication_handler()
             .handle_raft_request_in_batch(

@@ -107,7 +107,7 @@ where
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &crate::RaftContext<T>,
-        peer_channels: Arc<crate::alias::POF<T>>,
+        replication_members: Vec<crate::ChannelWithAddressAndRole>,
     ) -> Result<AppendResults>;
 
     /// Handles successful AppendEntries responses

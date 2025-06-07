@@ -13,6 +13,7 @@ use tokio::io::BufWriter;
 use tracing::debug;
 use tracing::error;
 
+use crate::ConvertError;
 use crate::FileDeleteError;
 use crate::Result;
 use crate::StorageError;
@@ -178,6 +179,47 @@ pub fn validate_checksum(
     let mut hasher = crc32fast::Hasher::new();
     hasher.update(data);
     hasher.finalize().to_be_bytes() == expected
+}
+
+/// Converts a byte vector into a fixed-size 32-byte checksum array
+///
+/// # Parameters
+/// - `checksum`: Input byte vector representing a checksum value
+///
+/// # Returns
+/// - `Ok([u8; 32])`: Successfully converted checksum array
+/// - `Err(String)`: Error with detailed reason if conversion fails
+///
+/// # Errors
+/// Returns an error in the following cases:
+/// 1. Input vector length is not exactly 32 bytes
+/// 2. Input vector is empty (special case handling)
+///
+/// # Example
+/// ```rust
+/// use d_engine::file_io::convert_vec_checksum;
+///
+/// let vec_checksum = vec![0u8; 32];
+/// let array_checksum = convert_vec_checksum(vec_checksum).unwrap();
+/// assert_eq!(array_checksum, [0u8; 32]);
+/// ```
+pub fn convert_vec_checksum(checksum: Vec<u8>) -> Result<[u8; 32]> {
+    match checksum.len() {
+        // Exact size match - use efficient conversion
+        32 => checksum.try_into().map_err(|_| {
+            ConvertError::ConversionFailure("Conversion failed despite correct length".to_string()).into()
+        }),
+
+        // Handle empty vector as special case
+        0 => Err(ConvertError::ConversionFailure("Empty checksum vector provided".to_string()).into()),
+
+        // All other length mismatches
+        len => Err(ConvertError::ConversionFailure(format!(
+            "Invalid checksum length: expected 32 bytes, got {} bytes",
+            len
+        ))
+        .into()),
+    }
 }
 
 pub(crate) async fn move_directory(

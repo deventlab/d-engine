@@ -79,7 +79,7 @@ pub enum NetworkError {
 
     /// Peer communication timeout
     #[error("Connection timeout to {node_id} after {duration:?}")]
-    Timeout { node_id: u64, duration: Duration },
+    Timeout { node_id: u32, duration: Duration },
 
     /// Unreachable node with source context
     #[error("Network unreachable: {source}")]
@@ -336,6 +336,10 @@ pub enum ReplicationError {
     #[error("Quorum not reached for log replication")]
     QuorumNotReached,
 
+    /// Timeout to receive majority response
+    #[error("Timeout to receive majority response")]
+    QuorumTimeout,
+
     /// Target follower node unreachable
     #[error("Node {node_id} unreachable for replication")]
     NodeUnreachable { node_id: u32 },
@@ -400,6 +404,9 @@ pub enum MembershipError {
 
     #[error("Invalid membership change request")]
     InvalidChangeRequest,
+
+    #[error("Invalid membership change request")]
+    CommitTimeout,
 }
 
 // ============== Conversion Implementations ============== //

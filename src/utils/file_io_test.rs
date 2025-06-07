@@ -10,6 +10,7 @@ use tempfile::NamedTempFile;
 
 use crate::file_io;
 use crate::file_io::compute_checksum_from_path;
+use crate::file_io::convert_vec_checksum;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
 use crate::file_io::move_directory;
@@ -368,4 +369,41 @@ async fn test_compute_checksum_consistency() {
         checksum1, checksum2,
         "Checksum should be consistent across multiple computations"
     );
+}
+
+#[test]
+fn test_convert_vec_checksum_converts_valid_checksum() {
+    let input = vec![1; 32];
+    let result = convert_vec_checksum(input).unwrap();
+    assert_eq!(result, [1; 32]);
+}
+
+#[test]
+fn test_convert_vec_checksum_rejects_short_checksum() {
+    let input = vec![0; 31];
+    let result = convert_vec_checksum(input);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_convert_vec_checksum_rejects_long_checksum() {
+    let input = vec![0; 33];
+    let result = convert_vec_checksum(input);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_convert_vec_checksum_rejects_empty_checksum() {
+    let input = vec![];
+    let result = convert_vec_checksum(input);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_convert_vec_checksum_preserves_byte_order() {
+    let mut input = vec![0; 32];
+    input[31] = 0xFF;
+    let result = convert_vec_checksum(input).unwrap();
+    assert_eq!(result[31], 0xFF);
+    assert_eq!(result[0], 0x00);
 }

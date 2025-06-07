@@ -1694,17 +1694,18 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
     )
     .await;
 
+    let peer2_id = 2;
     context
         .raft_context
         .handlers
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(
-                    2,
+                    peer2_id,
                     PeerUpdate {
                         match_index: 5,
                         next_index: 6,
@@ -1713,6 +1714,28 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
                 )]),
             })
         });
+    // Mock peer configuration (multiple peers)
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 8, rx1, true)
+        .await
+        .expect("should succeed");
+
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![
+            ChannelWithAddressAndRole {
+                id: 2,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+            ChannelWithAddressAndRole {
+                id: 3,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+        ]
+    });
+    context.raft_context.membership = Arc::new(membership);
 
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
@@ -1803,6 +1826,30 @@ async fn test_process_batch_case4_partial_timeouts() {
             })
         });
 
+    // Prepare leader peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 9, rx1, true)
+        .await
+        .expect("should succeed");
+
+    // Prepare AppendResults
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![
+            ChannelWithAddressAndRole {
+                id: 2,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+            ChannelWithAddressAndRole {
+                id: 3,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+        ]
+    });
+    context.raft_context.membership = Arc::new(membership);
+
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let result = context
@@ -1840,26 +1887,33 @@ async fn test_process_batch_case5_all_timeout() {
         .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 0,
-                            next_index: 1,
-                            success: false,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 0,
-                            next_index: 1,
-                            success: false,
-                        },
-                    ),
-                ]),
+                peer_updates: HashMap::from([]),
             })
         });
+
+    // Prepare leader peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 10, rx1, true)
+        .await
+        .expect("should succeed");
+
+    // Prepare AppendResults
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![
+            ChannelWithAddressAndRole {
+                id: 2,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+            ChannelWithAddressAndRole {
+                id: 3,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+        ]
+    });
+    context.raft_context.membership = Arc::new(membership);
 
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
@@ -1877,6 +1931,7 @@ async fn test_process_batch_case5_all_timeout() {
     assert_eq!(context.state.commit_index(), 5); // Unchanged
 
     let response = rx1.recv().await.unwrap().unwrap();
+    println!("----- {:?}", &response);
     assert!(response.is_propose_failure());
 }
 
@@ -2050,7 +2105,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
         });
 
     let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 8, rx1, true)
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 11, rx1, true)
         .await
         .expect("should succeed");
 

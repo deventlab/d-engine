@@ -22,6 +22,7 @@ use super::RoleEvent;
 use crate::alias::MOF;
 use crate::alias::POF;
 use crate::alias::TROF;
+use crate::proto::common::EntryPayload;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
@@ -249,11 +250,17 @@ where
                     .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
 
                 //async action
-                if self
+                if !self
                     .role
-                    .verify_leadership_in_new_term(self.peer_channels()?, &self.ctx, self.role_tx.clone())
+                    .verify_internal_quorum_with_retry(
+                        vec![EntryPayload::noop()],
+                        true,
+                        &self.ctx,
+                        self.peer_channels()?,
+                        &self.role_tx,
+                    )
                     .await
-                    .is_err()
+                    .unwrap_or(false)
                 {
                     info!("Verify leadership in new term failed. Now the node is going to step back to Follower...");
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {

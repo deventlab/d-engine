@@ -19,9 +19,14 @@ pub const CANDIDATE: i32 = 1;
 pub const LEADER: i32 = 2;
 pub const LEARNER: i32 = 3;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
+use super::RaftContext;
+use super::RaftEvent;
+use super::RoleEvent;
+use crate::alias::POF;
+use crate::proto::common::EntryPayload;
+use crate::proto::election::VotedFor;
+use crate::Result;
+use crate::TypeConfig;
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
@@ -32,18 +37,12 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
 use tracing::trace;
-
-use super::RaftContext;
-use super::RaftEvent;
-use super::RoleEvent;
-use crate::alias::POF;
-use crate::proto::election::VotedFor;
-use crate::Result;
-use crate::TypeConfig;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -299,39 +298,36 @@ impl<T: TypeConfig> RaftRole<T> {
         0
     }
 
-    /// Verifies leadership validity in the new term by attempting to replicate a no-op entry.
+    /// Internal Raft protocol function for quorum verification (not for client requests)
     ///
-    /// This critical safety check ensures the new leader can actually communicate with a quorum of
-    /// cluster nodes before accepting client requests. The verification is done by replicating
-    /// a special no-op log entry and confirming its commitment.
+    /// This function is used exclusively for internal Raft consensus operations like:
+    /// - Configuration changes
+    /// - Leadership verification
+    /// - Membership management
     ///
-    /// # Key Behaviors
-    /// - **Non-blocking verification**: Operates asynchronously without stalling main Raft loop
-    /// - **Term-aware retries**: Automatically aborts if higher term is detected
+    /// Client requests MUST use different payload types (Command) and go through separate channels.
     ///
-    /// # Error Semantics
-    /// Returned errors indicate **technical failures in the verification process**, not quorum
-    /// rejection:
-    /// - Network errors (gRPC failures, unreachable nodes)
-    /// - Storage I/O errors (failed to persist no-op entry)
-    /// - Internal channel errors (message queue overflows)
+    /// # Parameters
+    /// - `payloads`: Internal protocol payloads (Noop/Config only, NOT Command)
+    /// - `bypass_queue`: When true, forces immediate transmission bypassing queues
+    /// - `ctx`: Shared Raft context reference
+    /// - `peer_channels`: Cluster communication channels
+    /// - `role_tx`: Role change event transmitter
     ///
-    /// # Success Conditions
-    /// A successful `Ok(())` return only means:
-    /// The noop request has been successfully enqueued into the leader’s replication batch queue.
-    ///
-    /// # Arguments
-    /// - `peer_channels`: Network channels to cluster peers
-    /// - `ctx`: Shared Raft state context
-    /// - `role_tx`: Role transition event channel
-    pub(crate) async fn verify_leadership_in_new_term(
+    /// # Returns
+    /// - `Ok(true)` if quorum confirmed
+    /// - `Ok(false)` if quorum lost or network error
+    /// - `Err(_)` for request processing failures
+    pub(crate) async fn verify_internal_quorum_with_retry(
         &mut self,
-        peer_channels: Arc<POF<T>>,
+        payloads: Vec<EntryPayload>,
+        bypass_queue: bool,
         ctx: &RaftContext<T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
+        peer_channels: Arc<POF<T>>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
         self.state_mut()
-            .verify_leadership_in_new_term(peer_channels, ctx, role_tx)
+            .verify_internal_quorum_with_retry(payloads, bypass_queue, ctx, peer_channels, role_tx)
             .await
     }
 }
@@ -369,4 +365,11 @@ impl<'de> Deserialize<'de> for HardState {
             voted_for: hard_state_de.voted_for,
         })
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum QuorumVerificationResult {
+    Success,        // Leadership confirmation successful
+    LeadershipLost, // Confirmation of leadership loss (need to abdicate)
+    RetryRequired,  // Retry required (leadership still exists)
 }

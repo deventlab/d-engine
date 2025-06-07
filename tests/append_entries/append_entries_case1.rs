@@ -7,7 +7,7 @@
 //! 3. Node B appends 4 log entries with Term=1.
 //! 4. Node C appends 10 log entries with Term=2.
 //! 5. Node C becomes Leader
-//! 6. Trigger a client propose request
+//! 6. Trigger a client write request
 //!
 //! Expected Result:
 //!

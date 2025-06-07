@@ -1,26 +1,3 @@
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use tokio::fs;
-use tokio::fs::remove_dir_all;
-use tokio::sync::RwLock;
-use tokio_stream::StreamExt;
-use tonic::async_trait;
-use tonic::IntoRequest;
-use tonic::Status;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::warn;
-
 use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
@@ -49,6 +26,27 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tokio::fs;
+use tokio::fs::remove_dir_all;
+use tokio::sync::RwLock;
+use tokio_stream::StreamExt;
+use tonic::async_trait;
+use tonic::IntoRequest;
+use tonic::Status;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
@@ -271,7 +269,11 @@ where
         }
 
         let last_applied = self.state_machine.last_applied();
-        let (last_included, _) = self.state_machine.last_included();
+        let last_snapshot_metadata = self.state_machine.snapshot_metadata();
+
+        let last_included = last_snapshot_metadata
+            .and_then(|meta| meta.last_included)
+            .unwrap_or_else(|| LogId { index: 0, term: 0 });
 
         self.snapshot_policy.should_trigger(&SnapshotContext {
             role: new_commit_data.role,
@@ -425,8 +427,8 @@ where
         }
 
         // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let (_, Some(local_checksum)) = self.state_machine.last_included() {
-            if req.snapshot_checksum != local_checksum {
+        if let Some(last_snapshot_metadata) = self.state_machine.snapshot_metadata() {
+            if req.snapshot_checksum != last_snapshot_metadata.checksum {
                 return Ok(false);
             }
         } else {
@@ -477,8 +479,8 @@ where
         }
 
         // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let (_, Some(local_checksum)) = self.state_machine.last_included() {
-            if req.snapshot_checksum != local_checksum {
+        if let Some(last_snapshot_metadata) = self.state_machine.snapshot_metadata() {
+            if req.snapshot_checksum != last_snapshot_metadata.checksum {
                 return Ok(PurgeLogResponse {
                     node_id: self.node_id,
                     term: current_term,
@@ -514,6 +516,11 @@ where
                 })
             }
         }
+    }
+
+    fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata> {
+        self.state_machine.snapshot_metadata();
+        None
     }
 }
 

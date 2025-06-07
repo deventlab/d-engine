@@ -29,6 +29,7 @@ use crate::proto::election::VotedFor;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
@@ -1039,8 +1040,12 @@ async fn create_test_snapshot(
     checksum: [u8; 32],
 ) {
     sm.expect_last_applied().returning(move || LogId { index, term });
-    sm.expect_last_included()
-        .returning(move || (LogId { index, term }, Some(checksum)));
+    sm.expect_snapshot_metadata().returning(move || {
+        Some(SnapshotMetadata {
+            last_included: Some(LogId { term, index }),
+            checksum: checksum.to_vec(),
+        })
+    });
 }
 
 // Helper functions

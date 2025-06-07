@@ -13,7 +13,7 @@ use tonic::async_trait;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-use crate::Error;
+use crate::ConvertError;
 use crate::Result;
 
 //TODO
@@ -61,20 +61,18 @@ pub trait StateMachine: Send + Sync + 'static {
     ) -> Result<()>;
 
     /// Update last included index
-    fn update_last_included(
+    fn update_last_snapshot_metadata(
         &self,
-        last_included: LogId,
-        new_checksum: Option<[u8; 32]>,
-    );
+        snapshot_metadata: &SnapshotMetadata,
+    ) -> Result<()>;
 
-    /// Get snapshot metadata: (last_included_index, last_included_term, Option<checksum>)
-    fn last_included(&self) -> (LogId, Option<[u8; 32]>);
+    /// Get snapshot metadata
+    fn snapshot_metadata(&self) -> Option<SnapshotMetadata>;
 
     /// Persist (last_included_index, last_included_term) into local storage
-    fn persist_last_included(
+    fn persist_last_snapshot_metadata(
         &self,
-        last_applied: LogId,
-        last_checksum: Option<[u8; 32]>,
+        snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()>;
 
     async fn apply_snapshot_from_file(
@@ -123,7 +121,7 @@ impl SnapshotMetadata {
             array.copy_from_slice(&self.checksum);
             Ok(array)
         } else {
-            Err(Error::Fatal("Invalid checksum length".to_string()))
+            Err(ConvertError::ConversionFailure("Invalid checksum length".to_string()).into())
         }
     }
 

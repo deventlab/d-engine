@@ -1,11 +1,9 @@
 use super::*;
-use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
-use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
+use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
 use crate::constants::STATE_MACHINE_META_NAMESPACE;
 use crate::constants::STATE_MACHINE_TREE;
 use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
-use crate::convert::safe_vk;
 use crate::file_io::compute_checksum_from_path;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
@@ -28,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+use tracing::info;
 
 #[test]
 fn test_start_stop() {
@@ -276,35 +275,23 @@ async fn test_generate_snapshot_data_case1() {
 
     // Check metadata (stored in same tree due to code limitation)
     assert_eq!(
-        sm.last_included(),
-        (
-            LogId {
+        sm.snapshot_metadata(),
+        (Some(SnapshotMetadata {
+            last_included: Some(LogId {
                 index: 3u64,
                 term: 1u64
-            },
-            Some(expected_checksum)
-        )
+            }),
+            checksum: expected_checksum.to_vec()
+        }))
     );
-    assert_eq!(
-        safe_vk(
-            metadata_tree
-                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
-        3u64
-    );
-    assert_eq!(
-        safe_vk(
-            metadata_tree
-                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
-        1u64
-    );
+
+    let last_included = RaftStateMachine::load_snapshot_metadata(&metadata_tree)
+        .unwrap()
+        .unwrap()
+        .last_included
+        .unwrap();
+    assert_eq!(last_included.index, 3u64);
+    assert_eq!(last_included.term, 1u64);
 }
 
 /// # Case 2: Exclude upper entries
@@ -360,26 +347,13 @@ async fn test_generate_snapshot_data_case3() {
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
     let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
 
-    assert_eq!(
-        safe_vk(
-            metadata_tree
-                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
-        42u64
-    );
-    assert_eq!(
-        safe_vk(
-            metadata_tree
-                .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
-        5u64
-    );
+    let last_included = RaftStateMachine::load_snapshot_metadata(&metadata_tree)
+        .unwrap()
+        .unwrap()
+        .last_included
+        .unwrap();
+    assert_eq!(last_included.index, 42u64);
+    assert_eq!(last_included.term, 5u64);
 }
 
 /// # Case 4: Batch processing
@@ -443,8 +417,11 @@ async fn test_apply_snapshot_from_file_case1() {
     assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
     assert_eq!(sm.last_applied(), last_included);
     assert_eq!(
-        sm.last_included(),
-        (last_included, Some(metadata.checksum_array().expect("success")))
+        sm.snapshot_metadata(),
+        (Some(SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: metadata.checksum_array().expect("success").to_vec()
+        }))
     );
 }
 
@@ -500,12 +477,19 @@ async fn test_apply_snapshot_from_file_case3() {
         // Create minimal valid snapshot
         let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
         let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
-        metadata_tree
-            .insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included.index))
+
+        let last_snapshot_metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: vec![],
+        };
+
+        let v = bincode::serialize(&last_snapshot_metadata)
+            .map_err(|e| StorageError::BincodeError(e))
             .unwrap();
-        metadata_tree
-            .insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included.term))
-            .unwrap();
+
+        metadata_tree.insert(LAST_SNAPSHOT_METADATA_KEY, v).unwrap();
+        info!("persist_last_snapshot_metadata_with_tree successfully!");
+
         metadata_tree.flush().unwrap();
     }
 
@@ -513,8 +497,11 @@ async fn test_apply_snapshot_from_file_case3() {
 
     // Verify metadata propagation
     assert_eq!(
-        sm.last_included(),
-        (last_included, Some(test_metadata.checksum_array().expect("success")))
+        sm.snapshot_metadata(),
+        (Some(SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: test_metadata.checksum_array().expect("success").to_vec()
+        }))
     );
     assert_eq!(sm.last_applied(), last_included);
 }

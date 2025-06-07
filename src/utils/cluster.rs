@@ -18,9 +18,13 @@ pub(crate) fn collect_ids(entries: &[Entry]) -> Vec<u64> {
 
 pub(crate) fn is_majority(
     num: usize,
-    count: usize,
+    total: usize,
 ) -> bool {
-    num > count / 2
+    num > total / 2
+}
+
+pub fn majority_count(total_nodes: usize) -> usize {
+    (total_nodes / 2) + 1
 }
 
 pub(crate) fn find_nearest_lower_number(

@@ -18,6 +18,7 @@ mod network_test;
 use mockall::automock;
 use tonic::async_trait;
 
+use crate::cluster::majority_count;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::election::VoteRequest;
@@ -43,6 +44,15 @@ pub(crate) struct AppendResults {
     pub peer_updates: HashMap<u32, PeerUpdate>,
 }
 
+impl AppendResults {
+    pub fn if_leadership_maintained(
+        &self,
+        total_nodes: usize,
+    ) -> bool {
+        self.peer_updates.len() + 1 >= majority_count(total_nodes)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PeerUpdate {
     pub match_index: u64,
@@ -51,6 +61,26 @@ pub(crate) struct PeerUpdate {
     pub success: bool,
 }
 
+impl PeerUpdate {
+    pub fn success(
+        match_index: u64,
+        next_index: u64,
+    ) -> Self {
+        PeerUpdate {
+            match_index,
+            next_index,
+            success: true,
+        }
+    }
+
+    pub fn failed() -> Self {
+        Self {
+            match_index: 0,
+            next_index: 1,
+            success: false,
+        }
+    }
+}
 #[derive(Debug)]
 pub struct AppendResult {
     pub peer_ids: HashSet<u32>,
@@ -110,6 +140,14 @@ pub trait Transport: Send + Sync + 'static {
     /// # Parameters
     /// - `requests_with_peer_address`: Target nodes with customized entries
     /// - `retry`: Network retry configuration
+    ///
+    /// # Returns
+    /// - On success: `Ok(AppendResult)` containing aggregated responses
+    /// - On failure: `Err(NetworkError)` for unrecoverable errors
+    ///
+    /// ## **Error Conditions**: Top-level `Err` is returned ONLY when:
+    /// - Input `requests_with_peer_address` is empty (`NetworkError::EmptyPeerList`)
+    /// - Critical failures prevent spawning async tasks (not shown in current impl)
     ///
     /// # Errors
     /// - `NetworkError::EmptyPeerList` for empty input

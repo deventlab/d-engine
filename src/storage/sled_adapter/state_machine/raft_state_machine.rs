@@ -19,9 +19,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX;
-use crate::constants::SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM;
-use crate::constants::SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM;
+use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_TERM;
 use crate::constants::STATE_MACHINE_META_NAMESPACE;
@@ -119,15 +117,17 @@ impl StateMachine for RaftStateMachine {
         self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
     }
 
-    fn update_last_included(
+    fn update_last_snapshot_metadata(
         &self,
-        last_included: LogId,
-        new_checksum: Option<[u8; 32]>,
-    ) {
-        debug!(?last_included, "update_last_included");
+        snapshot_metadata: &SnapshotMetadata,
+    ) -> Result<()> {
+        debug!(?snapshot_metadata, "update_last_snapshot_metadata");
+        let last_included = snapshot_metadata.last_included.unwrap();
         self.last_included_index.store(last_included.index, Ordering::SeqCst);
         self.last_included_term.store(last_included.term, Ordering::SeqCst);
-        *self.last_snapshot_checksum.lock() = new_checksum;
+        *self.last_snapshot_checksum.lock() = Some(snapshot_metadata.checksum_array()?);
+
+        Ok(())
     }
 
     fn last_applied(&self) -> LogId {
@@ -137,14 +137,19 @@ impl StateMachine for RaftStateMachine {
         }
     }
 
-    fn last_included(&self) -> (LogId, Option<[u8; 32]>) {
-        (
-            LogId {
-                index: self.last_included_index.load(Ordering::SeqCst),
-                term: self.last_included_term.load(Ordering::SeqCst),
-            },
-            *self.last_snapshot_checksum.lock(),
-        )
+    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
+        let last_included_index = self.last_included_index.load(Ordering::SeqCst);
+        if last_included_index > 0 {
+            Some(SnapshotMetadata {
+                last_included: Some(LogId {
+                    index: self.last_included_index.load(Ordering::SeqCst),
+                    term: self.last_included_term.load(Ordering::SeqCst),
+                }),
+                checksum: self.last_snapshot_checksum.lock().as_ref().map(|arr| arr.to_vec())?,
+            })
+        } else {
+            None
+        }
     }
 
     fn get(
@@ -245,8 +250,9 @@ impl StateMachine for RaftStateMachine {
         let last_applied = self.last_applied();
         self.persist_last_applied(last_applied)?;
 
-        let (last_included, last_checksum) = self.last_included();
-        self.persist_last_included(last_included, last_checksum)?;
+        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
+            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
+        }
 
         self.flush()?;
         Ok(())
@@ -265,14 +271,13 @@ impl StateMachine for RaftStateMachine {
         Ok(())
     }
 
-    fn persist_last_included(
+    fn persist_last_snapshot_metadata(
         &self,
-        last_included: LogId,
-        last_checksum: Option<[u8; 32]>,
+        last_snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
         let db = self.db.load();
         let tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
-        self.persist_last_included_with_tree(tree, last_included, last_checksum)?;
+        self.persist_last_snapshot_metadata_with_tree(tree, last_snapshot_metadata)?;
 
         Ok(())
     }
@@ -340,12 +345,18 @@ impl StateMachine for RaftStateMachine {
         let checksum = compute_checksum_from_path(&new_snapshot_dir).await?;
 
         // Make sure last included is updated to the new ones
-        self.update_last_included(last_included, Some(checksum));
+
+        let last_snapshot_metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: checksum.to_vec(),
+        };
+
+        self.update_last_snapshot_metadata(&last_snapshot_metadata);
 
         // Make sure last included is persisted into local database
-        self.persist_last_included(last_included, Some(checksum))?;
+        self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
         // Make sure last included is persisted into the new database
-        self.persist_last_included_with_tree(new_snapshot_metadatat_tree, last_included, Some(checksum))?;
+        self.persist_last_snapshot_metadata_with_tree(new_snapshot_metadatat_tree, &last_snapshot_metadata)?;
 
         Ok(checksum)
     }
@@ -370,7 +381,7 @@ impl StateMachine for RaftStateMachine {
 
             // 4. Update the last applied and last included index and term
             self.update_last_applied(last_included);
-            self.update_last_included(last_included, Some(metadata.checksum_array()?));
+            self.update_last_snapshot_metadata(&metadata);
         } else {
             error!(
                 ?metadata,
@@ -401,8 +412,6 @@ impl RaftStateMachine {
         let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&state_machine_meta_tree)?;
 
         let snapshot_meta_tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
-        let (last_included_index, last_included_term, last_snapshot_checksum) =
-            Self::load_snapshot_metadata(&snapshot_meta_tree)?;
 
         let sm = RaftStateMachine {
             db: ArcSwap::from(db),
@@ -424,13 +433,14 @@ impl RaftStateMachine {
             index: last_applied_index,
             term: last_applied_term,
         });
-        sm.update_last_included(
-            LogId {
-                term: last_included_term,
-                index: last_included_index,
-            },
-            last_snapshot_checksum,
-        );
+
+        // Update last snapshot metadata
+        if let Some(last_snapshot_metadata) = Self::load_snapshot_metadata(&snapshot_meta_tree)? {
+            sm.update_last_snapshot_metadata(&last_snapshot_metadata);
+        } else {
+            info!("No snapshot metadata found in DB");
+        }
+
         Ok(sm)
     }
 
@@ -448,25 +458,31 @@ impl RaftStateMachine {
         Ok((index, term))
     }
 
-    fn load_snapshot_metadata(tree: &sled::Tree) -> Result<(u64, u64, Option<[u8; 32]>)> {
-        let index = tree
-            .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX)?
-            .map(safe_vk)
-            .unwrap_or(Ok(0))?;
-
-        let term = tree
-            .get(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM)?
-            .map(safe_vk)
-            .unwrap_or(Ok(0))?;
-
-        let checksum = tree
-            .get(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM)?
-            .and_then(|ivec| {
-                let bytes: Vec<u8> = ivec.to_vec();
-                bytes.try_into().ok()
-            });
-
-        Ok((index, term, checksum))
+    pub(super) fn load_snapshot_metadata(tree: &sled::Tree) -> Result<Option<SnapshotMetadata>> {
+        if let Ok(Some(v)) = tree.get(LAST_SNAPSHOT_METADATA_KEY) {
+            info!(
+                "found SnapshotMetadata from DB with key: {}",
+                LAST_SNAPSHOT_METADATA_KEY
+            );
+            let v = v.to_vec();
+            match bincode::deserialize::<SnapshotMetadata>(&v) {
+                Ok(last_snapshot_metadata) => {
+                    info!(
+                        "load_snapshot_metadata: last_included={:?}",
+                        last_snapshot_metadata.last_included
+                    );
+                    return Ok(Some(last_snapshot_metadata));
+                }
+                Err(e) => {
+                    return Err(StorageError::Snapshot(format!(
+                        "state:load_snapshot_metadata deserialize error. {}",
+                        e
+                    ))
+                    .into());
+                }
+            }
+        }
+        Ok(None)
     }
 
     #[autometrics(objective = API_SLO)]
@@ -488,21 +504,15 @@ impl RaftStateMachine {
         self.db.load().open_tree(STATE_MACHINE_TREE).unwrap()
     }
 
-    fn persist_last_included_with_tree(
+    pub(super) fn persist_last_snapshot_metadata_with_tree(
         &self,
         tree: sled::Tree,
-        last_included: LogId,
-        last_checksum: Option<[u8; 32]>,
+        last_snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
-        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_INDEX, &safe_kv(last_included.index))?;
-        tree.insert(SNAPSHOT_METADATA_KEY_LAST_INCLUDED_TERM, &safe_kv(last_included.term))?;
+        let v = bincode::serialize(last_snapshot_metadata).map_err(|e| StorageError::BincodeError(e))?;
 
-        if let Some(checksum) = last_checksum {
-            tree.insert(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM, &checksum)?;
-        } else {
-            // delete old checksum, if exists
-            tree.remove(SNAPSHOT_METADATA_KEY_LAST_SNAPSHOT_CHECKSUM)?;
-        }
+        tree.insert(LAST_SNAPSHOT_METADATA_KEY, v)?;
+        info!("persist_last_snapshot_metadata_with_tree successfully!");
 
         tree.flush()?;
         Ok(())

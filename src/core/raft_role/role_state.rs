@@ -1,17 +1,8 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
-
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::alias::POF;
+use crate::proto::common::EntryPayload;
 use crate::proto::election::VotedFor;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
@@ -22,6 +13,7 @@ use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
 use crate::NewCommitData;
+use crate::QuorumVerificationResult;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -30,6 +22,14 @@ use crate::Result;
 use crate::RoleEvent;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 
 #[async_trait]
 pub(crate) trait RaftRoleState: Send + Sync + 'static {
@@ -90,15 +90,30 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLeader.into())
     }
 
-    async fn verify_leadership_in_new_term(
+    async fn verify_internal_quorum(
         &mut self,
-        _peer_channels: Arc<POF<Self::T>>,
+        _payloads: Vec<EntryPayload>,
+        _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        warn!("verify_leadership_in_new_term NotLeader error");
+        _peer_channels: Arc<POF<Self::T>>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<QuorumVerificationResult> {
+        warn!("check_leadership_quorum_immediate NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
+
+    async fn verify_internal_quorum_with_retry(
+        &mut self,
+        _payloads: Vec<EntryPayload>,
+        _bypass_queue: bool,
+        _ctx: &RaftContext<Self::T>,
+        _peer_channels: Arc<POF<Self::T>>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
+        warn!("check_leadership_quorum_immediate NotLeader error");
+        Err(MembershipError::NotLeader.into())
+    }
+
     #[allow(dead_code)]
     fn is_follower(&self) -> bool {
         false
