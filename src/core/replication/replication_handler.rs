@@ -60,7 +60,8 @@ where
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
+        // peer_channels: Arc<POF<T>>,
+        replication_members: Vec<ChannelWithAddressAndRole>,
     ) -> Result<AppendResults> {
         debug!("-------- handle_raft_request_in_batch --------");
         trace!("entry_payloads: {:?}", &entry_payloads);
@@ -68,7 +69,7 @@ where
         // ----------------------
         // Phase 1: Pre-Checks
         // ----------------------
-        let replication_members = ctx.voting_members(peer_channels);
+        // let replication_members = ctx.voting_members(peer_channels);
         if replication_members.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
             return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());

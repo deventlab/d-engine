@@ -428,9 +428,14 @@ async fn test_handle_raft_request_in_batch_case1() {
         noop_log_id: None,
     };
 
-    let peer_channels = Arc::new(mock_peer_channels());
     let e = handler
-        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            vec![],
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -491,15 +496,11 @@ async fn test_handle_raft_request_in_batch_case2_1() {
         .await
         .expect("should succeed");
 
-    // Prepare AppendResults
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr1.clone(),
-            role: FOLLOWER,
-        }]
-    });
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr1.clone(),
+        role: FOLLOWER,
+    }];
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
@@ -519,13 +520,19 @@ async fn test_handle_raft_request_in_batch_case2_1() {
         })
     });
 
-    context.membership = Arc::new(membership);
+    // context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    // let peer_channels = Arc::new(mock_peer_channels());
 
     let result = handler
-        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            replication_members,
+        )
         .await
         .unwrap();
 
@@ -590,14 +597,6 @@ async fn test_handle_raft_request_in_batch_case2_2() {
         .expect("should succeed");
 
     // Prepare AppendResults
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr1.clone(),
-            role: FOLLOWER,
-        }]
-    });
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
@@ -611,13 +610,22 @@ async fn test_handle_raft_request_in_batch_case2_2() {
         }
         .into())
     });
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr1.clone(),
+        role: FOLLOWER,
+    }];
 
     let e = handler
-        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            replication_members,
+        )
         .await
         .unwrap_err();
 
@@ -658,15 +666,6 @@ async fn test_handle_raft_request_in_batch_case3() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr.clone(),
-            role: FOLLOWER,
-        }]
-    });
-
     // Response with term=1 (stale)
     let mut transport = MockTransport::new();
     transport.expect_send_append_requests().return_once(move |_, _| {
@@ -684,14 +683,22 @@ async fn test_handle_raft_request_in_batch_case3() {
     raft_log.expect_last_entry_id().return_const(3_u64);
     raft_log.expect_prev_log_term().return_const(1_u64);
     raft_log.expect_get_entries_between().returning(|_| vec![]);
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr.clone(),
+        role: FOLLOWER,
+    }];
 
     let result = handler
-        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            replication_members,
+        )
         .await;
 
     assert!(result.is_ok());
@@ -729,15 +736,6 @@ async fn test_handle_raft_request_in_batch_case4() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr.clone(),
-            role: FOLLOWER,
-        }]
-    });
-
     // HigherTerm response with term=2
     let higher_term = 2;
     let mut transport = MockTransport::new();
@@ -751,13 +749,22 @@ async fn test_handle_raft_request_in_batch_case4() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().return_const(1_u64);
 
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr.clone(),
+        role: FOLLOWER,
+    }];
 
     let result = handler
-        .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context, peer_channels)
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &context,
+            replication_members,
+        )
         .await;
 
     assert!(matches!(
@@ -838,19 +845,13 @@ async fn test_handle_raft_request_in_batch_case5() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr.clone(),
-            role: FOLLOWER,
-        }]
-    });
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr.clone(),
+        role: FOLLOWER,
+    }];
 
     let _ = handler
         .handle_raft_request_in_batch(
@@ -858,7 +859,7 @@ async fn test_handle_raft_request_in_batch_case5() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await;
 
@@ -1004,15 +1005,9 @@ async fn test_handle_raft_request_in_batch_case6() {
         .collect();
 
     let replication_members = futures::future::join_all(futures).await;
-    let mut membership = MockMembership::new();
-    membership
-        .expect_voting_members()
-        .returning(move |_| replication_members.clone());
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = replication_members.clone();
 
     // Execute test
     let result = handler
@@ -1021,7 +1016,7 @@ async fn test_handle_raft_request_in_batch_case6() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await;
 
@@ -1190,36 +1185,30 @@ async fn test_handle_raft_request_in_batch_case7() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![
-            ChannelWithAddressAndRole {
-                id: peer2_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-            ChannelWithAddressAndRole {
-                id: peer3_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-            ChannelWithAddressAndRole {
-                id: peer4_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-            ChannelWithAddressAndRole {
-                id: peer5_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-        ]
-    });
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer3_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer4_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer5_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+    ];
 
     // ----------------------
     // Execute test
@@ -1230,7 +1219,7 @@ async fn test_handle_raft_request_in_batch_case7() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await
         .unwrap();
@@ -1338,26 +1327,20 @@ async fn test_handle_raft_request_in_batch_case8() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![
-            ChannelWithAddressAndRole {
-                id: peer2_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-            ChannelWithAddressAndRole {
-                id: peer3_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-        ]
-    });
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer3_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+    ];
 
     // ----------------------
     // Execute test
@@ -1368,7 +1351,7 @@ async fn test_handle_raft_request_in_batch_case8() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await
         .unwrap();
@@ -1460,26 +1443,20 @@ async fn test_handle_raft_request_in_batch_case9() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![
-            ChannelWithAddressAndRole {
-                id: peer2_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-            ChannelWithAddressAndRole {
-                id: peer3_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-        ]
-    });
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer3_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+    ];
 
     // ----------------------
     // Execute test
@@ -1490,7 +1467,7 @@ async fn test_handle_raft_request_in_batch_case9() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await
         .unwrap();
@@ -1576,27 +1553,20 @@ async fn test_handle_raft_request_in_batch_case10() {
     let addr = MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 18, srx, true)
         .await
         .unwrap();
-
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![
-            ChannelWithAddressAndRole {
-                id: peer2_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-            ChannelWithAddressAndRole {
-                id: peer3_id,
-                channel_with_address: addr.clone(),
-                role: FOLLOWER,
-            },
-        ]
-    });
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![
+        ChannelWithAddressAndRole {
+            id: peer2_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+        ChannelWithAddressAndRole {
+            id: peer3_id,
+            channel_with_address: addr.clone(),
+            role: FOLLOWER,
+        },
+    ];
 
     // ----------------------
     // Execute test
@@ -1607,7 +1577,7 @@ async fn test_handle_raft_request_in_batch_case10() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await
         .unwrap_err();
@@ -1685,13 +1655,8 @@ async fn test_handle_raft_request_in_batch_case11() {
     // ----------------------
     //Call the function to be tested
     // ----------------------
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(|_| vec![]);
-
-    context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
 
     // ----------------------
     // Execute test
@@ -1702,7 +1667,7 @@ async fn test_handle_raft_request_in_batch_case11() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            vec![],
         )
         .await
         .unwrap_err();
@@ -1782,19 +1747,18 @@ async fn test_handle_raft_request_in_batch_case12() {
         .await
         .unwrap();
 
-    let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr.clone(),
-            role: FOLLOWER,
-        }]
-    });
+    // let mut membership = MockMembership::new();
+    // membership.expect_voting_members().returning(move |_| {});
 
-    context.membership = Arc::new(membership);
+    // context.membership = Arc::new(membership);
     context.storage.raft_log = Arc::new(raft_log);
     context.transport = Arc::new(transport);
-    let peer_channels = Arc::new(mock_peer_channels());
+    // let peer_channels = Arc::new(mock_peer_channels());
+    let replication_members = vec![ChannelWithAddressAndRole {
+        id: peer2_id,
+        channel_with_address: addr.clone(),
+        role: FOLLOWER,
+    }];
 
     // ----------------------
     // Execute test
@@ -1805,7 +1769,7 @@ async fn test_handle_raft_request_in_batch_case12() {
             state_snapshot,
             leader_state_snapshot,
             &context,
-            peer_channels,
+            replication_members,
         )
         .await
         .unwrap_err();

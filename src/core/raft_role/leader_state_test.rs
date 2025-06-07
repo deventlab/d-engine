@@ -9,6 +9,7 @@ use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
@@ -35,7 +36,6 @@ use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
-use crate::MembershipError;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
@@ -44,6 +44,7 @@ use crate::MockStateMachineHandler;
 use crate::MockTransport;
 use crate::NewCommitData;
 use crate::PeerUpdate;
+use crate::QuorumVerificationResult;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftOneshot;
@@ -56,6 +57,7 @@ use crate::FOLLOWER;
 use mockall::predicate::eq;
 use nanoid::nanoid;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -63,41 +65,24 @@ use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
 
-struct TestContext {
+struct ProcessRaftRequestTestContext {
     state: LeaderState<MockTypeConfig>,
     raft_context: RaftContext<MockTypeConfig>,
-    // replication_handler: MockReplicationCore<MockTypeConfig>,
-    // raft_log: Arc<MockRaftLog>,
-    // transport: Arc<MockTransport>,
-    // arc_node_config: Arc<RaftNodeConfig>,
 }
 
 /// Initialize the test environment and return the core components
-async fn setup_test_case(
+async fn setup_process_raft_request_test_context(
     test_name: &str,
     batch_threshold: usize,
     handle_raft_request_in_batch_expect_times: usize,
     shutdown_signal: watch::Receiver<()>,
-) -> TestContext {
+) -> ProcessRaftRequestTestContext {
     let mut node_config = node_config(&format!("/tmp/{test_name}",));
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
     let mut raft_context = MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)
         .build_context();
 
-    // let raft = RaftConfig {
-    //     replication: ReplicationConfig {
-    //         rpc_append_entries_in_batch_threshold: batch_threshold,
-    //         ..context.node_config.raft.replication.clone()
-    //     },
-    //     ..context.node_config.raft.clone()
-    // };
-
-    // Create Leader state
-    // let node_config = Arc::new(RaftNodeConfig {
-    //     raft: raft.clone(),
-    //     ..context.node_config.clone()
-    // });
     let mut state = LeaderState::new(1, raft_context.node_config());
     state
         .update_commit_index(4)
@@ -142,7 +127,7 @@ async fn setup_test_case(
     raft_context.handlers.replication_handler = replication_handler;
     raft_context.storage.raft_log = Arc::new(raft_log);
 
-    TestContext {
+    ProcessRaftRequestTestContext {
         state,
         raft_context,
         // replication_handler,
@@ -193,7 +178,8 @@ async fn test_process_raft_request_case1_1() {
     // Initialize the test environment (threshold = 0 means immediate execution)
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context = setup_test_case("/tmp/test_process_raft_request_case1_1", 0, 1, graceful_rx).await;
+    let mut test_context =
+        setup_process_raft_request_test_context("/tmp/test_process_raft_request_case1_1", 0, 1, graceful_rx).await;
 
     // Prepare test request
     let request = ClientWriteRequest {
@@ -265,7 +251,8 @@ async fn test_process_raft_request_case1_1() {
 async fn test_process_raft_request_case1_2() {
     // Initialize the test environment (threshold = 0 means immediate execution)
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context = setup_test_case("/tmp/test_process_raft_request_case1_2", 0, 2, graceful_rx).await;
+    let mut test_context =
+        setup_process_raft_request_test_context("/tmp/test_process_raft_request_case1_2", 0, 2, graceful_rx).await;
 
     // Prepare test request
     let request = ClientWriteRequest {
@@ -339,7 +326,8 @@ async fn test_process_raft_request_case1_2() {
 async fn test_process_raft_request_case2() {
     // let context = setup_raft_components("/tmp/test_process_raft_request_case2", None, false);
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context = setup_test_case("/tmp/test_process_raft_request_case2", 100, 0, graceful_rx).await;
+    let mut test_context =
+        setup_process_raft_request_test_context("/tmp/test_process_raft_request_case2", 100, 0, graceful_rx).await;
 
     // 1. Prepare mocks
     let client_propose_request = ClientWriteRequest {
@@ -1561,5 +1549,687 @@ fn test_can_purge_logs_case5() {
     assert!(!state.can_purge_logs(
         None,
         LogId { index: 100, term: 1 } // 100 not < 100
+    ));
+}
+
+/// # Case 1: Quorum achieved
+/// - All peers respond successfully
+/// - Commit index should advance
+/// - Clients receive success responses
+#[tokio::test]
+async fn test_process_batch_case1_quorum_achieved() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context =
+        setup_process_batch_test_context("/tmp/test_process_batch_case1_quorum_achieved", graceful_rx).await;
+
+    // Mock replication to return success with quorum
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::from([
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 6,
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 6,
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
+                ]),
+            })
+        });
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, _, _| Some(6));
+    context.raft_context.storage.raft_log = Arc::new(raft_log);
+
+    // Prepare batch of 2 requests
+    let (tx1, rx1) = MaybeCloneOneshot::new();
+    let (tx2, rx2) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
+    let receivers = vec![rx1, rx2];
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let result = context
+        .state
+        .process_batch(batch, &role_tx, &context.raft_context, Arc::new(mock_peer_channels()))
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(context.state.commit_index(), 6);
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))));
+
+    // Verify client responses
+    for mut rx in receivers {
+        let response = rx.recv().await.unwrap().unwrap();
+        assert!(response.is_write_success());
+    }
+}
+
+/// # Case 2.1: Quorum NOT achieved (verifiable)
+/// - Majority of peers responded but quorum not achieved
+/// - Clients receive RetryRequired responses
+#[tokio::test]
+async fn test_process_batch_case2_quorum_failed() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context =
+        setup_process_batch_test_context("/tmp/test_process_batch_case2_1_quorum_failed", graceful_rx).await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 0,
+                            next_index: 1,
+                            success: false,
+                        },
+                    ), // Failed
+                ]),
+            })
+        });
+
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    let (tx2, mut rx2) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
+    let result = context
+        .state
+        .process_batch(
+            batch,
+            &mpsc::unbounded_channel().0,
+            &context.raft_context,
+            Arc::new(mock_peer_channels()),
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(context.state.commit_index(), 5); // Should not advance
+
+    let response = rx1.recv().await.unwrap().unwrap();
+    assert!(response.is_retry_required());
+    let response = rx2.recv().await.unwrap().unwrap();
+    assert!(response.is_retry_required());
+}
+
+/// # Case 2.2: Quorum NOT achieved (non-verifiable)
+/// - Less than majority of peers responded
+/// - Clients receive ProposeFailed responses
+#[tokio::test]
+async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = setup_process_batch_test_context(
+        "/tmp/test_process_batch_case2_2_quorum_non_verifiable_failure",
+        graceful_rx,
+    )
+    .await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([(
+                    2,
+                    PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    },
+                )]),
+            })
+        });
+
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    let (tx2, mut rx2) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
+
+    let result = context
+        .state
+        .process_batch(
+            batch,
+            &mpsc::unbounded_channel().0,
+            &context.raft_context,
+            Arc::new(mock_peer_channels()),
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(context.state.commit_index(), 5); // Should not advance
+
+    let response = rx1.recv().await.unwrap().unwrap();
+    assert!(response.is_propose_failure());
+    let response = rx2.recv().await.unwrap().unwrap();
+    assert!(response.is_propose_failure());
+}
+
+/// # Case 3: Higher term detected
+/// - Follower responds with higher term
+/// - Leader should step down
+/// - Clients receive TermOutdated responses
+#[tokio::test]
+async fn test_process_batch_case3_higher_term() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = setup_process_batch_test_context("/tmp/test_process_batch_case3_higher_term", graceful_rx).await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Replication(
+                ReplicationError::HigherTerm(10), // Higher term
+            )))
+        });
+
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1)]);
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let result = context
+        .state
+        .process_batch(batch, &role_tx, &context.raft_context, Arc::new(mock_peer_channels()))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(context.state.current_term(), 10);
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
+
+    let response = rx1.recv().await.unwrap().unwrap();
+    assert!(response.is_term_outdated());
+}
+
+/// # Case 4: Partial timeouts (non-verifiable failure)
+/// - Some peers succeed, some time out
+/// - Clients receive ProposeFailed responses
+#[tokio::test]
+async fn test_process_batch_case4_partial_timeouts() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context =
+        setup_process_batch_test_context("/tmp/test_process_batch_case4_partial_timeouts", graceful_rx).await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([(
+                    2,
+                    PeerUpdate {
+                        match_index: 6,
+                        next_index: 7,
+                        success: true,
+                    },
+                )]),
+            })
+        });
+
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1)]);
+    let result = context
+        .state
+        .process_batch(
+            batch,
+            &mpsc::unbounded_channel().0,
+            &context.raft_context,
+            Arc::new(mock_peer_channels()),
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(context.state.commit_index(), 5); // Initial commit index
+
+    let response = rx1.recv().await.unwrap().unwrap();
+    assert!(response.is_propose_failure());
+}
+
+/// # Case 5: All peers timeout (non-verifiable failure)
+/// - No successful responses
+/// - Commit index unchanged
+/// - Clients receive failure responses
+#[tokio::test]
+async fn test_process_batch_case5_all_timeout() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = setup_process_batch_test_context("/tmp/test_process_batch_case5_all_timeout", graceful_rx).await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 0,
+                            next_index: 1,
+                            success: false,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 0,
+                            next_index: 1,
+                            success: false,
+                        },
+                    ),
+                ]),
+            })
+        });
+
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1)]);
+    let result = context
+        .state
+        .process_batch(
+            batch,
+            &mpsc::unbounded_channel().0,
+            &context.raft_context,
+            Arc::new(mock_peer_channels()),
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(context.state.commit_index(), 5); // Unchanged
+
+    let response = rx1.recv().await.unwrap().unwrap();
+    assert!(response.is_propose_failure());
+}
+
+/// # Case 6: Fatal error during replication
+/// - Storage failure or unrecoverable error
+/// - Clients receive failure responses
+#[tokio::test]
+async fn test_process_batch_case6_fatal_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = setup_process_batch_test_context("/tmp/test_process_batch_case6_fatal_error", graceful_rx).await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    let batch = VecDeque::from(vec![mock_request(tx1)]);
+    let result = context
+        .state
+        .process_batch(
+            batch,
+            &mpsc::unbounded_channel().0,
+            &context.raft_context,
+            Arc::new(mock_peer_channels()),
+        )
+        .await;
+
+    assert!(result.is_err());
+
+    let response = rx1.recv().await.unwrap().unwrap();
+    assert!(response.is_propose_failure());
+}
+
+// Helper functions
+async fn setup_process_batch_test_context(
+    path: &str,
+    graceful_rx: watch::Receiver<()>,
+) -> ProcessRaftRequestTestContext {
+    let context = mock_raft_context(path, graceful_rx, None);
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_commit_index(5).unwrap(); // Initial commit index
+
+    ProcessRaftRequestTestContext {
+        state,
+        raft_context: context,
+    }
+}
+
+struct ProcessBatchTestContext {
+    state: LeaderState<MockTypeConfig>,
+    raft_context: RaftContext<MockTypeConfig>,
+}
+
+fn mock_request(sender: MaybeCloneOneshotSender<Result<ClientResponse, Status>>) -> RaftRequestWithSignal {
+    RaftRequestWithSignal {
+        id: nanoid!(),
+        payloads: vec![],
+        sender,
+    }
+}
+
+/// # Case 1: Quorum achieved
+/// - All peers respond successfully
+/// - Returns `Ok(QuorumVerificationResult::Success)`
+#[tokio::test]
+async fn test_verify_internal_quorum_case1_quorum_achieved() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case1_quorum_achieved",
+        graceful_rx,
+        None,
+    );
+
+    // Setup replication handler to return success
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+            })
+        });
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, _, _| Some(5));
+    raft_context.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))));
+}
+
+/// # Case 2: Quorum NOT achieved (verifiable)
+/// - Majority of peers responded but quorum not achieved
+/// - Returns `Ok(QuorumVerificationResult::RetryRequired)`
+#[tokio::test]
+async fn test_verify_internal_quorum_case2_verifiable_failure() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case2_verifiable_failure",
+        graceful_rx,
+        None,
+    );
+
+    // Setup replication handler to return verifiable failure
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+            })
+        });
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
+}
+
+/// # Case 3: Quorum NOT achieved (non-verifiable)
+/// - Less than majority of peers responded
+/// - Returns `Ok(QuorumVerificationResult::LeadershipLost)`
+#[tokio::test]
+async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case3_non_verifiable_failure",
+        graceful_rx,
+        None,
+    );
+
+    // Setup replication handler to return non-verifiable failure
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
+            })
+        });
+
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 8, rx1, true)
+        .await
+        .expect("should succeed");
+
+    // Prepare AppendResults
+    let mut membership = MockMembership::new();
+    membership.expect_voting_members().returning(move |_| {
+        vec![
+            ChannelWithAddressAndRole {
+                id: 2,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+            ChannelWithAddressAndRole {
+                id: 3,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+            ChannelWithAddressAndRole {
+                id: 4,
+                channel_with_address: addr1.clone(),
+                role: FOLLOWER,
+            },
+        ]
+    });
+    raft_context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert_eq!(result.unwrap(), QuorumVerificationResult::LeadershipLost);
+}
+
+/// # Case 4: Partial timeouts
+/// - Some peers respond, some time out
+/// - Returns `Ok(QuorumVerificationResult::RetryRequired)`
+#[tokio::test]
+async fn test_verify_internal_quorum_case4_partial_timeouts() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case4_partial_timeouts",
+        graceful_rx,
+        None,
+    );
+
+    // Setup replication handler to return partial timeouts
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([
+                    (2, PeerUpdate::success(5, 6)),
+                    (3, PeerUpdate::failed()), // Timeout
+                ]),
+            })
+        });
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
+}
+
+/// # Case 5: All timeouts
+/// - No peers respond
+/// - Returns `Ok(QuorumVerificationResult::RetryRequired)`
+#[tokio::test]
+async fn test_verify_internal_quorum_case5_all_timeouts() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context("/tmp/test_verify_internal_quorum_case5_all_timeouts", graceful_rx, None);
+
+    // Setup replication handler to return all timeouts
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([(2, PeerUpdate::failed()), (3, PeerUpdate::failed())]),
+            })
+        });
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
+}
+
+/// # Case 6: Higher term detected
+/// - Follower responds with higher term
+/// - Returns `Err(HigherTerm)`
+#[tokio::test]
+async fn test_verify_internal_quorum_case6_higher_term() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context("/tmp/test_verify_internal_quorum_case6_higher_term", graceful_rx, None);
+
+    // Setup replication handler to return higher term error
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Replication(
+                ReplicationError::HigherTerm(10),
+            )))
+        });
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(10)))
+    ));
+    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
+}
+
+/// # Case 7: Critical failure
+/// - System or logic error occurs
+/// - Returns original error
+#[tokio::test]
+async fn test_verify_internal_quorum_case7_critical_failure() {
+    let payloads = vec![EntryPayload::command(vec![])];
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case7_critical_failure",
+        graceful_rx,
+        None,
+    );
+
+    // Setup replication handler to return critical error
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _) = mpsc::unbounded_channel();
+
+    let result = state
+        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Fatal(msg) if msg == "Storage failure"
     ));
 }

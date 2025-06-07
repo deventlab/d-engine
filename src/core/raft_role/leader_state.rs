@@ -9,11 +9,13 @@ use crate::alias::POF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::client_command_to_entry_payloads;
+use crate::cluster::is_majority;
 use crate::proto::client::ClientResponse;
-use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::common::membership_change::Change;
+use crate::proto::common::AddNode;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
@@ -29,13 +31,13 @@ use crate::BatchBuffer;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
-use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
+use crate::PeerUpdate;
 use crate::PurgeExecutor;
-use crate::QuorumStatus;
+use crate::QuorumVerificationResult;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -63,6 +65,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use tokio::time::Instant;
 use tonic::async_trait;
@@ -268,28 +271,151 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(self.noop_log_id)
     }
 
-    async fn verify_leadership_in_new_term(
+    /// Check leadership quorum verification Immidiatelly
+    ///
+    /// - Bypasses all queues with direct RPC transmission
+    /// - Enforces synchronous quorum validation
+    /// - Guarantees real-time network visibility
+    ///
+    /// # Returns
+    /// - `Ok(true)`: Real-time majority quorum confirmed
+    /// - `Ok(false)`: Failed to verify immediate quorum
+    /// - `Err(_)`: Network or processing failure during real-time verification
+    async fn verify_internal_quorum_with_retry(
         &mut self,
-        peer_channels: Arc<POF<T>>,
+        payloads: Vec<EntryPayload>,
+        bypass_queue: bool,
         ctx: &RaftContext<T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        debug!("verify_leadership_in_new_term...");
-        let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+        peer_channels: Arc<POF<T>>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
+        let retry_policy = ctx.node_config.retry.internal_quorum;
+        let max_retries = retry_policy.max_retries;
+        let initial_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
+        let max_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.max_delay_ms);
+
+        let mut current_delay = initial_delay;
+        let mut attempts = 0;
+
+        loop {
+            match self
+                .verify_internal_quorum(payloads.clone(), bypass_queue, ctx, peer_channels.clone(), role_tx)
+                .await
+            {
+                Ok(QuorumVerificationResult::Success) => return Ok(true),
+                Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
+                Ok(QuorumVerificationResult::RetryRequired) => {
+                    debug!(%attempts, "verify_internal_quorum");
+                    if attempts >= max_retries {
+                        return Err(NetworkError::TaskBackoffFailed("Max retries exceeded".to_string()).into());
+                    }
+
+                    current_delay = current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
+                    let jitter = Duration::from_millis(rand::random::<u64>() % 500);
+                    sleep(current_delay + jitter).await;
+
+                    attempts += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Note: This method acts as the centerialized internal Raft client
+    ///
+    /// Check leadership quorum verification Immidiatelly
+    ///
+    /// - Bypasses all queues with direct RPC transmission
+    /// - Enforces synchronous quorum validation
+    /// - Guarantees real-time network visibility
+    ///
+    /// Scenario handling summary:
+    ///
+    /// 1. Quorum achieved:
+    ///    - Return: `Ok(QuorumVerificationResult::Success)`
+    ///
+    /// 2. Quorum NOT achieved (verifiable):
+    ///    - Return: `Ok(QuorumVerificationResult::RetryRequired)`
+    ///
+    /// 3. Quorum NOT achieved (non-verifiable):
+    ///    - Return: `Ok(QuorumVerificationResult::LeadershipLost)`
+    ///
+    /// 4. Partial timeouts:
+    ///    - Return: `Ok(QuorumVerificationResult::RetryRequired)`
+    ///
+    /// 5. All timeouts:
+    ///    - Return: `Ok(QuorumVerificationResult::RetryRequired)`
+    ///
+    /// 6. Higher term detected:
+    ///    - Return: `Err(HigherTerm)`
+    ///
+    /// 7. Critical failure (e.g., system or logic error):
+    ///    - Return: original error
+    ///
+    async fn verify_internal_quorum(
+        &mut self,
+        payloads: Vec<EntryPayload>,
+        bypass_queue: bool,
+        ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<QuorumVerificationResult> {
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
         self.process_raft_request(
             RaftRequestWithSignal {
                 id: nanoid!(),
-                payloads: vec![EntryPayload::noop()],
+                payloads,
                 sender: resp_tx,
             },
             ctx,
             peer_channels,
-            false,
-            &role_tx,
+            bypass_queue,
+            role_tx,
         )
         .await?;
-        Ok(())
+
+        // Wait for response with timeout
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        match timeout(timeout_duration, resp_rx).await {
+            // Case 1: Response received successfully and verification passed
+            Ok(Ok(Ok(response))) => {
+                debug!("Leadership check response: {:?}", response);
+
+                // Handle different response cases
+                Ok(if response.is_write_success() {
+                    QuorumVerificationResult::Success
+                } else if response.is_retry_required() {
+                    // Verifiable quorum failure
+                    QuorumVerificationResult::RetryRequired
+                } else {
+                    // Non-verifiable failure or explicit rejection
+                    QuorumVerificationResult::LeadershipLost
+                })
+            }
+
+            // Case 2: Received explicit rejection status
+            Ok(Ok(Err(status))) => {
+                warn!("Leadership rejected by follower: {status:?}");
+                Ok(QuorumVerificationResult::LeadershipLost)
+            }
+
+            // Case 3: Channel communication failure (unrecoverable error)
+            Ok(Err(e)) => {
+                error!("Channel error during leadership check: {:?}", e);
+                Err(NetworkError::SingalReceiveFailed(e.to_string()).into())
+            }
+
+            // Case 4: Waiting for response timeout
+            Err(_) => {
+                warn!("Leadership check timed out after {:?}", timeout_duration);
+                Err(NetworkError::Timeout {
+                    node_id: self.node_id(),
+                    duration: timeout_duration,
+                }
+                .into())
+            }
+        }
     }
 
     fn is_leader(&self) -> bool {
@@ -541,11 +667,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     };
 
                     if client_read_request.linear {
-                        let quorum_result = self.enforce_quorum_consensus(ctx, peer_channels, &role_tx).await;
-
-                        let quorum_succeeded = matches!(quorum_result, Ok(true));
-
-                        if !quorum_succeeded {
+                        if !self
+                            .verify_internal_quorum_with_retry(vec![], true, ctx, peer_channels, &role_tx)
+                            .await
+                            .unwrap_or(false)
+                        {
                             warn!("enforce_quorum_consensus failed for linear read request");
 
                             Err(tonic::Status::failed_precondition(
@@ -732,7 +858,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 NetworkError::SingalSendFailed(error_str).into()
             })
     }
-
     /// # Params
     /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
@@ -745,12 +870,6 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         debug!(?raft_request_with_signal, "Leader::process_raft_request");
-
-        // let push_result = self.batch_buffer.push(RaftRequestWithSignal {
-        //     id: nanoid!(),
-        //     payloads: client_command_to_entry_payloads(client_write_request.commands),
-        //     sender,
-        // });
 
         let push_result = self.batch_buffer.push(raft_request_with_signal);
         // only buffer exceeds the max, the size will return
@@ -768,33 +887,178 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    async fn process_batch(
+    /// Scenario handling summary:
+    ///
+    /// 1. Quorum achieved:
+    ///    - Client response: `write_success()`
+    ///    - State update: update peer indexes and commit index
+    ///    - Return: `Ok(())`
+    ///
+    /// 2. Quorum NOT achieved (verifiable):
+    ///    - Client response: `RetryRequired`
+    ///    - State update: update peer indexes
+    ///    - Return: `Ok(())`
+    ///
+    /// 3. Quorum NOT achieved (non-verifiable):
+    ///    - Client response: `ProposeFailed`
+    ///    - State update: update peer indexes
+    ///    - Return: `Ok(())`
+    ///
+    /// 4. Partial timeouts:
+    ///    - Client response: `ProposeFailed`
+    ///    - State update: update only the peer indexes that responded
+    ///    - Return: `Ok(())`
+    ///
+    /// 5. All timeouts:
+    ///    - Client response: `ProposeFailed`
+    ///    - State update: no update
+    ///    - Return: `Ok(())`
+    ///
+    /// 6. Higher term detected:
+    ///    - Client response: `TermOutdated`
+    ///    - State update: update term and convert to follower
+    ///    - Return: `Err(HigherTerm)`
+    ///
+    /// 7. Critical failure (e.g., system or logic error):
+    ///    - Client response: `ProposeFailed`
+    ///    - State update: none
+    ///    - Return: original error
+    pub(super) async fn process_batch(
         &mut self,
         batch: VecDeque<RaftRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
         peer_channels: Arc<POF<T>>,
     ) -> Result<()> {
+        // 1. Prepare batch data
         let entry_payloads: Vec<EntryPayload> = batch.iter().flat_map(|req| &req.payloads).cloned().collect();
+        trace!(?entry_payloads, "process_batch..",);
 
-        trace!("process_batch.., entry_payloads:{:?}", &entry_payloads);
-
-        let append_result = ctx
+        // 2. Execute the copy
+        let replication_members = ctx.voting_members(peer_channels);
+        let cluster_size = replication_members.len() + 1;
+        let result = ctx
             .replication_handler()
             .handle_raft_request_in_batch(
                 entry_payloads,
                 self.state_snapshot(),
                 self.leader_state_snapshot(),
                 ctx,
-                peer_channels,
+                replication_members,
             )
             .await;
+        debug!(?result, "replication_handler::handle_raft_request_in_batch");
 
-        debug!("process_raft_request_in_batch_result: {:?}", &append_result);
+        // 3. Unify the processing results
+        match result {
+            // Case 1: Successfully reached majority
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates,
+            }) => {
+                self.update_peer_indexes(&peer_updates);
 
-        self.process_raft_request_in_batch_result(batch, append_result, ctx.raft_log(), role_tx)?;
+                // Update commit index
+                if let Some(new_commit_index) = self.calculate_new_commit_index(ctx.raft_log(), &peer_updates) {
+                    self.update_commit_index_with_signal(LEADER, self.current_term(), new_commit_index, role_tx)?;
+                }
+
+                // Notify all clients of success
+                for request in batch {
+                    let _ = request.sender.send(Ok(ClientResponse::write_success()));
+                }
+            }
+
+            // Case 2: Failed to reach majority
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates,
+            }) => {
+                self.update_peer_indexes(&peer_updates);
+
+                // Determine error code based on verifiability
+                let responses_received = peer_updates.len();
+                let error_code = if is_majority(responses_received, cluster_size) {
+                    ErrorCode::RetryRequired
+                } else {
+                    ErrorCode::ProposeFailed
+                };
+
+                // Notify all clients of failure
+                for request in batch {
+                    let _ = request.sender.send(Ok(ClientResponse::client_error(error_code)));
+                }
+            }
+
+            // Case 3: High term found
+            Err(Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(higher_term)))) => {
+                warn!("Higher term detected: {}", higher_term);
+                self.update_current_term(higher_term);
+                self.send_become_follower_event(None, role_tx)?;
+
+                // Notify client of term expiration
+                for request in batch {
+                    let _ = request
+                        .sender
+                        .send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated)));
+                }
+
+                return Err(ReplicationError::HigherTerm(higher_term).into());
+            }
+
+            // Case 4: Other errors
+            Err(e) => {
+                error!("Batch processing failed: {:?}", e);
+
+                // Notify all clients of failure
+                for request in batch {
+                    let _ = request
+                        .sender
+                        .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)));
+                }
+
+                return Err(e);
+            }
+        }
 
         Ok(())
+    }
+
+    /// Update peer node index
+    #[instrument]
+    fn update_peer_indexes(
+        &mut self,
+        peer_updates: &HashMap<u32, PeerUpdate>,
+    ) {
+        for (peer_id, update) in peer_updates {
+            if let Err(e) = self.update_next_index(*peer_id, update.next_index) {
+                error!("Failed to update next index: {:?}", e);
+            }
+            if let Err(e) = self.update_match_index(*peer_id, update.match_index) {
+                error!("Failed to update match index: {:?}", e);
+            }
+        }
+    }
+
+    /// Calculate new submission index
+    #[instrument]
+    fn calculate_new_commit_index(
+        &mut self,
+        raft_log: &Arc<ROF<T>>,
+        peer_updates: &HashMap<u32, PeerUpdate>,
+    ) -> Option<u64> {
+        let old_commit_index = self.commit_index();
+        let current_term = self.current_term();
+
+        let matched_ids: Vec<u64> = peer_updates.keys().filter_map(|&id| self.match_index(id)).collect();
+
+        let new_commit_index = raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
+
+        if new_commit_index.is_some() && new_commit_index.unwrap() > old_commit_index {
+            new_commit_index
+        } else {
+            None
+        }
     }
 
     /// Processes the result of batched client proposals and updates leader
@@ -906,19 +1170,27 @@ impl<T: TypeConfig> LeaderState<T> {
                         if let Err(e) = self.send_become_follower_event(None, role_tx) {
                             error!(?e, "Send conflict leader signal failed.");
                         }
+
+                        for r in batch {
+                            if let Err(e) = r.sender.send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated))) {
+                                error!("r.sender.send response failed: {:?}", e);
+                            }
+                        }
                     }
                     _ => {
                         error("process_raft_request_in_batch_result", &e);
+                        for r in batch {
+                            if let Err(e) = r
+                                .sender
+                                .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
+                            {
+                                error!("r.sender.send response failed: {:?}", e);
+                            }
+                        }
+                        return Err(e);
                     }
                 }
-                for r in batch {
-                    if let Err(e) = r
-                        .sender
-                        .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
-                    {
-                        error!("r.sender.send response failed: {:?}", e);
-                    }
-                }
+
                 return Err(e);
             }
         }
@@ -939,31 +1211,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
         debug!("Leader::update_commit_index: false");
         (false, current_commit_index)
-    }
-
-    /// The enforce_quorum_consensus should be executed immediatelly
-    ///  
-    #[tracing::instrument]
-    pub async fn enforce_quorum_consensus(
-        &mut self,
-        ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        let client_write_request = ClientWriteRequest {
-            client_id: self.node_config.raft.election.internal_rpc_client_request_id,
-            commands: vec![],
-        };
-
-        let status = self
-            .check_leadership_quorum_immediate(client_write_request, ctx, peer_channels, role_tx)
-            .await?;
-        debug!("enforce_quorum_consensus:status = {:?}", status);
-        match status {
-            QuorumStatus::Confirmed => Ok(true),
-            QuorumStatus::LostQuorum => Ok(false),
-            QuorumStatus::NetworkError => Ok(false),
-        }
     }
 
     pub(crate) fn ensure_state_machine_upto_commit_index(
@@ -1092,82 +1339,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 .all(|&v| v >= last_included_in_snapshot.index)
     }
 
-    /// Check leadership quorum verification Immidiatelly
-    ///
-    /// - Bypasses all queues with direct RPC transmission
-    /// - Enforces synchronous quorum validation
-    /// - Guarantees real-time network visibility
-    ///
-    /// # Returns
-    /// - `Ok(true)`: Real-time majority quorum confirmed
-    /// - `Ok(false)`: Failed to verify immediate quorum
-    /// - `Err(_)`: Network or processing failure during real-time verification
-    async fn check_leadership_quorum_immediate(
-        &mut self,
-        client_write_request: ClientWriteRequest,
-        ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<QuorumStatus> {
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.process_raft_request(
-            RaftRequestWithSignal {
-                id: nanoid!(),
-                payloads: client_command_to_entry_payloads(client_write_request.commands),
-                sender: resp_tx,
-            },
-            ctx,
-            peer_channels,
-            true,
-            role_tx,
-        )
-        .await?;
-
-        self.wait_quorum_response(
-            resp_rx,
-            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms),
-        )
-        .await
-    }
-
-    async fn wait_quorum_response(
-        &self,
-        receiver: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>,
-        timeout_duration: Duration,
-    ) -> Result<QuorumStatus> {
-        // Wait for response with timeout
-        match timeout(timeout_duration, receiver).await {
-            // Case 1: Response received successfully and verification passed
-            Ok(Ok(Ok(response))) => {
-                debug!("Leadership check response: {:?}", response);
-                Ok(if response.validate_error().is_ok() {
-                    QuorumStatus::Confirmed
-                } else {
-                    QuorumStatus::LostQuorum
-                })
-            }
-
-            // Case 2: Received explicit rejection status
-            Ok(Ok(Err(status))) => {
-                warn!("Leadership check failed with status: {:?}", status);
-                Ok(QuorumStatus::LostQuorum)
-            }
-
-            // Case 3: Channel communication failure (unrecoverable error)
-            Ok(Err(e)) => {
-                error!("Channel error during leadership check: {:?}", e);
-                Err(NetworkError::SingalReceiveFailed(e.to_string()).into())
-            }
-
-            // Case 4: Waiting for response timeout
-            Err(_) => {
-                warn!("Leadership check timed out after {:?}", timeout_duration);
-                Ok(QuorumStatus::NetworkError)
-            }
-        }
-    }
-
     async fn handle_join_cluster(
         &mut self,
         join_request: JoinRequest,
@@ -1176,116 +1347,81 @@ impl<T: TypeConfig> LeaderState<T> {
         peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        // let node_id = join_request.node_id;
-        // let address = join_request.address;
+        let node_id = join_request.node_id;
+        let address = join_request.address;
 
-        // // 1. Validate join request
-        // if ctx.membership().contains_node(node_id) {
-        //     let error_msg = format!("Node {} already exists in cluster", node_id);
-        //     warn!(%error_msg);
-        //     return self
-        //         .send_join_error(sender, MembershipError::NodeAlreadyExists(node_id))
-        //         .await;
-        // }
+        // 1. Validate join request
+        if ctx.membership().contains_node(node_id) {
+            let error_msg = format!("Node {} already exists in cluster", node_id);
+            warn!(%error_msg);
+            return self
+                .send_join_error(sender, MembershipError::NodeAlreadyExists(node_id))
+                .await;
+        }
 
-        // // 2. Create configuration change entry
-        // let config_change = ConfigurationChange::AddLearner {
-        //     node_id,
-        //     address: address.clone(),
-        // };
-        // let entry = LogEntry::new_config_change(config_change);
+        // 2. Create configuration change payload
+        let config_change = Change::AddNode(AddNode {
+            node_id,
+            address: address.clone(),
+        });
+        // 3. Wait for quorum confirmation
+        match self
+            .verify_internal_quorum_with_retry(
+                vec![EntryPayload::config(config_change)],
+                false,
+                ctx,
+                peer_channels,
+                role_tx,
+            )
+            .await
+        {
+            Ok(true) => {
+                info!("Join config committed for node {}", node_id);
+                self.send_join_success(node_id, &address, sender, ctx).await?;
 
-        // // 3. Submit configuration change to Raft log
-        // let append_result = ctx.raft_log().append(entry).await;
-        // let log_index = match append_result {
-        //     Ok(index) => index,
-        //     Err(e) => {
-        //         error!("Failed to append join config: {:?}", e);
-        //         return self.send_join_error(sender, e.into()).await;
-        //     }
-        // };
-
-        // // 4. Wait for configuration to be committed
-        // match self.wait_for_commit(log_index, ctx, peer_channels, role_tx).await {
-        //     Ok(true) => {
-        //         info!("Join config committed for node {}", node_id);
-        //         self.send_join_success(node_id, address, sender, ctx).await
-        //     }
-        //     Ok(false) => {
-        //         warn!("Failed to commit join config for node {}", node_id);
-        //         self.send_join_error(sender, ConsensusError::CommitTimeout).await
-        //     }
-        //     Err(e) => {
-        //         error!("Error waiting for commit: {:?}", e);
-        //         self.send_join_error(sender, e).await
-        //     }
-        // }
+                // AFTER join success: Trigger snapshot transfer
+                if let Some(metadata) = ctx.state_machine().snapshot_metadata() {
+                    self.trigger_snapshot_transfer(node_id, address, metadata, ctx).await;
+                }
+            }
+            Ok(false) => {
+                warn!("Failed to commit join config for node {}", node_id);
+                self.send_join_error(sender, MembershipError::CommitTimeout).await?
+            }
+            Err(e) => {
+                error!("Error waiting for commit: {:?}", e);
+                self.send_join_error(sender, e).await?
+            }
+        }
         Ok(())
-    }
-
-    async fn wait_for_commit(
-        &self,
-        log_index: u64,
-        ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        // let start = Instant::now();
-        // let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-
-        // while start.elapsed() < timeout_duration {
-        //     if self.commit_index() >= log_index {
-        //         return Ok(true);
-        //     }
-
-        //     // Trigger immediate replication
-        //     ctx.replication_handler()
-        //         .replicate_to_peers(
-        //             self.state_snapshot(),
-        //             self.leader_state_snapshot(),
-        //             ctx,
-        //             peer_channels.clone(),
-        //         )
-        //         .await?;
-
-        //     tokio::time::sleep(Duration::from_millis(10)).await;
-        // }
-
-        // warn!("Timeout waiting for commit of index {}", log_index);
-        Ok(false)
     }
 
     async fn send_join_success(
         &self,
         node_id: u32,
-        address: String,
+        address: &str,
         sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        // // Determine if snapshot is needed
-        // let snapshot_needed = ctx.raft_log().last_index() > 0;
-        // let snapshot_metadata = if snapshot_needed {
-        //     ctx.state_machine_handler().get_latest_snapshot_metadata().await.ok()
-        // } else {
-        //     None
-        // };
+        // Retrieve latest snapshot metadata, if there is
+        let snapshot_metadata = ctx.state_machine_handler().get_latest_snapshot_metadata();
 
-        // // Prepare response
-        // let response = JoinResponse {
-        //     success: true,
-        //     error: String::new(),
-        //     config: ctx.membership().retrieve_cluster_membership_config(),
-        //     config_version: ctx.membership().get_cluster_conf_version(),
-        //     snapshot_metadata,
-        //     leader_id: self.node_id(),
-        // };
+        // Prepare response
+        let response = JoinResponse {
+            success: true,
+            error: String::new(),
+            config: Some(ctx.membership().retrieve_cluster_membership_config()),
+            config_version: ctx.membership().get_cluster_conf_version(),
+            snapshot_metadata,
+            leader_id: self.node_id(),
+        };
 
-        // sender.send(Ok(response)).map_err(|e| {
-        //     error!("Failed to send join response: {:?}", e);
-        //     NetworkError::SingalSendFailed(format!("{e:?}"))
-        // })?;
+        sender.send(Ok(response)).map_err(|e| {
+            error!("Failed to send join response: {:?}", e);
+            NetworkError::SingalSendFailed(format!("{e:?}"))
+        })?;
 
-        // info!("Node {} ({}) successfully added as learner", node_id, address);
+        info!("Node {} ({}) successfully added as learner", node_id, address);
         Ok(())
     }
 
@@ -1338,6 +1474,27 @@ impl<T: TypeConfig> LeaderState<T> {
             last_purged_index: None, //TODO
             peer_purge_progress: HashMap::new(),
         }
+    }
+
+    async fn trigger_snapshot_transfer(
+        &self,
+        node_id: u32,
+        address: String,
+        metadata: SnapshotMetadata,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        // let transport = ctx.transport();
+        // let data_stream = self.load_snapshot_data(metadata.clone());
+
+        // tokio::spawn(async move {
+        //     let channel = transport.build_channel(address).await?;
+        //     transport
+        //         .install_snapshot(channel, metadata, data_stream, &self.retry_policy)
+        //         .await
+        //         .map_err(|e| error!("Snapshot failed: {:?}", e));
+        // });
+
+        Ok(())
     }
 }
 
