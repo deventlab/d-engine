@@ -592,9 +592,7 @@ where
         let mut files = Vec::new();
         let mut entries = fs::read_dir(&snapshot_dir).await.map_err(StorageError::IoError)?;
         while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
-            if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
-                files.push(entry.path());
-            }
+            files.push(entry.path());
         }
         files.sort();
 

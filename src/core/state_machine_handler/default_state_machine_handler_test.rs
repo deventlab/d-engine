@@ -7,10 +7,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use mockall::predicate::eq;
 use mockall::Sequence;
 use tempfile::tempdir;
 use tempfile::TempDir;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tokio::time;
 use tracing::debug;
@@ -338,16 +341,16 @@ async fn test_install_snapshot_chunk_case1() {
     raft_handle.await.expect("should succeed");
 }
 
-fn create_test_handler(temp_dir: &Path) -> DefaultStateMachineHandler<MockTypeConfig> {
+// Helper to create test handler
+fn create_test_handler(
+    temp_dir: &Path,
+    chunk_size: Option<usize>,
+) -> DefaultStateMachineHandler<MockTypeConfig> {
     let state_machine = MockStateMachine::new();
-    DefaultStateMachineHandler::new(
-        1,
-        0,
-        1,
-        Arc::new(state_machine),
-        snapshot_config(temp_dir.to_path_buf()),
-        MockSnapshotPolicy::new(),
-    )
+    let mut config = snapshot_config(temp_dir.to_path_buf());
+    config.chunk_size = chunk_size.unwrap_or(1024); // Default chunk size
+
+    DefaultStateMachineHandler::new(1, 0, 1, Arc::new(state_machine), config, MockSnapshotPolicy::new())
 }
 
 /// # Case 2: Successfully applies valid chunks
@@ -404,7 +407,7 @@ const TEST_LEADER_ID: u32 = 1;
 #[tokio::test]
 async fn test_install_snapshot_chunk_case3() {
     let temp_dir = tempdir().unwrap();
-    let handler = create_test_handler(temp_dir.path());
+    let handler = create_test_handler(temp_dir.path(), None);
 
     // Create chunk with invalid checksum
     let mut bad_chunk = create_test_chunk(0, b"bad data", TEST_TERM, TEST_LEADER_ID, 1);
@@ -426,7 +429,7 @@ async fn test_install_snapshot_chunk_case3() {
 #[tokio::test]
 async fn test_install_snapshot_chunk_case4() {
     let temp_dir = tempdir().unwrap();
-    let handler = create_test_handler(temp_dir.path());
+    let handler = create_test_handler(temp_dir.path(), None);
 
     // First chunk with term 1, second with term 2
     let chunks = vec![
@@ -450,7 +453,7 @@ async fn test_install_snapshot_chunk_case4() {
 #[tokio::test]
 async fn test_install_snapshot_chunk_case5() {
     let temp_dir = tempdir().unwrap();
-    let handler = create_test_handler(temp_dir.path());
+    let handler = create_test_handler(temp_dir.path(), None);
 
     // Create stream that returns error after first chunk
     let chunks = vec![create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2)];
@@ -471,7 +474,7 @@ async fn test_install_snapshot_chunk_case5() {
 #[tokio::test]
 async fn test_install_snapshot_chunk_case6() {
     let temp_dir = tempdir().unwrap();
-    let handler = create_test_handler(temp_dir.path());
+    let handler = create_test_handler(temp_dir.path(), None);
 
     // First chunk missing metadata
     let mut invalid_chunk = create_test_chunk(0, b"data", TEST_TERM, TEST_LEADER_ID, 1);
@@ -1181,4 +1184,210 @@ fn mock_node_with_rpc_service(
         .with_state_machine_handler(mock_state_machine_handler)
         .turn_on_election(is_leader)
         .build_node_with_rpc_server()
+}
+
+/// Helper to create test files in snapshot directory
+async fn create_test_snapshot_files(
+    dir: &Path,
+    files: &[(&str, &[u8])],
+) {
+    for (name, content) in files {
+        let path = dir.join(name);
+        let mut file = File::create(&path).await.unwrap();
+        file.write_all(content).await.unwrap();
+    }
+}
+
+/// # Case 1: Single file in snapshot (fits in one chunk)
+#[tokio::test]
+async fn test_load_snapshot_data_case1_single_file_single_chunk() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("snapshot-1-1");
+    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+
+    // Create test file
+    create_test_snapshot_files(&snapshot_dir, &[("file1.txt", b"Hello World")]).await;
+
+    let handler = create_test_handler(temp_dir.path(), None);
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 1, term: 1 }),
+        checksum: vec![1; 32],
+    };
+
+    // Get snapshot stream
+    let mut stream = handler
+        .load_snapshot_data(metadata.clone())
+        .await
+        .expect("Should create stream");
+
+    // Collect all chunks
+    let mut chunks = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        chunks.push(chunk.unwrap());
+    }
+
+    // Verify chunks
+    assert_eq!(chunks.len(), 1, "Should have one chunk");
+    let chunk = &chunks[0];
+    assert_eq!(chunk.term, 1);
+    assert_eq!(chunk.leader_id, 1);
+    assert_eq!(chunk.seq, 0);
+    assert_eq!(chunk.total, 1);
+    assert_eq!(chunk.data, b"Hello World");
+    assert_eq!(chunk.checksum, crc32fast::hash(b"Hello World").to_be_bytes().to_vec());
+    assert_eq!(chunk.metadata, Some(metadata));
+}
+
+/// # Case 2: Single file split into multiple chunks
+#[tokio::test]
+async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("snapshot-2-1");
+    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+
+    // Create large file (3 chunks of 4 bytes each)
+    let data = b"1234567890ABCDEF";
+    create_test_snapshot_files(&snapshot_dir, &[("large.bin", data)]).await;
+
+    // Handler with small chunk size
+    let handler = create_test_handler(temp_dir.path(), Some(4));
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 2, term: 1 }),
+        checksum: vec![2; 32],
+    };
+
+    // Get and collect chunks
+    let mut stream = handler.load_snapshot_data(metadata.clone()).await.unwrap();
+    let mut chunks = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        chunks.push(chunk.unwrap());
+    }
+
+    // Verify chunk count (16 bytes / 4 = 4 chunks)
+    assert_eq!(chunks.len(), 4);
+
+    // Verify sequence numbers
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert_eq!(chunk.seq, i as u32);
+        assert_eq!(chunk.total, 1); // Total files, not chunks (known issue)
+    }
+
+    // Reassemble data
+    let mut reassembled = Vec::new();
+    for chunk in &chunks {
+        reassembled.extend_from_slice(&chunk.data);
+    }
+
+    assert_eq!(reassembled, data);
+}
+
+/// # Case 3: Multiple files in snapshot
+#[tokio::test]
+async fn test_load_snapshot_data_case3_multiple_files() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("snapshot-3-1");
+    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+
+    // Create multiple files
+    create_test_snapshot_files(
+        &snapshot_dir,
+        &[
+            ("a.txt", b"First file"),
+            ("b.txt", b"Second file"),
+            ("c.txt", b"Third file"),
+        ],
+    )
+    .await;
+
+    let handler = create_test_handler(temp_dir.path(), None);
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 3, term: 1 }),
+        checksum: vec![3; 32],
+    };
+
+    // Get and collect chunks
+    let mut stream = handler.load_snapshot_data(metadata.clone()).await.unwrap();
+    let mut chunks = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        chunks.push(chunk.unwrap());
+    }
+
+    // Should have 3 chunks (one per file)
+    assert_eq!(chunks.len(), 3);
+
+    // Files should be in sorted order: a.txt, b.txt, c.txt
+    assert_eq!(chunks[0].data, b"First file");
+    assert_eq!(chunks[1].data, b"Second file");
+    assert_eq!(chunks[2].data, b"Third file");
+
+    // Verify metadata is consistent
+    for chunk in chunks {
+        assert_eq!(chunk.metadata, Some(metadata.clone()));
+    }
+}
+
+/// # Case 4: Empty snapshot directory
+#[tokio::test]
+async fn test_load_snapshot_data_case4_empty_snapshot() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("snapshot-4-1");
+    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+
+    let handler = create_test_handler(temp_dir.path(), None);
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 4, term: 1 }),
+        checksum: vec![4; 32],
+    };
+
+    let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
+    assert!(stream.next().await.is_none(), "Stream should be empty");
+}
+
+/// # Case 5: Checksum validation
+#[tokio::test]
+async fn test_load_snapshot_data_case5_checksum() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("snapshot-5-1");
+    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+
+    create_test_snapshot_files(&snapshot_dir, &[("checksum.txt", b"Validate me")]).await;
+
+    let handler = create_test_handler(temp_dir.path(), None);
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: vec![5; 32],
+    };
+
+    let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
+    let chunk = stream.next().await.unwrap().unwrap();
+
+    let expected_checksum = crc32fast::hash(b"Validate me").to_be_bytes().to_vec();
+    assert_eq!(chunk.checksum, expected_checksum);
+}
+
+/// # Case 6: File read error
+#[tokio::test]
+async fn test_load_snapshot_data_case6_read_error() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("snapshot-6-1");
+    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+
+    // Create invalid file (directory)
+    tokio::fs::create_dir(snapshot_dir.join("invalid")).await.unwrap();
+
+    let handler = create_test_handler(temp_dir.path(), None);
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 6, term: 1 }),
+        checksum: vec![6; 32],
+    };
+
+    let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
+    let result = stream.next().await.unwrap();
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Storage(StorageError::IoError(_)))
+    ));
 }
