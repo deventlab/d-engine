@@ -1,20 +1,25 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
-use std::collections::HashSet;
-
 use autometrics::autometrics;
+use futures::stream::BoxStream;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
+use std::collections::HashSet;
+use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::task;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+use crate::grpc::RestartableStream;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::election::raft_election_service_client::RaftElectionServiceClient;
@@ -24,8 +29,11 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
 use crate::task_with_timeout_and_exponential_backoff;
 use crate::AppendResult;
+use crate::BackoffPolicy;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::ClusterUpdateResult;
@@ -373,6 +381,85 @@ impl Transport for GrpcTransport {
         }
 
         Ok(responses)
+    }
+
+    async fn install_snapshot(
+        &self,
+        channel: Channel,
+        _metadata: SnapshotMetadata,
+        data_stream: BoxStream<'static, Result<SnapshotChunk>>,
+        retry: &BackoffPolicy,
+    ) -> Result<()> {
+        debug!("Starting snapshot installation");
+        let mut client = SnapshotServiceClient::new(channel)
+            .send_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+
+        let mut retry_count = 0;
+        let mut last_successful_chunk = 0;
+
+        // Convert the data stream to a retryable stream
+        let mut restartable_stream = RestartableStream::new(data_stream);
+        loop {
+            // Start from the last successful position
+            restartable_stream.seek(last_successful_chunk).await?;
+
+            // Create a new sending channel
+            let (tx, rx) = mpsc::channel(32);
+
+            // Process stream data
+            let stream_task = async {
+                while let Some(chunk_result) = restartable_stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let last_chunk = chunk.seq;
+                            if let Err(e) = tx.send(chunk).await {
+                                error!("Failed to send snapshot chunk: {:?}", e);
+                                break;
+                            }
+                            last_successful_chunk = last_chunk;
+                        }
+                        Err(e) => {
+                            error!("Snapshot chunk error: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+            };
+
+            // Send request
+            let request = ReceiverStream::new(rx);
+            let response = client.install_snapshot(request).await;
+
+            // Wait for the flow task to complete
+            stream_task.await;
+
+            match response {
+                Ok(response) => {
+                    let response = response.into_inner();
+                    if response.success {
+                        debug!("Snapshot transferred successfully");
+                        return Ok(());
+                    } else {
+                        warn!("Follower rejected snapshot at chunk {}", response.next_chunk);
+                        last_successful_chunk = response.next_chunk;
+                    }
+                }
+                Err(status) => {
+                    warn!("Snapshot transfer failed: {:?}", status);
+                }
+            }
+
+            // Handle retries
+            retry_count += 1;
+            if retry_count > retry.max_retries {
+                return Err(NetworkError::SnapshotTransferFailed.into());
+            }
+
+            // exponential backoff
+            let delay = retry.base_delay_ms * 2u64.pow(retry_count as u32);
+            tokio::time::sleep(Duration::from_millis(delay.into())).await;
+        }
     }
 }
 

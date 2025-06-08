@@ -53,7 +53,7 @@ pub(crate) fn create_test_chunk(
     seq: u32,
     data: &[u8],
     term: u64,
-    leader_id: u64,
+    leader_id: u32,
     total: u32,
 ) -> SnapshotChunk {
     SnapshotChunk {
@@ -79,8 +79,6 @@ impl tonic::codec::Decoder for SnapshotChunkDecoder {
         &mut self,
         buf: &mut tonic::codec::DecodeBuf<'_>,
     ) -> Result<Option<Self::Item>, Self::Error> {
-        debug!(?buf, "SnapshotChunkDecoder");
-
         match SnapshotChunk::decode(buf) {
             Ok(chunk) => Ok(Some(chunk)),
             Err(e) => Err(Status::new(Code::Internal, format!("Decode error: {e}"))),

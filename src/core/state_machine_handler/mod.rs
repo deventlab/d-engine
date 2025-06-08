@@ -46,8 +46,6 @@ mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;
 
-use std::sync::Arc;
-
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
@@ -63,6 +61,8 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
 use crate::Result;
 use crate::TypeConfig;
+use futures::stream::BoxStream;
+use std::sync::Arc;
 
 #[cfg_attr(test, automock)]
 #[async_trait]
@@ -146,4 +146,10 @@ where
     ///   - `checksum`: cryptographic hash of snapshot data
     /// - For non-leader nodes, this should reflect the last applied snapshot
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata>;
+
+    /// Load snapshot data as a stream of chunks
+    async fn load_snapshot_data(
+        &self,
+        metadata: SnapshotMetadata,
+    ) -> Result<BoxStream<'static, Result<SnapshotChunk>>>;
 }

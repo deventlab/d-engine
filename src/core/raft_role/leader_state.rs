@@ -14,6 +14,7 @@ use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::NodeStatus;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
 use crate::proto::common::EntryPayload;
@@ -35,6 +36,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
+use crate::PeerChannels;
 use crate::PeerUpdate;
 use crate::PurgeExecutor;
 use crate::QuorumVerificationResult;
@@ -56,6 +58,7 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use crate::LEARNER;
 use autometrics::autometrics;
 use nanoid::nanoid;
 use std::collections::HashMap;
@@ -1361,18 +1364,24 @@ impl<T: TypeConfig> LeaderState<T> {
                 .await;
         }
 
-        // 2. Create configuration change payload
+        // 2. Add new peer to connection manager
+        peer_channels
+            .add_peer(node_id, address.clone(), LEARNER, NodeStatus::Active)
+            .await?;
+
+        // 3. Create configuration change payload
         let config_change = Change::AddNode(AddNode {
             node_id,
             address: address.clone(),
         });
-        // 3. Wait for quorum confirmation
+
+        // 4. Wait for quorum confirmation
         match self
             .verify_internal_quorum_with_retry(
                 vec![EntryPayload::config(config_change)],
                 false,
                 ctx,
-                peer_channels,
+                peer_channels.clone(),
                 role_tx,
             )
             .await
@@ -1382,8 +1391,9 @@ impl<T: TypeConfig> LeaderState<T> {
                 self.send_join_success(node_id, &address, sender, ctx).await?;
 
                 // AFTER join success: Trigger snapshot transfer
-                if let Some(metadata) = ctx.state_machine().snapshot_metadata() {
-                    self.trigger_snapshot_transfer(node_id, address, metadata, ctx).await;
+                if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
+                    self.trigger_snapshot_transfer(node_id, lastest_snapshot_metadata, ctx, peer_channels.clone())
+                        .await?;
                 }
             }
             Ok(false) => {
@@ -1481,20 +1491,28 @@ impl<T: TypeConfig> LeaderState<T> {
     async fn trigger_snapshot_transfer(
         &self,
         node_id: u32,
-        address: String,
         metadata: SnapshotMetadata,
         ctx: &RaftContext<T>,
+        peer_channels: Arc<POF<T>>,
     ) -> Result<()> {
-        // let transport = ctx.transport();
-        // let data_stream = self.load_snapshot_data(metadata.clone());
+        let transport = ctx.transport().clone();
 
-        // tokio::spawn(async move {
-        //     let channel = transport.build_channel(address).await?;
-        //     transport
-        //         .install_snapshot(channel, metadata, data_stream, &self.retry_policy)
-        //         .await
-        //         .map_err(|e| error!("Snapshot failed: {:?}", e));
-        // });
+        // Get existing channel from peer manager
+        let channel_with_address = peer_channels
+            .get_peer_channel(node_id)
+            .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
+
+        let data_stream = ctx.state_machine_handler().load_snapshot_data(metadata.clone()).await?;
+        let retry = ctx.node_config.retry.install_snapshot.clone();
+        tokio::spawn(async move {
+            match transport
+                .install_snapshot(channel_with_address.channel, metadata, data_stream, &retry)
+                .await
+            {
+                Ok(_) => info!("Snapshot transferred successfully to node {}", node_id),
+                Err(e) => error!("Snapshot transfer failed to node {}: {:?}", node_id, e),
+            }
+        });
 
         Ok(())
     }

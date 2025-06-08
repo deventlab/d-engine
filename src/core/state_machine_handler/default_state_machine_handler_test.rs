@@ -398,7 +398,7 @@ async fn test_install_snapshot_chunk_case2() {
 }
 
 const TEST_TERM: u64 = 1;
-const TEST_LEADER_ID: u64 = 1;
+const TEST_LEADER_ID: u32 = 1;
 
 /// # Case 3: Rejects chunk with invalid checksum
 #[tokio::test]
@@ -1084,6 +1084,7 @@ fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         snapshot_cool_down_since_last_check: Duration::from_secs(0),
         cleanup_retain_count: 2,
         snapshots_dir,
+        chunk_size: 1024, //1KB
     }
 }
 

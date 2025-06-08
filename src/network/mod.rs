@@ -27,12 +27,15 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
 use crate::BackoffPolicy;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
+use tonic::transport::Channel;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
@@ -216,6 +219,24 @@ pub trait Transport: Send + Sync + 'static {
         req: PurgeLogRequest,
         retry: &RetryPolicies,
     ) -> Result<Vec<Result<PurgeLogResponse>>>;
+
+    /// Transfers snapshot to a follower node
+    ///
+    /// # Parameters
+    /// - `channel`: Pre-established gRPC channel
+    /// - `metadata`: Snapshot metadata
+    /// - `data_stream`: Stream of snapshot chunks
+    /// - `retry`: Snapshot-specific retry configuration
+    ///
+    /// # Errors
+    /// - `NetworkError::SnapshotTransferFailed`: On unrecoverable transfer failure
+    async fn install_snapshot(
+        &self,
+        channel: Channel,
+        metadata: SnapshotMetadata,
+        data_stream: futures::stream::BoxStream<'static, Result<SnapshotChunk>>,
+        retry: &BackoffPolicy,
+    ) -> Result<()>;
 }
 
 // Module level utils

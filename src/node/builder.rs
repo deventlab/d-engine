@@ -287,6 +287,7 @@ impl NodeBuilder {
                 snapshot_policy,
             ))
         });
+
         let membership = self
             .membership
             .take()
@@ -381,6 +382,27 @@ impl NodeBuilder {
         executor: PE<RaftTypeConfig>,
     ) -> Self {
         self.purge_executor = Some(executor);
+        self
+    }
+
+    /// Sets a custom state machine handler implementation.
+    ///
+    /// This allows developers to provide their own implementation of the state machine handler
+    /// which processes committed log entries and applies them to the state machine.
+    ///
+    /// # Arguments
+    /// * `handler` - custom state machine handler that must implement the
+    ///   `StateMachineHandler` trait
+    ///
+    /// # Notes
+    /// - The handler must be thread-safe as it will be shared across multiple threads
+    /// - If not set, a default implementation will be used during `build()`
+    /// - The handler should properly handle snapshot creation and restoration
+    pub fn with_custom_state_machine_handler(
+        mut self,
+        handler: Arc<SMHOF<RaftTypeConfig>>,
+    ) -> Self {
+        self.state_machine_handler = Some(handler);
         self
     }
 

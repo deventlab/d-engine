@@ -27,6 +27,7 @@ use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::NodeStatus;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
@@ -59,10 +60,26 @@ pub trait PeerChannels: Sync + Send + 'static {
         &mut self,
         my_id: u32,
     ) -> Result<()>;
+
     async fn check_cluster_is_ready(&self) -> Result<()>;
 
     /// Get all peers channel regardless peer's role
     fn voting_members(&self) -> DashMap<u32, ChannelWithAddress>;
+
+    /// Dynamically add a peer connection
+    async fn add_peer(
+        &self,
+        node_id: u32,
+        address: String,
+        role: i32,
+        status: NodeStatus,
+    ) -> Result<()>;
+
+    /// Get a specific peer's channel
+    fn get_peer_channel(
+        &self,
+        node_id: u32,
+    ) -> Option<ChannelWithAddress>;
 }
 
 #[cfg_attr(test, automock)]

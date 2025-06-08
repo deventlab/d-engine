@@ -26,7 +26,9 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
+use async_stream::try_stream;
 use autometrics::autometrics;
+use futures::stream::BoxStream;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
@@ -36,6 +38,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::fs::remove_dir_all;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::async_trait;
@@ -522,6 +526,23 @@ where
         self.state_machine.snapshot_metadata();
         None
     }
+
+    /// Load snapshot data as a stream of chunks
+    async fn load_snapshot_data(
+        &self,
+        metadata: SnapshotMetadata,
+    ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
+        let last_included = metadata
+            .last_included
+            .ok_or_else(|| StorageError::Snapshot("No last_included in metadata".to_string()))?;
+
+        let snapshot_dir = self.snapshot_config.snapshots_dir.join(format!(
+            "{}{}-{}",
+            SNAPSHOT_DIR_PREFIX, last_included.index, last_included.term
+        ));
+
+        self.create_snapshot_chunk_stream(snapshot_dir, metadata).await
+    }
 }
 
 impl<T> DefaultStateMachineHandler<T>
@@ -560,6 +581,60 @@ where
         } else {
             None
         }
+    }
+
+    async fn create_snapshot_chunk_stream(
+        &self,
+        snapshot_dir: PathBuf,
+        metadata: SnapshotMetadata,
+    ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
+        // Get list of files in snapshot directory
+        let mut files = Vec::new();
+        let mut entries = fs::read_dir(&snapshot_dir).await.map_err(StorageError::IoError)?;
+        while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
+            if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
+                files.push(entry.path());
+            }
+        }
+        files.sort();
+
+        let chunk_size = self.snapshot_config.chunk_size;
+        let node_id = self.node_id;
+        let term = metadata.last_included.map(|id| id.term).unwrap_or(0);
+        let total_files = files.len() as u32;
+
+        let stream = try_stream! {
+            let mut seq = 0;
+
+            for file_path in files {
+                let mut file = File::open(&file_path).await.map_err(StorageError::IoError)?;
+                let mut buffer = vec![0u8; chunk_size];
+
+                loop {
+                    let bytes_read = file.read(&mut buffer).await.map_err(StorageError::IoError)?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+
+                    let chunk_data = buffer[..bytes_read].to_vec();
+                    let checksum = crc32fast::hash(&chunk_data).to_be_bytes().to_vec();
+
+                    yield SnapshotChunk {
+                        term,
+                        leader_id: node_id,
+                        metadata: Some(metadata.clone()),
+                        seq,
+                        total: total_files,
+                        data: chunk_data,
+                        checksum,
+                    };
+
+                    seq += 1;
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 
     #[cfg(test)]

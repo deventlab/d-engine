@@ -46,6 +46,10 @@ pub struct RetryPolicies {
     #[serde(default)]
     pub membership: BackoffPolicy,
 
+    /// Retry policy for install snapshot requests
+    #[serde(default)]
+    pub install_snapshot: BackoffPolicy,
+
     /// Retry policy for purge log requests
     #[serde(default)]
     pub purge_log: BackoffPolicy,
@@ -80,7 +84,8 @@ impl Default for RetryPolicies {
                 max_delay_ms: 1000,
             },
             election: BackoffPolicy {
-                max_retries: 3, // Note: `retries` > 3 might prevent a successful election.
+                // Note: `retries` > 3 might prevent a successful election.
+                max_retries: 3,
                 timeout_ms: 100,
                 base_delay_ms: 50,
                 max_delay_ms: 5000,
@@ -98,13 +103,28 @@ impl Default for RetryPolicies {
                 max_delay_ms: 10000,
             },
 
+            // Recommended configuration examples for different network scenarios:
+            //
+            // Scenario                      Recommended Settings
+            // ------------------------------------------------------------
+            // Local Data Center (Low Latency)     -> max_retries=3, timeout_ms=500, max_delay_ms=2000
+            // Cross-Region Network (High Latency) -> max_retries=10, timeout_ms=5000, max_delay_ms=10000
+            // Edge Network (Unstable)             -> max_retries=10, timeout_ms=3000, max_delay_ms=30000
+            //
+            // Current config:
+            install_snapshot: BackoffPolicy {
+                max_retries: 3,
+                timeout_ms: 500,
+                base_delay_ms: 50,
+                max_delay_ms: 2000,
+            },
+
             purge_log: BackoffPolicy {
                 max_retries: 1,
                 timeout_ms: 100,
                 base_delay_ms: 50,
                 max_delay_ms: 1000,
             },
-
             internal_quorum: BackoffPolicy {
                 // Minimum must be 3: the first quorum check may fail if the leader is newly elected and followers haven't yet advanced their next_index
                 max_retries: 3,
@@ -169,6 +189,7 @@ impl RetryPolicies {
         self.validate_membership()?;
         self.validate_healthcheck()?;
         self.validate_purge_log()?;
+        self.validate_install_snapshot()?;
         Ok(())
     }
 
@@ -198,6 +219,12 @@ impl RetryPolicies {
 
     fn validate_purge_log(&self) -> Result<()> {
         self.purge_log.validate("purge_log")?;
+
+        Ok(())
+    }
+
+    fn validate_install_snapshot(&self) -> Result<()> {
+        self.install_snapshot.validate("install_snapshot")?;
 
         Ok(())
     }

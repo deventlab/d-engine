@@ -103,6 +103,10 @@ pub enum NetworkError {
     #[error("Request list for {request_type} contains no peers")]
     EmptyPeerList { request_type: &'static str },
 
+    /// Peer connection not found
+    #[error("Peer({0}) connection not found")]
+    PeerConnectionNotFound(u32),
+
     /// Malformed node addresses
     #[error("Invalid URI format: {0}")]
     InvalidURI(String),
@@ -148,6 +152,12 @@ pub enum NetworkError {
 
     #[error("{0}")]
     SingalReceiveFailed(String),
+
+    #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
+    SnapshotRejected { last_chunk: u32 },
+
+    #[error("Install snapshot RPC request failed")]
+    SnapshotTransferFailed,
 }
 
 #[derive(Debug, thiserror::Error)]

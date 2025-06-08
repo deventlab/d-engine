@@ -329,6 +329,12 @@ pub struct SnapshotConfig {
     /// Default: `default_snapshots_dir()` (/tmp/snapshots)
     #[serde(default = "default_snapshots_dir")]
     pub snapshots_dir: PathBuf,
+
+    /// Size (in bytes) of individual chunks when transferring snapshots
+    ///
+    /// Default: `default_chunk_size()` (typically 1MB)
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -337,6 +343,7 @@ impl Default for SnapshotConfig {
             snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
             cleanup_retain_count: default_cleanup_retain_count(),
             snapshots_dir: default_snapshots_dir(),
+            chunk_size: default_chunk_size(),
         }
     }
 }
@@ -353,9 +360,16 @@ impl SnapshotConfig {
                 "cleanup_retain_count must be greater than 0".into(),
             )));
         }
-
         // Validate storage paths
         validate_directory(&self.snapshots_dir, "snapshots_dir")?;
+
+        // chunk_size should be > 0
+        if self.chunk_size <= 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "chunk_size must be at least {} bytes (got {})",
+                0, self.chunk_size
+            ))));
+        }
 
         Ok(())
     }
@@ -380,4 +394,9 @@ fn default_cleanup_retain_count() -> u64 {
 /// Default snapshots storage path
 fn default_snapshots_dir() -> PathBuf {
     PathBuf::from("/tmp/snapshots")
+}
+
+/// 256KB chunks by default
+fn default_chunk_size() -> usize {
+    1024 * 256
 }

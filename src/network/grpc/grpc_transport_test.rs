@@ -1,3 +1,6 @@
+use futures::stream;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use tokio::sync::oneshot;
 use tonic::Status;
 
@@ -12,12 +15,19 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
+use crate::proto::storage::SnapshotResponse;
+use crate::test_utils::crate_test_snapshot_stream;
+use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
+use crate::test_utils::MOCK_INSTALL_SNAPSHOT_PORT_BASE;
 use crate::test_utils::MOCK_PURGE_PORT_BASE;
 use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
 use crate::test_utils::{self};
+use crate::BackoffPolicy;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::Error;
@@ -1210,4 +1220,266 @@ async fn test_purge_requests_case5_full_success() {
         }
         Err(e) => panic!("Unexpected error: {e:?}"),
     }
+}
+
+/// Helper to create a valid snapshot stream
+fn create_snapshot_stream(
+    chunks: usize,
+    chunk_size: usize,
+) -> BoxStream<'static, Result<SnapshotChunk>> {
+    let chunks: Vec<SnapshotChunk> = (0..chunks)
+        .map(|seq| {
+            let data = vec![seq as u8; chunk_size];
+            create_test_chunk(
+                seq as u32,
+                &data,
+                1, // term
+                1, // leader_id
+                chunks as u32,
+            )
+        })
+        .collect();
+
+    let stream = crate_test_snapshot_stream(chunks);
+    Box::pin(stream.map(|item| item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())))
+}
+
+/// Helper to create a failing stream
+fn create_failing_stream(fail_at: usize) -> BoxStream<'static, Result<SnapshotChunk>> {
+    let mut chunks = vec![];
+    for i in 0..5 {
+        let data = vec![i as u8; 1024];
+        chunks.push(create_test_chunk(i as u32, &data, 1, 1, 5));
+    }
+
+    let stream = crate_test_snapshot_stream(chunks);
+    Box::pin(stream::unfold((stream, 0), move |(mut stream, count)| async move {
+        if count == fail_at {
+            Some((Err(Error::Fatal("Injected failure".to_string())), (stream, count + 1)))
+        } else {
+            match stream.next().await {
+                Some(Ok(chunk)) => Some((Ok(chunk), (stream, count + 1))),
+                Some(Err(e)) => Some((Err(Error::Fatal(format!("{:?}", e))), (stream, count + 1))),
+                None => None,
+            }
+        }
+    }))
+}
+
+/// # Case 1: Successful snapshot transfer
+#[tokio::test]
+async fn test_install_snapshot_case1_success() {
+    test_utils::enable_logger();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    // Start mock server
+    let addr = MockNode::simulate_snapshot_mock_server(
+        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 1,
+        SnapshotResponse {
+            term: 1,
+            success: true, // always succeed
+            next_chunk: 1,
+        },
+        shutdown_rx,
+    )
+    .await
+    .unwrap();
+
+    let client = GrpcTransport { my_id: 1 };
+    let data_stream = create_snapshot_stream(5, 1024); // 5 chunks of 1KB
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 100, term: 1 }),
+        checksum: vec![],
+    };
+    let retry = BackoffPolicy {
+        base_delay_ms: 10,
+        max_retries: 3,
+        timeout_ms: 100,
+        max_delay_ms: 100,
+    };
+
+    let result = client
+        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .await;
+
+    shutdown_tx.send(()).ok();
+    assert!(result.is_ok(), "Snapshot should transfer successfully");
+}
+
+/// # Case 2: Transient failure then success
+#[tokio::test]
+async fn test_install_snapshot_case2_retry_success() {
+    test_utils::enable_logger();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    // Start mock server that fails first attempt
+    let addr = MockNode::simulate_snapshot_mock_server(
+        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 2,
+        SnapshotResponse {
+            term: 1,
+            success: true, // always succeed
+            next_chunk: 1,
+        },
+        shutdown_rx,
+    )
+    .await
+    .unwrap();
+
+    let client = GrpcTransport { my_id: 1 };
+    let data_stream = create_snapshot_stream(3, 512); // 3 chunks of 512B
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 50, term: 1 }),
+        checksum: vec![],
+    };
+    let retry = BackoffPolicy {
+        base_delay_ms: 10,
+        max_retries: 2,
+        timeout_ms: 100,
+        max_delay_ms: 100,
+    };
+
+    let result = client
+        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .await;
+
+    shutdown_tx.send(()).ok();
+    assert!(result.is_ok(), "Should succeed after retry");
+}
+
+/// # Case 3: Permanent failure after retries
+#[tokio::test]
+async fn test_install_snapshot_case3_retry_failure() {
+    test_utils::enable_logger();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    // Start mock server that always fails
+    let addr = MockNode::simulate_snapshot_mock_server(
+        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 3,
+        SnapshotResponse {
+            term: 1,
+            success: false, // always fail
+            next_chunk: 1,
+        },
+        shutdown_rx,
+    )
+    .await
+    .unwrap();
+
+    let client = GrpcTransport { my_id: 1 };
+    let data_stream = create_snapshot_stream(2, 2048); // 2 chunks of 2KB
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 75, term: 1 }),
+        checksum: vec![],
+    };
+    let retry = BackoffPolicy {
+        base_delay_ms: 10,
+        max_retries: 2,
+        timeout_ms: 100,
+        max_delay_ms: 100,
+    };
+
+    let result = client
+        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .await;
+
+    shutdown_tx.send(()).ok();
+    assert!(
+        matches!(
+            result,
+            Err(Error::System(SystemError::Network(
+                NetworkError::SnapshotTransferFailed
+            )))
+        ),
+        "Should fail after max retries"
+    );
+}
+
+/// # Case 4: Stream failure during transfer
+#[tokio::test]
+async fn test_install_snapshot_case4_stream_failure() {
+    test_utils::enable_logger();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    // Start mock server
+    let addr = MockNode::simulate_snapshot_mock_server(
+        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 4,
+        SnapshotResponse {
+            term: 1,
+            success: true, // always succeed
+            next_chunk: 1,
+        },
+        shutdown_rx,
+    )
+    .await
+    .unwrap();
+
+    let client = GrpcTransport { my_id: 1 };
+    let data_stream = create_failing_stream(2); // Fail at chunk 2
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 200, term: 1 }),
+        checksum: vec![],
+    };
+    let retry = BackoffPolicy {
+        base_delay_ms: 10,
+        max_retries: 1,
+        timeout_ms: 100,
+        max_delay_ms: 100,
+    };
+
+    let result = client
+        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .await;
+
+    shutdown_tx.send(()).ok();
+
+    println!(">>>>>>>>>>{:?}", &result);
+    assert!(
+        matches!(
+            result,
+            Err(Error::System(SystemError::Network(
+                NetworkError::SnapshotTransferFailed
+            )))
+        ),
+        "Should fail on stream error"
+    );
+}
+
+/// # Case 5: Large snapshot transfer
+#[tokio::test]
+async fn test_install_snapshot_case5_large_transfer() {
+    test_utils::enable_logger();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    // Start mock server
+    let addr = MockNode::simulate_snapshot_mock_server(
+        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 5,
+        SnapshotResponse {
+            term: 1,
+            success: true, // always succeed
+            next_chunk: 1,
+        },
+        shutdown_rx,
+    )
+    .await
+    .unwrap();
+
+    let client = GrpcTransport { my_id: 1 };
+    let data_stream = create_snapshot_stream(100, 1024 * 1024); // 100 chunks of 1MB
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 500, term: 1 }),
+        checksum: vec![],
+    };
+    let retry = BackoffPolicy {
+        base_delay_ms: 10,
+        max_retries: 3,
+        timeout_ms: 5000, // Longer timeout for large transfer
+        max_delay_ms: 1000,
+    };
+
+    let result = client
+        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .await;
+
+    shutdown_tx.send(()).ok();
+    assert!(result.is_ok(), "Large snapshot should transfer successfully");
 }

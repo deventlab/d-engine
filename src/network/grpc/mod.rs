@@ -7,6 +7,9 @@
 // Protobuf GRPC service introduction
 // -----------------------------------------------------------------------------
 
+mod restartable_stream;
+pub(crate) use restartable_stream::*;
+
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
 
@@ -18,25 +21,6 @@ mod grpc_transport_test;
 
 //-------------------------------------------------------------------------------
 // Start RPC Server
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
-
-use futures::FutureExt;
-use rcgen::generate_simple_self_signed;
-use rcgen::CertifiedKey;
-use tokio::sync::watch;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Certificate;
-use tonic::transport::Identity;
-use tonic::transport::ServerTlsConfig;
-use tonic_health::server::health_reporter;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
 use crate::proto::client::raft_client_service_server::RaftClientServiceServer;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementServiceServer;
 use crate::proto::election::raft_election_service_server::RaftElectionServiceServer;
@@ -48,6 +32,23 @@ use crate::Result;
 use crate::SystemError;
 use crate::TlsConfig;
 use crate::TypeConfig;
+use futures::FutureExt;
+use rcgen::generate_simple_self_signed;
+use rcgen::CertifiedKey;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::watch;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Certificate;
+use tonic::transport::Identity;
+use tonic::transport::ServerTlsConfig;
+use tonic_health::server::health_reporter;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 /// RPC server works for RAFT protocol
 /// It mainly listens on two request: Vote RPC Request and Append Entries RPC

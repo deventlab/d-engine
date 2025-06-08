@@ -395,6 +395,7 @@ name = "d-engine"
 version = "0.1.2"
 dependencies = [
  "arc-swap",
+ "async-stream",
  "autometrics",
  "bincode",
  "bytes",

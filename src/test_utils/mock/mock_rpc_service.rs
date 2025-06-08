@@ -18,6 +18,7 @@ use crate::proto::election::VoteResponse;
 use crate::proto::replication::raft_replication_service_server::RaftReplicationServiceServer;
 use crate::proto::storage::snapshot_service_server::SnapshotServiceServer;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotResponse;
 use crate::ChannelWithAddress;
 use crate::Result;
 
@@ -30,7 +31,8 @@ pub(crate) const MOCK_REPLICATION_HANDLER_PORT_BASE: u64 = 60600;
 pub(crate) const MOCK_MEMBERSHIP_PORT_BASE: u64 = 60700;
 pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
 pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60900;
-pub(crate) const MOCK_ROLE_STATE_PORT_BASE: u64 = 61000;
+pub(crate) const MOCK_INSTALL_SNAPSHOT_PORT_BASE: u64 = 61000;
+pub(crate) const MOCK_ROLE_STATE_PORT_BASE: u64 = 61100;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
 pub struct MockNode;
@@ -202,6 +204,25 @@ impl MockNode {
         //prepare learner's channel address inside membership config
         let mock_service = MockRpcService {
             expected_metadata_response: Some(response),
+            ..Default::default()
+        };
+        let addr = match Self::mock_listener(mock_service, port, rx, true).await {
+            Ok(a) => a,
+            Err(e) => {
+                panic!("error: {e:?}");
+            }
+        };
+        Ok(Self::mock_channel_with_address(Self::tcp_addr_to_http_addr(addr.to_string()), port).await)
+    }
+
+    pub(crate) async fn simulate_snapshot_mock_server(
+        port: u64,
+        response: SnapshotResponse,
+        rx: oneshot::Receiver<()>,
+    ) -> Result<ChannelWithAddress> {
+        //prepare learner's channel address inside membership config
+        let mock_service = MockRpcService {
+            expected_snapshot_response: Some(Ok(response)),
             ..Default::default()
         };
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {

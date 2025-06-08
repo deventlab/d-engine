@@ -6,7 +6,7 @@ import "proto/common.proto";
 message SnapshotChunk {
     // Protocol header (repeated in each block)
     fixed64 term = 1; // compact binary encoding
-    fixed64 leader_id = 2; // digital node ID
+    fixed32 leader_id = 2; // digital node ID
 
     // Chunk metadata
     fixed32 seq = 3; // Block sequence number starting from 0
