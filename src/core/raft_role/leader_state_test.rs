@@ -28,8 +28,10 @@ use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
+use crate::test_utils::MOCK_LEADER_STATE_PORT_BASE;
 use crate::test_utils::MOCK_ROLE_STATE_PORT_BASE;
 use crate::AppendResults;
+use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
@@ -37,11 +39,13 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::MockMembership;
+use crate::MockPeerChannels;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::MockTransport;
+use crate::NetworkError;
 use crate::NewCommitData;
 use crate::PeerUpdate;
 use crate::QuorumVerificationResult;
@@ -53,12 +57,15 @@ use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
 use crate::StorageError;
+use crate::SystemError;
 use crate::FOLLOWER;
+use futures::StreamExt;
 use mockall::predicate::eq;
 use nanoid::nanoid;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -2287,4 +2294,311 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
         result.unwrap_err(),
         Error::Fatal(msg) if msg == "Storage failure"
     ));
+}
+
+async fn mock_peer(
+    port: u64,
+    rx: oneshot::Receiver<()>,
+) -> ChannelWithAddress {
+    MockNode::simulate_mock_service_without_reps(port, rx, true)
+        .await
+        .expect("should succeed")
+}
+
+/// # Case 1: Successful snapshot transfer
+#[tokio::test]
+async fn test_trigger_snapshot_transfer_case1_success() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_trigger_snapshot_transfer_case1_success", graceful_rx, None);
+    let node_id = 2;
+
+    // Mock state machine handler to return valid stream
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(1)
+        .returning(|_| {
+            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
+            let stream = crate_test_snapshot_stream(chunks);
+            Ok(Box::pin(stream.map(|item| {
+                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
+            })))
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock transport to succeed
+    let mut transport = MockTransport::new();
+    transport
+        .expect_install_snapshot()
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    context.transport = Arc::new(transport);
+
+    // Mock peer channels
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 1, rx1).await;
+    peer_channels
+        .expect_get_peer_channel()
+        .returning(move |_| Some(addr.clone()));
+
+    // Prepare leader state
+    let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 100, term: 1 }),
+        checksum: vec![],
+    };
+
+    // Execute test
+    let result = state
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .await;
+
+    assert!(result.is_ok(), "Transfer should initiate successfully");
+
+    // Allow time for async task to complete
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+/// # Case 2: Peer connection not found
+#[tokio::test]
+async fn test_trigger_snapshot_transfer_case2_peer_not_found() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_trigger_snapshot_transfer_case2_peer_not_found",
+        graceful_rx,
+        None,
+    );
+    let node_id = 99; // Non-existent node
+
+    // Mock state machine handler to return valid stream
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(0)
+        .returning(|_| {
+            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
+            let stream = crate_test_snapshot_stream(chunks);
+            Ok(Box::pin(stream.map(|item| {
+                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
+            })))
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Prepare leader state
+    let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 100, term: 1 }),
+        checksum: vec![],
+    };
+
+    // Mock transport to succeed
+    let mut transport = MockTransport::new();
+    transport.expect_install_snapshot().times(0); // Should not be called
+    context.transport = Arc::new(transport);
+
+    // Mock peer channels to return None for non-existent node
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels
+        .expect_get_peer_channel()
+        .with(eq(node_id))
+        .times(1)
+        .returning(move |_| None);
+
+    // Execute test
+    let result = state
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Network(NetworkError::PeerConnectionNotFound(99)))
+    ));
+}
+
+/// # Case 3: Snapshot data load failure
+#[tokio::test]
+async fn test_trigger_snapshot_transfer_case3_load_failure() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_trigger_snapshot_transfer_case3_load_failure",
+        graceful_rx,
+        None,
+    );
+    let node_id = 2;
+
+    // Mock state machine handler to fail
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(1)
+        .returning(|_| Err(StorageError::Snapshot("Test failure".to_string()).into()));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock transport to succeed
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 3, rx1).await;
+    peer_channels
+        .expect_get_peer_channel()
+        .returning(move |_| Some(addr.clone()));
+
+    // Prepare leader state
+    let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 100, term: 1 }),
+        checksum: vec![],
+    };
+
+    // Execute test
+    let result = state
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Storage(StorageError::Snapshot(_)))
+    ));
+}
+
+/// # Case 4: Network transfer failure
+#[tokio::test]
+async fn test_trigger_snapshot_transfer_case4_network_failure() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_trigger_snapshot_transfer_case4_network_failure",
+        graceful_rx,
+        None,
+    );
+    let node_id = 2;
+
+    // Mock state machine handler
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(1)
+        .returning(|_| {
+            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
+            let stream = crate_test_snapshot_stream(chunks);
+            Ok(Box::pin(stream.map(|item| {
+                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
+            })))
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock transport to fail
+    let mut transport = MockTransport::new();
+    transport
+        .expect_install_snapshot()
+        .times(1)
+        .returning(|_, _, _, _| Err(NetworkError::SnapshotTransferFailed.into()));
+    context.transport = Arc::new(transport);
+
+    // Mock peer channels
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 4, rx1).await;
+    peer_channels
+        .expect_get_peer_channel()
+        .returning(move |_| Some(addr.clone()));
+
+    // Prepare leader state
+    let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 100, term: 1 }),
+        checksum: vec![],
+    };
+
+    // Execute test
+    let result = state
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .await;
+
+    assert!(result.is_ok(), "Should initiate transfer despite eventual failure");
+
+    // Allow time for async task to complete
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+/// # Case 5: Large snapshot transfer
+#[tokio::test]
+async fn test_trigger_snapshot_transfer_case5_large_snapshot() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_trigger_snapshot_transfer_case5_large_snapshot",
+        graceful_rx,
+        None,
+    );
+    let node_id = 2;
+
+    // Create large snapshot (10 chunks)
+    let mut chunks = Vec::new();
+    for i in 0..10 {
+        chunks.push(create_test_chunk(
+            i as u32,
+            &vec![i as u8; 1024 * 1024], // 1MB per chunk
+            1,
+            1,
+            10,
+        ));
+    }
+
+    // Mock state machine handler
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(1)
+        .returning(move |_| {
+            let stream = crate_test_snapshot_stream(chunks.clone());
+            Ok(Box::pin(stream.map(|item| {
+                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
+            })))
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock transport to succeed
+    let mut transport = MockTransport::new();
+    transport
+        .expect_install_snapshot()
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    context.transport = Arc::new(transport);
+
+    // Mock peer channels
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 5, rx1).await;
+    peer_channels
+        .expect_get_peer_channel()
+        .returning(move |_| Some(addr.clone()));
+
+    // Prepare leader state
+    let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 100, term: 1 }),
+        checksum: vec![],
+    };
+
+    // Execute test
+    let result = state
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .await;
+
+    assert!(result.is_ok(), "Should handle large snapshot");
+
+    // Allow time for transfer
+    tokio::time::sleep(Duration::from_millis(100)).await;
 }

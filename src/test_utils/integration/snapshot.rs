@@ -1,7 +1,10 @@
+use crate::Result;
 use bytes::BufMut;
 use bytes::BytesMut;
 use crc32fast::Hasher;
 use futures::stream;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
@@ -14,7 +17,29 @@ use tracing::debug;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
+use crate::NetworkError;
 
+/// Helper to create a valid snapshot stream
+pub(crate) fn create_snapshot_stream(
+    chunks: usize,
+    chunk_size: usize,
+) -> BoxStream<'static, Result<SnapshotChunk>> {
+    let chunks: Vec<SnapshotChunk> = (0..chunks)
+        .map(|seq| {
+            let data = vec![seq as u8; chunk_size];
+            create_test_chunk(
+                seq as u32,
+                &data,
+                1, // term
+                1, // leader_id
+                chunks as u32,
+            )
+        })
+        .collect();
+
+    let stream = crate_test_snapshot_stream(chunks);
+    Box::pin(stream.map(|item| item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())))
+}
 pub(crate) fn crate_test_snapshot_stream(chunks: Vec<SnapshotChunk>) -> tonic::Streaming<SnapshotChunk> {
     // Convert chunks to encoded byte streams
     let byte_stream = stream::iter(chunks.into_iter().map(|chunk| {
@@ -78,7 +103,7 @@ impl tonic::codec::Decoder for SnapshotChunkDecoder {
     fn decode(
         &mut self,
         buf: &mut tonic::codec::DecodeBuf<'_>,
-    ) -> Result<Option<Self::Item>, Self::Error> {
+    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
         match SnapshotChunk::decode(buf) {
             Ok(chunk) => Ok(Some(chunk)),
             Err(e) => Err(Status::new(Code::Internal, format!("Decode error: {e}"))),

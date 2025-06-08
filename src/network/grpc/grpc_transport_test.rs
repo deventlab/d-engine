@@ -19,6 +19,7 @@ use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
+use crate::test_utils::create_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
@@ -1220,28 +1221,6 @@ async fn test_purge_requests_case5_full_success() {
         }
         Err(e) => panic!("Unexpected error: {e:?}"),
     }
-}
-
-/// Helper to create a valid snapshot stream
-fn create_snapshot_stream(
-    chunks: usize,
-    chunk_size: usize,
-) -> BoxStream<'static, Result<SnapshotChunk>> {
-    let chunks: Vec<SnapshotChunk> = (0..chunks)
-        .map(|seq| {
-            let data = vec![seq as u8; chunk_size];
-            create_test_chunk(
-                seq as u32,
-                &data,
-                1, // term
-                1, // leader_id
-                chunks as u32,
-            )
-        })
-        .collect();
-
-    let stream = crate_test_snapshot_stream(chunks);
-    Box::pin(stream.map(|item| item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())))
 }
 
 /// Helper to create a failing stream

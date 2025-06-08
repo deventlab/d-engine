@@ -33,6 +33,7 @@ pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
 pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60900;
 pub(crate) const MOCK_INSTALL_SNAPSHOT_PORT_BASE: u64 = 61000;
 pub(crate) const MOCK_ROLE_STATE_PORT_BASE: u64 = 61100;
+pub(crate) const MOCK_LEADER_STATE_PORT_BASE: u64 = 61200;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
 pub struct MockNode;

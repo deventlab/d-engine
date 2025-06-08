@@ -1488,7 +1488,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    async fn trigger_snapshot_transfer(
+    pub(super) async fn trigger_snapshot_transfer(
         &self,
         node_id: u32,
         metadata: SnapshotMetadata,
