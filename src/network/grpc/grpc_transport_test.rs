@@ -1432,7 +1432,6 @@ async fn test_install_snapshot_case4_stream_failure() {
 
     shutdown_tx.send(()).ok();
 
-    println!(">>>>>>>>>>{:?}", &result);
     assert!(
         matches!(
             result,

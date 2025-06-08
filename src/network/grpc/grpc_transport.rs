@@ -14,6 +14,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
+use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -406,35 +407,45 @@ impl Transport for GrpcTransport {
 
             // Create a new sending channel
             let (tx, rx) = mpsc::channel(32);
+            let request = ReceiverStream::new(rx);
 
-            // Process stream data
-            let stream_task = async {
+            // Send request and monitor for errors
+            let grpc_call = client.install_snapshot(request);
+            tokio::pin!(grpc_call);
+
+            // Process stream data and handle errors
+            let mut stream_error = None;
+            let mut last_chunk = last_successful_chunk;
+            let send_task = async {
                 while let Some(chunk_result) = restartable_stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
-                            let last_chunk = chunk.seq;
-                            if let Err(e) = tx.send(chunk).await {
-                                error!("Failed to send snapshot chunk: {:?}", e);
+                            last_chunk = chunk.seq;
+                            if tx.send(chunk).await.is_err() {
                                 break;
                             }
-                            last_successful_chunk = last_chunk;
                         }
                         Err(e) => {
-                            error!("Snapshot chunk error: {:?}", e);
+                            stream_error = Some(e);
                             break;
                         }
                     }
                 }
+                last_chunk
             };
 
-            // Send request
-            let request = ReceiverStream::new(rx);
-            let response = client.install_snapshot(request).await;
+            // Wait for either send task or gRPC response
+            let (last_sent, grpc_result) = tokio::join!(send_task, grpc_call);
+            last_successful_chunk = last_sent;
 
-            // Wait for the flow task to complete
-            stream_task.await;
+            // Handle stream error first
+            if let Some(e) = stream_error {
+                warn!("Snapshot stream failed: {:?}", e);
+                return Err(NetworkError::SnapshotTransferFailed.into());
+            }
 
-            match response {
+            // Process gRPC response
+            match grpc_result {
                 Ok(response) => {
                     let response = response.into_inner();
                     if response.success {
@@ -456,8 +467,8 @@ impl Transport for GrpcTransport {
                 return Err(NetworkError::SnapshotTransferFailed.into());
             }
 
-            // exponential backoff
-            let delay = retry.base_delay_ms * 2u64.pow(retry_count as u32);
+            // Exponential backoff
+            let delay = std::cmp::min(retry.base_delay_ms * 2u64.pow(retry_count as u32), retry.max_delay_ms);
             tokio::time::sleep(Duration::from_millis(delay.into())).await;
         }
     }
