@@ -35,6 +35,7 @@ use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::utils::net::address_str;
 use crate::MembershipError;
 use crate::NetworkConfig;
@@ -188,6 +189,48 @@ impl PeerChannels for RpcPeerChannels {
 
     fn voting_members(&self) -> DashMap<u32, ChannelWithAddress> {
         self.channels.clone()
+    }
+
+    async fn add_peer(
+        &self,
+        node_id: u32,
+        address: String,
+        role: i32,
+        status: NodeStatus,
+    ) -> Result<()> {
+        // Check if peer already exists
+        if self.channels.contains_key(&node_id) {
+            return Ok(());
+        }
+
+        // Create node meta for connection
+        let node_meta = NodeMeta {
+            id: node_id,
+            address,
+            role,
+            status: status.into(),
+        };
+
+        // Connect with retry
+        let channel = Self::connect_with_retry(&node_meta, &self.node_config.retry, &self.node_config.network).await?;
+
+        // Store the connection
+        let channel_with_address = ChannelWithAddress {
+            address: node_meta.address.clone(),
+            channel,
+        };
+
+        self.channels.insert(node_id, channel_with_address);
+
+        debug!("Added new peer connection for node {}", node_id);
+        Ok(())
+    }
+
+    fn get_peer_channel(
+        &self,
+        node_id: u32,
+    ) -> Option<ChannelWithAddress> {
+        self.channels.get(&node_id).map(|entry| entry.value().clone())
     }
 }
 

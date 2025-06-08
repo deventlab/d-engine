@@ -14,11 +14,14 @@ use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MOCK_PEER_CHANNEL_PORT_BASE;
+use crate::Error;
 use crate::NetworkError;
 use crate::PeerChannels;
 use crate::PeerChannelsFactory;
 use crate::RpcPeerChannels;
+use crate::SystemError;
 use crate::FOLLOWER;
+use crate::LEARNER;
 
 // Test helper for creating mock peer configurations
 async fn mock_peer(
@@ -266,4 +269,205 @@ async fn test_connection_retry_mechanism() {
     .await;
 
     assert!(result.is_ok(), "Should succeed after retries");
+}
+
+/// # Case 1: Add new peer successfully
+#[tokio::test]
+async fn test_add_peer_case1_success() {
+    enable_logger();
+    let peer_channels = RpcPeerChannels::create(1, Arc::new(node_config("/tmp/test_add_peer_case1_success")));
+    let port = MOCK_PEER_CHANNEL_PORT_BASE + 13;
+
+    // Start mock server
+    let (_tx, rx) = oneshot::channel::<()>();
+    let _server = MockNode::simulate_mock_service_without_reps(port, rx, true)
+        .await
+        .unwrap();
+
+    // Add new peer
+    let result = peer_channels
+        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+        .await;
+
+    assert!(result.is_ok(), "Should add peer successfully");
+    assert_eq!(peer_channels.channels.len(), 1, "Should have 1 peer connection");
+    assert!(
+        peer_channels.get_peer_channel(2).is_some(),
+        "Should retrieve added peer"
+    );
+}
+
+/// # Case 2: Add duplicate peer (idempotent)
+#[tokio::test]
+async fn test_add_case2_duplicate_peer() {
+    enable_logger();
+    let peer_channels = RpcPeerChannels::create(1, Arc::new(node_config("/tmp/test_add_case2_duplicate_peer")));
+    let port = MOCK_PEER_CHANNEL_PORT_BASE + 14;
+
+    // Start mock server
+    let (_tx, rx) = oneshot::channel::<()>();
+    let _server = MockNode::simulate_mock_service_without_reps(port, rx, true)
+        .await
+        .unwrap();
+
+    // Add peer twice
+    peer_channels
+        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+        .await
+        .unwrap();
+    let result = peer_channels
+        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+        .await;
+
+    assert!(result.is_ok(), "Should handle duplicate gracefully");
+    assert_eq!(peer_channels.channels.len(), 1, "Should not add duplicate peer");
+}
+
+/// # Case 3: Add peer with connection failure
+#[tokio::test]
+async fn test_add_peer_case3_connection_failure() {
+    enable_logger();
+    let mut node_config = node_config("/tmp/test_add_peer_case3_connection_failure");
+    node_config.retry.membership.max_retries = 1;
+    let peer_channels = RpcPeerChannels::create(1, Arc::new(node_config));
+
+    // Use invalid port to force connection failure
+    let result = peer_channels
+        .add_peer(
+            2,
+            "127.0.0.1:0".to_string(), // Invalid port
+            FOLLOWER,
+            NodeStatus::Active,
+        )
+        .await;
+
+    assert!(result.is_err(), "Should fail to connect");
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Network(NetworkError::TaskBackoffFailed(_)))
+    ));
+    assert!(peer_channels.channels.is_empty(), "Should not add failed connection");
+}
+
+/// # Case 4: Add multiple peers with different roles
+#[tokio::test]
+async fn test_add_peer_case4_multiple_peers() {
+    enable_logger();
+    let peer_channels = RpcPeerChannels::create(1, Arc::new(node_config("/tmp/test_add_peer_case4_multiple_peers")));
+    let ports = [17, 15, 16];
+
+    // Add 3 peers with different roles
+    for i in 0..3 {
+        let port = MOCK_PEER_CHANNEL_PORT_BASE + ports[i];
+        let (_tx, rx) = oneshot::channel::<()>();
+        let _server = MockNode::simulate_mock_service_without_reps(port, rx, true)
+            .await
+            .unwrap();
+
+        peer_channels
+            .add_peer(2 + i as u32, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(peer_channels.channels.len(), 3, "Should add all peers");
+}
+
+/// # Case 5: Get existing peer channel
+#[tokio::test]
+async fn test_get_peer_channel_case1_existing_peer_channel() {
+    enable_logger();
+    let peer_channels = RpcPeerChannels::create(
+        1,
+        Arc::new(node_config("/tmp/test_get_peer_channel_case1_existing_peer_channel")),
+    );
+    let port = MOCK_PEER_CHANNEL_PORT_BASE + 18;
+
+    // Add peer
+    let (_tx, rx) = oneshot::channel::<()>();
+    let server_addr = MockNode::simulate_mock_service_without_reps(port, rx, true)
+        .await
+        .unwrap();
+    peer_channels
+        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+        .await
+        .unwrap();
+
+    // Retrieve channel
+    let channel = peer_channels.get_peer_channel(2).unwrap();
+
+    assert_eq!(
+        MockNode::tcp_addr_to_http_addr(channel.address),
+        server_addr.address,
+        "Should return correct address"
+    );
+}
+
+/// # Case 6: Get non-existent peer channel
+#[tokio::test]
+async fn test_get_peer_channel_case2_nonexistent_peer_channel() {
+    enable_logger();
+    let peer_channels = RpcPeerChannels::create(
+        1,
+        Arc::new(node_config("/tmp/test_get_peer_channel_case2_nonexistent_peer_channel")),
+    );
+
+    assert!(
+        peer_channels.get_peer_channel(999).is_none(),
+        "Should return None for non-existent peer"
+    );
+}
+
+/// # Case 7: Add peer with inactive status
+#[tokio::test]
+async fn test_add_peer_case5_inactive_peer() {
+    enable_logger();
+    let peer_channels = RpcPeerChannels::create(1, Arc::new(node_config("/tmp/test_add_peer_case5_inactive_peer")));
+    let port = MOCK_PEER_CHANNEL_PORT_BASE + 19;
+
+    // Start mock server
+    let (_tx, rx) = oneshot::channel::<()>();
+    let _server = MockNode::simulate_mock_service_without_reps(port, rx, true)
+        .await
+        .unwrap();
+
+    // Add inactive peer
+    peer_channels
+        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Draining)
+        .await
+        .unwrap();
+
+    assert!(peer_channels.get_peer_channel(2).is_some());
+}
+
+/// # Case 8: Concurrent add_peer calls
+#[tokio::test]
+async fn test_add_peer_case6_concurrent_add_peer() {
+    enable_logger();
+    let peer_channels = Arc::new(RpcPeerChannels::create(
+        1,
+        Arc::new(node_config("/tmp/test_concurrent_add_peer")),
+    ));
+    let port_base = MOCK_PEER_CHANNEL_PORT_BASE + 20;
+
+    let mut handles = vec![];
+    for i in 0..5 {
+        let pc = peer_channels.clone();
+        let port = port_base + i;
+        handles.push(tokio::spawn(async move {
+            let (_tx, rx) = oneshot::channel::<()>();
+            let _server = MockNode::simulate_mock_service_without_reps(port, rx, true)
+                .await
+                .unwrap();
+            pc.add_peer(i as u32, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+                .await
+        }));
+    }
+
+    let results = futures::future::join_all(handles).await;
+    for result in results {
+        assert!(result.unwrap().is_ok(), "All adds should succeed");
+    }
+
+    assert_eq!(peer_channels.channels.len(), 5, "Should add all peers concurrently");
 }
