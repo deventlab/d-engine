@@ -222,11 +222,10 @@ impl StateMachine for RaftStateMachine {
                         }
                     }
                 }
-                Some(Payload::Config(config_change)) => {
-                    debug!("Storing config change at index {}", entry.index);
-                    let config_key = b"__raft_config__".to_vec();
-                    let config_value = config_change.encode_to_vec();
-                    batch.insert(config_key, config_value);
+                Some(Payload::Config(_config_change)) => {
+                    debug!("Ignoring config change in state machine at index {}", entry.index);
+                    // Update only the configuration state of the Raft layer, without writing to the state machine
+                    // Example: raft.update_cluster_config(config_change);
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }

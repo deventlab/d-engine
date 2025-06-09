@@ -103,6 +103,7 @@ pub(crate) fn mock_raft_context(
     if let Some(peers_meta) = peers_meta_option {
         node_config.cluster.initial_cluster = peers_meta;
     }
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;
 
     MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)

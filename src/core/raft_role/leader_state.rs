@@ -1344,7 +1344,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 .all(|&v| v >= last_included_in_snapshot.index)
     }
 
-    async fn handle_join_cluster(
+    pub(super) async fn handle_join_cluster(
         &mut self,
         join_request: JoinRequest,
         sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -1369,13 +1369,16 @@ impl<T: TypeConfig> LeaderState<T> {
             .add_peer(node_id, address.clone(), LEARNER, NodeStatus::Active)
             .await?;
 
-        // 3. Create configuration change payload
+        // 3. Add the node as Learner
+        ctx.membership().add_learner(node_id, address.clone()).await?;
+
+        // 4. Create configuration change payload
         let config_change = Change::AddNode(AddNode {
             node_id,
             address: address.clone(),
         });
 
-        // 4. Wait for quorum confirmation
+        // 5. Wait for quorum confirmation
         match self
             .verify_internal_quorum_with_retry(
                 vec![EntryPayload::config(config_change)],

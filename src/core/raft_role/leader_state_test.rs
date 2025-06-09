@@ -8,6 +8,7 @@ use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
@@ -43,6 +44,7 @@ use crate::MockPeerChannels;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
+use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockTransport;
 use crate::NetworkError;
@@ -69,6 +71,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tonic::transport::Endpoint;
 use tonic::Code;
 use tonic::Status;
 
@@ -715,7 +718,24 @@ async fn test_handle_raft_event_case4_2() {
 #[tokio::test]
 async fn test_handle_raft_event_case5_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case5_1", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case5_1", graceful_rx, None);
+    // Setup replication handler to return success
+    context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
+            })
+        });
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, _, _| Some(5));
+    context.storage.raft_log = Arc::new(raft_log);
 
     // New state
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -1996,7 +2016,9 @@ struct ProcessBatchTestContext {
     raft_context: RaftContext<MockTypeConfig>,
 }
 
-fn mock_request(sender: MaybeCloneOneshotSender<Result<ClientResponse, Status>>) -> RaftRequestWithSignal {
+type ClientResponseResult = std::result::Result<ClientResponse, Status>;
+
+fn mock_request(sender: MaybeCloneOneshotSender<ClientResponseResult>) -> RaftRequestWithSignal {
     RaftRequestWithSignal {
         id: nanoid!(),
         payloads: vec![],
@@ -2601,4 +2623,387 @@ async fn test_trigger_snapshot_transfer_case5_large_snapshot() {
 
     // Allow time for transfer
     tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
+/// # Case 1: Successful join
+#[tokio::test]
+async fn test_handle_join_cluster_case1_success() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_context = mock_raft_context("/tmp/test_handle_join_cluster_case1_success", graceful_rx, None);
+    let node_id = 100;
+    let address = "127.0.0.1:8080".to_string();
+
+    // Mock membership// Prepare leader peer address
+    let (_tx1, rx1) = oneshot::channel::<()>();
+    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_LEADER_STATE_PORT_BASE + 10, rx1, true)
+        .await
+        .expect("should succeed");
+    let mut membership = MockMembership::new();
+    membership.expect_contains_node().returning(|_| false);
+    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .returning(|| ClusterMembership::default());
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_voting_members().returning(move |_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: addr1.clone(),
+            role: FOLLOWER,
+        }]
+    });
+    raft_context.membership = Arc::new(membership);
+
+    // Mock peer channels
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // -->  perpare verify_internal_quorum returns success
+    // Setup replication handler to return success
+    raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+            })
+        });
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, _, _| Some(5));
+    raft_context.storage.raft_log = Arc::new(raft_log);
+    let mut state_machine = MockStateMachine::new();
+    state_machine.expect_snapshot_metadata().returning(move || {
+        Some(SnapshotMetadata {
+            last_included: Some(LogId { term: 1, index: 1 }),
+            checksum: vec![],
+        })
+    });
+    raft_context.storage.state_machine = Arc::new(state_machine);
+    // <--
+
+    // Mock state machine handler
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_get_latest_snapshot_metadata()
+        .returning(|| None);
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(1)
+        .returning(|_| {
+            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
+            let stream = crate_test_snapshot_stream(chunks);
+            Ok(Box::pin(stream.map(|item| {
+                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
+            })))
+        });
+    raft_context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock quorum verification
+    let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config.clone());
+
+    let (sender, mut receiver) = MaybeCloneOneshot::new();
+    let result = state
+        .handle_join_cluster(
+            JoinRequest {
+                node_id,
+                address: address.clone(),
+            },
+            sender,
+            &raft_context,
+            Arc::new(peer_channels),
+            &mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    let response = receiver.recv().await.unwrap().unwrap();
+    assert!(response.success);
+    assert_eq!(response.leader_id, 1);
+}
+
+/// # Case 2: Node already exists
+#[tokio::test]
+async fn test_handle_join_cluster_case2_node_exists() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_join_cluster_case2_node_exists", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership to report existing node
+    let mut membership = MockMembership::new();
+    membership.expect_contains_node().returning(|_| true);
+    let context = RaftContext {
+        membership: Arc::new(membership),
+        ..context
+    };
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (sender, mut receiver) = MaybeCloneOneshot::new();
+    let result = state
+        .handle_join_cluster(
+            JoinRequest {
+                node_id,
+                address: "127.0.0.1:8080".to_string(),
+            },
+            sender,
+            &context,
+            Arc::new(mock_peer_channels()),
+            &mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    assert!(result.is_err());
+    let status = receiver.recv().await.unwrap().unwrap_err();
+    assert_eq!(status.code(), Code::Internal);
+    assert!(status.message().contains("already been added into cluster config"));
+}
+
+/// # Case 3: Quorum not achieved
+#[tokio::test]
+async fn test_handle_join_cluster_case3_quorum_failed() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_join_cluster_case3_quorum_failed", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_contains_node().returning(|_| false);
+    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_voting_members().returning(|_| vec![]); // Empty voting members will cause quorum failure
+    context.membership = Arc::new(membership);
+
+    // Setup replication handler to simulate quorum not achieved
+    context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::new(),
+            })
+        });
+
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock quorum verification to fail
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (sender, mut receiver) = MaybeCloneOneshot::new();
+    let result = state
+        .handle_join_cluster(
+            JoinRequest {
+                node_id,
+                address: "127.0.0.1:8080".to_string(),
+            },
+            sender,
+            &context,
+            Arc::new(peer_channels),
+            &mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    assert!(result.is_err());
+    let status = receiver.recv().await.unwrap().unwrap_err();
+    assert_eq!(status.code(), Code::Internal);
+    assert!(status.message().contains("Commit Timeout"));
+}
+
+/// # Case 4: Quorum verification error
+#[tokio::test]
+async fn test_handle_join_cluster_case4_quorum_error() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_join_cluster_case4_quorum_error", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_contains_node().returning(|_| false);
+    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_voting_members().returning(|_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: ChannelWithAddress {
+                address: "".to_string(),
+                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+            },
+            role: FOLLOWER,
+        }]
+    });
+    context.membership = Arc::new(membership);
+    // Setup replication handler to return error
+    context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Test error".to_string())));
+
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock quorum verification to return error
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (sender, mut receiver) = MaybeCloneOneshot::new();
+    let result = state
+        .handle_join_cluster(
+            JoinRequest {
+                node_id,
+                address: "127.0.0.1:8080".to_string(),
+            },
+            sender,
+            &context,
+            Arc::new(peer_channels),
+            &mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    assert!(result.is_err());
+    let status = receiver.recv().await.unwrap().unwrap_err();
+    assert_eq!(status.code(), Code::Internal);
+}
+
+/// # Case 5: Snapshot transfer triggered
+#[tokio::test]
+async fn test_handle_join_cluster_case5_snapshot_triggered() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_join_cluster_case5_snapshot_triggered",
+        graceful_rx,
+        None,
+    );
+    let node_id = 100;
+    let address = "127.0.0.1:8080".to_string();
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_contains_node().returning(|_| false);
+    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .returning(|| ClusterMembership::default());
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_voting_members().returning(|_| {
+        vec![ChannelWithAddressAndRole {
+            id: 2,
+            channel_with_address: ChannelWithAddress {
+                address: "".to_string(),
+                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+            },
+            role: FOLLOWER,
+        }]
+    });
+    context.membership = Arc::new(membership);
+
+    // Mock state machine handler to return snapshot metadata
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_get_latest_snapshot_metadata()
+        .returning(|| {
+            Some(SnapshotMetadata {
+                last_included: Some(LogId { index: 100, term: 1 }),
+                checksum: vec![],
+            })
+        });
+    state_machine_handler
+        .expect_load_snapshot_data()
+        .times(1)
+        .returning(|_| {
+            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
+            let stream = crate_test_snapshot_stream(chunks);
+            Ok(Box::pin(stream.map(|item| {
+                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
+            })))
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Setup replication handler to return success
+    context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
+            })
+        });
+
+    // Mock transport
+    let mut transport = MockTransport::new();
+    transport
+        .expect_install_snapshot()
+        .times(0)
+        .returning(|_, _, _, _| Ok(()));
+    context.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, _, _| Some(5));
+    context.storage.raft_log = Arc::new(raft_log);
+    let mut state_machine = MockStateMachine::new();
+    state_machine.expect_snapshot_metadata().returning(move || {
+        Some(SnapshotMetadata {
+            last_included: Some(LogId { term: 1, index: 1 }),
+            checksum: vec![],
+        })
+    });
+    context.storage.state_machine = Arc::new(state_machine);
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock quorum verification
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (sender, mut receiver) = MaybeCloneOneshot::new();
+    let result = state
+        .handle_join_cluster(
+            JoinRequest { node_id, address },
+            sender,
+            &context,
+            Arc::new(peer_channels),
+            &mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    let response = receiver.recv().await.unwrap().unwrap();
+    assert!(response.success);
 }

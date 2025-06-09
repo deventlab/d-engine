@@ -17,15 +17,6 @@ mod replication_handler_test;
 
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use dashmap::DashMap;
-#[cfg(test)]
-use mockall::automock;
-use tonic::async_trait;
-use tonic::Status;
-
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
@@ -42,6 +33,14 @@ use crate::AppendResults;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::TypeConfig;
+use dashmap::DashMap;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tonic::async_trait;
+use tonic::Status;
+
+#[cfg(test)]
+use mockall::automock;
 
 /// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]

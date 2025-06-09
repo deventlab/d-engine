@@ -415,7 +415,7 @@ pub enum MembershipError {
     #[error("Invalid membership change request")]
     InvalidChangeRequest,
 
-    #[error("Invalid membership change request")]
+    #[error("Commit Timeout")]
     CommitTimeout,
 }
 
