@@ -15,11 +15,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Put { key: String, value: String },
-    Update { key: String, value: String },
-    Delete { key: String },
-    Get { key: String },
-    Lget { key: String },
+    Put {
+        key: String,
+        value: String,
+    },
+    Update {
+        key: String,
+        value: String,
+    },
+    Delete {
+        key: String,
+    },
+    Get {
+        key: String,
+    },
+    Lget {
+        key: String,
+    },
+    /// Join a new node to the cluster
+    Join {
+        /// Node ID for the new member
+        #[clap(long)]
+        node_id: u32,
+
+        /// Network address of the new node
+        #[clap(long)]
+        address: String,
+    },
 }
 
 #[tokio::main]
@@ -39,6 +61,7 @@ async fn main() -> Result<()> {
         Commands::Delete { key } => handle_delete(&client, key).await,
         Commands::Get { key } => handle_read(&client, key, false).await,
         Commands::Lget { key } => handle_read(&client, key, true).await,
+        Commands::Join { node_id, address } => handle_cluster_command(&client, node_id, address).await,
     }
 }
 
@@ -91,6 +114,28 @@ async fn handle_read(
             println!("Value: {:?}", value);
         }
         None => println!("Key not found"),
+    }
+
+    Ok(())
+}
+
+async fn handle_cluster_command(
+    client: &d_engine::Client,
+    node_id: u32,
+    address: String,
+) -> crate::Result<()> {
+    let response = client
+        .cluster()
+        .join_cluster(node_id, address)
+        .await
+        .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {:?}", e))?;
+
+    if response.success {
+        println!("Node joined successfully!");
+        println!("Cluster configuration version: {}", response.config_version);
+        println!("Leader ID: {}", response.leader_id);
+    } else {
+        eprintln!("Join failed: {}", response.error);
     }
 
     Ok(())

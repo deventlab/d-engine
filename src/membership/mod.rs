@@ -71,8 +71,6 @@ pub trait PeerChannels: Sync + Send + 'static {
         &self,
         node_id: u32,
         address: String,
-        role: i32,
-        status: NodeStatus,
     ) -> Result<()>;
 
     /// Get a specific peer's channel
@@ -149,6 +147,14 @@ where
         &self,
         node_id: u32,
         address: String,
+        status: NodeStatus,
+    ) -> Result<()>;
+
+    /// Update status of a node
+    async fn update_node_status(
+        &self,
+        node_id: u32,
+        status: NodeStatus,
     ) -> Result<()>;
 
     /// Check if the node already exists

@@ -1,9 +1,3 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use tempfile::tempdir;
-use tokio::sync::watch;
-
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
 use crate::test_utils::insert_state_storage;
@@ -19,6 +13,10 @@ use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::SystemError;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tempfile::tempdir;
+use tokio::sync::watch;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.

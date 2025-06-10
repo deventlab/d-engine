@@ -257,12 +257,7 @@ async fn test_connection_retry_mechanism() {
     rx.recv().await.unwrap();
 
     let result = RpcPeerChannels::connect_with_retry(
-        &NodeMeta {
-            id: 2,
-            address: format!("127.0.0.1:{}", MOCK_PEER_CHANNEL_PORT_BASE + 12),
-            role: FOLLOWER,
-            status: NodeStatus::Active.into(),
-        },
+        format!("127.0.0.1:{}", MOCK_PEER_CHANNEL_PORT_BASE + 12),
         &node_config.retry,
         &node_config.network,
     )
@@ -285,9 +280,7 @@ async fn test_add_peer_case1_success() {
         .unwrap();
 
     // Add new peer
-    let result = peer_channels
-        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
-        .await;
+    let result = peer_channels.add_peer(2, format!("127.0.0.1:{port}")).await;
 
     assert!(result.is_ok(), "Should add peer successfully");
     assert_eq!(peer_channels.channels.len(), 1, "Should have 1 peer connection");
@@ -311,13 +304,8 @@ async fn test_add_case2_duplicate_peer() {
         .unwrap();
 
     // Add peer twice
-    peer_channels
-        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
-        .await
-        .unwrap();
-    let result = peer_channels
-        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
-        .await;
+    peer_channels.add_peer(2, format!("127.0.0.1:{port}")).await.unwrap();
+    let result = peer_channels.add_peer(2, format!("127.0.0.1:{port}")).await;
 
     assert!(result.is_ok(), "Should handle duplicate gracefully");
     assert_eq!(peer_channels.channels.len(), 1, "Should not add duplicate peer");
@@ -336,8 +324,6 @@ async fn test_add_peer_case3_connection_failure() {
         .add_peer(
             2,
             "127.0.0.1:0".to_string(), // Invalid port
-            FOLLOWER,
-            NodeStatus::Active,
         )
         .await;
 
@@ -365,7 +351,7 @@ async fn test_add_peer_case4_multiple_peers() {
             .unwrap();
 
         peer_channels
-            .add_peer(2 + i as u32, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
+            .add_peer(2 + i as u32, format!("127.0.0.1:{port}"))
             .await
             .unwrap();
     }
@@ -388,10 +374,7 @@ async fn test_get_peer_channel_case1_existing_peer_channel() {
     let server_addr = MockNode::simulate_mock_service_without_reps(port, rx, true)
         .await
         .unwrap();
-    peer_channels
-        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
-        .await
-        .unwrap();
+    peer_channels.add_peer(2, format!("127.0.0.1:{port}")).await.unwrap();
 
     // Retrieve channel
     let channel = peer_channels.get_peer_channel(2).unwrap();
@@ -432,10 +415,7 @@ async fn test_add_peer_case5_inactive_peer() {
         .unwrap();
 
     // Add inactive peer
-    peer_channels
-        .add_peer(2, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Draining)
-        .await
-        .unwrap();
+    peer_channels.add_peer(2, format!("127.0.0.1:{port}")).await.unwrap();
 
     assert!(peer_channels.get_peer_channel(2).is_some());
 }
@@ -459,8 +439,7 @@ async fn test_add_peer_case6_concurrent_add_peer() {
             let _server = MockNode::simulate_mock_service_without_reps(port, rx, true)
                 .await
                 .unwrap();
-            pc.add_peer(i as u32, format!("127.0.0.1:{port}"), FOLLOWER, NodeStatus::Active)
-                .await
+            pc.add_peer(i as u32, format!("127.0.0.1:{port}")).await
         }));
     }
 

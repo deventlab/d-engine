@@ -1365,12 +1365,12 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         // 2. Add new peer to connection manager
-        peer_channels
-            .add_peer(node_id, address.clone(), LEARNER, NodeStatus::Active)
-            .await?;
+        peer_channels.add_peer(node_id, address.clone()).await?;
 
-        // 3. Add the node as Learner
-        ctx.membership().add_learner(node_id, address.clone()).await?;
+        // 3. Add the node as Learner with Joining status
+        ctx.membership()
+            .add_learner(node_id, address.clone(), NodeStatus::Active)
+            .await?;
 
         // 4. Create configuration change payload
         let config_change = Change::AddNode(AddNode {
@@ -1390,10 +1390,14 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
         {
             Ok(true) => {
+                // 4. Update node status to Active
+                ctx.membership().update_node_status(node_id, NodeStatus::Active).await?;
+
+                // 5. Send successful response
                 info!("Join config committed for node {}", node_id);
                 self.send_join_success(node_id, &address, sender, ctx).await?;
 
-                // AFTER join success: Trigger snapshot transfer
+                // 6. Trigger snapshot transmission (only when snapshot exists in Leader node)
                 if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
                     self.trigger_snapshot_transfer(node_id, lastest_snapshot_metadata, ctx, peer_channels.clone())
                         .await?;

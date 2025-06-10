@@ -27,7 +27,6 @@ use tracing::trace;
 use tracing::warn;
 
 use super::ChannelWithAddress;
-use super::Membership;
 use super::PeerChannels;
 use crate::alias::POF;
 use crate::cluster::is_candidate;
@@ -39,6 +38,7 @@ use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
 use crate::ChannelWithAddressAndRole;
+use crate::Membership;
 use crate::MembershipError;
 use crate::Result;
 use crate::TypeConfig;
@@ -240,7 +240,8 @@ where
         // Step 3: Handle specific change type
         match &cluster_conf_change_req.change {
             Some(Change::AddNode(add_node)) => {
-                self.add_learner(add_node.node_id, add_node.address.clone()).await?;
+                self.add_learner(add_node.node_id, add_node.address.clone(), NodeStatus::Joining)
+                    .await?;
             }
             Some(Change::RemoveNode(remove_node)) => {
                 self.remove_node(remove_node.node_id).await?;
@@ -305,6 +306,7 @@ where
         &self,
         node_id: u32,
         address: String,
+        status: NodeStatus,
     ) -> Result<()> {
         if self.contains_node(node_id) {
             return Err(MembershipError::NodeAlreadyExists(node_id).into());
@@ -314,13 +316,43 @@ where
             id: node_id,
             address,
             role: LEARNER, // Defined as a learner
-            status: NodeStatus::Active.into(),
+            status: status.into(),
         };
 
         self.membership.insert(node_id, new_node);
         self.auto_incr_cluster_conf_version();
 
         Ok(())
+    }
+
+    /// Update node status
+    #[autometrics(objective = API_SLO)]
+    #[instrument]
+    async fn update_node_status(
+        &self,
+        node_id: u32,
+        status: NodeStatus,
+    ) -> Result<()> {
+        // Validate node exists
+        if !self.contains_node(node_id) {
+            return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
+        }
+
+        // Update status in membership metadata
+        if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
+            trace!(
+                "Updating node {} status from {:?} to {:?}",
+                node_id,
+                node_meta.status,
+                status
+            );
+
+            node_meta.status = status as i32;
+            Ok(())
+        } else {
+            // This should never happen due to the contains_node check, but handle it anyway
+            Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
+        }
     }
 
     /// Remove node

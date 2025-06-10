@@ -32,16 +32,6 @@
 //! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-
 use super::RaftTypeConfig;
 use crate::alias::COF;
 use crate::alias::MOF;
@@ -80,12 +70,27 @@ use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::SystemError;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+
+pub enum NodeMode {
+    Joiner,
+    FullMember,
+}
 
 /// Builder pattern implementation for constructing a Raft node with configurable components.
 /// Provides a fluent interface to set up node configuration, storage, transport, and other
 /// dependencies.
 pub struct NodeBuilder {
     node_id: u32,
+    mode: NodeMode, //startup mode
+
     pub(super) node_config: RaftNodeConfig,
     pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
@@ -122,6 +127,7 @@ impl NodeBuilder {
                 .with_override_config(p)
                 .expect("Overwrite node_config successfully.");
         }
+
         Self::init(node_config, shutdown_signal)
     }
 
@@ -151,6 +157,7 @@ impl NodeBuilder {
     ) -> Self {
         Self {
             node_id: node_config.cluster.node_id,
+            mode: node_config.join_mode(),
             raft_log: None,
             state_machine: None,
             state_storage: None,

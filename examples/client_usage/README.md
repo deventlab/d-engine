@@ -21,3 +21,8 @@ cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127
 
 # Delete key
 cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.0.1:9081" delete 42
+
+# Join cluster
+cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.0.1:9081" join \
+    --node-id 100 \
+    --address 127.0.0.1:9084

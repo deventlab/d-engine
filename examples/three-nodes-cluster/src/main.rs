@@ -1,16 +1,13 @@
 use core::panic;
+use d_engine::file_io::open_file_for_append;
+use d_engine::node::NodeBuilder;
 use std::env;
 use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
-
-use d_engine::client::ClientBuilder;
-use d_engine::file_io::open_file_for_append;
-use d_engine::node::NodeBuilder;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
-use tokio::time::sleep;
 use tracing::error;
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;

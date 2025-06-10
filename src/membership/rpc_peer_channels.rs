@@ -195,30 +195,18 @@ impl PeerChannels for RpcPeerChannels {
         &self,
         node_id: u32,
         address: String,
-        role: i32,
-        status: NodeStatus,
     ) -> Result<()> {
         // Check if peer already exists
         if self.channels.contains_key(&node_id) {
             return Ok(());
         }
 
-        // Create node meta for connection
-        let node_meta = NodeMeta {
-            id: node_id,
-            address,
-            role,
-            status: status.into(),
-        };
-
         // Connect with retry
-        let channel = Self::connect_with_retry(&node_meta, &self.node_config.retry, &self.node_config.network).await?;
+        let channel =
+            Self::connect_with_retry(address.clone(), &self.node_config.retry, &self.node_config.network).await?;
 
         // Store the connection
-        let channel_with_address = ChannelWithAddress {
-            address: node_meta.address.clone(),
-            channel,
-        };
+        let channel_with_address = ChannelWithAddress { address, channel };
 
         self.channels.insert(node_id, channel_with_address);
 
@@ -250,7 +238,7 @@ impl RpcPeerChannels {
                 continue; // Skip self
             }
 
-            let task = self.spawn_connection_task(node_meta.clone(), retry.clone(), rpc_settings);
+            let task = self.spawn_connection_task(node_meta.id, node_meta.address.clone(), retry.clone(), rpc_settings);
             tasks.push(task);
         }
 
@@ -260,17 +248,18 @@ impl RpcPeerChannels {
     /// Spawns a single connection task for a peer.
     fn spawn_connection_task(
         &self,
-        node_meta: NodeMeta,
+        node_id: u32,
+        address_string: String,
         retry: RetryPolicies,
         rpc_settings: &NetworkConfig,
     ) -> task::JoinHandle<Result<(u32, ChannelWithAddress)>> {
         let rpc_settings = rpc_settings.clone();
         task::spawn(async move {
-            let channel = Self::connect_with_retry(&node_meta, &retry, &rpc_settings).await?;
-            let address = address_str(&node_meta.address);
+            let channel = Self::connect_with_retry(address_string.clone(), &retry, &rpc_settings).await?;
+            let address = address_str(&address_string);
 
             debug!("Successfully connected with ({})", &address);
-            Ok((node_meta.id, ChannelWithAddress { address, channel }))
+            Ok((node_id, ChannelWithAddress { address, channel }))
         })
     }
 
@@ -307,22 +296,22 @@ impl RpcPeerChannels {
 
     /// Attempts to connect to a peer with retries and exponential backoff.
     pub(super) async fn connect_with_retry(
-        node_meta: &NodeMeta,
+        address: String,
         retry: &RetryPolicies,
         rpc_settings: &NetworkConfig,
     ) -> Result<Channel> {
         task_with_timeout_and_exponential_backoff(
-            || Self::connect(node_meta.clone(), rpc_settings.clone()),
+            || Self::connect(address.clone(), rpc_settings.clone()),
             retry.membership,
         )
         .await
     }
 
     async fn connect(
-        node_meta: NodeMeta,
+        address: String,
         node_config: NetworkConfig,
     ) -> Result<Channel> {
-        let addr = address_str(&node_meta.address);
+        let addr = address_str(&address);
 
         Endpoint::try_from(addr.clone())?
             .connect_timeout(Duration::from_millis(node_config.connect_timeout_in_ms))
@@ -340,6 +329,7 @@ impl RpcPeerChannels {
                 NetworkError::ConnectError.into()
             })
     }
+
     #[cfg(test)]
     pub(crate) fn set_peer_channel(
         &self,

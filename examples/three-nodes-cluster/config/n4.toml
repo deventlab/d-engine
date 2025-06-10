@@ -1,0 +1,10 @@
+[cluster]
+node_id = 4
+listen_address = "127.0.0.1:9084"
+initial_cluster = [
+    { id = 1, address = "127.0.0.1:9081" },
+    { id = 2, address = "127.0.0.1:9082" },
+    { id = 3, address = "127.0.0.1:9083" },
+    { id = 4, address = "127.0.0.1:9084", status = "joining" },
+    { id = 5, address = "127.0.0.1:9085", status = "joining" },
+]

@@ -35,7 +35,9 @@ use config::File;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::proto::cluster::NodeStatus;
 use crate::Error;
+use crate::NodeMode;
 use crate::Result;
 
 /// Main configuration container for Raft consensus engine components
@@ -172,6 +174,21 @@ impl RaftNodeConfig {
         self.tls.validate()?;
         self.retry.validate()?;
         Ok(())
+    }
+
+    pub fn join_mode(&self) -> NodeMode {
+        if self
+            .cluster
+            .initial_cluster
+            .iter()
+            .find(|n| n.id == self.cluster.node_id)
+            .map(|n| n.status == NodeStatus::Joining as i32)
+            .unwrap_or(false)
+        {
+            NodeMode::Joiner
+        } else {
+            NodeMode::FullMember
+        }
     }
 }
 

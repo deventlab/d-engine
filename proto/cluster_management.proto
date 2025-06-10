@@ -54,6 +54,7 @@ message ClusterMembership {
 enum NodeStatus {
   ACTIVE = 0; // Normal service
   DRAINING = 1; // Prepare to go offline (not accepting new requests)
+  JOINING = 2; // Join cluster as new node
 }
 
 message NodeMeta {

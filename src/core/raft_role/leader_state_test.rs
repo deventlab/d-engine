@@ -2359,7 +2359,7 @@ async fn test_trigger_snapshot_transfer_case1_success() {
 
     // Mock peer channels
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
 
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 1, rx1).await;
@@ -2425,7 +2425,7 @@ async fn test_trigger_snapshot_transfer_case2_peer_not_found() {
 
     // Mock peer channels to return None for non-existent node
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     peer_channels
         .expect_get_peer_channel()
         .with(eq(node_id))
@@ -2466,7 +2466,7 @@ async fn test_trigger_snapshot_transfer_case3_load_failure() {
 
     // Mock transport to succeed
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 3, rx1).await;
     peer_channels
@@ -2528,7 +2528,7 @@ async fn test_trigger_snapshot_transfer_case4_network_failure() {
 
     // Mock peer channels
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 4, rx1).await;
     peer_channels
@@ -2600,7 +2600,7 @@ async fn test_trigger_snapshot_transfer_case5_large_snapshot() {
 
     // Mock peer channels
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 5, rx1).await;
     peer_channels
@@ -2641,11 +2641,12 @@ async fn test_handle_join_cluster_case1_success() {
         .expect("should succeed");
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_update_node_status().returning(|_, _| Ok(()));
     membership.expect_voting_members().returning(move |_| {
         vec![ChannelWithAddressAndRole {
             id: 2,
@@ -2657,7 +2658,7 @@ async fn test_handle_join_cluster_case1_success() {
 
     // Mock peer channels
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     peer_channels.expect_get_peer_channel().returning(|_| {
         Some(ChannelWithAddress {
             address: "".to_string(),
@@ -2782,7 +2783,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership.expect_voting_members().returning(|_| vec![]); // Empty voting members will cause quorum failure
     context.membership = Arc::new(membership);
 
@@ -2800,7 +2801,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
         });
 
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     peer_channels.expect_get_peer_channel().returning(|_| {
         Some(ChannelWithAddress {
             address: "".to_string(),
@@ -2841,7 +2842,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership.expect_voting_members().returning(|_| {
         vec![ChannelWithAddressAndRole {
             id: 2,
@@ -2862,7 +2863,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
         .returning(|_, _, _, _, _| Err(Error::Fatal("Test error".to_string())));
 
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     peer_channels.expect_get_peer_channel().returning(|_| {
         Some(ChannelWithAddress {
             address: "".to_string(),
@@ -2907,11 +2908,12 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_update_node_status().returning(|_, _| Ok(()));
     membership.expect_voting_members().returning(|_| {
         vec![ChannelWithAddressAndRole {
             id: 2,
@@ -2981,7 +2983,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     });
     context.storage.state_machine = Arc::new(state_machine);
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _, _, _| Ok(()));
+    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
     peer_channels.expect_get_peer_channel().returning(|_| {
         Some(ChannelWithAddress {
             address: "".to_string(),
