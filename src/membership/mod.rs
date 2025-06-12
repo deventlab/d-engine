@@ -163,6 +163,11 @@ where
         node_id: u32,
     ) -> bool;
 
+    fn retrieve_node_meta(
+        &self,
+        node_id: u32,
+    ) -> Option<crate::proto::cluster::NodeMeta>;
+
     /// Elegantly remove nodes
     async fn remove_node(
         &self,

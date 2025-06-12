@@ -14,6 +14,7 @@ use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::NodeStatus;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
@@ -58,7 +59,6 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
-use crate::LEARNER;
 use autometrics::autometrics;
 use nanoid::nanoid;
 use std::collections::HashMap;
@@ -825,6 +825,24 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::DiscoverLeader(request, sender) => {
                 debug!(?request, "Leader::RaftEvent::DiscoverLeader");
+
+                if let Some(meta) = ctx.membership().retrieve_node_meta(my_id) {
+                    let response = LeaderDiscoveryResponse {
+                        leader_id: my_id,
+                        leader_address: meta.address,
+                        term: my_term,
+                    };
+                    sender.send(Ok(response)).map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+                    return Ok(());
+                } else {
+                    let msg = "Leader can not find its address? It must be a bug.";
+                    error!("{}", msg);
+                    panic!("{}", msg);
+                }
             }
         }
         return Ok(());

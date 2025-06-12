@@ -1,13 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tokio::time;
-use tokio::time::timeout;
-
 use super::*;
 use crate::candidate_state::CandidateState;
 use crate::cluster::is_candidate;
@@ -36,6 +26,14 @@ use crate::MockTransport;
 use crate::PeerUpdate;
 use crate::RaftOneshot;
 use crate::VoteResult;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::timeout;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]

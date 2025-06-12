@@ -4,7 +4,9 @@ use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::cluster_conf_update_response;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
 use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
@@ -544,6 +546,82 @@ async fn test_handle_raft_event_case9() {
 
     // Step 4: Verify the error response
     assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+}
+
+/// Test handling JoinCluster event by CandidateState
+#[tokio::test]
+async fn test_handle_raft_event_case10() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case10", graceful_rx, None);
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the event
+    let request = JoinRequest {
+        node_id: 2,
+        address: "127.0.0.1:9090".to_string(),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::JoinCluster(request, resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state
+        .handle_raft_event(
+            raft_event,
+            Arc::new(mock_peer_channels()),
+            &context,
+            mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    // Step 4: Verify the response
+    assert!(result.is_err(), "Expected handle_raft_event to return error");
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await.expect("Response should be received");
+    assert!(response.is_err(), "Expected an error response");
+    let status = response.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(status.code(), Code::PermissionDenied);
+}
+
+/// Test handling DiscoverLeader event by CandidateState
+#[tokio::test]
+async fn test_handle_raft_event_case11() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case11", graceful_rx, None);
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Step 2: Prepare the event
+    let request = LeaderDiscoveryRequest {
+        node_id: 2,
+        requester_address: "127.0.0.1:9090".to_string(),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state
+        .handle_raft_event(
+            raft_event,
+            Arc::new(mock_peer_channels()),
+            &context,
+            mpsc::unbounded_channel().0,
+        )
+        .await;
+
+    // Step 4: Verify the response
+    assert!(result.is_err(), "Expected handle_raft_event to return error");
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await.expect("Response should be received");
+    assert!(response.is_err(), "Expected an error response");
+    let status = response.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(status.code(), Code::PermissionDenied);
 }
 
 /// Tests successful leader discovery on first attempt

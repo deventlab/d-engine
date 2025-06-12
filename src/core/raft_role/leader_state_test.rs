@@ -9,7 +9,10 @@ use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::LeaderDiscoveryRequest;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
@@ -61,6 +64,7 @@ use crate::RoleEvent;
 use crate::StorageError;
 use crate::SystemError;
 use crate::FOLLOWER;
+use crate::LEADER;
 use futures::StreamExt;
 use mockall::predicate::eq;
 use nanoid::nanoid;
@@ -1474,6 +1478,178 @@ async fn test_handle_raft_event_case9_6() {
     assert_eq!(state.peer_purge_progress.get(&3), Some(&95));
 }
 
+/// # Case 1: Successful leader discovery
+#[tokio::test]
+async fn test_handle_raft_event_case10_1_discover_leader_success() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_raft_event_case10_1_discover_leader_success",
+        graceful_rx,
+        None,
+    );
+
+    // Mock membership to return leader metadata
+    let mut membership = MockMembership::new();
+    membership.expect_retrieve_node_meta().returning(|_| {
+        Some(NodeMeta {
+            id: 1,
+            address: "127.0.0.1:50051".to_string(),
+            role: LEADER,
+            status: NodeStatus::Active.into(),
+        })
+    });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+
+    let request = LeaderDiscoveryRequest {
+        node_id: 100,
+        requester_address: "127.0.0.1:8080".to_string(),
+    };
+    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should handle successfully");
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(response.leader_id, 1);
+    assert_eq!(response.leader_address, "127.0.0.1:50051");
+    assert_eq!(response.term, state.current_term());
+}
+
+/// # Case 2: Leader metadata not found (should panic)
+#[tokio::test]
+#[should_panic(expected = "Leader can not find its address? It must be a bug.")]
+async fn test_handle_raft_event_case10_2_discover_leader_metadata_not_found() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_raft_event_case10_2_discover_leader_metadata_not_found",
+        graceful_rx,
+        None,
+    );
+
+    // Mock membership to return no metadata
+    let mut membership = MockMembership::new();
+    membership.expect_retrieve_node_meta().returning(|_| None);
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, _) = MaybeCloneOneshot::new();
+
+    let request = LeaderDiscoveryRequest {
+        node_id: 100,
+        requester_address: "127.0.0.1:8080".to_string(),
+    };
+    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should panic during handling");
+}
+
+/// # Case 4: Discovery with different leader terms
+#[tokio::test]
+async fn test_handle_raft_event_case10_4_different_leader_terms() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_raft_event_case10_4_different_leader_terms",
+        graceful_rx,
+        None,
+    );
+
+    // Mock membership to return leader metadata
+    let mut membership = MockMembership::new();
+    membership.expect_retrieve_node_meta().returning(|_| {
+        Some(NodeMeta {
+            id: 1,
+            address: "127.0.0.1:50051".to_string(),
+            role: LEADER,
+            status: NodeStatus::Active.into(),
+        })
+    });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+
+    // Set different terms
+    state.update_current_term(5);
+    let request = LeaderDiscoveryRequest {
+        node_id: 100,
+        requester_address: "127.0.0.1:8080".to_string(),
+    };
+    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should handle successfully");
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(response.term, 5);
+}
+
+/// # Case 5: Discovery with invalid node ID
+#[tokio::test]
+async fn test_handle_raft_event_case10_5_invalid_node_id() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_raft_event_case10_5_invalid_node_id",
+        graceful_rx,
+        None,
+    );
+
+    // Mock membership to return leader metadata
+    let mut membership = MockMembership::new();
+    membership.expect_retrieve_node_meta().returning(|_| {
+        Some(NodeMeta {
+            id: 1,
+            address: "127.0.0.1:50051".to_string(),
+            role: LEADER,
+            status: NodeStatus::Active.into(),
+        })
+    });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+
+    // Use invalid node ID (0)
+    let request = LeaderDiscoveryRequest {
+        node_id: 0,
+        requester_address: "127.0.0.1:8080".to_string(),
+    };
+    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+
+    let peer_channels = Arc::new(mock_peer_channels());
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .await
+        .expect("Should handle successfully");
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(response.leader_id, 1);
+}
+
 #[test]
 fn test_state_size() {
     assert!(size_of::<LeaderState<RaftTypeConfig>>() < 312);
@@ -2009,11 +2185,6 @@ async fn setup_process_batch_test_context(
         state,
         raft_context: context,
     }
-}
-
-struct ProcessBatchTestContext {
-    state: LeaderState<MockTypeConfig>,
-    raft_context: RaftContext<MockTypeConfig>,
 }
 
 type ClientResponseResult = std::result::Result<ClientResponse, Status>;

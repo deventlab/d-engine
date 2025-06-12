@@ -12,20 +12,6 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
-use std::marker::PhantomData;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use dashmap::DashMap;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
-
 use super::ChannelWithAddress;
 use super::PeerChannels;
 use crate::alias::POF;
@@ -46,7 +32,19 @@ use crate::API_SLO;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
+use autometrics::autometrics;
+use dashmap::DashMap;
 use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::instrument;
+use tracing::trace;
+use tracing::warn;
 
 pub struct RaftMembership<T>
 where
@@ -395,6 +393,14 @@ where
         node_id: u32,
     ) -> bool {
         self.membership.contains_key(&node_id)
+    }
+
+
+    fn retrieve_node_meta(
+        &self,
+        node_id: u32,
+    ) -> Option<NodeMeta> {
+        self.membership.get(&node_id).map(|v| v.clone())
     }
 
     fn get_all_nodes(&self) -> Vec<NodeMeta> {
