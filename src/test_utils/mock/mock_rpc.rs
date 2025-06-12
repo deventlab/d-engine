@@ -10,6 +10,8 @@ use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::election::raft_election_service_server::RaftElectionService;
 use crate::proto::election::VoteRequest;
@@ -35,6 +37,7 @@ pub struct MockRpcService {
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
     pub expected_purge_log_response: Option<Result<PurgeLogResponse, tonic::Status>>,
     pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
+    pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
 }
 #[tonic::async_trait]
 impl RaftElectionService for MockRpcService {
@@ -93,6 +96,17 @@ impl ClusterManagementService for MockRpcService {
         _request: tonic::Request<JoinRequest>,
     ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
         match &self.expected_join_cluster_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown("No mock get_cluster_metadata response set")),
+        }
+    }
+
+    async fn discover_leader(
+        &self,
+        request: tonic::Request<LeaderDiscoveryRequest>,
+    ) -> std::result::Result<tonic::Response<LeaderDiscoveryResponse>, tonic::Status> {
+        match &self.expected_discover_leader_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock get_cluster_metadata response set")),

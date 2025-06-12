@@ -106,10 +106,31 @@ message JoinResponse {
   uint32 leader_id = 6;
 }
 
+
+// New messages
+message LeaderDiscoveryRequest {
+    // Requester's node ID
+    uint32 node_id = 1;
+    // Requester's address
+    string requester_address = 2;
+}
+
+message LeaderDiscoveryResponse {
+    // Current leader's node ID (0 if unknown)
+    uint32 leader_id = 1;
+    // Current leader's address (empty if unknown)
+    string leader_address = 2;
+    // Current term
+    uint64 term = 3;
+}
+
 service ClusterManagementService {
   rpc UpdateClusterConf (ClusterConfChangeRequest) returns (ClusterConfUpdateResponse);
   rpc GetClusterMetadata (MetadataRequest) returns (ClusterMembership);
 
   // Request to join the cluster as a new learner node
   rpc JoinCluster(JoinRequest) returns (JoinResponse);
+  
+  // New RPC for leader discovery
+  rpc DiscoverLeader(LeaderDiscoveryRequest) returns (LeaderDiscoveryResponse);
 }

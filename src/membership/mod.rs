@@ -108,7 +108,7 @@ where
         leader_id: u32,
     ) -> Result<()>;
 
-    fn current_leader(&self) -> Option<u32>;
+    fn current_leader_id(&self) -> Option<u32>;
 
     /// Reset old leader to follower
     fn reset_leader(&self) -> Result<()>;

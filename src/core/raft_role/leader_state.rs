@@ -822,6 +822,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 self.handle_join_cluster(join_request, sender, ctx, peer_channels.clone(), &role_tx)
                     .await?;
             }
+
+            RaftEvent::DiscoverLeader(request, sender) => {
+                debug!(?request, "Leader::RaftEvent::DiscoverLeader");
+            }
         }
         return Ok(());
     }

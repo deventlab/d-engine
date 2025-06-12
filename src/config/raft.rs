@@ -48,6 +48,10 @@ pub struct RaftConfig {
     /// Default value is set via default_general_timeout() function
     #[serde(default = "default_general_timeout")]
     pub general_raft_timeout_duration_in_ms: u64,
+
+    /// Configuration settings for new node auto join feature
+    #[serde(default)]
+    pub auto_join: AutoJoinConfig,
 }
 
 impl Debug for RaftConfig {
@@ -68,6 +72,7 @@ impl Default for RaftConfig {
             snapshot: SnapshotConfig::default(),
             learner_raft_log_gap: default_learner_gap(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
+            auto_join: AutoJoinConfig::default(),
         }
     }
 }
@@ -399,4 +404,20 @@ fn default_snapshots_dir() -> PathBuf {
 /// 256KB chunks by default
 fn default_chunk_size() -> usize {
     1024 * 256
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AutoJoinConfig {
+    #[serde(default = "default_rpc_enable_compression")]
+    pub rpc_enable_compression: bool,
+}
+impl Default for AutoJoinConfig {
+    fn default() -> Self {
+        Self {
+            rpc_enable_compression: default_rpc_enable_compression(),
+        }
+    }
+}
+fn default_rpc_enable_compression() -> bool {
+    true
 }

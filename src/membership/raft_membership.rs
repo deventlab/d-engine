@@ -168,7 +168,7 @@ where
         self.get_followers_candidates_channel_and_role(&peers)
     }
 
-    fn current_leader(&self) -> Option<u32> {
+    fn current_leader_id(&self) -> Option<u32> {
         for node_meta in self.membership.iter_mut() {
             if node_meta.role == LEADER {
                 return Some(node_meta.id);
@@ -366,7 +366,7 @@ where
         }
 
         // If it is the leader, you need to transfer leadership first
-        if self.current_leader() == Some(node_id) {
+        if self.current_leader_id() == Some(node_id) {
             return Err(MembershipError::RemoveNodeIsLeader(node_id).into());
         }
 

@@ -1,15 +1,11 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-
 use crate::learner_state::LearnerState;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
 use crate::proto::cluster::cluster_conf_update_response;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
@@ -18,19 +14,36 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
+use crate::test_utils::enable_logger;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
+use crate::ChannelWithAddress;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
+use crate::MembershipError;
 use crate::MockMembership;
+use crate::MockPeerChannels;
 use crate::MockReplicationCore;
+use crate::MockTransport;
+use crate::NetworkError;
 use crate::NewCommitData;
+use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
+use crate::SystemError;
+use dashmap::DashMap;
+use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::transport::Endpoint;
+use tonic::Code;
+use tracing::debug;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
@@ -133,7 +146,7 @@ async fn test_handle_raft_event_case3() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -531,4 +544,471 @@ async fn test_handle_raft_event_case9() {
 
     // Step 4: Verify the error response
     assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+}
+
+/// Tests successful leader discovery on first attempt
+#[tokio::test]
+async fn test_broadcast_discovery_case1_success() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (peer_channels, mut ctx) = mock_context("test_broadcast_discovery_case1_success", graceful_rx);
+
+    let mut transport = MockTransport::new();
+    // Single valid response
+    transport.expect_discover_leader().returning(|_, _, _| {
+        Ok(vec![LeaderDiscoveryResponse {
+            leader_id: 5,
+            leader_address: "127.0.0.1:5005".to_string(),
+            term: 3,
+        }])
+    });
+    ctx.set_transport(Arc::new(transport));
+
+    let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    let result = state.broadcast_discovery(peer_channels.clone(), &ctx).await;
+
+    assert!(result.is_ok(), "Should return leader channel");
+}
+
+/// Tests discovery failure after max retries
+#[tokio::test]
+async fn test_broadcast_discovery_case2_retry_exhaustion() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (peer_channels, mut ctx) = mock_context("test_broadcast_discovery_case2_retry_exhaustion", graceful_rx);
+
+    let mut transport = MockTransport::new();
+    // Always return empty responses
+    transport.expect_discover_leader().returning(|_, _, _| Ok(vec![]));
+    ctx.set_transport(Arc::new(transport));
+
+    let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    let result = state.broadcast_discovery(peer_channels.clone(), &ctx).await;
+
+    assert!(result.is_err(), "Should error after retries");
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Network(NetworkError::RetryTimeoutError(_)))
+    ));
+}
+
+fn mock_context(
+    case_name: &str,
+    shutdown_signal: watch::Receiver<()>,
+) -> (Arc<MockPeerChannels>, RaftContext<MockTypeConfig>) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join(case_name);
+    let raft_context = mock_raft_context(case_path.to_str().unwrap(), shutdown_signal, None);
+
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_voting_members().returning(DashMap::new);
+    peer_channels.expect_get_peer_channel().returning(move |_| {
+        Some(ChannelWithAddress {
+            address: "".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    (Arc::new(peer_channels), raft_context)
+}
+
+/// Tests leader selection with multiple valid responses
+#[tokio::test]
+async fn test_select_valid_leader_case1_priority() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (peer_channels, ctx) = mock_context("test_select_valid_leader_case1_priority", graceful_rx);
+    let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let responses = vec![
+        LeaderDiscoveryResponse {
+            leader_id: 3,
+            term: 5,
+            ..Default::default()
+        },
+        LeaderDiscoveryResponse {
+            leader_id: 5,
+            term: 7,
+            ..Default::default()
+        }, // Highest term
+        LeaderDiscoveryResponse {
+            leader_id: 4,
+            term: 7,
+            ..Default::default()
+        }, // Same term, higher ID
+    ];
+
+    let result = state.select_valid_leader(responses, peer_channels.clone()).await;
+
+    assert!(result.is_some());
+    // Should select leader_id=5 (highest term)
+    assert_eq!(result.unwrap().0, 5);
+}
+
+/// Tests filtering of invalid responses
+#[tokio::test]
+async fn test_select_valid_leader_case2_invalid_responses() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (peer_channels, ctx) = mock_context("test_select_valid_leader_case2_invalid_responses", graceful_rx);
+    let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let responses = vec![
+        LeaderDiscoveryResponse {
+            leader_id: 0,
+            term: 5,
+            ..Default::default()
+        }, // Invalid ID
+        LeaderDiscoveryResponse {
+            leader_id: 3,
+            term: 0,
+            ..Default::default()
+        }, // Invalid term
+    ];
+
+    let result = state.select_valid_leader(responses, peer_channels.clone()).await;
+
+    assert!(result.is_none(), "Should filter invalid responses");
+}
+
+/// # Case 1: Successful join with known leader
+#[tokio::test]
+async fn test_join_cluster_case1_success_known_leader() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case1", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership to return known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| Some(5));
+    ctx.membership = Arc::new(membership);
+
+    // Mock peer channels to return leader channel
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "127.0.0.1:5005".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock transport to succeed
+    let mut transport = MockTransport::new();
+    transport.expect_join_cluster().returning(|_, _, _| {
+        Ok(JoinResponse {
+            success: true,
+            error: "".to_string(),
+            config: None,
+            config_version: 1,
+            snapshot_metadata: None,
+            leader_id: 3,
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    assert!(result.is_ok(), "Join should succeed with known leader");
+}
+
+/// # Case 2: Successful join after leader discovery
+#[tokio::test]
+async fn test_join_cluster_case2_success_after_discovery() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case2", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership with no known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| None);
+    ctx.membership = Arc::new(membership);
+
+    // Mock peer channels for discovery
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "127.0.0.1:5005".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+    peer_channels.expect_voting_members().returning(|| {
+        let map = DashMap::new();
+        map.insert(
+            2,
+            ChannelWithAddress {
+                address: "".to_string(),
+                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+            },
+        );
+        map.insert(
+            3,
+            ChannelWithAddress {
+                address: "".to_string(),
+                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+            },
+        );
+        map
+    });
+
+    // Mock transport for discovery and join
+    let mut transport = MockTransport::new();
+    transport.expect_discover_leader().returning(|_, _, _| {
+        Ok(vec![LeaderDiscoveryResponse {
+            leader_id: 5,
+            leader_address: "127.0.0.1:5005".to_string(),
+            term: 3,
+        }])
+    });
+    transport.expect_join_cluster().returning(|_, _, _| {
+        Ok(JoinResponse {
+            success: true,
+            error: "".to_string(),
+            config: None,
+            config_version: 0,
+            snapshot_metadata: None,
+            leader_id: 2,
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    debug!(?result);
+
+    assert!(result.is_ok(), "Join should succeed after discovery");
+}
+
+/// # Case 3: Join failure - leader discovery timeout
+#[tokio::test]
+async fn test_join_cluster_case3_discovery_timeout() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case3", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership with no known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| None);
+    ctx.membership = Arc::new(membership);
+
+    // Mock peer channels for discovery
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_voting_members().returning(|| DashMap::new());
+
+    // Mock transport to timeout during discovery
+    let mut transport = MockTransport::new();
+    transport.expect_discover_leader().returning(|_, _, _| {
+        sleep(Duration::from_secs(1));
+        Ok(vec![])
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Network(NetworkError::RetryTimeoutError(_)))
+    ));
+}
+
+/// # Case 4: Join failure - leader found but join RPC fails
+#[tokio::test]
+async fn test_join_cluster_case4_join_rpc_failure() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case4", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership to return known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| Some(5));
+    ctx.membership = Arc::new(membership);
+
+    // Mock peer channels to return leader channel
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "127.0.0.1:5005".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock transport to fail join RPC
+    let mut transport = MockTransport::new();
+    transport
+        .expect_join_cluster()
+        .returning(|_, _, _| Err(NetworkError::ServiceUnavailable("Service unavailable".to_string()).into()));
+
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Network(NetworkError::ServiceUnavailable(_)))
+    ));
+}
+
+/// # Case 5: Join failure - leader found but invalid response
+#[tokio::test]
+async fn test_join_cluster_case5_invalid_join_response() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case5", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership to return known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| Some(5));
+    ctx.membership = Arc::new(membership);
+
+    // Mock peer channels to return leader channel
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "127.0.0.1:5005".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock transport to return failure response
+    let mut transport = MockTransport::new();
+    transport.expect_join_cluster().returning(|_, _, _| {
+        Ok(JoinResponse {
+            success: false,
+            error: "Node rejected".to_string(),
+            ..Default::default()
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    debug!(?result);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Membership(MembershipError::JoinClusterFailed(_)))
+    ));
+}
+
+/// # Case 6: Join with leader redirect
+#[tokio::test]
+async fn test_join_cluster_case6_leader_redirect() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case6", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership to return known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| Some(5));
+    ctx.membership = Arc::new(membership);
+
+    // Mock peer channels to return leader channel
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "127.0.0.1:5005".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+
+    // Mock transport to redirect to new leader
+    let mut transport = MockTransport::new();
+    transport.expect_join_cluster().returning(|_, req, _| {
+        // First call: redirect
+        if req.node_id == 100 {
+            Err(NetworkError::ServiceUnavailable("Not leader".to_string()).into())
+        }
+        // Second call: success
+        else {
+            Ok(JoinResponse {
+                success: true,
+                error: "".to_string(),
+                config: None,
+                config_version: 1,
+                snapshot_metadata: None,
+                leader_id: 3,
+            })
+        }
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    assert!(result.is_ok(), "Should handle leader redirect");
+}
+
+/// # Case 7: Join with large cluster (100 nodes)
+#[tokio::test]
+async fn test_join_cluster_case7_large_cluster() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case7", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership with no known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| None);
+    ctx.membership = Arc::new(membership);
+
+    // Create large peer set (100 nodes)
+    let mut peer_channels = MockPeerChannels::new();
+    peer_channels.expect_get_peer_channel().returning(|_| {
+        Some(ChannelWithAddress {
+            address: "127.0.0.1:5005".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
+    });
+    peer_channels.expect_voting_members().returning(|| {
+        let map = DashMap::new();
+        for i in 1..=100 {
+            map.insert(
+                i,
+                ChannelWithAddress {
+                    address: "127.0.0.1:5005".to_string(),
+                    channel: Endpoint::from_static("http://dummy:50051").connect_lazy(),
+                },
+            );
+        }
+        map
+    });
+
+    // Mock transport to handle large discovery
+    let mut transport = MockTransport::new();
+    transport.expect_discover_leader().returning(|peers, _, _| {
+        assert_eq!(peers.len(), 100, "Should handle 100 peers");
+        Ok(vec![LeaderDiscoveryResponse {
+            leader_id: 5,
+            leader_address: "127.0.0.1:5005".to_string(),
+            term: 3,
+        }])
+    });
+    transport.expect_join_cluster().returning(|_, _, _| {
+        Ok(JoinResponse {
+            success: true,
+            error: "".to_string(),
+            config: None,
+            config_version: 1,
+            snapshot_metadata: None,
+            leader_id: 3,
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+
+    assert!(result.is_ok(), "Should handle large cluster");
 }

@@ -1,13 +1,15 @@
 use tonic::Status;
 
-use crate::proto::client::ClientWriteRequest;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
@@ -86,6 +88,11 @@ pub(crate) enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
     ),
 
+    DiscoverLeader(
+        LeaderDiscoveryRequest,
+        MaybeCloneOneshotSender<std::result::Result<LeaderDiscoveryResponse, Status>>,
+    ),
+
     // None RPC event
     #[allow(dead_code)]
     CreateSnapshotEvent,
@@ -113,6 +120,8 @@ pub(crate) enum TestEvent {
 
     JoinCluster(JoinRequest),
 
+    DiscoverLeader(LeaderDiscoveryRequest),
+
     // None RPC event
     CreateSnapshotEvent,
 }
@@ -127,8 +136,9 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
         RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
-        RaftEvent::RaftLogCleanUp(purge_log_request, _) => TestEvent::RaftLogCleanUp(purge_log_request.clone()),
-        RaftEvent::JoinCluster(join_cluster_request, _) => TestEvent::JoinCluster(join_cluster_request.clone()),
+        RaftEvent::RaftLogCleanUp(req, _) => TestEvent::RaftLogCleanUp(req.clone()),
+        RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
+        RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
     }
 }

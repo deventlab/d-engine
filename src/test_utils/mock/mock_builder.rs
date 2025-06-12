@@ -209,7 +209,7 @@ impl MockBuilder {
             }),
         );
 
-        raft.join_cluster(Arc::new(peer_channels)).expect("join failed");
+        raft.init_peer_channels(Arc::new(peer_channels)).expect("join failed");
 
         raft
     }

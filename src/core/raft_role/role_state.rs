@@ -98,7 +98,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         _peer_channels: Arc<POF<Self::T>>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumVerificationResult> {
-        warn!("check_leadership_quorum_immediate NotLeader error");
+        warn!("verify_internal_quorum NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
 
@@ -110,8 +110,17 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         _peer_channels: Arc<POF<Self::T>>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
-        warn!("check_leadership_quorum_immediate NotLeader error");
+        warn!("verify_internal_quorum_with_retry NotLeader error");
         Err(MembershipError::NotLeader.into())
+    }
+
+    async fn join_cluster(
+        &self,
+        _peer_channels: Arc<POF<Self::T>>,
+        _ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        warn!("join_cluster NotLearner error");
+        Err(MembershipError::NotLearner.into())
     }
 
     #[allow(dead_code)]

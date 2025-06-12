@@ -210,9 +210,9 @@ async fn test_mark_leader_id_case1() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
-    assert_eq!(membership.current_leader(), Some(old_leader_id));
+    assert_eq!(membership.current_leader_id(), Some(old_leader_id));
     assert!(membership.mark_leader_id(new_leader_id).is_ok());
-    assert_eq!(membership.current_leader(), Some(new_leader_id));
+    assert_eq!(membership.current_leader_id(), Some(new_leader_id));
 }
 
 /// # Case 2: Try to mark an none exist peer as leader will throw Error
@@ -262,7 +262,7 @@ async fn test_mark_leader_id_case2() {
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster);
 
     assert!(membership.mark_leader_id(new_leader_id).is_err());
-    assert_eq!(membership.current_leader(), None);
+    assert_eq!(membership.current_leader_id(), None);
 }
 
 #[test]

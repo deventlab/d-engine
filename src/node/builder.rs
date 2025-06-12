@@ -89,7 +89,6 @@ pub enum NodeMode {
 /// dependencies.
 pub struct NodeBuilder {
     node_id: u32,
-    mode: NodeMode, //startup mode
 
     pub(super) node_config: RaftNodeConfig,
     pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
@@ -157,7 +156,6 @@ impl NodeBuilder {
     ) -> Self {
         Self {
             node_id: node_config.cluster.node_id,
-            mode: node_config.join_mode(),
             raft_log: None,
             state_machine: None,
             state_storage: None,

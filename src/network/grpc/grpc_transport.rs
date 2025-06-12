@@ -1,28 +1,13 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
-use autometrics::autometrics;
-use futures::stream::BoxStream;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use std::collections::HashSet;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::task;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::async_trait;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
 use crate::grpc::RestartableStream;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::election::raft_election_service_client::RaftElectionServiceClient;
 use crate::proto::election::VoteRequest;
 use crate::proto::replication::raft_replication_service_client::RaftReplicationServiceClient;
@@ -45,6 +30,24 @@ use crate::RetryPolicies;
 use crate::Transport;
 use crate::VoteResult;
 use crate::API_SLO;
+use autometrics::autometrics;
+use dashmap::DashMap;
+use futures::stream::BoxStream;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use std::collections::HashSet;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::task;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct GrpcTransport {
@@ -471,6 +474,72 @@ impl Transport for GrpcTransport {
             let delay = std::cmp::min(retry.base_delay_ms * 2u64.pow(retry_count as u32), retry.max_delay_ms);
             tokio::time::sleep(Duration::from_millis(delay.into())).await;
         }
+    }
+
+    #[autometrics(objective = API_SLO)]
+    async fn join_cluster(
+        &self,
+        leader_channel: Channel,
+        request: JoinRequest,
+        retry: BackoffPolicy,
+    ) -> Result<JoinResponse> {
+        debug!("Initiating cluster join for node {}", request.node_id);
+
+        let closure = move || {
+            let channel = leader_channel.clone();
+            let mut client = ClusterManagementServiceClient::new(channel)
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+            let req = request.clone();
+            async move { client.join_cluster(tonic::Request::new(req)).await }
+        };
+
+        let response = task_with_timeout_and_exponential_backoff(closure, retry).await?;
+
+        debug!("Join cluster response: {:?}", response);
+        Ok(response.into_inner())
+    }
+
+    #[autometrics(objective = API_SLO)]
+    async fn discover_leader(
+        &self,
+        voting_members: DashMap<u32, ChannelWithAddress>,
+        request: LeaderDiscoveryRequest,
+        rpc_enable_compression: bool,
+    ) -> Result<Vec<LeaderDiscoveryResponse>> {
+        debug!("Starting leader discovery for node {}", request.node_id);
+
+        // Build parallel request streams
+        let requests = voting_members
+            .iter()
+            .map(|entry| {
+                let channel = entry.value().channel.clone();
+                let request = request.clone();
+
+                // Build future directly using asynchronous blocks
+                async move {
+                    let mut client = ClusterManagementServiceClient::new(channel);
+                    if rpc_enable_compression {
+                        client = client
+                            .send_compressed(CompressionEncoding::Gzip)
+                            .accept_compressed(CompressionEncoding::Gzip);
+                    }
+                    match client.discover_leader(request).await {
+                        Ok(res) => Some(res.into_inner()),
+                        Err(e) => {
+                            // Error logs can be recorded here
+                            None
+                        }
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Use join_all to execute in parallel (single-thread cooperative concurrency)
+        let results = futures::future::join_all(requests).await;
+
+        // Filter results
+        Ok(results.into_iter().flatten().collect())
     }
 }
 

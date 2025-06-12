@@ -127,9 +127,15 @@ where
         let mut raft = self.raft_core.lock().await;
 
         // 4. Join the node with cluster
-        raft.join_cluster(Arc::new(peer_channels))?;
+        let peer_channels = Arc::new(peer_channels);
+        raft.init_peer_channels(peer_channels.clone())?;
 
-        // 5. Run the main event processing loop
+        // 5. if join as a new node
+        if self.node_config.is_joining() {
+            raft.join_cluster(peer_channels.clone()).await?;
+        }
+
+        // 6. Run the main event processing loop
         raft.run().await?;
 
         Ok(())

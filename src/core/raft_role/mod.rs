@@ -180,6 +180,14 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().reset_timer()
     }
 
+    pub(crate) async fn join_cluster(
+        &self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state().join_cluster(peer_channels, ctx).await
+    }
+
     pub(crate) fn next_deadline(&self) -> Instant {
         self.state().next_deadline()
     }

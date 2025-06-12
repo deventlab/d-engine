@@ -46,6 +46,14 @@ pub struct RetryPolicies {
     #[serde(default)]
     pub membership: BackoffPolicy,
 
+    /// Retry policy for leader auto discovery request
+    #[serde(default)]
+    pub auto_discovery: BackoffPolicy,
+
+    /// Retry policy for join cluster request
+    #[serde(default)]
+    pub join_cluster: BackoffPolicy,
+
     /// Retry policy for install snapshot requests
     #[serde(default)]
     pub install_snapshot: BackoffPolicy,
@@ -101,6 +109,20 @@ impl Default for RetryPolicies {
                 timeout_ms: 100,
                 base_delay_ms: 1000,
                 max_delay_ms: 10000,
+            },
+
+            auto_discovery: BackoffPolicy {
+                max_retries: 3,
+                timeout_ms: 100,
+                base_delay_ms: 50,
+                max_delay_ms: 1000,
+            },
+
+            join_cluster: BackoffPolicy {
+                max_retries: 3,
+                timeout_ms: 500,
+                base_delay_ms: 3000,
+                max_delay_ms: 60000,
             },
 
             // Recommended configuration examples for different network scenarios:
@@ -188,8 +210,11 @@ impl RetryPolicies {
         self.validate_election()?;
         self.validate_membership()?;
         self.validate_healthcheck()?;
-        self.validate_purge_log()?;
+        self.validate_auto_discovery()?;
+        self.validate_join_cluster()?;
         self.validate_install_snapshot()?;
+        self.validate_purge_log()?;
+        self.validate_internal_quorum()?;
         Ok(())
     }
 
@@ -225,6 +250,24 @@ impl RetryPolicies {
 
     fn validate_install_snapshot(&self) -> Result<()> {
         self.install_snapshot.validate("install_snapshot")?;
+
+        Ok(())
+    }
+
+    fn validate_join_cluster(&self) -> Result<()> {
+        self.join_cluster.validate("join_cluster")?;
+
+        Ok(())
+    }
+
+    fn validate_auto_discovery(&self) -> Result<()> {
+        self.auto_discovery.validate("auto_discovery")?;
+
+        Ok(())
+    }
+
+    fn validate_internal_quorum(&self) -> Result<()> {
+        self.internal_quorum.validate("internal_quorum")?;
 
         Ok(())
     }

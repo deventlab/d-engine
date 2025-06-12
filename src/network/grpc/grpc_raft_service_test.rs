@@ -199,7 +199,7 @@ async fn test_handle_rpc_services_successfully() {
             version: 1,
             nodes: vec![],
         });
-    membership.expect_current_leader().returning(|| None);
+    membership.expect_current_leader_id().returning(|| None);
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_append_entries()

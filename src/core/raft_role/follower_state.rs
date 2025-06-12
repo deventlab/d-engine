@@ -267,7 +267,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version();
 
-                let current_leader_id = ctx.membership().current_leader();
+                let current_leader_id = ctx.membership().current_leader_id();
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Follower receive ClusterConfUpdate"
@@ -365,7 +365,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
-                let leader_id = ctx.membership().current_leader();
+                let leader_id = ctx.membership().current_leader_id();
 
                 // ----------------------
                 // Phase 1: Validate Leader purge log request
@@ -460,6 +460,26 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     current_role: "Follower",
                     required_role: "Leader",
                     context: format!("Follower node {} receives RaftEvent::JoinCluster", ctx.node_id),
+                }
+                .into());
+            }
+
+            RaftEvent::DiscoverLeader(request, sender) => {
+                debug!(?request, "Follower::RaftEvent::DiscoverLeader");
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Follower should not response DiscoverLeader event.",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!("Follower node {} should not response DiscoverLeader event", ctx.node_id),
                 }
                 .into());
             }

@@ -237,6 +237,52 @@ pub trait Transport: Send + Sync + 'static {
         data_stream: futures::stream::BoxStream<'static, Result<SnapshotChunk>>,
         retry: &BackoffPolicy,
     ) -> Result<()>;
+
+    /// Initiates cluster join process for a learner node
+    ///
+    /// # Protocol
+    /// - Implements cluster join protocol from Raft §6
+    /// - Learner-exclusive operation
+    /// - Requires leader connection
+    ///
+    /// # Parameters
+    /// - `leader_channel`: Pre-established gRPC channel to cluster leader
+    /// - [request](http://_vscodecontentref_/2): Join request with node metadata
+    /// - [retry](http://_vscodecontentref_/3): Join-specific retry configuration
+    ///
+    /// # Errors
+    /// - [NetworkError::JoinFailed](http://_vscodecontentref_/4): On unrecoverable join failure
+    /// - [NetworkError::NotLeader](http://_vscodecontentref_/5): If contacted node isn't leader
+    ///
+    /// # Guarantees
+    /// - At-least-once delivery
+    /// - Automatic leader discovery
+    /// - Idempotent operation
+    async fn join_cluster(
+        &self,
+        leader_channel: Channel,
+        request: crate::proto::cluster::JoinRequest,
+        retry: BackoffPolicy,
+    ) -> Result<crate::proto::cluster::JoinResponse>;
+
+    /// Discovers current cluster leader
+    ///
+    /// # Protocol
+    /// - Broadcast-based leader discovery
+    /// - Handles redirection to current leader
+    ///
+    /// # Parameters
+    /// - `bootstrap_endpoints`: Initial cluster endpoints
+    /// - `request`: Discovery request with node metadata
+    ///
+    /// # Errors
+    /// - `NetworkError::DiscoveryTimeout`: When no response received
+    async fn discover_leader(
+        &self,
+        voting_members: dashmap::DashMap<u32, ChannelWithAddress>,
+        request: crate::proto::cluster::LeaderDiscoveryRequest,
+        rpc_enable_compression: bool,
+    ) -> Result<Vec<crate::proto::cluster::LeaderDiscoveryResponse>>;
 }
 
 // Module level utils

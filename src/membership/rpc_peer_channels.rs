@@ -11,14 +11,27 @@
 //! `raft_membership` can operate. This layer abstracts network implementation
 //! details from the consensus algorithm.
 
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
-
+use super::ChannelWithAddress;
+use super::PeerChannels;
+use super::PeerChannelsFactory;
+use crate::async_task::task_with_timeout_and_exponential_backoff;
+use crate::membership::health_checker::HealthChecker;
+use crate::membership::health_checker::HealthCheckerApis;
+use crate::proto::cluster::NodeMeta;
+use crate::utils::net::address_str;
+use crate::MembershipError;
+use crate::NetworkConfig;
+use crate::NetworkError;
+use crate::RaftNodeConfig;
+use crate::Result;
+use crate::RetryPolicies;
 use dashmap::DashMap;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::task;
 use tonic::async_trait;
 use tonic::transport::Channel;
@@ -27,22 +40,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-use super::ChannelWithAddress;
-use super::PeerChannels;
-use super::PeerChannelsFactory;
-use crate::async_task::task_with_timeout_and_exponential_backoff;
-use crate::membership::health_checker::HealthChecker;
-use crate::membership::health_checker::HealthCheckerApis;
-use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
-use crate::utils::net::address_str;
-use crate::MembershipError;
-use crate::NetworkConfig;
-use crate::NetworkError;
-use crate::RaftNodeConfig;
-use crate::Result;
-use crate::RetryPolicies;
 
 #[derive(Clone)]
 pub struct RpcPeerChannels {

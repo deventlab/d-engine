@@ -104,6 +104,8 @@ pub(crate) fn mock_raft_context(
         node_config.cluster.initial_cluster = peers_meta;
     }
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;
+    // Reduce timeout for test
+    node_config.retry.auto_discovery.timeout_ms = 10;
 
     MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)

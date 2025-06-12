@@ -158,6 +158,9 @@ pub enum NetworkError {
 
     #[error("Install snapshot RPC request failed")]
     SnapshotTransferFailed,
+
+    #[error("New node join cluster failed: {0}")]
+    JoinFailed(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -385,6 +388,10 @@ pub enum MembershipError {
     #[error("Membership changes require leader role")]
     NotLeader,
 
+    /// Non-learner node attempted join cluster
+    #[error("Only Learner can join cluster")]
+    NotLearner,
+
     /// Cluster not in operational state
     #[error("Cluster bootstrap not completed")]
     ClusterIsNotReady,
@@ -417,6 +424,9 @@ pub enum MembershipError {
 
     #[error("Commit Timeout")]
     CommitTimeout,
+
+    #[error("Learner({0}) join cluster failed.")]
+    JoinClusterFailed(u32),
 }
 
 // ============== Conversion Implementations ============== //

@@ -21,7 +21,6 @@ use crate::PeerChannelsFactory;
 use crate::RpcPeerChannels;
 use crate::SystemError;
 use crate::FOLLOWER;
-use crate::LEARNER;
 
 // Test helper for creating mock peer configurations
 async fn mock_peer(

@@ -1,17 +1,4 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep_until;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 use super::follower_state::FollowerState;
-#[cfg(test)]
-use super::raft_event_to_test_event;
 use super::NewCommitData;
 use super::RaftContext;
 use super::RaftCoreHandlers;
@@ -22,6 +9,7 @@ use super::RoleEvent;
 use crate::alias::MOF;
 use crate::alias::POF;
 use crate::alias::TROF;
+use crate::learner_state::LearnerState;
 use crate::proto::common::EntryPayload;
 use crate::Membership;
 use crate::MembershipError;
@@ -32,6 +20,18 @@ use crate::Result;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
+#[cfg(test)]
+use super::raft_event_to_test_event;
 
 pub struct Raft<T>
 where
@@ -93,13 +93,17 @@ where
 
         let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
 
-        // let ctx = Box::new(ctx);
-        let role = RaftRole::Follower(Box::new(FollowerState::new(
-            node_id,
-            node_config.clone(),
-            ctx.storage.state_storage.load_hard_state(),
-            last_applied_index,
-        )));
+        let role = if node_config.is_joining() {
+            RaftRole::Learner(Box::new(LearnerState::new(node_id, node_config.clone())))
+        } else {
+            RaftRole::Follower(Box::new(FollowerState::new(
+                node_id,
+                node_config.clone(),
+                ctx.storage.state_storage.load_hard_state(),
+                last_applied_index,
+            )))
+        };
+
         Raft {
             node_id,
             ctx,
@@ -144,12 +148,19 @@ where
         }
     }
 
-    pub fn join_cluster(
+    pub fn init_peer_channels(
         &mut self,
-        peer_chanels: Arc<POF<T>>,
+        peer_channels: Arc<POF<T>>,
     ) -> Result<()> {
-        self.peer_channels = Some(peer_chanels);
+        self.peer_channels = Some(peer_channels);
         Ok(())
+    }
+
+    pub async fn join_cluster(
+        &self,
+        peer_channels: Arc<POF<T>>,
+    ) -> Result<()> {
+        self.role.join_cluster(peer_channels, &self.ctx).await
     }
 
     pub async fn run(&mut self) -> Result<()> {

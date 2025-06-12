@@ -27,6 +27,8 @@ use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::election::raft_election_service_server::RaftElectionService;
 use crate::proto::election::VoteRequest;
@@ -240,6 +242,28 @@ where
 
         let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "join_cluster").await
+    }
+
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
+    #[tracing::instrument]
+    async fn discover_leader(
+        &self,
+        request: tonic::Request<LeaderDiscoveryRequest>,
+    ) -> std::result::Result<tonic::Response<LeaderDiscoveryResponse>, tonic::Status> {
+        debug!("receive discover_leader");
+        if !self.server_is_ready() {
+            warn!("[rpc|discover_leader] Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        self.event_tx
+            .send(RaftEvent::DiscoverLeader(request.into_inner(), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        handle_rpc_timeout(resp_rx, timeout_duration, "discover_leader").await
     }
 }
 #[tonic::async_trait]

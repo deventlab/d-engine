@@ -373,7 +373,7 @@ async fn test_handle_raft_event_case3_1() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -426,7 +426,7 @@ async fn test_handle_raft_event_case3_2() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| Some(2)); // Actual leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Actual leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -479,7 +479,7 @@ async fn test_handle_raft_event_case3_3() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 5); // Current version is 5
-    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -533,7 +533,7 @@ async fn test_handle_raft_event_case3_4() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -584,7 +584,7 @@ async fn test_handle_raft_event_case3_5() {
             )))
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -637,7 +637,7 @@ async fn test_handle_raft_event_case3_6() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| None); // No known leader
+    membership.expect_current_leader_id().returning(|| None); // No known leader
     context.membership = Arc::new(membership);
 
     let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -1033,7 +1033,7 @@ async fn test_handle_raft_event_case8_1() {
 
     // Mock membership with no current leader
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().returning(|| None);
+    membership.expect_current_leader_id().returning(|| None);
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1091,7 +1091,7 @@ async fn test_handle_raft_event_case8_2() {
 
     // Mock membership with current leader
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().returning(|| Some(2));
+    membership.expect_current_leader_id().returning(|| Some(2));
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1154,7 +1154,7 @@ async fn test_handle_raft_event_case8_3() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().return_const(1);
+    membership.expect_current_leader_id().return_const(1);
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1216,7 +1216,7 @@ async fn test_handle_raft_event_case8_4() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().return_const(1);
+    membership.expect_current_leader_id().return_const(1);
     context.membership = Arc::new(membership);
 
     // Prepare follower state with higher term
@@ -1271,7 +1271,7 @@ async fn test_handle_raft_event_case8_5() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().return_const(1);
+    membership.expect_current_leader_id().return_const(1);
     context.membership = Arc::new(membership);
 
     // Prepare follower state where commit index < purge index
@@ -1328,7 +1328,7 @@ async fn test_handle_raft_event_case8_6() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().return_const(1);
+    membership.expect_current_leader_id().return_const(1);
     context.membership = Arc::new(membership);
 
     // Prepare follower state where last_purged_index > requested purge index
@@ -1393,7 +1393,7 @@ async fn test_handle_raft_event_case8_7() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_current_leader().return_const(1);
+    membership.expect_current_leader_id().return_const(1);
     context.membership = Arc::new(membership);
 
     // Prepare follower state

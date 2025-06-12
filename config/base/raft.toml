@@ -40,3 +40,6 @@ cleanup_retain_count = 2
 
 [raft.membership]
 cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"
+
+[raft.auto_join]
+rpc_enable_compression = true

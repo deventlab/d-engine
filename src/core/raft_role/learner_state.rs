@@ -1,15 +1,17 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::async_trait;
+use tonic::transport::Channel;
 use tonic::Status;
-use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+use tracing::{debug, trace};
 
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
@@ -20,21 +22,21 @@ use super::StateSnapshot;
 use super::LEARNER;
 use crate::alias::POF;
 use crate::proto::client::ClientResponse;
-use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::{ClusterConfUpdateResponse, JoinRequest, LeaderDiscoveryRequest, LeaderDiscoveryResponse};
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
 use crate::NetworkError;
 use crate::RaftContext;
-use crate::RaftEvent;
 use crate::RaftLog;
-use crate::RaftNodeConfig;
-use crate::Result;
 use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::{ConsensusError, Membership};
+use crate::{MembershipError, Result};
+use crate::{PeerChannels, RaftEvent};
+use crate::{RaftNodeConfig, Transport};
 
 /// Learner node's state in Raft cluster.
 ///
@@ -214,7 +216,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version();
 
-                let current_leader_id = ctx.membership().current_leader();
+                let current_leader_id = ctx.membership().current_leader_id();
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Learner receive ClusterConfUpdate"
@@ -271,6 +273,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
             }
+
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
                 sender
                     .send(Err(Status::permission_denied(
@@ -330,8 +333,70 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
                 .into());
             }
+
+            RaftEvent::DiscoverLeader(request, sender) => {
+                debug!(?request, "Learner::RaftEvent::DiscoverLeader");
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Learner should not response DiscoverLeader event.",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!("Learner node {} should not response DiscoverLeader event", ctx.node_id),
+                }
+                .into());
+            }
         }
         return Ok(());
+    }
+
+    async fn join_cluster(
+        &self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        // 1. Check if there is a Leader address (as specified in the configuration)
+        let leader_channel: Channel = match ctx.membership().current_leader_id() {
+            None => {
+                // 2. Trigger broadcast discovery
+                self.broadcast_discovery(peer_channels.clone(), ctx).await?
+            }
+            Some(leader_id) => match peer_channels.get_peer_channel(leader_id) {
+                Some(channel_with_address) => channel_with_address.channel,
+                None => {
+                    warn!(%leader_id, "peer_channels.get_peer_channel(leader_id) found none");
+                    return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
+                }
+            },
+        };
+
+        // 3. Continue the original Join process
+        let node_config = ctx.node_config();
+        let response = ctx
+            .transport()
+            .join_cluster(
+                leader_channel,
+                JoinRequest {
+                    node_id: node_config.cluster.node_id,
+                    address: node_config.cluster.listen_address.to_string(),
+                },
+                node_config.retry.join_cluster,
+            )
+            .await?;
+
+        debug!(?response, "transport::join_cluster");
+        if !response.success {
+            return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
+        }
+
+        Ok(())
     }
 }
 
@@ -356,9 +421,102 @@ impl<T: TypeConfig> LearnerState<T> {
             shared_state: SharedState::new(node_id, None, None),
             node_config,
             _marker: PhantomData,
-            // last_purged_index: None, //TODO
-            // scheduled_purge_upto: None,
         }
+    }
+
+    pub(crate) async fn broadcast_discovery(
+        &self,
+        peer_channels: Arc<POF<T>>,
+        ctx: &RaftContext<T>,
+    ) -> Result<Channel> {
+        let retry_policy = ctx.node_config.retry.auto_discovery;
+        let mut retry_count = 0;
+        let mut current_delay = Duration::from_millis(retry_policy.base_delay_ms);
+
+        let voting_members = peer_channels.voting_members();
+        let request = LeaderDiscoveryRequest {
+            node_id: ctx.node_id,
+            requester_address: ctx.node_config.cluster.listen_address.to_string(),
+        };
+
+        let rpc_enable_compression = ctx.node_config.raft.auto_join.rpc_enable_compression;
+        loop {
+            // Execute discovery attempt with timeout
+            let discovery_result = tokio::time::timeout(
+                Duration::from_millis(retry_policy.timeout_ms),
+                ctx.transport
+                    .discover_leader(voting_members.clone(), request.clone(), rpc_enable_compression),
+            )
+            .await;
+
+            trace!(?discovery_result);
+
+            match discovery_result {
+                Ok(responses) => {
+                    if let Some((leader_id, leader_channel)) =
+                        self.select_valid_leader(responses?, peer_channels.clone()).await
+                    {
+                        debug!(%leader_id, "find valid leader");
+                        return Ok(leader_channel);
+                    }
+                }
+                Err(_) => {
+                    warn!("Discovery request timed out after {}ms", retry_policy.timeout_ms);
+                }
+            }
+
+            // Check retry limits
+            retry_count += 1;
+            if retry_policy.max_retries > 0 && retry_count >= retry_policy.max_retries {
+                error!("Discovery failed after {} retries", retry_count);
+                return Err(NetworkError::RetryTimeoutError(Duration::from_millis(retry_policy.timeout_ms)).into());
+            }
+
+            // Calculate next backoff delay
+            current_delay = Duration::from_millis(
+                (current_delay.as_millis() as u64)
+                    .saturating_mul(2) // Exponential backoff
+                    .min(retry_policy.max_delay_ms), // Cap at maximum delay
+            );
+
+            debug!(
+                "Retrying discovery in {}ms (attempt {}/{})",
+                current_delay.as_millis(),
+                retry_count,
+                retry_policy.max_retries
+            );
+
+            tokio::time::sleep(current_delay).await;
+        }
+    }
+
+    /// @return Option<(leader_id, Channel)>
+    pub(super) async fn select_valid_leader(
+        &self,
+        responses: Vec<LeaderDiscoveryResponse>,
+        peer_channels: Arc<POF<T>>,
+    ) -> Option<(u32, Channel)> {
+        // Filter invalid responses
+        let mut valid_responses: Vec<_> = responses
+            .into_iter()
+            .filter(|r| r.leader_id != 0 && r.term > 0)
+            .collect();
+
+        if valid_responses.is_empty() {
+            return None;
+        }
+
+        // Sort by term in descending order, node_id in descending order
+        valid_responses.sort_by(|a, b| b.term.cmp(&a.term).then_with(|| b.leader_id.cmp(&a.leader_id)));
+
+        trace!(?valid_responses);
+
+        // Select the response with the highest term
+        valid_responses.first().and_then(|resp| {
+            peer_channels
+                .get_peer_channel(resp.leader_id)
+                .map(|c| (resp.leader_id, c.channel))
+        })
     }
 }
 impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {

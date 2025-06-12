@@ -287,7 +287,7 @@ async fn test_handle_raft_event_case3() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader().returning(|| Some(2)); // Leader is 2
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
