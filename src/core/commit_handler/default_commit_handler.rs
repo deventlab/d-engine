@@ -1,15 +1,3 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 use super::CommitHandler;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
@@ -19,6 +7,16 @@ use crate::RaftEvent;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>

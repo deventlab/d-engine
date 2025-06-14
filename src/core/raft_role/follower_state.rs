@@ -474,12 +474,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
 
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!("Follower node {} should not response DiscoverLeader event", ctx.node_id),
-                }
-                .into());
+                return Ok(());
             }
         }
 
@@ -543,7 +538,7 @@ impl<T: TypeConfig> FollowerState<T> {
     /// - At least one committed entry remains after purge
     /// - Critical for follower's log matching property during reelections
     /// - Prevents "phantom entries" when combined with §5.4.2 election restriction
-    #[instrument]
+    #[instrument(skip(self))]
     pub(super) fn can_purge_logs(
         &self,
         last_purge_index: Option<LogId>,

@@ -480,15 +480,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
 
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} should not response DiscoverLeader event",
-                        ctx.node_id
-                    ),
-                }
-                .into());
+                return Ok(());
             }
         }
         return Ok(());

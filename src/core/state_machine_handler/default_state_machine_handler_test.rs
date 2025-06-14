@@ -505,6 +505,7 @@ async fn test_create_snapshot_case1() {
         .times(1)
         .in_sequence(&mut seq)
         .returning(|| LogId { index: 5, term: 1 });
+    sm.expect_entry_term().returning(|_| Some(1));
     sm.expect_generate_snapshot_data()
         .times(1)
         .withf(|path, last_included| {
@@ -519,14 +520,11 @@ async fn test_create_snapshot_case1() {
         })
         .returning(|_, _| Ok([0; 32]));
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        0,
-        1,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
+    let mut config = snapshot_config(temp_dir.path().to_path_buf());
+    config.retained_log_entries = 0;
+
+    let handler =
+        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
 
     // Execute snapshot creation
     let result = handler.create_snapshot().await;
@@ -555,6 +553,7 @@ async fn test_create_snapshot_case2() {
     // Setup slow snapshot generation
     let (tx, mut rx) = tokio::sync::oneshot::channel();
     sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
+    sm.expect_entry_term().returning(|_| Some(1));
     sm.expect_generate_snapshot_data().times(2).returning(move |path, _| {
         std::thread::sleep(Duration::from_millis(50));
         // Wait forever
@@ -573,12 +572,15 @@ async fn test_create_snapshot_case2() {
         Ok([0; 32])
     });
 
+    let mut config = snapshot_config(temp_dir.path().to_path_buf());
+    config.retained_log_entries = 0;
+
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         0,
         1,
         Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
+        config,
         MockSnapshotPolicy::new(),
     ));
     tx.send(()).unwrap(); // Unblock the first task
@@ -617,6 +619,7 @@ async fn test_create_snapshot_case3() {
         count += 1;
         LogId { term: 1, index: count }
     });
+    sm.expect_entry_term().returning(|_| Some(1));
     sm.expect_generate_snapshot_data().returning(|path, _| {
         debug!(?path, "expect_generate_snapshot_data");
         let _new_db = init_sled_state_machine_db(path).expect("");
@@ -624,12 +627,16 @@ async fn test_create_snapshot_case3() {
         Ok([0; 32])
     });
     let snapshot_dir = temp_dir.as_ref().to_path_buf();
+
+    let mut config = snapshot_config(snapshot_dir.clone());
+    config.retained_log_entries = 0;
+
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         3, // Current version
         1,
         Arc::new(sm),
-        snapshot_config(snapshot_dir.clone()),
+        config,
         MockSnapshotPolicy::new(),
     );
 
@@ -653,17 +660,15 @@ async fn test_create_snapshot_case4() {
 
     // Setup failing snapshot generation
     sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
+    sm.expect_entry_term().returning(|_| Some(1));
     sm.expect_generate_snapshot_data()
         .returning(|_, _| Err(StorageError::Snapshot("test failure".into()).into()));
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        0,
-        1,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
+    let mut config = snapshot_config(temp_dir.path().to_path_buf());
+    config.retained_log_entries = 0;
+
+    let handler =
+        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
 
     // Attempt snapshot creation
     let result = handler.create_snapshot().await;
@@ -1087,7 +1092,8 @@ fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         snapshot_cool_down_since_last_check: Duration::from_secs(0),
         cleanup_retain_count: 2,
         snapshots_dir,
-        chunk_size: 1024, //1KB
+        chunk_size: 1024,
+        retained_log_entries: 1,
     }
 }
 

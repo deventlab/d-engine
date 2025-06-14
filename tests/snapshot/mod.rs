@@ -1,1 +1,1 @@
-mod snapshot_case1;
+mod generate_snapshot_case1;

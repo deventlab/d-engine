@@ -140,9 +140,9 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     fn reset_timer(&mut self) {
         warn!("Learner should not be asked to reset timer");
     }
+
     fn next_deadline(&self) -> Instant {
-        warn!("Learner should not be asked for next_deadline");
-        Instant::now()
+        Instant::now() + Duration::from_secs(24 * 60 * 60) //1 day
     }
 
     // fn tick_interval(&self) -> Duration {
@@ -156,8 +156,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         _peer_channels: Arc<POF<T>>,
         _ctx: &RaftContext<T>,
     ) -> Result<()> {
-        warn!("Learner should not has timer tick");
-
         Ok(())
     }
 
@@ -346,12 +344,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         NetworkError::SingalSendFailed(error_str)
                     })?;
 
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!("Learner node {} should not response DiscoverLeader event", ctx.node_id),
-                }
-                .into());
+                return Ok(());
             }
         }
         return Ok(());
@@ -449,7 +442,7 @@ impl<T: TypeConfig> LearnerState<T> {
             )
             .await;
 
-            trace!(?discovery_result);
+            debug!(?discovery_result);
 
             match discovery_result {
                 Ok(responses) => {

@@ -1,24 +1,5 @@
 //! It works as KV storage for client business CRUDs.
 
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Instant;
-
-use arc_swap::ArcSwap;
-use autometrics::autometrics;
-use parking_lot::Mutex;
-use prost::Message;
-use sled::Batch;
-use tokio::sync::RwLock;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
 use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_TERM;
@@ -43,6 +24,24 @@ use crate::StateMachineIter;
 use crate::StorageError;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
+use arc_swap::ArcSwap;
+use autometrics::autometrics;
+use parking_lot::Mutex;
+use prost::Message;
+use sled::Batch;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::RwLock;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
 
 pub struct RaftStateMachine {
     node_id: u32,
@@ -112,7 +111,7 @@ impl StateMachine for RaftStateMachine {
         &self,
         last_applied: LogId,
     ) {
-        debug!(?last_applied, "update_last_applied");
+        debug!(%self.node_id, ?last_applied, "update_last_applied");
         self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
         self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
     }
@@ -121,7 +120,7 @@ impl StateMachine for RaftStateMachine {
         &self,
         snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
-        debug!(?snapshot_metadata, "update_last_snapshot_metadata");
+        debug!(%self.node_id, ?snapshot_metadata, "update_last_snapshot_metadata");
         let last_included = snapshot_metadata.last_included.unwrap();
         self.last_included_index.store(last_included.index, Ordering::SeqCst);
         self.last_included_term.store(last_included.term, Ordering::SeqCst);
@@ -162,6 +161,20 @@ impl StateMachine for RaftStateMachine {
             Err(e) => {
                 error!("state_machine get error: {}", e);
                 Err(StorageError::DbError(e.to_string()).into())
+            }
+        }
+    }
+
+    fn entry_term(
+        &self,
+        entry_id: u64,
+    ) -> Option<u64> {
+        match self.get(&safe_kv(entry_id)) {
+            Ok(Some(term_bytes)) => safe_vk(&term_bytes).ok(),
+            Ok(None) => None,
+            Err(e) => {
+                error!("Failed to retrieve term for entry {}: {}", entry_id, e);
+                None
             }
         }
     }
@@ -261,6 +274,7 @@ impl StateMachine for RaftStateMachine {
         &self,
         last_applied: LogId,
     ) -> Result<()> {
+        debug!(%self.node_id, ?last_applied, "persist_last_applied");
         let db = self.db.load();
         let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
         tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX, &safe_kv(last_applied.index))?;
@@ -274,6 +288,7 @@ impl StateMachine for RaftStateMachine {
         &self,
         last_snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
+        debug!(%self.node_id, ?last_snapshot_metadata, "persist_last_snapshot_metadata");
         let db = self.db.load();
         let tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
         self.persist_last_snapshot_metadata_with_tree(tree, last_snapshot_metadata)?;
@@ -296,6 +311,7 @@ impl StateMachine for RaftStateMachine {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
@@ -350,7 +366,7 @@ impl StateMachine for RaftStateMachine {
             checksum: checksum.to_vec(),
         };
 
-        self.update_last_snapshot_metadata(&last_snapshot_metadata);
+        self.update_last_snapshot_metadata(&last_snapshot_metadata)?;
 
         // Make sure last included is persisted into local database
         self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
@@ -380,7 +396,7 @@ impl StateMachine for RaftStateMachine {
 
             // 4. Update the last applied and last included index and term
             self.update_last_applied(last_included);
-            self.update_last_snapshot_metadata(&metadata);
+            self.update_last_snapshot_metadata(&metadata)?;
         } else {
             error!(
                 ?metadata,
@@ -435,7 +451,7 @@ impl RaftStateMachine {
 
         // Update last snapshot metadata
         if let Some(last_snapshot_metadata) = Self::load_snapshot_metadata(&snapshot_meta_tree)? {
-            sm.update_last_snapshot_metadata(&last_snapshot_metadata);
+            sm.update_last_snapshot_metadata(&last_snapshot_metadata)?;
         } else {
             info!("No snapshot metadata found in DB");
         }

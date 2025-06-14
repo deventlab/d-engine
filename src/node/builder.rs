@@ -91,10 +91,10 @@ pub struct NodeBuilder {
     node_id: u32,
 
     pub(super) node_config: RaftNodeConfig,
-    pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
+    pub(super) raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    pub(super) state_storage: Option<SSOF<RaftTypeConfig>>,
+    pub(super) state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
     pub(super) transport: Option<TROF<RaftTypeConfig>>,
     pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
     pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
@@ -174,7 +174,7 @@ impl NodeBuilder {
     /// Sets a custom Raft log storage implementation
     pub fn raft_log(
         mut self,
-        raft_log: ROF<RaftTypeConfig>,
+        raft_log: Arc<ROF<RaftTypeConfig>>,
     ) -> Self {
         self.raft_log = Some(raft_log);
         self
@@ -192,7 +192,7 @@ impl NodeBuilder {
     /// Sets a custom state storage implementation
     pub fn state_storage(
         mut self,
-        state_storage: SSOF<RaftTypeConfig>,
+        state_storage: Arc<SSOF<RaftTypeConfig>>,
     ) -> Self {
         self.state_storage = Some(state_storage);
         self
@@ -266,13 +266,13 @@ impl NodeBuilder {
 
         let raft_log = self.raft_log.take().unwrap_or_else(|| {
             let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
-            SledRaftLog::new(Arc::new(raft_log_db), last_applied_index)
+            Arc::new(SledRaftLog::new(Arc::new(raft_log_db), last_applied_index))
         });
 
         let state_storage = self.state_storage.take().unwrap_or_else(|| {
             let state_storage_db =
                 init_sled_state_storage_db(&db_root_dir).expect("init_sled_state_storage_db successfully.");
-            SledStateStorage::new(Arc::new(state_storage_db))
+            Arc::new(SledStateStorage::new(Arc::new(state_storage_db)))
         });
 
         let transport = self.transport.take().unwrap_or(GrpcTransport { my_id: node_id });
@@ -298,7 +298,6 @@ impl NodeBuilder {
             .take()
             .unwrap_or_else(|| RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone()));
 
-        let raft_log = Arc::new(raft_log);
         let purge_executor = self
             .purge_executor
             .take()
@@ -315,7 +314,7 @@ impl NodeBuilder {
             RaftStorageHandles::<RaftTypeConfig> {
                 raft_log,
                 state_machine: state_machine.clone(),
-                state_storage: Box::new(state_storage),
+                state_storage,
             },
             transport,
             RaftCoreHandlers::<RaftTypeConfig> {

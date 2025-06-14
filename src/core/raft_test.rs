@@ -1093,7 +1093,7 @@ async fn test_raft_drop() {
     let mut state_storage = MockStateStorage::new();
 
     state_storage.expect_save_hard_state().times(1).returning(|_| Ok(()));
-    raft.ctx.storage.state_storage = Box::new(state_storage);
+    raft.ctx.storage.state_storage = Arc::new(state_storage);
 
     // 2. Start the Raft main loop
     let raft_handle = tokio::spawn(async move { raft.run().await });

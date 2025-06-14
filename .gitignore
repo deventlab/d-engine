@@ -26,3 +26,5 @@ tests/logs
 config/local.toml
 .vscode
 .vscode/settings.json
+
+snapshots

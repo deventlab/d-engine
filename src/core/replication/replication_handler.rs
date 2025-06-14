@@ -285,7 +285,7 @@ where
                 let legacy_entries = raft_log.get_entries_between(peer_next_id..=until_index);
 
                 if !legacy_entries.is_empty() {
-                    debug!("legacy_entries: {:?}", &legacy_entries);
+                    trace!("legacy_entries: {:?}", &legacy_entries);
                     entries.extend(legacy_entries);
                 }
             }
@@ -500,7 +500,6 @@ where
     }
 
     /// Build an append request for a single node
-    #[tracing::instrument]
     pub(super) fn build_append_request(
         &self,
         raft_log: &Arc<ROF<T>>,

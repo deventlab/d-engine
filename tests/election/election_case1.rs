@@ -15,6 +15,7 @@
 //!   fewer entries than Node A.
 //! - Nodes A and C recognize B as the leader.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine::ClientApiError;
@@ -42,13 +43,13 @@ async fn test_leader_election_based_on_log_term_and_index() -> std::result::Resu
     // 1. Start a 3-node cluster and artificially create inconsistent states
     println!("1. Start a 3-node cluster and artificially create inconsistent states");
 
-    let r1 = prepare_raft_log("./db/election/case1/cs/1", 0);
+    let r1 = Arc::new(prepare_raft_log("./db/election/case1/cs/1", 0));
     manipulate_log(&r1, (1..=10).collect(), 2);
-    let r2 = prepare_raft_log("./db/election/case1/cs/2", 0);
+    let r2 = Arc::new(prepare_raft_log("./db/election/case1/cs/2", 0));
     manipulate_log(&r2, (1..=8).collect(), 3);
-    let ss1 = prepare_state_storage("./db/election/case1/cs/1");
+    let ss1 = Arc::new(prepare_state_storage("./db/election/case1/cs/1"));
     init_state_storage(&ss1, 2, None);
-    let ss2 = prepare_state_storage("./db/election/case1/cs/2");
+    let ss2 = Arc::new(prepare_state_storage("./db/election/case1/cs/2"));
     init_state_storage(&ss2, 3, None);
 
     let (graceful_tx1, node_n1) = start_node("./tests/election/case1/n1", None, Some(r1), Some(ss1)).await?;

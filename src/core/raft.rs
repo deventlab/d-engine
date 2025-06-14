@@ -201,21 +201,22 @@ where
 
                 // P2: Role events
                 Some(role_event) = self.role_rx.recv() => {
-                    debug!("receive role event: {:?}", role_event);
+                    debug!(%self.node_id, ?role_event, "receive role event");
+
                     if let Err(e) = self.handle_role_event(role_event).await {
-                        error!("handle_role_event: {:?}", e);
+                        error!(%self.node_id, ?e, "handle_role_event error");
                     }
                 }
 
                 // P3: Other events
                 Some(raft_event) = self.event_rx.recv() => {
-                    debug!("receive raft event: {:?}", raft_event);
+                    debug!(%self.node_id, ?raft_event, "receive raft event");
 
                     #[cfg(test)]
                     let event = raft_event_to_test_event(&raft_event);
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, self.peer_channels()?, &self.ctx, self.role_tx.clone()).await {
-                        error!("handle_raft_event: {:?}", e);
+                        error!(%self.node_id, ?e, "handle_raft_event error");
                     }
 
                     #[cfg(test)]

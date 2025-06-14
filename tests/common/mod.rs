@@ -1,3 +1,4 @@
+use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use d_engine::storage::RaftLog;
 use d_engine::storage::RaftStateMachine;
 use d_engine::storage::SledRaftLog;
 use d_engine::storage::SledStateStorage;
+use d_engine::storage::StateMachine;
 use d_engine::storage::StateStorage;
 use d_engine::ClientApiError;
 use d_engine::HardState;
@@ -69,8 +71,8 @@ pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result
 pub async fn start_node(
     config_path: &str,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
+    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<
     (
         watch::Sender<()>,
@@ -95,8 +97,8 @@ async fn build_node(
     config_path: &str,
     graceful_rx: watch::Receiver<()>,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
+    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
     // Load configuration from the specified path
     let config = RaftNodeConfig::default();
@@ -132,6 +134,7 @@ async fn run_node(
     node_id: u32,
     node: Arc<Node<RaftTypeConfig>>,
 ) -> std::result::Result<(), ClientApiError> {
+    println!("Run node: {}", node_id);
     // Run the node until shutdown
     if let Err(e) = node.run().await {
         error!("Node error: {:?}", e);
@@ -184,7 +187,7 @@ pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
 }
 
 pub fn manipulate_log(
-    raft_log: &dyn RaftLog,
+    raft_log: &Arc<impl RaftLog>,
     log_ids: Vec<u64>,
     term: u64,
 ) {
@@ -199,8 +202,18 @@ pub fn manipulate_log(
     }
     assert!(raft_log.insert_batch(entries).is_ok());
 }
+
+pub fn manipulate_state_machine(
+    raft_log: &Arc<impl RaftLog>,
+    state_machine: &Arc<impl StateMachine>,
+    id_range: RangeInclusive<u64>,
+) {
+    let entries = raft_log.get_entries_between(id_range);
+    assert!(state_machine.apply_chunk(entries).is_ok());
+}
+
 pub fn init_state_storage(
-    state_storage: &dyn StateStorage,
+    state_storage: &Arc<impl StateStorage>,
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
@@ -232,16 +245,19 @@ pub async fn reset(case_name: &str) -> std::result::Result<(), ClientApiError> {
     // Define path
     let logs_dir = format!("{}/logs/{case_name}", root_path.display(),);
     let db_dir = format!("{}/db/{case_name}", root_path.display(),);
+    let snapshots_dir = format!("{}/snapshots/{case_name}", root_path.display(),);
+
+    debug!(?logs_dir, ?db_dir, ?snapshots_dir, "reset path");
 
     // Make sure the parent directory exists
     fs::create_dir_all(&logs_dir).await?;
     fs::create_dir_all(&db_dir).await?;
+    fs::create_dir_all(&snapshots_dir).await?;
 
     // Clean up the log directory (ignore errors that do not exist)
     let _ = remove_dir_all(Path::new(&logs_dir)).await;
-
-    // Clean up the database directory (ignore errors that do not exist)
     let _ = remove_dir_all(Path::new(&db_dir)).await;
+    let _ = remove_dir_all(Path::new(&snapshots_dir)).await;
 
     Ok(())
 }

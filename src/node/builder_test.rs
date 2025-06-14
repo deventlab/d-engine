@@ -47,7 +47,7 @@ fn test_set_raft_log_replaces_default() {
     let state_machine_db = Arc::new(state_machine_db);
     let state_storage_db = Arc::new(state_storage_db);
 
-    let sled_raft_log = SledRaftLog::new(raft_log_db, 0);
+    let sled_raft_log = Arc::new(SledRaftLog::new(raft_log_db, 0));
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];
     insert_raft_log(&sled_raft_log, expected_raft_log_ids.clone(), 1);
@@ -56,7 +56,7 @@ fn test_set_raft_log_replaces_default() {
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
 
-    let sled_state_storage = SledStateStorage::new(state_storage_db);
+    let sled_state_storage = Arc::new(SledStateStorage::new(state_storage_db));
     let expected_state_storage_ids = vec![1, 2, 3, 4, 5];
     insert_state_storage(&sled_state_storage, expected_state_storage_ids.clone());
 

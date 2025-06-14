@@ -32,6 +32,11 @@ pub trait StateMachine: Send + Sync + 'static {
     ) -> Result<Option<Vec<u8>>>;
     fn iter(&self) -> StateMachineIter;
 
+    fn entry_term(
+        &self,
+        entry_id: u64,
+    ) -> Option<u64>;
+
     /// Apply log entries in chunks
     fn apply_chunk(
         &self,

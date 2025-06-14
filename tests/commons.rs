@@ -69,8 +69,8 @@ pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> Result<()> {
 pub async fn start_node(
     config_path: &str,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
+    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> Result<(watch::Sender<()>, tokio::task::JoinHandle<Result<()>>)> {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
@@ -89,8 +89,8 @@ async fn build_node(
     config_path: &str,
     graceful_rx: watch::Receiver<()>,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
+    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> Result<Arc<Node<RaftTypeConfig>>> {
     // Load configuration from the specified path
     let config = RaftNodeConfig::default();

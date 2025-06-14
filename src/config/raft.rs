@@ -340,6 +340,10 @@ pub struct SnapshotConfig {
     /// Default: `default_chunk_size()` (typically 1MB)
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
+
+    /// Number of log entries to retain (0 = disable retention)
+    #[serde(default = "default_retained_log_entries")]
+    pub retained_log_entries: u64,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -349,6 +353,7 @@ impl Default for SnapshotConfig {
             cleanup_retain_count: default_cleanup_retain_count(),
             snapshots_dir: default_snapshots_dir(),
             chunk_size: default_chunk_size(),
+            retained_log_entries: default_retained_log_entries(),
         }
     }
 }
@@ -373,6 +378,13 @@ impl SnapshotConfig {
             return Err(Error::Config(ConfigError::Message(format!(
                 "chunk_size must be at least {} bytes (got {})",
                 0, self.chunk_size
+            ))));
+        }
+
+        if self.retained_log_entries < 1 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "retained_log_entries must be >= 1, (got {})",
+                self.retained_log_entries
             ))));
         }
 
@@ -420,4 +432,8 @@ impl Default for AutoJoinConfig {
 }
 fn default_rpc_enable_compression() -> bool {
     true
+}
+
+fn default_retained_log_entries() -> u64 {
+    1
 }

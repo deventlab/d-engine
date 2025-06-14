@@ -52,7 +52,7 @@ impl ClusterClient {
     ///
     /// # Returns
     /// - `JoinResponse` with cluster configuration if successful
-    #[instrument]
+    #[instrument(skip(self))]
     pub async fn join_cluster(
         &self,
         node: NodeMeta,

@@ -37,6 +37,10 @@ max_entries_per_chunk = 100
 [raft.snapshot]
 max_log_entries_before_snapshot = 1000
 cleanup_retain_count = 2
+snapshots_dir = "./snapshot/"
+
+# Number of log entries to retain (0 = disable retention)
+retained_log_entries = 1
 
 [raft.membership]
 cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"

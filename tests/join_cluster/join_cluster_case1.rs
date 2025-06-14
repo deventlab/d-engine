@@ -4,6 +4,7 @@
 
 use d_engine::client::ClientApiError;
 use std::time::Duration;
+use tokio::time::sleep;
 
 use crate::{
     common::{check_cluster_is_ready, reset, start_node, WAIT_FOR_NODE_READY_IN_SEC},
@@ -35,6 +36,16 @@ async fn test_join_cluster_scenario() -> Result<(), ClientApiError> {
 
     println!("Cluster started. Running tests...");
 
+    // Start a new node and try to join the cluster
+    println!("Start a new node and try to join the cluster...");
+    let (graceful_tx4, node_n4) = start_node("./tests/join_cluster/case1/n4", None, None, None).await?;
+
+    sleep(Duration::from_secs(10)).await;
+
+    // Wait nodes shutdown
+    graceful_tx4
+        .send(())
+        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
     graceful_tx3
         .send(())
         .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
@@ -47,5 +58,6 @@ async fn test_join_cluster_scenario() -> Result<(), ClientApiError> {
     node_n3.await??;
     node_n2.await??;
     node_n1.await??;
+    node_n4.await??;
     Ok(()) // Return Result type
 }

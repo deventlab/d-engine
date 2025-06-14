@@ -1495,7 +1495,7 @@ async fn test_handle_raft_event_case11() {
         .await;
 
     // Step 4: Verify the response
-    assert!(result.is_err(), "Expected handle_raft_event to return error");
+    assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
 
     // Step 5: Check the response sent through the channel
     let response = resp_rx.recv().await.expect("Response should be received");

@@ -1052,7 +1052,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Update peer node index
-    #[instrument]
+    #[instrument(skip(self))]
     fn update_peer_indexes(
         &mut self,
         peer_updates: &HashMap<u32, PeerUpdate>,
@@ -1068,7 +1068,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Calculate new submission index
-    #[instrument]
+    #[instrument(skip(self))]
     fn calculate_new_commit_index(
         &mut self,
         raft_log: &Arc<ROF<T>>,
@@ -1354,11 +1354,14 @@ impl<T: TypeConfig> LeaderState<T> {
         last_purge_index: Option<LogId>,
         last_included_in_snapshot: LogId,
     ) -> bool {
+        let commit_index = self.commit_index();
+        debug!(?self
+                .peer_purge_progress, ?commit_index, ?last_purge_index, ?last_included_in_snapshot, "can_purge_logs");
         let monotonic_check = last_purge_index
             .map(|lid| lid.index < last_included_in_snapshot.index)
             .unwrap_or(true);
 
-        last_included_in_snapshot.index < self.commit_index()
+        last_included_in_snapshot.index < commit_index
             && monotonic_check
             && self
                 .peer_purge_progress
@@ -1378,6 +1381,7 @@ impl<T: TypeConfig> LeaderState<T> {
         let address = join_request.address;
 
         // 1. Validate join request
+        debug!("1. Validate join request");
         if ctx.membership().contains_node(node_id) {
             let error_msg = format!("Node {} already exists in cluster", node_id);
             warn!(%error_msg);
@@ -1387,20 +1391,24 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         // 2. Add new peer to connection manager
+        debug!("2. Add new peer to connection manager");
         peer_channels.add_peer(node_id, address.clone()).await?;
 
         // 3. Add the node as Learner with Joining status
+        debug!("3. Add the node as Learner with Joining status");
         ctx.membership()
             .add_learner(node_id, address.clone(), NodeStatus::Active)
             .await?;
 
         // 4. Create configuration change payload
+        debug!("4. Create configuration change payload");
         let config_change = Change::AddNode(AddNode {
             node_id,
             address: address.clone(),
         });
 
         // 5. Wait for quorum confirmation
+        debug!("5. Wait for quorum confirmation");
         match self
             .verify_internal_quorum_with_retry(
                 vec![EntryPayload::config(config_change)],
@@ -1412,14 +1420,17 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
         {
             Ok(true) => {
-                // 4. Update node status to Active
+                // 6. Update node status to Active
+                debug!("6. Update node status to Active");
                 ctx.membership().update_node_status(node_id, NodeStatus::Active).await?;
 
-                // 5. Send successful response
+                // 7. Send successful response
+                debug!("7. Send successful response");
                 info!("Join config committed for node {}", node_id);
                 self.send_join_success(node_id, &address, sender, ctx).await?;
 
-                // 6. Trigger snapshot transmission (only when snapshot exists in Leader node)
+                // 8. Trigger snapshot transmission (only when snapshot exists in Leader node)
+                debug!("8. Trigger snapshot transmission (only when snapshot exists in Leader node)");
                 if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
                     self.trigger_snapshot_transfer(node_id, lastest_snapshot_metadata, ctx, peer_channels.clone())
                         .await?;

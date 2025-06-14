@@ -23,6 +23,7 @@ pub use builder::*;
 
 #[doc(hidden)]
 mod type_config;
+use tracing::info;
 #[doc(hidden)]
 pub use type_config::*;
 
@@ -132,6 +133,7 @@ where
 
         // 5. if join as a new node
         if self.node_config.is_joining() {
+            info!(%self.node_config.cluster.node_id, "Node is joining...");
             raft.join_cluster(peer_channels.clone()).await?;
         }
 

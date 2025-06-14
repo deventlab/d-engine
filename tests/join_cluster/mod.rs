@@ -1,1 +1,1 @@
-// mod join_cluster_case1;
+mod join_cluster_case1;

@@ -98,7 +98,7 @@ impl MockBuilder {
         ) = (
             Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            Box::new(self.state_storage.unwrap_or_else(mock_state_storage)),
+            Arc::new(self.state_storage.unwrap_or_else(mock_state_storage)),
             Arc::new(self.transport.unwrap_or_else(mock_transport)),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
@@ -183,7 +183,7 @@ impl MockBuilder {
             RaftStorageHandles::<MockTypeConfig> {
                 raft_log: Arc::new(raft_log),
                 state_machine,
-                state_storage: Box::new(state_storage),
+                state_storage: Arc::new(state_storage),
             },
             transport,
             RaftCoreHandlers::<MockTypeConfig> {

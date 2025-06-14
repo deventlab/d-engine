@@ -1,0 +1,30 @@
+[cluster]
+node_id = 1
+listen_address = "127.0.0.1:30501"
+initial_cluster = [
+    { id = 1, name = "n1", address = "127.0.0.1:30501", role = 1, status = 0 },
+    { id = 2, name = "n2", address = "127.0.0.1:30502", role = 1, status = 0 },
+    { id = 3, name = "n3", address = "127.0.0.1:30503", role = 1, status = 0 },
+]
+db_root_dir = "./db/snapshot/case1"
+log_dir = "./logs/snapshot/case1"
+
+[monitoring]
+prometheus_enabled = false
+
+[raft]
+general_raft_timeout_duration_in_ms = 10000
+
+[raft.replication]
+rpc_append_entries_in_batch_threshold = 1
+
+[raft.commit_handler]
+batch_size = 1
+process_interval_ms = 100
+
+[raft.snapshot]
+max_log_entries_before_snapshot = 1
+cleanup_retain_count = 2
+snapshots_dir = "./snapshots/snapshot/case1/1"
+# Number of log entries to retain (0 = disable retention)
+retained_log_entries = 1

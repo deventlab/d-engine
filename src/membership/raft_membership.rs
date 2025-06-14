@@ -175,7 +175,7 @@ where
         None
     }
 
-    #[instrument]
+    #[instrument(skip(self))]
     fn retrieve_cluster_membership_config(&self) -> ClusterMembership {
         let nodes: Vec<NodeMeta> = self.membership.iter().map(|entry| entry.clone()).collect();
         let version = self.cluster_conf_version.load(Ordering::Acquire);
@@ -325,7 +325,7 @@ where
 
     /// Update node status
     #[autometrics(objective = API_SLO)]
-    #[instrument]
+    #[instrument(skip(self))]
     async fn update_node_status(
         &self,
         node_id: u32,
@@ -394,7 +394,6 @@ where
     ) -> bool {
         self.membership.contains_key(&node_id)
     }
-
 
     fn retrieve_node_meta(
         &self,

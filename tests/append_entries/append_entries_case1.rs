@@ -15,12 +15,6 @@
 //! - last_commit_index is 10
 //! - Node A and B's log-3's term is 2
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use d_engine::storage::StateMachine;
-use d_engine::ClientApiError;
-
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::init_state_storage;
@@ -35,6 +29,10 @@ use crate::common::ITERATIONS;
 use crate::common::LATENCY_IN_MS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
+use d_engine::storage::StateMachine;
+use d_engine::ClientApiError;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[tracing::instrument]
 #[tokio::test]
@@ -49,17 +47,17 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     // 1. Prepare state machine for node 1 so that we could read out the last applied id in this test
     println!("1. Prepare state_machine & raft_log");
     let sm1 = Arc::new(prepare_state_machine(1, "./db/append_entries/case1/cs/1"));
-    let r1 = prepare_raft_log("./db/append_entries/case1/cs/1", 0);
+    let r1 = Arc::new(prepare_raft_log("./db/append_entries/case1/cs/1", 0));
     manipulate_log(&r1, vec![1, 2, 3], 1);
-    let r2 = prepare_raft_log("./db/append_entries/case1/cs/2", 0);
+    let r2 = Arc::new(prepare_raft_log("./db/append_entries/case1/cs/2", 0));
     manipulate_log(&r2, vec![1, 2, 3, 4], 1);
-    let r3 = prepare_raft_log("./db/append_entries/case1/cs/3", 0);
+    let r3 = Arc::new(prepare_raft_log("./db/append_entries/case1/cs/3", 0));
     manipulate_log(&r3, (1..=10).collect(), 2);
-    let ss1 = prepare_state_storage("./db/append_entries/case1/cs/1");
+    let ss1 = Arc::new(prepare_state_storage("./db/append_entries/case1/cs/1"));
     init_state_storage(&ss1, 1, None);
-    let ss2 = prepare_state_storage("./db/append_entries/case1/cs/2");
+    let ss2 = Arc::new(prepare_state_storage("./db/append_entries/case1/cs/2"));
     init_state_storage(&ss2, 1, None);
-    let ss3 = prepare_state_storage("./db/append_entries/case1/cs/3");
+    let ss3 = Arc::new(prepare_state_storage("./db/append_entries/case1/cs/3"));
     init_state_storage(&ss3, 2, None);
 
     // 2. Start a 3-node cluster and artificially create inconsistent states

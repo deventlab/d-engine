@@ -19,7 +19,7 @@ use crate::TypeConfig;
 pub(crate) struct RaftStorageHandles<T: TypeConfig> {
     pub(crate) raft_log: Arc<ROF<T>>,
     pub(crate) state_machine: Arc<SMOF<T>>,
-    pub(crate) state_storage: Box<SSOF<T>>,
+    pub(crate) state_storage: Arc<SSOF<T>>,
 }
 
 pub(crate) struct RaftCoreHandlers<T: TypeConfig> {

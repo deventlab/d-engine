@@ -297,7 +297,23 @@ where
 
         // 2: Prepare temp snapshot file and final snapshot file
         debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
-        let last_included = self.state_machine.last_applied();
+        let raw_last_included = self.state_machine.last_applied();
+
+        // Apply retention policy
+        let last_included = LogId {
+            index: raw_last_included
+                .index
+                .saturating_sub(self.snapshot_config.retained_log_entries),
+            term: self
+                .state_machine
+                .entry_term(
+                    raw_last_included
+                        .index
+                        .saturating_sub(self.snapshot_config.retained_log_entries),
+                )
+                .unwrap_or(raw_last_included.term),
+        };
+
         let temp_dir = self
             .snapshot_config
             .snapshots_dir
@@ -331,7 +347,7 @@ where
         move_directory(&temp_dir, &final_dir).await?;
 
         // 5: cleanup old versions
-        debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 6: cleanup old versions");
+        debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 5: cleanup old versions");
         if let Err(e) = self
             .cleanup_snapshot(
                 self.snapshot_config.cleanup_retain_count,
@@ -407,7 +423,7 @@ where
         Ok(())
     }
 
-    #[instrument]
+    #[instrument(skip(self))]
     async fn validate_purge_request(
         &self,
         current_term: u64,
