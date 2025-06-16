@@ -1,32 +1,69 @@
-use std::path::Path;
+use crate::proto::storage::SnapshotMetadata;
+use crate::Result;
+use crate::SnapshotError;
+use crate::SnapshotPathManager;
+use crate::StorageError;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-
+use std::sync::Arc;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::debug;
 
-use crate::constants::SNAPSHOT_DIR_PREFIX;
-use crate::file_io::move_directory;
-use crate::proto::storage::SnapshotMetadata;
-use crate::Result;
-use crate::StorageError;
-
 pub(crate) struct SnapshotAssembler {
     temp_file: File,
     pub(crate) temp_path: PathBuf,
+    path_mgr: Arc<SnapshotPathManager>,
+
     expected_index: u32,
     total_size: usize,
     received_chunks: AtomicU32,
-    snapshots_dir: PathBuf,
 }
 
 impl SnapshotAssembler {
-    pub(crate) async fn new(snapshots_dir: impl AsRef<Path>) -> Result<Self> {
-        let snapshots_dir = snapshots_dir.as_ref().to_path_buf();
+    pub(crate) async fn new(path_mgr: Arc<SnapshotPathManager>) -> Result<Self> {
+        let temp_file_path = path_mgr.temp_assembly_file();
 
-        let temp_file_path = snapshots_dir.join("snapshot.part");
+        // If `snapshot.part` already exists and is a directory, remove it (or report an error)
+        if temp_file_path.is_dir() {
+            // Generate a new path with a timestamp (e.g. `snapshot.part_20240614_083034`)
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| {
+                    StorageError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("SystemTime before UNIX EPOCH: {}", e),
+                    ))
+                })?
+                .as_nanos();
+
+            let backup_filename = format!("{}{}_{}", path_mgr.temp_prefix, "snapshot.part", timestamp);
+            let backup_path = path_mgr.base_dir.join(backup_filename);
+
+            // Rename directory (move)
+            tokio::fs::rename(&temp_file_path, &backup_path).await.map_err(|e| {
+                StorageError::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to rename directory {} to {}: {}",
+                        temp_file_path.display(),
+                        backup_path.display(),
+                        e
+                    ),
+                ))
+            })?;
+
+            // Optional: Log that the old directory has been moved
+            tracing::warn!(
+                "Moved existing directory {} to {}",
+                temp_file_path.display(),
+                backup_path.display()
+            );
+        }
+
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -40,7 +77,7 @@ impl SnapshotAssembler {
             expected_index: 0,
             total_size: 0,
             received_chunks: AtomicU32::new(0),
-            snapshots_dir,
+            path_mgr,
         })
     }
     pub(crate) async fn write_chunk(
@@ -50,7 +87,7 @@ impl SnapshotAssembler {
     ) -> Result<()> {
         // Check if the block index is continuous
         if index != self.expected_index {
-            return Err(StorageError::Snapshot(format!(
+            return Err(SnapshotError::OperationFailed(format!(
                 "Out-of-order chunk. Expected {}, got {}",
                 self.expected_index, index
             ))
@@ -93,7 +130,7 @@ impl SnapshotAssembler {
     ) -> Result<PathBuf> {
         // 0. Validate snapshot metadata
         if snapshot_metadata.last_included.is_none() {
-            return Err(StorageError::Snapshot(
+            return Err(SnapshotError::OperationFailed(
                 "snapshot_metadata is empty when install new snapshot file".to_string(),
             )
             .into());
@@ -103,22 +140,29 @@ impl SnapshotAssembler {
         self.flush_to_disk().await?;
 
         // 2. Construct the final snapshot directory path, based on snapshot metadata.
-        let final_dir = self.snapshots_dir.join(format!(
-            "{}{}-{}",
-            SNAPSHOT_DIR_PREFIX, last_included.index, last_included.term
-        ));
+        let final_path = self.path_mgr.final_snapshot_path(&last_included);
 
         debug!(
             ?self.temp_path,
-            ?final_dir,
+            ?final_path,
             "SnapshotAssembler: Atomic rename to final snapshot file path"
         );
 
-        // 3. Perform an atomic rename of the temporary snapshot directory to the final directory path.
-        move_directory(&self.temp_path, &final_dir).await?;
+        // 3. Move temporary file to final location
+        tokio::fs::rename(&self.temp_path, &final_path).await.map_err(|e| {
+            StorageError::IoError(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to move compressed snapshot from {} to {}: {}",
+                    self.temp_path.display(),
+                    final_path.display(),
+                    e
+                ),
+            ))
+        })?;
 
         // 4. Return the final snapshot directory path.
-        Ok(final_dir)
+        Ok(final_path)
     }
 
     pub(crate) fn received_chunks(&self) -> u32 {

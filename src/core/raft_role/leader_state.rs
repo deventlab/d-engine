@@ -1397,7 +1397,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 3. Add the node as Learner with Joining status
         debug!("3. Add the node as Learner with Joining status");
         ctx.membership()
-            .add_learner(node_id, address.clone(), NodeStatus::Active)
+            .add_learner(node_id, address.clone(), NodeStatus::Joining)
             .await?;
 
         // 4. Create configuration change payload

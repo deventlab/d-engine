@@ -1,9 +1,3 @@
-use futures::stream;
-use futures::stream::BoxStream;
-use futures::StreamExt;
-use tokio::sync::oneshot;
-use tonic::Status;
-
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::proto::cluster::ClusterConfChangeRequest;
@@ -31,15 +25,22 @@ use crate::test_utils::{self};
 use crate::BackoffPolicy;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
+use crate::ConsensusError;
 use crate::Error;
 use crate::NetworkError;
 use crate::RaftNodeConfig;
 use crate::RetryPolicies;
+use crate::SnapshotError;
 use crate::SystemError;
 use crate::Transport;
 use crate::CANDIDATE;
 use crate::FOLLOWER;
 use crate::LEARNER;
+use futures::stream;
+use futures::stream::BoxStream;
+use futures::StreamExt;
+use tokio::sync::oneshot;
+use tonic::Status;
 
 async fn simulate_append_entries_mock_server(
     port: u64,
@@ -1365,8 +1366,8 @@ async fn test_install_snapshot_case3_retry_failure() {
     assert!(
         matches!(
             result,
-            Err(Error::System(SystemError::Network(
-                NetworkError::SnapshotTransferFailed
+            Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::TransferFailed
             )))
         ),
         "Should fail after max retries"
@@ -1414,8 +1415,8 @@ async fn test_install_snapshot_case4_stream_failure() {
     assert!(
         matches!(
             result,
-            Err(Error::System(SystemError::Network(
-                NetworkError::SnapshotTransferFailed
+            Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::TransferFailed
             )))
         ),
         "Should fail on stream error"

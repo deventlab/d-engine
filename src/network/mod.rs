@@ -229,7 +229,7 @@ pub trait Transport: Send + Sync + 'static {
     /// - `retry`: Snapshot-specific retry configuration
     ///
     /// # Errors
-    /// - `NetworkError::SnapshotTransferFailed`: On unrecoverable transfer failure
+    /// - `SnapshotError::TransferFailed`: On unrecoverable transfer failure
     async fn install_snapshot(
         &self,
         channel: Channel,

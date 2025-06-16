@@ -26,5 +26,6 @@ process_interval_ms = 100
 max_log_entries_before_snapshot = 1
 cleanup_retain_count = 2
 snapshots_dir = "./snapshots/snapshot/case1/1"
+
 # Number of log entries to retain (0 = disable retention)
 retained_log_entries = 1

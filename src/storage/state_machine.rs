@@ -80,6 +80,22 @@ pub trait StateMachine: Send + Sync + 'static {
         snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()>;
 
+    /// Applies a snapshot received from the Raft leader to the local state machine
+    ///
+    /// # Critical Security and Integrity Measures
+    /// 1. Checksum Validation: Verifies snapshot integrity before application
+    /// 2. Version Validation: Ensures snapshot is newer than current state
+    /// 3. Atomic Application: Uses locking to prevent concurrent modifications
+    /// 4. File Validation: Confirms compressed format before decompression
+    ///
+    /// # Workflow
+    /// 1. Validate snapshot metadata and version
+    /// 2. Verify compressed file format
+    /// 3. Decompress to temporary directory
+    /// 4. Validate checklsum
+    /// 5. Initialize new state machine database
+    /// 6. Atomically replace current database
+    /// 7. Update Raft metadata and indexes
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,

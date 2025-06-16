@@ -61,7 +61,7 @@ use crate::RaftRequestWithSignal;
 use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
-use crate::StorageError;
+use crate::SnapshotError;
 use crate::SystemError;
 use crate::FOLLOWER;
 use crate::LEADER;
@@ -1204,7 +1204,7 @@ async fn test_handle_raft_event_case9_3() {
     let mut state_machine = MockStateMachineHandler::new();
     state_machine
         .expect_create_snapshot()
-        .returning(move || Err(StorageError::Snapshot("Test failure".to_string()).into()));
+        .returning(move || Err(SnapshotError::OperationFailed("Test failure".to_string()).into()));
     context.handlers.state_machine_handler = Arc::new(state_machine);
 
     // Prepare leader state
@@ -2632,7 +2632,7 @@ async fn test_trigger_snapshot_transfer_case3_load_failure() {
     state_machine_handler
         .expect_load_snapshot_data()
         .times(1)
-        .returning(|_| Err(StorageError::Snapshot("Test failure".to_string()).into()));
+        .returning(|_| Err(SnapshotError::OperationFailed("Test failure".to_string()).into()));
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock transport to succeed
@@ -2659,7 +2659,7 @@ async fn test_trigger_snapshot_transfer_case3_load_failure() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        Error::System(SystemError::Storage(StorageError::Snapshot(_)))
+        Error::Consensus(ConsensusError::Snapshot(SnapshotError::OperationFailed(_)))
     ));
 }
 
@@ -2694,7 +2694,7 @@ async fn test_trigger_snapshot_transfer_case4_network_failure() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _| Err(NetworkError::SnapshotTransferFailed.into()));
+        .returning(|_, _, _, _| Err(SnapshotError::TransferFailed.into()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels

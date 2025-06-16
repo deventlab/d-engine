@@ -1,21 +1,24 @@
 mod raft_log;
 mod sled_adapter;
+mod snapshot_path_manager;
 mod state_machine;
 mod state_storage;
-
-#[cfg(test)]
-mod storage_test;
-
-use std::path::Path;
 
 #[doc(hidden)]
 pub use raft_log::*;
 #[doc(hidden)]
 pub use sled_adapter::*;
 #[doc(hidden)]
+pub use snapshot_path_manager::*;
+#[doc(hidden)]
 pub use state_machine::*;
 #[doc(hidden)]
 pub use state_storage::*;
+
+#[cfg(test)]
+mod storage_test;
+
+use std::path::Path;
 use tracing::debug;
 use tracing::warn;
 

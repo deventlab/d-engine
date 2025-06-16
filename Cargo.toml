@@ -57,6 +57,7 @@ sled = { version = "0.34.7", features = [
 ], default-features = false }
 # Monitoring
 prometheus = { version = "0.13", default-features = false }
+metrics = { version = "0.24", features = [] }
 # log
 tracing = { version = "0.1.41" }
 parking_lot = "0.12.3"
@@ -74,6 +75,12 @@ tempfile = "3.19.1"
 crc32fast = "1.4.2"
 sha2 = "0.10.9"
 async-stream = "0.3.6"
+
+# Compress/decompress data stream
+async-compression = { version = "0.4", features = ["tokio","gzip"] }
+
+# Packing/unpacking TAR archives
+tokio-tar = "0.3"
 
 [dev-dependencies]
 mockall = "0.12.1"

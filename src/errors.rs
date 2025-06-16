@@ -49,6 +49,10 @@ pub enum ConsensusError {
     #[error(transparent)]
     Membership(#[from] MembershipError),
 
+    /// Snapshot-related errors during installation or restoration
+    #[error(transparent)]
+    Snapshot(#[from] SnapshotError),
+
     /// Role permission conflict error
     #[error("Operation requires {required_role} role but current role is {current_role}")]
     RoleViolation {
@@ -153,12 +157,11 @@ pub enum NetworkError {
     #[error("{0}")]
     SingalReceiveFailed(String),
 
-    #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
-    SnapshotRejected { last_chunk: u32 },
+    // #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
+    // SnapshotRejected { last_chunk: u32 },
 
-    #[error("Install snapshot RPC request failed")]
-    SnapshotTransferFailed,
-
+    // #[error("Install snapshot RPC request failed")]
+    // SnapshotTransferFailed,
     #[error("New node join cluster failed: {0}")]
     JoinFailed(String),
 }
@@ -188,10 +191,9 @@ pub enum StorageError {
     #[error("Log storage failure: {0}")]
     LogStorage(String),
 
-    /// Snapshot creation/restoration failures
-    #[error("Snapshot operation failed: {0}")]
-    Snapshot(String),
-
+    // /// Snapshot creation/restoration failures
+    // #[error("Snapshot operation failed: {0}")]
+    // Snapshot(String),
     /// Checksum validation failures
     #[error("Data corruption detected at {location}")]
     DataCorruption { location: String },
@@ -208,9 +210,9 @@ pub enum StorageError {
     #[error("Value convert failed")]
     Convert(#[from] ConvertError),
 
-    /// File delete errors
-    #[error("Delete file failed")]
-    FileDelete(#[from] FileDeleteError),
+    /// File errors
+    #[error("File errors")]
+    File(#[from] FileError),
 
     /// Serialization error
     #[error("Serialization error: {0}")]
@@ -218,7 +220,7 @@ pub enum StorageError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum FileDeleteError {
+pub enum FileError {
     #[error("Path does not exist: {0}")]
     NotFound(String),
     #[error("Path is a directory: {0}")]
@@ -231,6 +233,12 @@ pub enum FileDeleteError {
     FileBusy(String),
     #[error("Invalid path: {0}")]
     InvalidPath(String),
+    #[error("Too small: {0}")]
+    TooSmall(u64),
+    #[error("Invalid extension: {0}")]
+    InvalidExt(String),
+    #[error("Invalid GZIP header: {0}")]
+    InvalidGzipHeader(String),
     #[error("Unknown IO error: {0}")]
     UnknownIo(String),
 }
@@ -429,6 +437,29 @@ pub enum MembershipError {
     JoinClusterFailed(u32),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    /// Snapshot chunk rejected during installation
+    #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
+    Rejected { last_chunk: u32 },
+
+    /// Snapshot transfer failed due to stream/network issues
+    #[error("Install snapshot RPC request failed")]
+    TransferFailed,
+
+    /// Snapshot operation failed with context
+    #[error("Snapshot operation failed: {0}")]
+    OperationFailed(String),
+
+    /// Snapshot is outdated and cannot be used
+    #[error("Snapshot is outdated")]
+    Outdated,
+
+    /// Snapshot file checksum mismatch
+    #[error("Snapshot file checksum mismatch")]
+    ChecksumMismatch,
+}
+
 // ============== Conversion Implementations ============== //
 impl From<NetworkError> for Error {
     fn from(e: NetworkError) -> Self {
@@ -448,9 +479,9 @@ impl From<ConvertError> for Error {
     }
 }
 
-impl From<FileDeleteError> for Error {
-    fn from(e: FileDeleteError) -> Self {
-        Error::System(SystemError::Storage(StorageError::FileDelete(e)))
+impl From<FileError> for Error {
+    fn from(e: FileError) -> Self {
+        Error::System(SystemError::Storage(StorageError::File(e)))
     }
 }
 
@@ -514,5 +545,11 @@ impl From<sled::Error> for Error {
 impl From<JoinError> for Error {
     fn from(err: JoinError) -> Self {
         NetworkError::TaskFailed(err).into()
+    }
+}
+
+impl From<SnapshotError> for Error {
+    fn from(e: SnapshotError) -> Self {
+        Error::Consensus(ConsensusError::Snapshot(e))
     }
 }

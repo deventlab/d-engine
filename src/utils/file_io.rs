@@ -1,20 +1,21 @@
 use std::fs::create_dir_all;
-use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-
 use sha2::Digest;
 use sha2::Sha256;
 use tokio::fs;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 use tracing::debug;
 use tracing::error;
-
+use crate::init_sled_state_machine_db;
 use crate::ConvertError;
-use crate::FileDeleteError;
+use crate::FileError;
 use crate::Result;
 use crate::StorageError;
 
@@ -50,7 +51,7 @@ pub fn create_parent_dir_if_not_exist(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn open_file_for_append(path: PathBuf) -> Result<File> {
+pub fn open_file_for_append(path: PathBuf) -> Result<std::fs::File> {
     create_parent_dir_if_not_exist(&path)?;
     let log_file = match OpenOptions::new().append(true).create(true).open(&path) {
         Ok(f) => f,
@@ -90,7 +91,7 @@ pub(crate) async fn write_into_file(
 /// - `path`: The file path to be deleted, accepting any type that implements AsRef<Path>
 ///
 /// # Error
-/// Returns a custom FileDeleteError error type, including various possible failure scenarios
+/// Returns a custom FileError error type, including various possible failure scenarios
 pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     let display_path = path.display().to_string();
@@ -109,7 +110,7 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
 
     // Verify file type
     if metadata.is_dir() {
-        return Err(FileDeleteError::IsDirectory(display_path).into());
+        return Err(FileError::IsDirectory(display_path).into());
     }
 
     // Perform deletion
@@ -123,11 +124,11 @@ pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
 fn map_canonicalize_error(
     error: std::io::Error,
     path: &str,
-) -> FileDeleteError {
+) -> FileError {
     match error.kind() {
-        std::io::ErrorKind::NotFound => FileDeleteError::NotFound(path.to_string()),
-        std::io::ErrorKind::PermissionDenied => FileDeleteError::PermissionDenied(path.to_string()),
-        _ => FileDeleteError::InvalidPath(format!("{path}: {error}")),
+        std::io::ErrorKind::NotFound => FileError::NotFound(path.to_string()),
+        std::io::ErrorKind::PermissionDenied => FileError::PermissionDenied(path.to_string()),
+        _ => FileError::InvalidPath(format!("{path}: {error}")),
     }
 }
 
@@ -135,11 +136,11 @@ fn map_canonicalize_error(
 fn map_metadata_error(
     error: std::io::Error,
     path: &str,
-) -> FileDeleteError {
+) -> FileError {
     match error.kind() {
-        std::io::ErrorKind::PermissionDenied => FileDeleteError::PermissionDenied(path.to_string()),
-        std::io::ErrorKind::NotFound => FileDeleteError::NotFound(path.to_string()),
-        _ => FileDeleteError::UnknownIo(format!("{path}: {error}")),
+        std::io::ErrorKind::PermissionDenied => FileError::PermissionDenied(path.to_string()),
+        std::io::ErrorKind::NotFound => FileError::NotFound(path.to_string()),
+        _ => FileError::UnknownIo(format!("{path}: {error}")),
     }
 }
 
@@ -147,12 +148,12 @@ fn map_metadata_error(
 fn map_remove_error(
     error: std::io::Error,
     path: &str,
-) -> FileDeleteError {
+) -> FileError {
     match error.kind() {
-        std::io::ErrorKind::PermissionDenied => FileDeleteError::PermissionDenied(path.to_string()),
-        std::io::ErrorKind::NotFound => FileDeleteError::NotFound(path.to_string()),
-        std::io::ErrorKind::Other if is_file_busy(&error) => FileDeleteError::FileBusy(path.to_string()),
-        _ => FileDeleteError::UnknownIo(format!("{path}: {error}")),
+        std::io::ErrorKind::PermissionDenied => FileError::PermissionDenied(path.to_string()),
+        std::io::ErrorKind::NotFound => FileError::NotFound(path.to_string()),
+        std::io::ErrorKind::Other if is_file_busy(&error) => FileError::FileBusy(path.to_string()),
+        _ => FileError::UnknownIo(format!("{path}: {error}")),
     }
 }
 
@@ -272,9 +273,9 @@ pub(crate) async fn is_dir(path: &Path) -> Result<bool> {
 /// - Only top-level files are processed (no recursion into subdirectories)
 /// - File read order is determined by filename sort, not creation time or modification time
 /// - Empty directories will return the SHA-256 hash of empty data
-pub(crate) async fn compute_checksum_from_path(path: &Path) -> Result<[u8; 32]> {
+pub(crate) async fn compute_checksum_from_folder_path(folder_path: &Path) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
-    let mut entries = fs::read_dir(path).await.map_err(StorageError::IoError)?;
+    let mut entries = fs::read_dir(folder_path).await.map_err(StorageError::IoError)?;
 
     // Collect files while preserving DirEntry information
     let mut files = Vec::new();
@@ -296,4 +297,97 @@ pub(crate) async fn compute_checksum_from_path(path: &Path) -> Result<[u8; 32]> 
     }
 
     Ok(hasher.finalize().into())
+}
+
+/// Computes a SHA-256 checksum for a file by hashing its contents.
+///
+/// The algorithm:
+/// 1. Opens the file at the specified path
+/// 2. Reads the file content in chunks to handle large files efficiently
+/// 3. Updates the hasher with each chunk of bytes
+/// 4. Finalizes and returns the SHA-256 hash
+///
+/// Notes:
+/// - Processes the entire file content sequentially
+/// - Uses buffered reading to handle large files efficiently
+/// - Consistent across platforms and file systems
+pub(crate) async fn compute_checksum_from_file_path(file_path: &Path) -> Result<[u8; 32]> {
+    let mut file = tokio::fs::File::open(file_path).await.map_err(StorageError::IoError)?;
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 4096]; // 4KB buffer
+
+    loop {
+        let bytes_read = file.read(&mut buffer).await.map_err(StorageError::IoError)?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(hasher.finalize().into())
+}
+
+/// Validates compressed file format using magic numbers and extensions
+/// Referenced  flate2 header validation principles and  security practices
+pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
+    // 1. Check if the file exists
+    if !path.exists() {
+        return Err(FileError::NotFound(path.display().to_string()).into());
+    }
+    // 2. Check file size
+    if let Ok(metadata) = std::fs::metadata(path) {
+        if metadata.len() < 10 {
+            return Err(FileError::TooSmall(metadata.len()).into());
+        }
+    }
+
+    // 3. Check the file extension
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| FileError::InvalidExt("Invalid file extension".into()))?;
+
+    if !matches!(ext.to_lowercase().as_str(), "gz" | "tgz" | "snap") {
+        return Err(FileError::InvalidExt(format!("Invalid compression extension: {}", ext)).into());
+    }
+
+    // 4. Verify magic numbers (GZIP header checks)
+    let mut file = std::fs::File::open(path).map_err(StorageError::IoError)?;
+    let mut header = [0u8; 2];
+    file.read_exact(&mut header).map_err(StorageError::IoError)?;
+
+    // GZIP magic numbers: 0x1f 0x8b
+    if header != [0x1f, 0x8b] {
+        return Err(FileError::InvalidGzipHeader("Invalid GZIP header".to_string()).into());
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn create_valid_snapshot<F>(
+    path: &Path,
+    data_setup: F,
+) -> [u8; 32]
+where
+    F: FnOnce(&sled::Db),
+{
+    let temp_data_dir = tempfile::tempdir().unwrap();
+    let db = init_sled_state_machine_db(temp_data_dir.path()).unwrap();
+    data_setup(&db);
+    let checksum = compute_checksum_from_folder_path(&temp_data_dir.path()).await.unwrap();
+
+    let file = File::create(path).await.unwrap();
+    let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
+    let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
+    tar_builder.append_dir_all(".", temp_data_dir.path()).await.unwrap();
+
+    tar_builder.finish().await.unwrap();
+
+    let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
+    gzip_encoder.shutdown().await.unwrap();
+
+    checksum
 }

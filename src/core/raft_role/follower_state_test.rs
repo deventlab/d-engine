@@ -43,8 +43,8 @@ use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RaftTypeConfig;
 use crate::RoleEvent;
+use crate::SnapshotError;
 use crate::StateUpdate;
-use crate::StorageError;
 use crate::SystemError;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -1149,7 +1149,7 @@ async fn test_handle_raft_event_case8_3() {
     let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
     state_machine_handler
         .expect_validate_purge_request()
-        .returning(|_, _, _| Err(StorageError::Snapshot("test".to_string()).into()));
+        .returning(|_, _, _| Err(SnapshotError::OperationFailed("test".to_string()).into()));
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock membership
@@ -1388,7 +1388,7 @@ async fn test_handle_raft_event_case8_7() {
     purge_executor
         .expect_execute_purge()
         .times(1)
-        .returning(|_| Err(StorageError::Snapshot("test".to_string()).into()));
+        .returning(|_| Err(SnapshotError::OperationFailed("test".to_string()).into()));
     context.handlers.purge_executor = purge_executor;
 
     // Mock membership

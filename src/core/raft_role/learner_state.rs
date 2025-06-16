@@ -1,18 +1,3 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::mpsc::{self};
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tonic::Status;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-use tracing::{debug, trace};
-
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -37,6 +22,19 @@ use crate::{ConsensusError, Membership};
 use crate::{MembershipError, Result};
 use crate::{PeerChannels, RaftEvent};
 use crate::{RaftNodeConfig, Transport};
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::Status;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
+use tracing::{debug, trace};
 
 /// Learner node's state in Raft cluster.
 ///
@@ -133,21 +131,15 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     }
     //--- None state behaviors
     fn is_timer_expired(&self) -> bool {
-        warn!("Learner should not has timer");
-
         false
     }
     fn reset_timer(&mut self) {
-        warn!("Learner should not be asked to reset timer");
+        // Nothing to do for Learner
     }
 
     fn next_deadline(&self) -> Instant {
         Instant::now() + Duration::from_secs(24 * 60 * 60) //1 day
     }
-
-    // fn tick_interval(&self) -> Duration {
-    //     self.timer.tick_interval()
-    // }
 
     async fn tick(
         &mut self,
@@ -285,10 +277,15 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
-                ctx.handlers
+                if let Err(e) = ctx
+                    .handlers
                     .state_machine_handler
                     .install_snapshot_chunk(my_term, stream, sender)
-                    .await?;
+                    .await
+                {
+                    error!(?e, "Learner handle  RaftEvent::InstallSnapshotChunk");
+                    return Err(e);
+                }
             }
 
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {

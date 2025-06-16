@@ -38,14 +38,10 @@ impl SnapshotStore for SledSnapshotStore {
         snapshot: &dyn crate::Snapshot,
     ) -> crate::Result<PathBuf> {
         let version = self.current_version.fetch_add(1, Ordering::SeqCst);
-        let temp_path = self.dir.join(format!(".temp-{}", version));
-        let final_path = self.dir.join(format!(
-            "{}{}-{}-{}",
-            SNAPSHOT_DIR_PREFIX,
-            version,
-            snapshot.metadata().last_included_index,
-            snapshot.metadata().last_included_term
-        ));
+
+        let path_mgr = SnapshotPathManager::new(self.dir.clone(), SNAPSHOT_DIR_PREFIX.to_string());
+        let temp_path = path_mgr.temp_work_path(&last_included);
+        let final_path = path_mgr.final_snapshot_path(&last_included);
 
         // Phase 1: Stream data to temporary file
         let mut writer = BufWriter::new(File::create(&temp_path).await?);
@@ -154,12 +150,12 @@ impl SledSnapshotStore {
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or(StorageError::Snapshot(format!(
+            .ok_or(SnapshotError::OperationFailed(format!(
                 "InvalidSnapshotFile({:?})",
                 path.to_path_buf()
             )))?;
 
-        let (_, index, term) = parse_filename(file_name).ok_or(StorageError::Snapshot(format!(
+        let (_, index, term) = parse_filename(file_name).ok_or(SnapshotError::OperationFailed(format!(
             "InvalidSnapshotFile({:?})",
             path.to_path_buf()
         )))?;

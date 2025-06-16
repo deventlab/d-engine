@@ -6,7 +6,6 @@ use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
-use crate::file_io::move_directory;
 use crate::file_io::validate_checksum;
 use crate::proto::client::ClientResult;
 use crate::proto::common::LogId;
@@ -21,11 +20,14 @@ use crate::NewCommitData;
 use crate::RaftLog;
 use crate::Result;
 use crate::SnapshotConfig;
+use crate::SnapshotError;
 use crate::SnapshotGuard;
+use crate::SnapshotPathManager;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
+use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use autometrics::autometrics;
 use futures::stream::BoxStream;
@@ -38,8 +40,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::fs::remove_dir_all;
+use tokio::fs::remove_file;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::async_trait;
@@ -69,6 +73,8 @@ where
     snapshot_config: SnapshotConfig,
     snapshot_policy: SNP<T>,
     snapshot_in_progress: AtomicBool,
+
+    path_mgr: Arc<SnapshotPathManager>,
 
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
@@ -157,6 +163,7 @@ where
         }
     }
 
+    #[instrument(skip(self))]
     async fn install_snapshot_chunk(
         &self,
         current_term: u64,
@@ -166,7 +173,7 @@ where
         debug!(%current_term, ?stream_request, "install_snapshot_chunk");
 
         // 1. Init SnapshotAssembler
-        let mut assembler = SnapshotAssembler::new(&self.snapshot_config.snapshots_dir).await?;
+        let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
 
         // 2. Block processing loop (including network fault tolerance)
         let mut term_check = None;
@@ -185,11 +192,13 @@ where
             };
 
             // Verify the legitimacy of Leader
+            debug!(%chunk.seq, "chunk sequence");
+
             if let Some((term, leader_id)) = &term_check {
                 if chunk.term != *term || chunk.leader_id != *leader_id {
                     sender
                         .send(Err(Status::aborted("Leader changed")))
-                        .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
                     return Ok(());
                 }
             } else {
@@ -206,7 +215,7 @@ where
                         success: false,
                         next_chunk: chunk.seq,
                     }))
-                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
+                    .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
                 return Ok(());
             }
 
@@ -214,7 +223,7 @@ where
             if let Err(e) = assembler.write_chunk(chunk.seq, chunk.data).await {
                 sender
                     .send(Err(Status::internal(e.to_string())))
-                    .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
+                    .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
                 return Ok(());
             }
         }
@@ -229,7 +238,7 @@ where
                 ))))
                 .map_err(|e| {
                     warn!("Failed to send response: {:?}", e);
-                    StorageError::Snapshot(format!("Send snapshot error: {e:?}"))
+                    SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}"))
                 })?;
             return Ok(());
         }
@@ -241,7 +250,7 @@ where
                 )))
                 .map_err(|e| {
                     warn!("Failed to send response: {:?}", e);
-                    StorageError::Snapshot(format!("Send snapshot error: {e:?}"))
+                    SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}"))
                 })?;
             return Ok(());
         }
@@ -258,7 +267,7 @@ where
                 success: true,
                 next_chunk: 0,
             }))
-            .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
 
         Ok(())
     }
@@ -314,39 +323,53 @@ where
                 .unwrap_or(raw_last_included.term),
         };
 
-        let temp_dir = self
-            .snapshot_config
-            .snapshots_dir
-            .join(format!("temp-{}-{}", last_included.index, last_included.term));
-        let final_dir = self.snapshot_config.snapshots_dir.join(format!(
-            "{}{}-{}",
-            SNAPSHOT_DIR_PREFIX, last_included.index, last_included.term
-        ));
+        let temp_path = self.path_mgr.temp_work_path(&last_included);
 
         // 3: Create snapshot based on the temp path
-        debug!(?temp_dir, "create_snapshot 3: Create snapshot based on the temp path");
-
-        let checksum = match self
+        debug!(?temp_path, "create_snapshot 3: Create snapshot based on the temp path");
+        let checksum = self
             .state_machine
-            .generate_snapshot_data(temp_dir.clone(), last_included)
+            .generate_snapshot_data(temp_path.clone(), last_included)
+            .await?;
+
+        // 4: Compress the snapshot directory into a tar.gz archive
+        debug!("create_snapshot 4: Compressing snapshot directory");
+        let final_path = self.path_mgr.final_snapshot_path(&last_included);
+        // let compressed_path = final_path.with_extension("tar.gz");
+        let compressed_file = File::create(&final_path)
             .await
-        {
-            Err(e) => {
-                error!(?e, "state_machine.generate_snapshot_data failed");
-                return Err(e);
-            }
-            Ok(checksum) => checksum,
-        };
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create compressed file: {}", e)))?;
+        let gzip_encoder = GzipEncoder::new(compressed_file);
+        let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
 
-        // 4: Atomic rename to final snapshot file path
-        debug!(
-            ?final_dir,
-            "create_snapshot 4: Atomic rename to final snapshot file path"
-        );
+        // Add all files in temp_path to the archive
+        tar_builder
+            .append_dir_all(".", &temp_path)
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create tar archive: {}", e)))?;
 
-        move_directory(&temp_dir, &final_dir).await?;
+        // Finish writing and flush all data
+        tar_builder
+            .finish()
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to finish tar archive: {}", e)))?;
 
-        // 5: cleanup old versions
+        // Get inner GzipEncoder and shutdown to ensure all data is written
+        let mut gzip_encoder = tar_builder
+            .into_inner()
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to get inner encoder: {}", e)))?;
+        gzip_encoder
+            .shutdown()
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {}", e)))?;
+
+        // 6. Remove the original uncompressed directory
+        remove_dir_all(&temp_path)
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to remove temp directory: {}", e)))?;
+
+        // 7: cleanup old versions
         debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 5: cleanup old versions");
         if let Err(e) = self
             .cleanup_snapshot(
@@ -363,7 +386,7 @@ where
                 last_included: Some(last_included),
                 checksum: checksum.to_vec(),
             },
-            final_dir,
+            final_path,
         ))
     }
 
@@ -385,12 +408,20 @@ where
             let path = entry.path();
             debug!(?path, "cleanup_snapshot");
 
-            if path.is_dir() {
-                if let Some((index, term)) = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(parse_snapshot_dirname)
-                {
+            if path.extension().map_or(false, |ext| ext == "gz") {
+                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    let parsed = parse_snapshot_dirname(file_name).or_else(|| {
+                        file_name
+                            .strip_suffix(".tar.gz")
+                            .and_then(|stripped| parse_snapshot_dirname(stripped))
+                    });
+
+                    let (index, term) = if let Some(pair) = parsed {
+                        pair
+                    } else {
+                        continue;
+                    };
+
                     info!("Index: {:>10} | Term: {:>10} | Path: {}", index, term, path.display());
                     snapshots.push(CleanupSnapshotMeta { index, term, path });
                 }
@@ -416,8 +447,15 @@ where
                 meta.term,
                 meta.path.display()
             );
-            if let Err(e) = remove_dir_all(&meta.path).await {
-                error!("Failed to delete {}: {}", meta.path.display(), e);
+            let file_type = tokio::fs::metadata(&meta.path)
+                .await
+                .map_err(StorageError::IoError)?
+                .file_type();
+
+            if file_type.is_file() {
+                remove_file(&meta.path).await.map_err(StorageError::IoError)?;
+            } else if file_type.is_dir() {
+                remove_dir_all(&meta.path).await.map_err(StorageError::IoError)?;
             }
         }
         Ok(())
@@ -539,25 +577,24 @@ where
     }
 
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.state_machine.snapshot_metadata();
-        None
+        self.state_machine.snapshot_metadata()
     }
 
     /// Load snapshot data as a stream of chunks
+    #[instrument(skip(self))]
     async fn load_snapshot_data(
         &self,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
         let last_included = metadata
             .last_included
-            .ok_or_else(|| StorageError::Snapshot("No last_included in metadata".to_string()))?;
+            .ok_or_else(|| SnapshotError::OperationFailed("No last_included in metadata".to_string()))?;
 
-        let snapshot_dir = self.snapshot_config.snapshots_dir.join(format!(
-            "{}{}-{}",
-            SNAPSHOT_DIR_PREFIX, last_included.index, last_included.term
-        ));
+        // Build path to compressed snapshot file
+        let snapshot_file = self.path_mgr.final_snapshot_path(&last_included);
 
-        self.create_snapshot_chunk_stream(snapshot_dir, metadata).await
+        debug!("Loading snapshot from file: {:?}", snapshot_file);
+        self.create_snapshot_chunk_stream(snapshot_file, metadata).await
     }
 }
 
@@ -579,9 +616,13 @@ where
             pending_commit: AtomicU64::new(0),
             max_entries_per_chunk,
             state_machine,
-            // current_snapshot_version: AtomicU64::new(0),
-            snapshot_config,
             snapshot_policy,
+            path_mgr: Arc::new(SnapshotPathManager::new(
+                snapshot_config.snapshots_dir.clone(),
+                SNAPSHOT_DIR_PREFIX.to_string(),
+            )),
+            snapshot_config,
+
             snapshot_lock: RwLock::new(()),
             snapshot_in_progress: AtomicBool::new(false),
         }
@@ -599,52 +640,65 @@ where
         }
     }
 
+    #[instrument(skip(self))]
     async fn create_snapshot_chunk_stream(
         &self,
-        snapshot_dir: PathBuf,
+        snapshot_file: PathBuf,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
-        // Get list of files in snapshot directory
-        let mut files = Vec::new();
-        let mut entries = fs::read_dir(&snapshot_dir).await.map_err(StorageError::IoError)?;
-        while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
-            files.push(entry.path());
+        let path_metadata = tokio::fs::metadata(&snapshot_file)
+            .await
+            .map_err(StorageError::IoError)?;
+
+        if !path_metadata.is_file() {
+            return Err(SnapshotError::OperationFailed(format!(
+                "Invalid snapshot file type: {}",
+                snapshot_file.display()
+            ))
+            .into());
         }
-        files.sort();
 
         let chunk_size = self.snapshot_config.chunk_size;
         let node_id = self.node_id;
         let term = metadata.last_included.map(|id| id.term).unwrap_or(0);
-        let total_files = files.len() as u32;
+
+        // Open the compressed file
+        let mut file = File::open(&snapshot_file).await.map_err(StorageError::IoError)?;
+        let file_len = path_metadata.len();
+        let total_chunks = ((file_len as usize) + chunk_size - 1) / chunk_size;
+
+        debug!(%total_chunks);
 
         let stream = try_stream! {
             let mut seq = 0;
+            let mut buffer = vec![0u8; chunk_size];
 
-            for file_path in files {
-                let mut file = File::open(&file_path).await.map_err(StorageError::IoError)?;
-                let mut buffer = vec![0u8; chunk_size];
-
-                loop {
-                    let bytes_read = file.read(&mut buffer).await.map_err(StorageError::IoError)?;
-                    if bytes_read == 0 {
-                        break;
-                    }
-
-                    let chunk_data = buffer[..bytes_read].to_vec();
-                    let checksum = crc32fast::hash(&chunk_data).to_be_bytes().to_vec();
-
-                    yield SnapshotChunk {
-                        term,
-                        leader_id: node_id,
-                        metadata: Some(metadata.clone()),
-                        seq,
-                        total: total_files,
-                        data: chunk_data,
-                        checksum,
-                    };
-
-                    seq += 1;
+            while let Ok(bytes_read) = file.read(&mut buffer).await {
+                if bytes_read == 0 {
+                    break;
                 }
+
+                let chunk_data = buffer[..bytes_read].to_vec();
+                let checksum = crc32fast::hash(&chunk_data).to_be_bytes().to_vec();
+
+                // Only first chunk contains metadata
+                let chunk_metadata = if seq == 0 {
+                    Some(metadata.clone())
+                } else {
+                    None
+                };
+
+                yield SnapshotChunk {
+                    term,
+                    leader_id: node_id,
+                    metadata: chunk_metadata,
+                    seq,
+                    total: total_chunks as u32,
+                    data: chunk_data,
+                    checksum,
+                };
+
+                seq += 1;
             }
         };
 

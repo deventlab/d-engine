@@ -21,3 +21,8 @@ rpc_append_entries_in_batch_threshold = 1
 [raft.commit_handler]
 batch_size = 1
 process_interval_ms = 100
+
+[raft.snapshot]
+max_log_entries_before_snapshot = 10
+cleanup_retain_count = 2
+snapshots_dir = "./snapshots/join_cluster/case1/3"

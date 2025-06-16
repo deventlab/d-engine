@@ -1,14 +1,12 @@
-use std::fmt::Debug;
-use std::path::PathBuf;
-use std::time::Duration;
-
-use config::ConfigError;
-use serde::Deserialize;
-use serde::Serialize;
-
 use super::validate_directory;
 use crate::Error;
 use crate::Result;
+use config::ConfigError;
+use serde::Deserialize;
+use serde::Serialize;
+use std::fmt::Debug;
+use std::path::PathBuf;
+use std::time::Duration;
 
 /// Configuration parameters for the Raft consensus algorithm implementation
 #[derive(Serialize, Deserialize, Clone)]

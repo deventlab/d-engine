@@ -1,26 +1,26 @@
-//! Case 1: Verify that Node C has snapshot generated
+//! Case 1: Verify that Node 3 has snapshot generated
 //!
 //! Scenario:
 //!
-//! 1. Create a cluster with 3 nodes (A, B, C).
-//! 2. Node A appends 3 log entries with Term=1.
-//! 3. Node B appends 4 log entries with Term=1.
-//! 4. Node C appends 10 log entries with Term=2.
+//! 1. Create a cluster with 3 nodes (1, 2, 3).
+//! 2. Node 1 appends 3 log entries with Term=1.
+//! 3. Node 2 appends 4 log entries with Term=1.
+//! 4. Node 3 appends 10 log entries with Term=2.
 //! 5. All three node state machine has log1, 2, 3
-//! 6. Node C will be Leader
-//! 7. According to the config `max_log_entries_before_snapshot = 1`, snapshot should be generated in node C
+//! 6. Node 3 will be Leader
+//! 7. According to the config `max_log_entries_before_snapshot = 1`, snapshot should be generated in node 3
 //!
 //! Expected Result:
 //!
-//! - Node C becomes the leader
+//! - Node 3 becomes the leader
 //! - last_commit_index is 10
-//! - Node A and B's log-3's term is 2
+//! - Node 1 and 2's log-3's term is 2
 //!
 
 use crate::{
     common::{
-        check_cluster_is_ready, init_state_storage, manipulate_log, manipulate_state_machine, prepare_raft_log,
-        prepare_state_machine, prepare_state_storage, reset, start_node, WAIT_FOR_NODE_READY_IN_SEC,
+        check_cluster_is_ready, check_path_contents, init_state_storage, manipulate_log, manipulate_state_machine,
+        prepare_raft_log, prepare_state_machine, prepare_state_storage, reset, start_node, WAIT_FOR_NODE_READY_IN_SEC,
     },
     SNAPSHOT_PORT_BASE,
 };
@@ -28,7 +28,7 @@ use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::RaftLog;
 use d_engine::storage::StateMachine;
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 
 /// The current test relies on the following snapshot configuration:
@@ -96,8 +96,6 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     sleep(Duration::from_secs(3)).await;
     let leader_snapshot_metadata = sm3.snapshot_metadata().unwrap();
 
-    println!("{:?}", leader_snapshot_metadata);
-
     // Verify snapshot file exists
     let snapshot_path = "./snapshots/snapshot/case1/3";
     assert!(check_path_contents(snapshot_path).unwrap_or(false));
@@ -131,43 +129,4 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     node_n1.await??;
 
     Ok(()) // Return Result type
-}
-
-fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> {
-    let path = Path::new(snapshot_path);
-
-    // Check if path exists first
-    if !path.exists() {
-        println!("Path '{}' does not exist", snapshot_path);
-        return Ok(false);
-    }
-
-    // Check if it's a directory
-    if !path.is_dir() {
-        println!("Path '{}' is not a directory", snapshot_path);
-        return Ok(false);
-    }
-
-    // Read directory contents
-    let entries = fs::read_dir(path)?;
-    let mut has_contents = false;
-
-    for entry in entries {
-        let entry = entry?;
-        let entry_path = entry.path();
-
-        if entry_path.is_dir() {
-            println!("Found subdirectory: {}", entry_path.display());
-            has_contents = true;
-        } else if entry_path.is_file() {
-            println!("Found file: {}", entry_path.display());
-            has_contents = true;
-        }
-    }
-
-    if !has_contents {
-        println!("Path '{}' is empty (no files or subdirectories)", snapshot_path);
-    }
-
-    Ok(has_contents)
 }

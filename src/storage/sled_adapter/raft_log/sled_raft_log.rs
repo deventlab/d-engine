@@ -809,7 +809,7 @@ impl SledRaftLog {
                 // Performance bug fix: remove value clone.
                 // let v = v.clone();
                 b.insert(k.clone(), v.encode_to_vec());
-                debug!("batch insert local log: key: {:?} - value: {:?}", k, v);
+                trace!("batch insert local log: key: {:?} - value: {:?}", k, v);
             } else {
                 b.remove(k.clone());
                 debug!("remove local log: key: {:?}", k);

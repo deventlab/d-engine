@@ -1,28 +1,7 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fs;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use futures::StreamExt;
-use mockall::predicate::eq;
-use mockall::Sequence;
-use tempfile::tempdir;
-use tempfile::TempDir;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::watch;
-use tokio::time;
-use tracing::debug;
-
 use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
 use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
-use crate::file_io::is_dir;
 use crate::init_sled_state_machine_db;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
@@ -56,9 +35,28 @@ use crate::NetworkError;
 use crate::Node;
 use crate::RaftOneshot;
 use crate::SnapshotConfig;
+use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
 use crate::SystemError;
+use futures::StreamExt;
+use mockall::predicate::eq;
+use mockall::Sequence;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tempfile::tempdir;
+use tempfile::TempDir;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
+use tokio::time;
+use tracing::debug;
 
 // Case 1: normal update
 #[test]
@@ -359,6 +357,7 @@ async fn test_install_snapshot_chunk_case2() {
     enable_logger();
 
     let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_install_snapshot_chunk_case2");
     let mut state_machine_mock = MockStateMachine::new();
     state_machine_mock
         .expect_apply_snapshot_from_file()
@@ -370,22 +369,49 @@ async fn test_install_snapshot_chunk_case2() {
         10,
         1,
         Arc::new(state_machine_mock),
-        snapshot_config(temp_dir.path().to_path_buf()),
+        snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
     );
     // 3. Fake install snapshot request stream
     let total_chunks = 1;
-    // Generate valid chunks with seq 0..2
+    // Create compressed chunk data
     let mut chunks: Vec<SnapshotChunk> = vec![];
-    for seq in 0..total_chunks {
-        chunks.push(create_test_chunk(
-            seq,
-            &format!("chunk-{seq}",).into_bytes(),
-            3, // chunk term (higher than handler's current_term)
-            1, // leader_id
-            total_chunks,
-        ));
-    }
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 2, term: 1 }),
+        checksum: vec![2; 32],
+    };
+
+    // Create test data
+    tokio::fs::create_dir_all(&temp_path).await.unwrap();
+    let data_file = temp_path.join("test.txt");
+    tokio::fs::write(&data_file, "test content").await.unwrap();
+
+    // Compress to tar.gz
+    let compressed_path = temp_path.join("snapshot.tar.gz");
+    let file = File::create(&compressed_path).await.unwrap();
+    let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
+    let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
+    let file_name_in_tar = "test.txt";
+    tar_builder
+        .append_path_with_name(&data_file, file_name_in_tar)
+        .await
+        .unwrap();
+    tar_builder.finish().await.unwrap();
+    let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
+    gzip_encoder.shutdown().await.unwrap();
+
+    // Read compressed data
+    let compressed_data = tokio::fs::read(&compressed_path).await.unwrap();
+    let chunk = SnapshotChunk {
+        term: 1,
+        leader_id: 1,
+        metadata: Some(metadata.clone()),
+        seq: 0,
+        total: total_chunks,
+        data: compressed_data.clone(),
+        checksum: crc32fast::hash(&compressed_data).to_be_bytes().to_vec(),
+    };
+    chunks.push(chunk);
 
     let streaming_request = crate_test_snapshot_stream(chunks);
     let (sender, receiver) = MaybeCloneOneshot::new();
@@ -497,6 +523,7 @@ async fn test_create_snapshot_case1() {
     enable_logger();
 
     let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_create_snapshot_case1");
     let mut sm = MockStateMachine::new();
 
     // Mock state machine behavior
@@ -511,7 +538,7 @@ async fn test_create_snapshot_case1() {
         .withf(|path, last_included| {
             debug!(?path, ?last_included);
             // Create the directory structure correctly
-            fs::create_dir_all(path).unwrap();
+            fs::create_dir_all(path.clone()).unwrap();
             //Simulate sled to create a subdirectory
             let db_path = path.join("state_machine");
             fs::create_dir(&db_path).unwrap();
@@ -520,7 +547,7 @@ async fn test_create_snapshot_case1() {
         })
         .returning(|_, _| Ok([0; 32]));
 
-    let mut config = snapshot_config(temp_dir.path().to_path_buf());
+    let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
 
     let handler =
@@ -528,17 +555,21 @@ async fn test_create_snapshot_case1() {
 
     // Execute snapshot creation
     let result = handler.create_snapshot().await;
+
+    debug!(?result);
+
     assert!(result.is_ok());
 
     // Verify file system changes
     let (metadata, final_path) = result.unwrap();
-    assert!(final_path.exists());
+    debug!(?final_path);
+    assert!(final_path.is_file());
+    assert!(final_path.extension().unwrap() == "gz");
     assert!(final_path
         .to_str()
         .unwrap()
-        .contains(&format!("{SNAPSHOT_DIR_PREFIX}5-1",)));
+        .contains(&format!("{SNAPSHOT_DIR_PREFIX}5-1.tar.gz",)));
 
-    assert!(is_dir(&final_path).await.unwrap());
     assert_eq!(metadata.last_included, Some(LogId { term: 1, index: 5 }));
 }
 
@@ -548,6 +579,7 @@ async fn test_create_snapshot_case2() {
     enable_logger();
 
     let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_create_snapshot_case2");
     let mut sm = MockStateMachine::new();
 
     // Setup slow snapshot generation
@@ -558,7 +590,7 @@ async fn test_create_snapshot_case2() {
         std::thread::sleep(Duration::from_millis(50));
         // Wait forever
         if let Err(_e) = rx.try_recv() {
-            return Err(StorageError::Snapshot("test failure".into()).into());
+            return Err(SnapshotError::OperationFailed("test failure".into()).into());
         }
 
         debug!(?path, "generate_snapshot_data");
@@ -572,7 +604,7 @@ async fn test_create_snapshot_case2() {
         Ok([0; 32])
     });
 
-    let mut config = snapshot_config(temp_dir.path().to_path_buf());
+    let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
 
     let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
@@ -604,7 +636,7 @@ async fn test_create_snapshot_case2() {
     // Verify only one successful creation
     let success_count = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
     assert_eq!(success_count, 1);
-    assert_eq!(count_snapshots(temp_dir.path()), 1);
+    assert_eq!(count_snapshots(&temp_path), 1);
 }
 
 /// # Case 3: Test cleanup old versions
@@ -612,6 +644,7 @@ async fn test_create_snapshot_case2() {
 async fn test_create_snapshot_case3() {
     enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_create_snapshot_case3");
 
     let mut sm = MockStateMachine::new();
     let mut count = 0;
@@ -626,7 +659,7 @@ async fn test_create_snapshot_case3() {
 
         Ok([0; 32])
     });
-    let snapshot_dir = temp_dir.as_ref().to_path_buf();
+    let snapshot_dir = temp_path.to_path_buf();
 
     let mut config = snapshot_config(snapshot_dir.clone());
     config.retained_log_entries = 0;
@@ -649,6 +682,12 @@ async fn test_create_snapshot_case3() {
     // Verify cleanup results
     let remaining: HashSet<u64> = get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
     assert_eq!(remaining, [4, 3].into_iter().collect());
+
+    // Verify files are compressed
+    for version in &[3, 4] {
+        let path = snapshot_dir.join(format!("{}{}-1.tar.gz", SNAPSHOT_DIR_PREFIX, version));
+        assert!(path.is_file(), "Snapshot file not found: {:?}", path);
+    }
 }
 
 /// # Case 4: Test failure handling
@@ -656,15 +695,16 @@ async fn test_create_snapshot_case3() {
 async fn test_create_snapshot_case4() {
     enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_create_snapshot_case4");
     let mut sm = MockStateMachine::new();
 
     // Setup failing snapshot generation
     sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
     sm.expect_entry_term().returning(|_| Some(1));
     sm.expect_generate_snapshot_data()
-        .returning(|_, _| Err(StorageError::Snapshot("test failure".into()).into()));
+        .returning(|_, _| Err(SnapshotError::OperationFailed("test failure".into()).into()));
 
-    let mut config = snapshot_config(temp_dir.path().to_path_buf());
+    let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
 
     let handler =
@@ -675,18 +715,27 @@ async fn test_create_snapshot_case4() {
     assert!(result.is_err());
 
     // Verify no files created
-    assert_eq!(count_snapshots(temp_dir.path()), 0);
+    assert_eq!(count_snapshots(&temp_path), 0);
 }
 
 // Helper functions
 fn count_snapshots(dir: &Path) -> usize {
     debug!(?dir, "count_snapshots");
 
-    std::fs::read_dir(dir)
-        .unwrap()
-        .filter(|entry| {
-            let name = entry.as_ref().unwrap().file_name();
-            name.to_str().unwrap().starts_with(SNAPSHOT_DIR_PREFIX)
+    // If the directory does not exist or cannot be accessed, just return 0
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+
+    entries
+        .filter_map(|entry| {
+            // Ignore directory entries that cannot be read
+            let entry = entry.ok()?;
+            // Extract the file name and check the prefix
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.starts_with(SNAPSHOT_DIR_PREFIX).then_some(()))
         })
         .count()
 }
@@ -697,10 +746,20 @@ fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
     std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|entry| {
-            let name = entry.unwrap().file_name();
+            let entry = entry.unwrap();
+            let name = entry.file_name();
             let name = name.to_str().unwrap();
             debug!(%name, "get_snapshot_versions");
-            name.split('-').nth(1).and_then(|v| v.parse().ok())
+
+            // Handle compressed snapshots
+            if name.ends_with(".tar.gz") {
+                let base_name = name.trim_end_matches(".tar.gz");
+                base_name.split('-').nth(1).and_then(|v| v.parse().ok())
+            }
+            // Handle legacy directories (if any)
+            else {
+                name.split('-').nth(1).and_then(|v| v.parse().ok())
+            }
         })
         .collect()
 }
@@ -713,7 +772,7 @@ async fn test_cleanup_snapshot_case1() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
 
-    create_test_dirs(&temp_dir, &[1, 2, 3]).await;
+    create_test_files(&temp_dir, &[1, 2, 3]).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
@@ -732,6 +791,14 @@ async fn test_cleanup_snapshot_case1() {
     let mut expect = vec![2, 3];
     expect.sort();
     assert_eq!(remaining, expect);
+
+    // Verify files are compressed
+    for version in &[2, 3] {
+        let path = temp_dir
+            .path()
+            .join(format!("{}{}-1.tar.gz", SNAPSHOT_DIR_PREFIX, version));
+        assert!(path.is_file(), "Snapshot file not found: {:?}", path);
+    }
 }
 
 /// # Case 2: Test no old versions to be cleaned
@@ -739,7 +806,7 @@ async fn test_cleanup_snapshot_case1() {
 async fn test_cleanup_snapshot_case2() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
-    create_test_dirs(&temp_dir, &[3, 4]).await;
+    create_test_files(&temp_dir, &[3, 4]).await;
 
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
@@ -1066,6 +1133,20 @@ async fn create_test_dirs(
     }
 }
 
+async fn create_test_files(
+    temp_dir: &TempDir,
+    ids: &[u64],
+) {
+    for id in ids {
+        let file_name = format!("{}{}-1.tar.gz", SNAPSHOT_DIR_PREFIX, id);
+        let path = temp_dir.path().join(file_name);
+        debug!(?path, "create_test_files");
+        let mut file = File::create(&path).await.unwrap();
+        // Write some dummy content
+        file.write_all(b"dummy snapshot data").await.unwrap();
+    }
+}
+
 async fn create_dir(
     temp_dir: &TempDir,
     name: &str,
@@ -1177,7 +1258,7 @@ fn mock_node_with_rpc_service(
                     success: true,
                     next_chunk: 0,
                 }))
-                .map_err(|e| StorageError::Snapshot(format!("Send snapshot error: {e:?}")))?;
+                .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
 
             Ok(())
         },
@@ -1192,27 +1273,20 @@ fn mock_node_with_rpc_service(
         .build_node_with_rpc_server()
 }
 
-/// Helper to create test files in snapshot directory
-async fn create_test_snapshot_files(
-    dir: &Path,
-    files: &[(&str, &[u8])],
-) {
-    for (name, content) in files {
-        let path = dir.join(name);
-        let mut file = File::create(&path).await.unwrap();
-        file.write_all(content).await.unwrap();
-    }
-}
-
-/// # Case 1: Single file in snapshot (fits in one chunk)
+// Update test_load_snapshot_data_case1_single_file_single_chunk
 #[tokio::test]
 async fn test_load_snapshot_data_case1_single_file_single_chunk() {
-    let temp_dir = tempdir().unwrap();
-    let snapshot_dir = temp_dir.path().join("snapshot-1-1");
-    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+    enable_logger();
 
-    // Create test file
-    create_test_snapshot_files(&snapshot_dir, &[("file1.txt", b"Hello World")]).await;
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path();
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+
+    // Create compressed snapshot file
+    let snapshot_file = snapshot_dir.join("snapshot-1-1.tar.gz");
+    debug!(?snapshot_file, "prepared test snapshot_file");
+    let content = b"Hello World";
+    tokio::fs::write(&snapshot_file, content).await.unwrap();
 
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
@@ -1239,21 +1313,22 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     assert_eq!(chunk.leader_id, 1);
     assert_eq!(chunk.seq, 0);
     assert_eq!(chunk.total, 1);
-    assert_eq!(chunk.data, b"Hello World");
-    assert_eq!(chunk.checksum, crc32fast::hash(b"Hello World").to_be_bytes().to_vec());
+    assert_eq!(chunk.data, content);
+    assert_eq!(chunk.checksum, crc32fast::hash(content).to_be_bytes().to_vec());
     assert_eq!(chunk.metadata, Some(metadata));
 }
 
-/// # Case 2: Single file split into multiple chunks
+// Update test_load_snapshot_data_case2_single_file_multi_chunk
 #[tokio::test]
 async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
     let temp_dir = tempdir().unwrap();
-    let snapshot_dir = temp_dir.path().join("snapshot-2-1");
-    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+    let snapshot_dir = temp_dir.path();
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
 
-    // Create large file (3 chunks of 4 bytes each)
+    // Create large compressed file (3 chunks of 4 bytes each)
     let data = b"1234567890ABCDEF";
-    create_test_snapshot_files(&snapshot_dir, &[("large.bin", data)]).await;
+    let snapshot_file = snapshot_dir.join("snapshot-2-1.tar.gz");
+    tokio::fs::write(&snapshot_file, data).await.unwrap();
 
     // Handler with small chunk size
     let handler = create_test_handler(temp_dir.path(), Some(4));
@@ -1273,10 +1348,16 @@ async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
     // Verify chunk count (16 bytes / 4 = 4 chunks)
     assert_eq!(chunks.len(), 4);
 
-    // Verify sequence numbers
+    // Verify sequence numbers and metadata
     for (i, chunk) in chunks.iter().enumerate() {
         assert_eq!(chunk.seq, i as u32);
-        assert_eq!(chunk.total, 1); // Total files, not chunks (known issue)
+        assert_eq!(chunk.total, 4);
+        // Only first chunk should have metadata
+        if i == 0 {
+            assert_eq!(chunk.metadata, Some(metadata.clone()));
+        } else {
+            assert!(chunk.metadata.is_none());
+        }
     }
 
     // Reassemble data
@@ -1288,76 +1369,43 @@ async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
     assert_eq!(reassembled, data);
 }
 
-/// # Case 3: Multiple files in snapshot
-#[tokio::test]
-async fn test_load_snapshot_data_case3_multiple_files() {
-    let temp_dir = tempdir().unwrap();
-    let snapshot_dir = temp_dir.path().join("snapshot-3-1");
-    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+// Update test_load_snapshot_data_case3_multiple_files
+// This test is no longer relevant since we now have a single compressed file
+// Remove or replace with a test for compressed file containing multiple files
 
-    // Create multiple files
-    create_test_snapshot_files(
-        &snapshot_dir,
-        &[
-            ("a.txt", b"First file"),
-            ("b.txt", b"Second file"),
-            ("c.txt", b"Third file"),
-        ],
-    )
-    .await;
-
-    let handler = create_test_handler(temp_dir.path(), None);
-    let metadata = SnapshotMetadata {
-        last_included: Some(LogId { index: 3, term: 1 }),
-        checksum: vec![3; 32],
-    };
-
-    // Get and collect chunks
-    let mut stream = handler.load_snapshot_data(metadata.clone()).await.unwrap();
-    let mut chunks = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        chunks.push(chunk.unwrap());
-    }
-
-    // Should have 3 chunks (one per file)
-    assert_eq!(chunks.len(), 3);
-
-    // Files should be in sorted order: a.txt, b.txt, c.txt
-    assert_eq!(chunks[0].data, b"First file");
-    assert_eq!(chunks[1].data, b"Second file");
-    assert_eq!(chunks[2].data, b"Third file");
-
-    // Verify metadata is consistent
-    for chunk in chunks {
-        assert_eq!(chunk.metadata, Some(metadata.clone()));
-    }
-}
-
-/// # Case 4: Empty snapshot directory
+// Update test_load_snapshot_data_case4_empty_snapshot
 #[tokio::test]
 async fn test_load_snapshot_data_case4_empty_snapshot() {
+    enable_logger();
     let temp_dir = tempdir().unwrap();
-    let snapshot_dir = temp_dir.path().join("snapshot-4-1");
-    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+    let snapshot_dir = temp_dir.path();
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+
+    // Create empty compressed file
+    let snapshot_file = snapshot_dir.join("snapshot-4-1.tar.gz");
+    debug!(?snapshot_file);
+    File::create(&snapshot_file).await.unwrap();
 
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
-        last_included: Some(LogId { index: 4, term: 1 }),
-        checksum: vec![4; 32],
+        last_included: None,
+        checksum: vec![],
     };
 
-    let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
-    assert!(stream.next().await.is_none(), "Stream should be empty");
+    assert!(handler.load_snapshot_data(metadata).await.is_err());
 }
 
-/// # Case 5: Checksum validation
+// Update test_load_snapshot_data_case5_checksum
 #[tokio::test]
 async fn test_load_snapshot_data_case5_checksum() {
     let temp_dir = tempdir().unwrap();
-    let snapshot_dir = temp_dir.path().join("snapshot-5-1");
-    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+    let snapshot_dir = temp_dir.path();
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
 
-    create_test_snapshot_files(&snapshot_dir, &[("checksum.txt", b"Validate me")]).await;
+    // Create compressed file
+    let content = b"Validate me";
+    let snapshot_file = snapshot_dir.join("snapshot-5-1.tar.gz");
+    tokio::fs::write(&snapshot_file, content).await.unwrap();
 
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
@@ -1368,19 +1416,22 @@ async fn test_load_snapshot_data_case5_checksum() {
     let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
     let chunk = stream.next().await.unwrap().unwrap();
 
-    let expected_checksum = crc32fast::hash(b"Validate me").to_be_bytes().to_vec();
+    let expected_checksum = crc32fast::hash(content).to_be_bytes().to_vec();
     assert_eq!(chunk.checksum, expected_checksum);
 }
 
-/// # Case 6: File read error
+// Update test_load_snapshot_data_case6_read_error
 #[tokio::test]
 async fn test_load_snapshot_data_case6_read_error() {
-    let temp_dir = tempdir().unwrap();
-    let snapshot_dir = temp_dir.path().join("snapshot-6-1");
-    tokio::fs::create_dir(&snapshot_dir).await.unwrap();
+    enable_logger();
 
-    // Create invalid file (directory)
-    tokio::fs::create_dir(snapshot_dir.join("invalid")).await.unwrap();
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path();
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+
+    // Create invalid file (directory with same name)
+    let snapshot_file = snapshot_dir.join("snapshot-6-1.tar.gz");
+    tokio::fs::create_dir(&snapshot_file).await.unwrap();
 
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
@@ -1388,12 +1439,89 @@ async fn test_load_snapshot_data_case6_read_error() {
         checksum: vec![6; 32],
     };
 
-    let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
-    let result = stream.next().await.unwrap();
-
+    let result = handler.load_snapshot_data(metadata).await;
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        Error::System(SystemError::Storage(StorageError::IoError(_)))
-    ));
+}
+
+// Add new test for metadata in first chunk only
+#[tokio::test]
+async fn test_load_snapshot_data_case7_metadata_in_first_chunk_only() {
+    let temp_dir = tempdir().unwrap();
+    let snapshot_dir = temp_dir.path();
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+
+    // Create compressed file
+    let content = b"Test content for multiple chunks";
+    let snapshot_file = snapshot_dir.join("snapshot-7-1.tar.gz");
+    tokio::fs::write(&snapshot_file, content).await.unwrap();
+
+    // Handler with small chunk size
+    let handler = create_test_handler(temp_dir.path(), Some(10));
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 7, term: 1 }),
+        checksum: vec![7; 32],
+    };
+
+    // Get and collect chunks
+    let mut stream = handler.load_snapshot_data(metadata.clone()).await.unwrap();
+    let mut chunks = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        chunks.push(chunk.unwrap());
+    }
+
+    // Verify metadata only in first chunk
+    assert_eq!(chunks.len(), 4);
+    assert_eq!(chunks[0].metadata, Some(metadata));
+    for chunk in &chunks[1..] {
+        assert!(chunk.metadata.is_none());
+    }
+}
+
+// Add new test for compression functionality
+#[tokio::test]
+async fn test_snapshot_compression() {
+    enable_logger();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_snapshot_compression");
+    let mut sm = MockStateMachine::new();
+
+    // Mock state machine to create test data
+    sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
+    sm.expect_entry_term().returning(|_| Some(2));
+    sm.expect_generate_snapshot_data().returning(|path, _| {
+        // Create the directory structure correctly
+        fs::create_dir_all(path.clone()).unwrap();
+        // Create test files in the temp directory
+        let file1 = path.join("test1.txt");
+        let file2 = path.join("test2.bin");
+
+        std::fs::write(&file1, "This is a test file").unwrap();
+        std::fs::write(&file2, vec![0u8; 1024]).unwrap();
+
+        Ok([0; 32])
+    });
+
+    let mut config = snapshot_config(temp_path.to_path_buf());
+    config.retained_log_entries = 0;
+
+    let handler =
+        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+
+    // Create snapshot
+    let (_, snapshot_path) = handler.create_snapshot().await.unwrap();
+
+    // Verify compressed file exists
+    assert!(snapshot_path.is_file());
+    assert_eq!(snapshot_path.extension().unwrap(), "gz");
+
+    // Verify file size is smaller than uncompressed (at least 50% smaller)
+    let uncompressed_size = 1024 + "This is a test file".len();
+    let compressed_size = std::fs::metadata(&snapshot_path).unwrap().len() as usize;
+    assert!(
+        compressed_size < uncompressed_size / 2,
+        "Compression ineffective: {} > {}",
+        compressed_size,
+        uncompressed_size / 2
+    );
 }

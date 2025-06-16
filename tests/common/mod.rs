@@ -290,3 +290,53 @@ pub async fn check_cluster_is_ready(
         }
     }
 }
+
+/// Checks whether the given snapshot path exists, is a directory, and contains any files or subdirectories.
+///
+/// # Arguments
+///
+/// * `snapshot_path` - A string slice that holds the path to the snapshot directory.
+///
+/// # Returns
+///
+/// * `Ok(true)` if the path exists, is a directory, and contains at least one file or subdirectory.
+/// * `Ok(false)` if the path does not exist, is not a directory, or is empty.
+/// * `Err(ClientApiError)` if an error occurs while reading the directory contents.
+pub fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> {
+    let path = Path::new(snapshot_path);
+
+    // Check if path exists first
+    if !path.exists() {
+        println!("Path '{}' does not exist", snapshot_path);
+        return Ok(false);
+    }
+
+    // Check if it's a directory
+    if !path.is_dir() {
+        println!("Path '{}' is not a directory", snapshot_path);
+        return Ok(false);
+    }
+
+    // Read directory contents
+    let entries = std::fs::read_dir(path)?;
+    let mut has_contents = false;
+
+    for entry in entries {
+        let entry = entry?;
+        let entry_path = entry.path();
+
+        if entry_path.is_dir() {
+            println!("Found subdirectory: {}", entry_path.display());
+            has_contents = true;
+        } else if entry_path.is_file() {
+            println!("Found file: {}", entry_path.display());
+            has_contents = true;
+        }
+    }
+
+    if !has_contents {
+        println!("Path '{}' is empty (no files or subdirectories)", snapshot_path);
+    }
+
+    Ok(has_contents)
+}

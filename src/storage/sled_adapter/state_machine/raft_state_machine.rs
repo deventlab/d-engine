@@ -8,7 +8,8 @@ use crate::constants::STATE_MACHINE_TREE;
 use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
 use crate::convert::safe_vk;
-use crate::file_io::compute_checksum_from_path;
+use crate::file_io::compute_checksum_from_folder_path;
+use crate::file_io::validate_compressed_format;
 use crate::init_sled_state_machine_db;
 use crate::proto::client::write_command::Delete;
 use crate::proto::client::write_command::Insert;
@@ -19,23 +20,29 @@ use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
 use crate::Result;
+use crate::SnapshotError;
 use crate::StateMachine;
 use crate::StateMachineIter;
 use crate::StorageError;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
 use arc_swap::ArcSwap;
+use async_compression::tokio::bufread::GzipDecoder;
 use autometrics::autometrics;
 use parking_lot::Mutex;
 use prost::Message;
 use sled::Batch;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::fs::File;
+use tokio::io::BufReader;
 use tokio::sync::RwLock;
+use tokio_tar::Archive;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -357,8 +364,9 @@ impl StateMachine for RaftStateMachine {
         new_db.flush()?;
 
         // Calculate the checksum after generating snapshot data
-        let checksum = compute_checksum_from_path(&new_snapshot_dir).await?;
+        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
 
+        println!("checksum = {:?}", checksum);
         // Make sure last included is updated to the new ones
 
         let last_snapshot_metadata = SnapshotMetadata {
@@ -379,23 +387,72 @@ impl StateMachine for RaftStateMachine {
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
-        snapshot_path: PathBuf,
+        compressed_path: PathBuf,
     ) -> Result<()> {
-        if let Some(last_included) = metadata.last_included {
-            // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
+        if let Some(new_last_included) = metadata.last_included {
+            // 1. Acquire write lock to prevent concurrent snapshot generation/application
+            //    This ensures atomic snapshot application per Raft requirements
             let _guard = self.snapshot_lock.write().await;
 
-            // 2. Create a new state machine database instance
-            let db = init_sled_state_machine_db(&snapshot_path).map_err(|e| StorageError::PathError {
-                path: snapshot_path,
+            // 2. Validate snapshot version - only apply if newer than current state
+            if let Some(current_metadata) = self.snapshot_metadata() {
+                if let Some(current_last_included) = current_metadata.last_included {
+                    // Only allow application when the new snapshot index is larger
+                    if new_last_included.index <= current_last_included.index {
+                        return Err(SnapshotError::Outdated.into());
+                    }
+                }
+            }
+
+            // 3. Validate file format before processing (IMPROVEMENT ADDED)
+            //    Verify the file is actually compressed using magic numbers or extension
+            validate_compressed_format(&compressed_path)?;
+
+            // 4. Create temp directory for decompression
+            //    Using tempfile crate ensures secure cleanup
+            let temp_dir = tempfile::tempdir().map_err(StorageError::IoError)?;
+            let temp_dir_path = temp_dir.path().to_path_buf();
+
+            // 5. Decompress snapshot using proper chunking/validation
+            //    Added compression format validation based on
+            self.decompress_snapshot(&compressed_path, &temp_dir_path).await?;
+
+            // 6. CRITICAL SECURITY STEP: Validate checksum
+            //    Prevents tampered or corrupted snapshots from being applied
+            let computed_checksum = compute_checksum_from_folder_path(&temp_dir_path).await?;
+
+            if metadata.checksum != computed_checksum {
+                error!(
+                    "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                    computed_checksum, metadata.checksum
+                );
+
+                metrics::counter!(
+                    "snapshot.checksum_failures",
+                    &[
+                        ("node_id", self.node_id.to_string()),
+                        ("snapshot_index", new_last_included.index.to_string()),
+                    ]
+                )
+                .increment(1);
+
+                return Err(SnapshotError::ChecksumMismatch.into());
+            }
+
+            // 7. Initialize new state machine database
+            //    Maintains ACID properties during state transition
+            let db = init_sled_state_machine_db(&temp_dir_path).map_err(|e| StorageError::PathError {
+                path: temp_dir_path,
                 source: e,
             })?;
 
-            // 3. Atomically replace the current database
+            // 7. Atomically replace current database
+            //    Critical for maintaining consistency per Raft spec
             self.db.store(Arc::new(db));
 
-            // 4. Update the last applied and last included index and term
-            self.update_last_applied(last_included);
+            // 8. Update Raft metadata and indexes
+            //    Follows snapshot application procedure from
+            self.update_last_applied(new_last_included);
             self.update_last_snapshot_metadata(&metadata)?;
         } else {
             error!(
@@ -489,7 +546,7 @@ impl RaftStateMachine {
                     return Ok(Some(last_snapshot_metadata));
                 }
                 Err(e) => {
-                    return Err(StorageError::Snapshot(format!(
+                    return Err(SnapshotError::OperationFailed(format!(
                         "state:load_snapshot_metadata deserialize error. {}",
                         e
                     ))
@@ -532,6 +589,20 @@ impl RaftStateMachine {
         tree.flush()?;
         Ok(())
     }
+
+    pub(super) async fn decompress_snapshot(
+        &self,
+        compressed_path: &Path,
+        dest_dir: &Path,
+    ) -> Result<()> {
+        let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
+        let buf_reader = BufReader::new(file);
+        let gzip_decoder = GzipDecoder::new(buf_reader);
+        let mut archive = Archive::new(gzip_decoder);
+
+        archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
+        Ok(())
+    }
 }
 
 /// TODO: how to refactor with `current_tree`
@@ -540,5 +611,5 @@ fn new_tree(
     key: &str,
 ) -> Result<sled::Tree> {
     db.open_tree(key)
-        .map_err(|e| StorageError::Snapshot(format!("{e:?}")).into())
+        .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")).into())
 }

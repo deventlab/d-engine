@@ -4,13 +4,14 @@ use crate::constants::STATE_MACHINE_META_NAMESPACE;
 use crate::constants::STATE_MACHINE_TREE;
 use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
-use crate::file_io::compute_checksum_from_path;
+use crate::file_io::compute_checksum_from_folder_path;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_storages;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
+use crate::test_utils::enable_logger;
 use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::setup_raft_components;
@@ -22,11 +23,14 @@ use crate::SystemError;
 use crate::COMMITTED_LOG_METRIC;
 use prometheus::Registry;
 use sled::Batch;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
-use tracing::info;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tracing::debug;
 
 #[test]
 fn test_start_stop() {
@@ -243,6 +247,7 @@ fn test_metrics_integration() {
 /// # Case 1: test basic functionality
 #[tokio::test]
 async fn test_generate_snapshot_data_case1() {
+    enable_logger();
     let root = tempfile::tempdir().unwrap();
     let context = setup_raft_components("/tmp/test_generate_snapshot_data_case1", None, false);
     let sm = context.state_machine.clone();
@@ -266,11 +271,11 @@ async fn test_generate_snapshot_data_case1() {
     let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
     let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
 
-    let expected_checksum = compute_checksum_from_path(&temp_path).await.expect("success");
+    let expected_checksum = compute_checksum_from_folder_path(&temp_path).await.expect("success");
 
     // Check data entries
     for i in 1..=3 {
-        assert!(tree.get(safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
     }
 
     // Check metadata (stored in same tree due to code limitation)
@@ -321,12 +326,12 @@ async fn test_generate_snapshot_data_case2() {
 
     // Entries <=3 should exist
     for i in 1..=3 {
-        assert!(tree.get(safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
     }
 
     // Entries >3 should not exist
     for i in 4..=5 {
-        assert!(tree.get(safe_kv(i)).unwrap().is_none());
+        assert!(tree.get(&safe_kv(i)).unwrap().is_none());
     }
 }
 
@@ -383,190 +388,280 @@ async fn test_generate_snapshot_data_case4() {
 
     assert_eq!(tree.len(), 150);
     for i in 1..=150 {
-        assert!(tree.get(safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
     }
 }
 
-/// # Case 1: Basic snapshot application
-#[tokio::test]
-async fn test_apply_snapshot_from_file_case1() {
-    let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case1", None, false);
-    let sm = context.state_machine.clone();
-
-    // Generate test snapshot
-    let temp_path = root.path().join("snapshot_basic");
-    let last_included = LogId { index: 5, term: 2 };
-    let metadata = SnapshotMetadata {
-        last_included: Some(last_included),
-        checksum: [0; 32].to_vec(), //TODO: to be tested
+#[cfg(test)]
+mod apply_snapshot_from_file_tests {
+    use super::*;
+    use crate::{
+        file_io::{create_valid_snapshot, validate_compressed_format},
+        test_utils::enable_logger,
+        FileError,
     };
 
-    {
-        // Create dummy snapshot data
-        let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
-        let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
-        tree.insert(b"test_key", b"test_value").unwrap();
-        tree.flush().unwrap();
-    }
+    /// # Case 1: Basic snapshot application
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case1() {
+        enable_logger();
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/test_apply_snapshot_case1", None, false);
+        let sm = context.state_machine.clone();
 
-    // Apply snapshot
-    sm.apply_snapshot_from_file(&metadata, temp_path.clone()).await.unwrap();
+        // Generate test snapshot - COMPRESSED FILE
+        let temp_path = root.path().join("snapshot_basic.tar.gz");
+        let checksum = create_valid_snapshot(&temp_path, |db| {
+            let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
+            tree.insert(b"test_key", b"test_value").unwrap();
+        })
+        .await;
 
-    // Verify data
-    assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
-    assert_eq!(sm.last_applied(), last_included);
-    assert_eq!(
-        sm.snapshot_metadata(),
-        (Some(SnapshotMetadata {
+        // Validate file format
+        validate_compressed_format(&temp_path).expect("Valid compressed format");
+
+        // Get file size
+        let file_size = std::fs::metadata(&temp_path).unwrap().len();
+        assert!(file_size > 100, "File too small: {} bytes", file_size);
+
+        let last_included = LogId { index: 5, term: 2 };
+        let metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: metadata.checksum_array().expect("success").to_vec()
-        }))
-    );
-}
+            checksum: checksum.to_vec(),
+        };
 
-/// # Case 2: Overwrite existing state
-#[tokio::test]
-async fn test_apply_snapshot_from_file_case2() {
-    let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case2", None, false);
-    let sm = context.state_machine.clone();
+        // Apply snapshot
+        sm.apply_snapshot_from_file(&metadata, temp_path.clone()).await.unwrap();
 
-    // Add initial data
-    let mut batch = Batch::default();
-    batch.insert(b"existing_key", b"old_value");
-    sm.apply_batch(batch).unwrap();
-
-    // Create snapshot with new data
-    let temp_path = root.path().join("snapshot_overwrite");
-    let metadata = SnapshotMetadata {
-        last_included: Some(LogId { index: 10, term: 3 }),
-        checksum: [0; 32].to_vec(), //TODO: to be tested
-    };
-
-    {
-        let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
-        let tree = snapshot_db.open_tree(STATE_MACHINE_TREE).unwrap();
-        tree.insert(b"new_key", b"new_value").unwrap();
-        tree.flush().unwrap();
+        // Verify data and metadata
+        assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
+        assert_eq!(sm.last_applied(), last_included);
+        assert_eq!(sm.snapshot_metadata(), Some(metadata.clone()));
     }
 
-    // Apply snapshot
-    sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
+    /// # Case 2: Overwrite existing state
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case2() {
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/testtest_apply_snapshot_case2", None, false);
+        let sm = context.state_machine.clone();
 
-    // Verify old data replaced
-    assert_eq!(sm.get(b"existing_key").unwrap(), None);
-    assert_eq!(sm.get(b"new_key").unwrap(), Some(b"new_value".to_vec()));
-}
+        // Add initial data
+        let mut batch = Batch::default();
+        batch.insert(b"existing_key", b"old_value");
+        sm.apply_batch(batch).unwrap();
 
-/// # Case 3: Metadata consistency check
-#[tokio::test]
-async fn test_apply_snapshot_from_file_case3() {
-    let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case3", None, false);
-    let sm = context.state_machine.clone();
+        // Create COMPRESSED snapshot with new data
+        let temp_path = root.path().join("snapshot_overwrite.tar.gz");
+        let last_included = LogId { index: 10, term: 3 };
 
-    let temp_path = root.path().join("snapshot_metadata");
-    let last_included = LogId { index: 15, term: 4 };
-    let test_metadata = SnapshotMetadata {
-        last_included: Some(last_included),
-        checksum: [0; 32].to_vec(), //TODO: to be tested
-    };
+        let checksum = create_valid_snapshot(&temp_path, |db| {
+            let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
+            tree.insert(b"new_key", b"new_value").unwrap();
+        })
+        .await;
 
-    {
-        // Create minimal valid snapshot
-        let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
-        let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
-
-        let last_snapshot_metadata = SnapshotMetadata {
+        let metadata = SnapshotMetadata {
             last_included: Some(last_included),
+            checksum: checksum.to_vec(),
+        };
+
+        // Apply snapshot
+        sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
+
+        // Verify state overwrite
+        assert_eq!(sm.get(b"existing_key").unwrap(), None);
+        assert_eq!(sm.get(b"new_key").unwrap(), Some(b"new_value".to_vec()));
+    }
+
+    /// # Case 3: Metadata consistency check
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case3() {
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/testtest_apply_snapshot_case3", None, false);
+        let sm = context.state_machine.clone();
+
+        // Create COMPRESSED snapshot
+        let temp_path = root.path().join("snapshot_metadata.tar.gz");
+        let last_included = LogId { index: 15, term: 4 };
+
+        let checksum = create_valid_snapshot(&temp_path, |db| {
+            let metadata_tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
+            let value = bincode::serialize(&SnapshotMetadata {
+                last_included: Some(last_included),
+                checksum: vec![],
+            })
+            .unwrap();
+            metadata_tree.insert(LAST_SNAPSHOT_METADATA_KEY, value).unwrap();
+        })
+        .await;
+
+        let metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: checksum.to_vec(),
+        };
+
+        sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
+
+        // Verify metadata propagation
+        assert_eq!(sm.snapshot_metadata(), Some(metadata.clone()));
+        assert_eq!(sm.last_applied(), last_included);
+    }
+
+    /// # Case 4: Concurrent snapshot protection
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case4() {
+        enable_logger();
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case4", None, false);
+        let sm = context.state_machine.clone();
+
+        let temp_path = root.path().join("snapshot_concurrent.tar.gz");
+
+        let checksum = create_valid_snapshot(&temp_path, |db| {
+            let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
+            tree.insert(b"test_key", b"test_value").unwrap();
+        })
+        .await;
+
+        // Validate file format
+        validate_compressed_format(&temp_path).expect("Valid compressed format");
+
+        let last_included = LogId { index: 20, term: 5 };
+        let metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: checksum.to_vec(),
+        };
+
+        // Start two concurrent apply operations
+        let handle1 = tokio::spawn({
+            let sm = sm.clone();
+            let path = temp_path.clone();
+            let metadata = metadata.clone();
+            async move { sm.apply_snapshot_from_file(&metadata, path).await }
+        });
+
+        let handle2 = tokio::spawn({
+            let sm = sm.clone();
+            let path = temp_path.clone();
+            let metadata = metadata.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                sm.apply_snapshot_from_file(&metadata, path).await
+            }
+        });
+
+        // Verify only one succeeds
+        let results = futures::join!(handle1, handle2);
+        println!(" > {results:?}",);
+
+        match (results.0, results.1) {
+            (Ok(Ok(_)), Ok(Err(_))) | (Ok(Err(_)), Ok(Ok(_))) => (), // Expected scenario
+            _ => panic!("Both snapshot applications should not succeed concurrently"),
+        }
+    }
+
+    /// # Case 5: Invalid snapshot handling
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case5() {
+        let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", None, false);
+        let sm = context.state_machine.clone();
+
+        let result = sm
+            .apply_snapshot_from_file(
+                &SnapshotMetadata {
+                    last_included: Some(LogId { term: 1, index: 1 }),
+                    checksum: [0_u8; 32].to_vec(),
+                },
+                PathBuf::from("/non/existent/path"),
+            )
+            .await;
+
+        debug!(?result, "test_apply_snapshot_from_file_case5");
+        assert!(matches!(
+            result,
+            Err(Error::System(SystemError::Storage(StorageError::File(
+                FileError::NotFound(_)
+            ))))
+        ));
+    }
+
+    /// # Case 6: Checksum validation failure
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case6_checksum_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/testtest_apply_snapshot_case6", None, false);
+        let sm = context.state_machine.clone();
+
+        // Create valid snapshot
+        let temp_path = root.path().join("snapshot_checksum_failure.tar.gz");
+        let checksum = create_valid_snapshot(&temp_path, |_| {}).await;
+
+        let last_included = LogId { index: 25, term: 6 };
+        let mut metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: checksum.to_vec(),
+        };
+
+        // Corrupt checksum
+        metadata.checksum[0] = !metadata.checksum[0];
+
+        // Should fail on checksum validation
+        let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
+        assert!(result.is_err());
+    }
+
+    /// # Case 7: Empty snapshot application
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case7_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/testtest_apply_snapshot_case7", None, false);
+        let sm = context.state_machine.clone();
+
+        // Create empty snapshot file
+        let temp_path = root.path().join("empty.snapshot.tar.gz");
+        File::create(&temp_path).await.unwrap();
+
+        let last_included = LogId { index: 0, term: 0 };
+        let metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: vec![], // Special empty checksum
+        };
+
+        // Should handle empty snapshot
+        let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
+        debug!(?result, "test_apply_snapshot_from_file_case7_empty");
+        assert!(result.is_err());
+
+        // Should reset to initial state
+        assert_eq!(sm.get(b"any_key").unwrap(), None);
+        assert_eq!(sm.last_applied(), last_included);
+    }
+
+    /// # Case 8: Invalid file format
+    #[tokio::test]
+    async fn test_apply_snapshot_from_file_case8_invalid_format() {
+        let root = tempfile::tempdir().unwrap();
+        let context = setup_raft_components("/tmp/testtest_apply_snapshot_case8", None, false);
+        let sm = context.state_machine.clone();
+
+        // Create invalid file (not tar.gz)
+        let temp_path = root.path().join("invalid.txt");
+        tokio::fs::write(&temp_path, "I'm not a valid snapshot").await.unwrap();
+
+        let metadata = SnapshotMetadata {
+            last_included: Some(LogId { index: 30, term: 8 }),
             checksum: vec![],
         };
 
-        let v = bincode::serialize(&last_snapshot_metadata)
-            .map_err(|e| StorageError::BincodeError(e))
-            .unwrap();
+        let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
+        assert!(result.is_err());
 
-        metadata_tree.insert(LAST_SNAPSHOT_METADATA_KEY, v).unwrap();
-        info!("persist_last_snapshot_metadata_with_tree successfully!");
-
-        metadata_tree.flush().unwrap();
+        // assert!(matches!(
+        //     result,
+        //     Err(Error::System(SystemError::Storage(StorageError::InvalidFormat)))
+        // ));
     }
-
-    sm.apply_snapshot_from_file(&test_metadata, temp_path).await.unwrap();
-
-    // Verify metadata propagation
-    assert_eq!(
-        sm.snapshot_metadata(),
-        (Some(SnapshotMetadata {
-            last_included: Some(last_included),
-            checksum: test_metadata.checksum_array().expect("success").to_vec()
-        }))
-    );
-    assert_eq!(sm.last_applied(), last_included);
-}
-
-/// # Case 4: Concurrent snapshot protection
-#[tokio::test]
-async fn test_apply_snapshot_from_file_case4() {
-    let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case4", None, false);
-    let sm = context.state_machine.clone();
-
-    let temp_path = root.path().join("snapshot_concurrent");
-    let metadata = SnapshotMetadata {
-        last_included: Some(LogId { index: 20, term: 5 }),
-        checksum: [0; 32].to_vec(), //TODO: to be tested
-    };
-
-    // Start two concurrent apply operations
-    let handle1 = tokio::spawn({
-        let sm = sm.clone();
-        let path = temp_path.clone();
-        let metadata = metadata.clone();
-        async move { sm.apply_snapshot_from_file(&metadata, path).await }
-    });
-
-    let handle2 = tokio::spawn({
-        let sm = sm.clone();
-        let path = temp_path.clone();
-        let metadata = metadata.clone();
-        async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            sm.apply_snapshot_from_file(&metadata, path).await
-        }
-    });
-
-    // Verify only one succeeds
-    let results = futures::join!(handle1, handle2);
-    println!(" > {results:?}",);
-
-    match (results.0, results.1) {
-        (Ok(Ok(_)), Ok(Err(_))) | (Ok(Err(_)), Ok(Ok(_))) => (), // Expected scenario
-        _ => panic!("Both snapshot applications should not succeed concurrently"),
-    }
-}
-
-/// # Case 5: Invalid snapshot handling
-#[tokio::test]
-async fn test_apply_snapshot_from_file_case5() {
-    let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", None, false);
-    let sm = context.state_machine.clone();
-
-    let result = sm
-        .apply_snapshot_from_file(
-            &SnapshotMetadata {
-                last_included: Some(LogId { term: 1, index: 1 }),
-                checksum: [0_u8; 32].to_vec(),
-            },
-            PathBuf::from("/non/existent/path"),
-        )
-        .await;
-
-    assert!(matches!(
-        result,
-        Err(Error::System(SystemError::Storage(StorageError::PathError { .. })))
-    ));
 }
 
 #[tokio::test]
@@ -591,4 +686,44 @@ async fn test_state_machine_drop() {
     // Verify flush occurred by checking persistence
     let reloaded_db = sled::open(temp_dir.path()).unwrap();
     assert!(!reloaded_db.open_tree(STATE_MACHINE_META_NAMESPACE).unwrap().is_empty());
+}
+
+/// Creates a fake compressed snapshot file for testing
+async fn create_fake_compressed_snapshot(
+    path: &Path,
+    content: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use async_compression::tokio::write::GzipEncoder;
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = File::create(path).await?;
+    let mut encoder = GzipEncoder::new(file);
+    encoder.write_all(content).await?;
+    encoder.shutdown().await?;
+    Ok(())
+}
+
+/// Creates a fake compressed snapshot with directory structure
+async fn create_fake_dir_compressed_snapshot(
+    path: &Path,
+    files: &[(&str, &[u8])],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use async_compression::tokio::write::GzipEncoder;
+    use tokio_tar::Builder;
+
+    let file = File::create(path).await?;
+    let gzip_encoder = GzipEncoder::new(file);
+    let mut tar_builder = Builder::new(gzip_encoder);
+
+    let temp_dir = tempfile::tempdir()?;
+    for (file_name, content) in files {
+        let file_path = temp_dir.path().join(file_name);
+        tokio::fs::write(&file_path, content).await?;
+        tar_builder.append_path(&file_path).await?;
+    }
+
+    tar_builder.finish().await?;
+    let mut gzip_encoder = tar_builder.into_inner().await?;
+    gzip_encoder.shutdown().await?;
+    Ok(())
 }

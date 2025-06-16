@@ -27,6 +27,7 @@ use crate::Error;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
+use crate::SnapshotError;
 use crate::Transport;
 use crate::VoteResult;
 use crate::API_SLO;
@@ -387,6 +388,7 @@ impl Transport for GrpcTransport {
         Ok(responses)
     }
 
+    /// Leader send snapshot
     async fn install_snapshot(
         &self,
         channel: Channel,
@@ -444,7 +446,7 @@ impl Transport for GrpcTransport {
             // Handle stream error first
             if let Some(e) = stream_error {
                 warn!("Snapshot stream failed: {:?}", e);
-                return Err(NetworkError::SnapshotTransferFailed.into());
+                return Err(SnapshotError::TransferFailed.into());
             }
 
             // Process gRPC response
@@ -467,7 +469,7 @@ impl Transport for GrpcTransport {
             // Handle retries
             retry_count += 1;
             if retry_count > retry.max_retries {
-                return Err(NetworkError::SnapshotTransferFailed.into());
+                return Err(SnapshotError::TransferFailed.into());
             }
 
             // Exponential backoff
