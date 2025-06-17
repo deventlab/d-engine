@@ -47,6 +47,10 @@ pub struct RaftConfig {
     #[serde(default = "default_general_timeout")]
     pub general_raft_timeout_duration_in_ms: u64,
 
+    /// Timeout for snapshot RPC operations (milliseconds)
+    #[serde(default = "default_snapshot_rpc_timeout_ms")]
+    pub snapshot_rpc_timeout_ms: u64,
+
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
@@ -71,6 +75,7 @@ impl Default for RaftConfig {
             learner_raft_log_gap: default_learner_gap(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
+            snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
         }
     }
 }
@@ -106,7 +111,10 @@ fn default_learner_gap() -> u64 {
 fn default_general_timeout() -> u64 {
     50
 }
-
+fn default_snapshot_rpc_timeout_ms() -> u64 {
+    // 1 hour - sufficient for large snapshots
+    3_600_000
+}
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReplicationConfig {
     #[serde(default = "default_append_interval")]
@@ -342,6 +350,14 @@ pub struct SnapshotConfig {
     /// Number of log entries to retain (0 = disable retention)
     #[serde(default = "default_retained_log_entries")]
     pub retained_log_entries: u64,
+
+    /// Number of chunks to process before yielding the task
+    #[serde(default = "default_sender_yield_every_n_chunks")]
+    pub sender_yield_every_n_chunks: usize,
+
+    /// Number of chunks to process before yielding the task
+    #[serde(default = "default_receiver_yield_every_n_chunks")]
+    pub receiver_yield_every_n_chunks: usize,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -352,6 +368,8 @@ impl Default for SnapshotConfig {
             snapshots_dir: default_snapshots_dir(),
             chunk_size: default_chunk_size(),
             retained_log_entries: default_retained_log_entries(),
+            sender_yield_every_n_chunks: default_sender_yield_every_n_chunks(),
+            receiver_yield_every_n_chunks: default_receiver_yield_every_n_chunks(),
         }
     }
 }
@@ -386,6 +404,20 @@ impl SnapshotConfig {
             ))));
         }
 
+        if self.sender_yield_every_n_chunks < 1 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "sender_yield_every_n_chunks must be >= 1, (got {})",
+                self.sender_yield_every_n_chunks
+            ))));
+        }
+
+        if self.receiver_yield_every_n_chunks < 1 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "receiver_yield_every_n_chunks must be >= 1, (got {})",
+                self.receiver_yield_every_n_chunks
+            ))));
+        }
+
         Ok(())
     }
 }
@@ -411,9 +443,9 @@ fn default_snapshots_dir() -> PathBuf {
     PathBuf::from("/tmp/snapshots")
 }
 
-/// 256KB chunks by default
+/// 1KB chunks by default
 fn default_chunk_size() -> usize {
-    1024 * 256
+    1024
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -433,5 +465,13 @@ fn default_rpc_enable_compression() -> bool {
 }
 
 fn default_retained_log_entries() -> u64 {
+    1
+}
+
+fn default_sender_yield_every_n_chunks() -> usize {
+    1
+}
+
+fn default_receiver_yield_every_n_chunks() -> usize {
     1
 }

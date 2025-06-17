@@ -5,9 +5,12 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
+use crate::SnapshotConfig;
 use prost::Message;
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     let mut buffer = Vec::new();
@@ -85,4 +88,17 @@ static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
 pub fn enable_logger() {
     *LOGGER_INIT;
     println!("setup logger for unit test.");
+}
+
+pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
+    SnapshotConfig {
+        max_log_entries_before_snapshot: 1,
+        snapshot_cool_down_since_last_check: Duration::from_secs(0),
+        cleanup_retain_count: 2,
+        snapshots_dir,
+        chunk_size: 1024,
+        retained_log_entries: 1,
+        sender_yield_every_n_chunks: 1,
+        receiver_yield_every_n_chunks: 1,
+    }
 }

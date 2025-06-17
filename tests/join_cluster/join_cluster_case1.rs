@@ -95,7 +95,7 @@ async fn test_join_cluster_scenario() -> Result<(), ClientApiError> {
     )
     .await?;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // 5. Validate if node 4 has snapshot installed
     let snapshot_path = "./snapshots/join_cluster/case1/4";

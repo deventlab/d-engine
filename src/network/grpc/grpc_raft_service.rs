@@ -2,21 +2,6 @@
 //! and client requests. Implements core Raft protocol logic for leader election,
 //! log replication, and cluster configuration management.
 
-use std::future::Future;
-use std::time::Duration;
-
-use autometrics::autometrics;
-use tokio::select;
-use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
-use tonic::Request;
-use tonic::Response;
-use tonic::Status;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
-
 use crate::proto::client::raft_client_service_server::RaftClientService;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
@@ -47,6 +32,19 @@ use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use std::future::Future;
+use std::time::Duration;
+use tokio::select;
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
+use tonic::Request;
+use tonic::Response;
+use tonic::Status;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
@@ -134,7 +132,7 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration = Duration::from_millis(self.node_config.raft.snapshot_rpc_timeout_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
     }
 

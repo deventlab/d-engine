@@ -90,6 +90,7 @@ where
         current_term: u64,
         stream_request: Box<tonic::Streaming<SnapshotChunk>>,
         sender: crate::MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
+        config: &crate::SnapshotConfig,
     ) -> Result<()>;
 
     /// Validate if should generate snapshot now

@@ -1544,15 +1544,11 @@ impl<T: TypeConfig> LeaderState<T> {
 
         let data_stream = ctx.state_machine_handler().load_snapshot_data(metadata.clone()).await?;
         let retry = ctx.node_config.retry.install_snapshot.clone();
-        tokio::spawn(async move {
-            match transport
-                .install_snapshot(channel_with_address.channel, metadata, data_stream, &retry)
-                .await
-            {
-                Ok(_) => info!("Snapshot transferred successfully to node {}", node_id),
-                Err(e) => error!("Snapshot transfer failed to node {}: {:?}", node_id, e),
-            }
-        });
+        let config = ctx.node_config.raft.snapshot.clone();
+
+        transport
+            .install_snapshot(channel_with_address.channel, metadata, data_stream, &retry, &config)
+            .await?;
 
         Ok(())
     }

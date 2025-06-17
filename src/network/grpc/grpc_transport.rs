@@ -17,6 +17,7 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
+use crate::scoped_timer::ScopedTimer;
 use crate::task_with_timeout_and_exponential_backoff;
 use crate::AppendResult;
 use crate::BackoffPolicy;
@@ -24,9 +25,11 @@ use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::ClusterUpdateResult;
 use crate::Error;
+use crate::InstallSnapshotBackoffPolicy;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
+use crate::SnapshotConfig;
 use crate::SnapshotError;
 use crate::Transport;
 use crate::VoteResult;
@@ -41,10 +44,12 @@ use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task;
+use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
+use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -392,90 +397,140 @@ impl Transport for GrpcTransport {
     async fn install_snapshot(
         &self,
         channel: Channel,
-        _metadata: SnapshotMetadata,
+        metadata: SnapshotMetadata,
         data_stream: BoxStream<'static, Result<SnapshotChunk>>,
-        retry: &BackoffPolicy,
+        retry: &InstallSnapshotBackoffPolicy,
+        config: &SnapshotConfig,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("install_snapshot");
         debug!("Starting snapshot installation");
         let mut client = SnapshotServiceClient::new(channel)
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip);
 
-        let mut retry_count = 0;
-        let mut last_successful_chunk = 0;
+        // let mut retry_count = 0;
+        let mut last_successful_chunk: u32 = 0;
+
+        // Calculate total chunks from metadata
+        let total_chunks = metadata.last_included.map(|id| id.index).unwrap_or(0);
 
         // Convert the data stream to a retryable stream
         let mut restartable_stream = RestartableStream::new(data_stream);
-        loop {
-            // Start from the last successful position
-            restartable_stream.seek(last_successful_chunk).await?;
+        // loop {
+        // Calculate dynamic timeout based on remaining chunks
+        let remaining_chunks = total_chunks.saturating_sub(last_successful_chunk.into());
+        debug!(?retry, "install_snapshot retry");
+        let dynamic_timeout = Duration::from_millis(retry.per_chunk_timeout_ms * remaining_chunks as u64).clamp(
+            Duration::from_millis(retry.min_timeout_ms),
+            Duration::from_millis(retry.max_timeout_ms),
+        );
 
-            // Create a new sending channel
-            let (tx, rx) = mpsc::channel(32);
-            let request = ReceiverStream::new(rx);
+        // Start from the last successful position
+        restartable_stream.seek(last_successful_chunk).await?;
 
-            // Send request and monitor for errors
-            let grpc_call = client.install_snapshot(request);
-            tokio::pin!(grpc_call);
+        // Create a new sending channel
+        let (tx, rx) = mpsc::channel(32);
+        let request = ReceiverStream::new(rx);
 
-            // Process stream data and handle errors
-            let mut stream_error = None;
+        // Send request and monitor for errors
+        let grpc_call = client.install_snapshot(request);
+        tokio::pin!(grpc_call);
+
+        // Send chunks with backpressure and timeouts
+        let send_task = async {
             let mut last_chunk = last_successful_chunk;
-            let send_task = async {
-                while let Some(chunk_result) = restartable_stream.next().await {
-                    match chunk_result {
-                        Ok(chunk) => {
-                            last_chunk = chunk.seq;
-                            if tx.send(chunk).await.is_err() {
-                                break;
+            let mut count = 0;
+
+            while let Some(chunk_result) = restartable_stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        last_chunk = chunk.seq;
+
+                        // Add backpressure waiting
+                        if tx.capacity() == 0 {
+                            debug!("Backpressure: waiting for receiver");
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+
+                        // Send with per-chunk timeout
+                        match timeout(Duration::from_millis(retry.per_chunk_timeout_ms), tx.send(chunk)).await {
+                            Ok(Ok(_)) => (),
+                            Ok(Err(_)) => break, // Channel closed
+                            Err(_) => {
+                                warn!("Chunk {} timeout", last_chunk);
+                                return Err(SnapshotError::TransferFailed);
                             }
                         }
-                        Err(e) => {
-                            stream_error = Some(e);
-                            break;
+
+                        count += 1;
+                        // Yield every 10 chunks to prevent starvation
+                        if count % config.sender_yield_every_n_chunks == 0 {
+                            tokio::task::yield_now().await;
                         }
                     }
+                    Err(e) => return Err(SnapshotError::OperationFailed(format!("{:?}", e)).into()),
                 }
-                last_chunk
-            };
+            }
+            Ok(last_chunk)
+        };
 
-            // Wait for either send task or gRPC response
-            let (last_sent, grpc_result) = tokio::join!(send_task, grpc_call);
-            last_successful_chunk = last_sent;
+        // Wait for either send task or gRPC response with dynamic timeout
+        debug!(?dynamic_timeout, "send_task, grpc_call");
+        let result = timeout(dynamic_timeout, async { tokio::join!(send_task, grpc_call) }).await;
 
-            // Handle stream error first
-            if let Some(e) = stream_error {
+        let (last_sent, grpc_result) = match result {
+            Ok((send_res, grpc_res)) => (send_res, grpc_res),
+            Err(_) => {
+                warn!("Snapshot transfer timed out after {:?}", dynamic_timeout);
+                (
+                    Err(SnapshotError::TransferTimeout),
+                    Err(Status::deadline_exceeded("Snapshot transfer timeout")),
+                )
+            }
+        };
+
+        last_successful_chunk = match last_sent {
+            Ok(chunk) => chunk,
+            Err(e) => {
                 warn!("Snapshot stream failed: {:?}", e);
+                return Err(e.into());
+            }
+        };
+
+        // Process gRPC response
+        match grpc_result {
+            Ok(response) => {
+                let response = response.into_inner();
+                if response.success {
+                    debug!("Snapshot transferred successfully");
+                    return Ok(());
+                } else {
+                    last_successful_chunk = response.next_chunk;
+                    warn!(
+                        ?last_successful_chunk,
+                        "Follower rejected snapshot at chunk {}", response.next_chunk
+                    );
+                    return Err(SnapshotError::TransferFailed.into());
+                }
+            }
+            Err(status) => {
+                warn!("Snapshot transfer failed: {:?}", status);
                 return Err(SnapshotError::TransferFailed.into());
             }
-
-            // Process gRPC response
-            match grpc_result {
-                Ok(response) => {
-                    let response = response.into_inner();
-                    if response.success {
-                        debug!("Snapshot transferred successfully");
-                        return Ok(());
-                    } else {
-                        warn!("Follower rejected snapshot at chunk {}", response.next_chunk);
-                        last_successful_chunk = response.next_chunk;
-                    }
-                }
-                Err(status) => {
-                    warn!("Snapshot transfer failed: {:?}", status);
-                }
-            }
-
-            // Handle retries
-            retry_count += 1;
-            if retry_count > retry.max_retries {
-                return Err(SnapshotError::TransferFailed.into());
-            }
-
-            // Exponential backoff
-            let delay = std::cmp::min(retry.base_delay_ms * 2u64.pow(retry_count as u32), retry.max_delay_ms);
-            tokio::time::sleep(Duration::from_millis(delay.into())).await;
         }
+
+        // Handle retries
+        // debug!(%retry_count, "install_snapshot");
+
+        // retry_count += 1;
+        // if retry_count > retry.max_retries {
+        //     return Err(SnapshotError::TransferFailed.into());
+        // }
+
+        //     // Exponential backoff
+        //     let delay = std::cmp::min(retry.base_delay_ms * 2u64.pow(retry_count as u32), retry.max_delay_ms);
+        //     tokio::time::sleep(Duration::from_millis(delay.into())).await;
+        // }
     }
 
     #[autometrics(objective = API_SLO)]

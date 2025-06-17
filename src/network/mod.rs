@@ -235,7 +235,8 @@ pub trait Transport: Send + Sync + 'static {
         channel: Channel,
         metadata: SnapshotMetadata,
         data_stream: futures::stream::BoxStream<'static, Result<SnapshotChunk>>,
-        retry: &BackoffPolicy,
+        retry: &crate::InstallSnapshotBackoffPolicy,
+        config: &crate::SnapshotConfig,
     ) -> Result<()>;
 
     /// Initiates cluster join process for a learner node

@@ -280,7 +280,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 if let Err(e) = ctx
                     .handlers
                     .state_machine_handler
-                    .install_snapshot_chunk(my_term, stream, sender)
+                    .install_snapshot_chunk(my_term, stream, sender, &ctx.node_config.raft.snapshot)
                     .await
                 {
                     error!(?e, "Learner handle  RaftEvent::InstallSnapshotChunk");

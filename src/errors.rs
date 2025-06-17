@@ -447,6 +447,10 @@ pub enum SnapshotError {
     #[error("Install snapshot RPC request failed")]
     TransferFailed,
 
+    /// Snapshot transfer timeout due to network issues
+    #[error("Install snapshot RPC request timeout")]
+    TransferTimeout,
+
     /// Snapshot operation failed with context
     #[error("Snapshot operation failed: {0}")]
     OperationFailed(String),
@@ -458,6 +462,14 @@ pub enum SnapshotError {
     /// Snapshot file checksum mismatch
     #[error("Snapshot file checksum mismatch")]
     ChecksumMismatch,
+
+    /// Invalid snapshot
+    #[error("Invalid snapshot")]
+    InvalidSnapshot,
+
+    /// Invalid chunk sequence
+    #[error("Invalid chunk sequence")]
+    InvalidChunkSequence,
 }
 
 // ============== Conversion Implementations ============== //

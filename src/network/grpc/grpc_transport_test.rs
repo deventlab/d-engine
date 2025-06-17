@@ -16,17 +16,18 @@ use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
+use crate::test_utils::snapshot_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::MOCK_INSTALL_SNAPSHOT_PORT_BASE;
 use crate::test_utils::MOCK_PURGE_PORT_BASE;
 use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
 use crate::test_utils::{self};
-use crate::BackoffPolicy;
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
+use crate::InstallSnapshotBackoffPolicy;
 use crate::NetworkError;
 use crate::RaftNodeConfig;
 use crate::RetryPolicies;
@@ -1271,15 +1272,25 @@ async fn test_install_snapshot_case1_success() {
         last_included: Some(LogId { index: 100, term: 1 }),
         checksum: vec![],
     };
-    let retry = BackoffPolicy {
+    let retry = InstallSnapshotBackoffPolicy {
         base_delay_ms: 10,
         max_retries: 3,
         timeout_ms: 100,
         max_delay_ms: 100,
+        per_chunk_timeout_ms: 30_000,
+        min_timeout_ms: 60_000,
+        max_timeout_ms: 300_000,
+        between_chunk_timeout_ms: 30_000,
     };
 
     let result = client
-        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .install_snapshot(
+            addr.channel,
+            metadata,
+            data_stream,
+            &retry,
+            &snapshot_config("/tmp/test_install_snapshot_case1_success".into()),
+        )
         .await;
 
     shutdown_tx.send(()).ok();
@@ -1311,15 +1322,25 @@ async fn test_install_snapshot_case2_retry_success() {
         last_included: Some(LogId { index: 50, term: 1 }),
         checksum: vec![],
     };
-    let retry = BackoffPolicy {
+
+    let retry = InstallSnapshotBackoffPolicy {
         base_delay_ms: 10,
         max_retries: 2,
         timeout_ms: 100,
         max_delay_ms: 100,
+        per_chunk_timeout_ms: 30_000,
+        min_timeout_ms: 60_000,
+        max_timeout_ms: 300_000,
+        between_chunk_timeout_ms: 30_000,
     };
-
     let result = client
-        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .install_snapshot(
+            addr.channel,
+            metadata,
+            data_stream,
+            &retry,
+            &snapshot_config("/tmp/test_install_snapshot_case2_retry_success".into()),
+        )
         .await;
 
     shutdown_tx.send(()).ok();
@@ -1351,15 +1372,25 @@ async fn test_install_snapshot_case3_retry_failure() {
         last_included: Some(LogId { index: 75, term: 1 }),
         checksum: vec![],
     };
-    let retry = BackoffPolicy {
+    let retry = InstallSnapshotBackoffPolicy {
         base_delay_ms: 10,
         max_retries: 2,
         timeout_ms: 100,
         max_delay_ms: 100,
+        per_chunk_timeout_ms: 30_000,
+        min_timeout_ms: 60_000,
+        max_timeout_ms: 300_000,
+        between_chunk_timeout_ms: 30_000,
     };
 
     let result = client
-        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .install_snapshot(
+            addr.channel,
+            metadata,
+            data_stream,
+            &retry,
+            &snapshot_config("/tmp/test_install_snapshot_case3_retry_failure".into()),
+        )
         .await;
 
     shutdown_tx.send(()).ok();
@@ -1399,24 +1430,34 @@ async fn test_install_snapshot_case4_stream_failure() {
         last_included: Some(LogId { index: 200, term: 1 }),
         checksum: vec![],
     };
-    let retry = BackoffPolicy {
+    let retry = InstallSnapshotBackoffPolicy {
         base_delay_ms: 10,
         max_retries: 1,
         timeout_ms: 100,
         max_delay_ms: 100,
+        per_chunk_timeout_ms: 30_000,
+        min_timeout_ms: 60_000,
+        max_timeout_ms: 300_000,
+        between_chunk_timeout_ms: 30_000,
     };
-
     let result = client
-        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .install_snapshot(
+            addr.channel,
+            metadata,
+            data_stream,
+            &retry,
+            &snapshot_config("/tmp/test_install_snapshot_case4_stream_failure".into()),
+        )
         .await;
 
     shutdown_tx.send(()).ok();
 
+    debug!(?result);
     assert!(
         matches!(
             result,
             Err(Error::Consensus(ConsensusError::Snapshot(
-                SnapshotError::TransferFailed
+                SnapshotError::OperationFailed(_)
             )))
         ),
         "Should fail on stream error"
@@ -1448,15 +1489,24 @@ async fn test_install_snapshot_case5_large_transfer() {
         last_included: Some(LogId { index: 500, term: 1 }),
         checksum: vec![],
     };
-    let retry = BackoffPolicy {
+    let retry = InstallSnapshotBackoffPolicy {
         base_delay_ms: 10,
         max_retries: 3,
         timeout_ms: 5000, // Longer timeout for large transfer
         max_delay_ms: 1000,
+        per_chunk_timeout_ms: 30_000,
+        min_timeout_ms: 60_000,
+        max_timeout_ms: 300_000,
+        between_chunk_timeout_ms: 30_000,
     };
-
     let result = client
-        .install_snapshot(addr.channel, metadata, data_stream, &retry)
+        .install_snapshot(
+            addr.channel,
+            metadata,
+            data_stream,
+            &retry,
+            &snapshot_config("/tmp/test_install_snapshot_case5_large_transfer".into()),
+        )
         .await;
 
     shutdown_tx.send(()).ok();

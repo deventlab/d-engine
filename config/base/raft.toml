@@ -6,7 +6,8 @@
 # /// 
 learner_raft_log_gap = 10
 general_raft_timeout_duration_in_ms = 100
-
+# 1hour
+snapshot_rpc_timeout_ms = 3_600_000
 
 [raft.replication]
 # [raft], leader append frequence
@@ -38,9 +39,12 @@ max_entries_per_chunk = 100
 max_log_entries_before_snapshot = 1000
 cleanup_retain_count = 2
 snapshots_dir = "./snapshots/"
-
+# 1KB
+chunk_size = 1024
 # Number of log entries to retain (0 = disable retention)
 retained_log_entries = 1
+sender_yield_every_n_chunks = 1
+receiver_yield_every_n_chunks = 1
 
 [raft.membership]
 cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"

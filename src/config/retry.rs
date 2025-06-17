@@ -27,6 +27,43 @@ pub struct BackoffPolicy {
     pub max_delay_ms: u64,
 }
 
+/// Configuration for exponential backoff retry strategy
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
+pub struct InstallSnapshotBackoffPolicy {
+    /// Maximum number of retries (0 means unlimited retries)
+    #[serde(default = "default_max_retries")]
+    pub max_retries: usize,
+
+    /// Single operation timeout (unit: milliseconds)
+    #[serde(default = "default_op_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Backoff base (unit: milliseconds)
+    #[serde(default = "default_base_delay_ms")]
+    pub base_delay_ms: u64,
+
+    /// Maximum backoff time (unit: milliseconds)
+    #[serde(default = "default_max_delay_ms")]
+    pub max_delay_ms: u64,
+
+    // New fields for snapshot transfers
+    /// Timeout per chunk during transfer (milliseconds)
+    #[serde(default = "default_per_chunk_timeout_ms")]
+    pub per_chunk_timeout_ms: u64,
+
+    /// Minimum overall timeout for snapshot RPC (milliseconds)
+    #[serde(default = "default_min_timeout_ms")]
+    pub min_timeout_ms: u64,
+
+    /// Maximum overall timeout for snapshot RPC (milliseconds)
+    #[serde(default = "default_max_timeout_ms")]
+    pub max_timeout_ms: u64,
+
+    /// Timeout between chunks on receiver side (milliseconds)
+    #[serde(default = "default_between_chunk_timeout_ms")]
+    pub between_chunk_timeout_ms: u64,
+}
+
 /// Domain-specific retry strategy configurations for Raft subsystems
 /// Enables fine-grained control over different RPC types and operations
 #[derive(Serialize, Deserialize, Clone)]
@@ -56,7 +93,7 @@ pub struct RetryPolicies {
 
     /// Retry policy for install snapshot requests
     #[serde(default)]
-    pub install_snapshot: BackoffPolicy,
+    pub install_snapshot: InstallSnapshotBackoffPolicy,
 
     /// Retry policy for purge log requests
     #[serde(default)]
@@ -134,11 +171,15 @@ impl Default for RetryPolicies {
             // Edge Network (Unstable)             -> max_retries=10, timeout_ms=3000, max_delay_ms=30000
             //
             // Current config:
-            install_snapshot: BackoffPolicy {
+            install_snapshot: InstallSnapshotBackoffPolicy {
                 max_retries: 3,
                 timeout_ms: 500,
                 base_delay_ms: 50,
                 max_delay_ms: 2000,
+                per_chunk_timeout_ms: default_per_chunk_timeout_ms(),
+                min_timeout_ms: default_min_timeout_ms(),
+                max_timeout_ms: default_max_timeout_ms(),
+                between_chunk_timeout_ms: default_between_chunk_timeout_ms(),
             },
 
             purge_log: BackoffPolicy {
@@ -196,6 +237,120 @@ impl BackoffPolicy {
             return Err(Error::Config(ConfigError::Message(format!(
                 "{}: max_delay_ms({}) exceeds 2min limit",
                 policy_name, self.max_delay_ms
+            ))));
+        }
+
+        Ok(())
+    }
+}
+
+impl InstallSnapshotBackoffPolicy {
+    /// Validates snapshot backoff policy parameters
+    /// # Errors
+    /// Returns `Error::InvalidConfig` when:
+    /// - Inherited backoff parameters fail validation (see BackoffPolicy)
+    /// - Timeouts for snapshot chunks/transfers are invalid
+    /// - Snapshot RPC timeout constraints are violated
+    pub fn validate(
+        &self,
+        policy_name: &str,
+    ) -> Result<()> {
+        // First validate common backoff parameters
+        self.validate_base_policy(policy_name)?;
+
+        // Validate chunk-related timeouts
+        self.validate_chunk_timeouts(policy_name)?;
+
+        // Validate snapshot RPC timeout constraints
+        self.validate_rpc_timeouts(policy_name)?;
+
+        Ok(())
+    }
+
+    /// Validate parameters inherited from BackoffPolicy
+    fn validate_base_policy(
+        &self,
+        policy_name: &str,
+    ) -> Result<()> {
+        if self.max_retries == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: max_retries=0 means infinite retries - dangerous for {policy_name} operations"
+            ))));
+        }
+
+        if self.timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: timeout_ms cannot be 0"
+            ))));
+        }
+
+        if self.base_delay_ms >= self.max_delay_ms {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{}: base_delay_ms({}) must be less than max_delay_ms({})",
+                policy_name, self.base_delay_ms, self.max_delay_ms
+            ))));
+        }
+
+        if self.max_delay_ms > 120_000 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{}: max_delay_ms({}) exceeds 2min limit",
+                policy_name, self.max_delay_ms
+            ))));
+        }
+
+        Ok(())
+    }
+
+    /// Validate snapshot chunk transfer parameters
+    fn validate_chunk_timeouts(
+        &self,
+        policy_name: &str,
+    ) -> Result<()> {
+        if self.per_chunk_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: per_chunk_timeout_ms cannot be 0"
+            ))));
+        }
+
+        if self.between_chunk_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: between_chunk_timeout_ms cannot be 0"
+            ))));
+        }
+
+        Ok(())
+    }
+
+    /// Validate snapshot RPC timeout hierarchy
+    fn validate_rpc_timeouts(
+        &self,
+        policy_name: &str,
+    ) -> Result<()> {
+        const MAX_RPC_TIMEOUT: u64 = 86_400_000; // 24 hours
+
+        if self.min_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: min_timeout_ms cannot be 0"
+            ))));
+        }
+
+        if self.max_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: max_timeout_ms cannot be 0"
+            ))));
+        }
+
+        if self.min_timeout_ms > self.max_timeout_ms {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{}: min_timeout_ms({}) > max_timeout_ms({})",
+                policy_name, self.min_timeout_ms, self.max_timeout_ms
+            ))));
+        }
+
+        if self.max_timeout_ms > MAX_RPC_TIMEOUT {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{}: max_timeout_ms({}) exceeds 24-hour limit",
+                policy_name, self.max_timeout_ms
             ))));
         }
 
@@ -284,4 +439,16 @@ fn default_base_delay_ms() -> u64 {
 }
 fn default_max_delay_ms() -> u64 {
     1000
+}
+fn default_per_chunk_timeout_ms() -> u64 {
+    1000
+}
+fn default_min_timeout_ms() -> u64 {
+    100
+}
+fn default_max_timeout_ms() -> u64 {
+    30_000
+}
+fn default_between_chunk_timeout_ms() -> u64 {
+    30_000
 }

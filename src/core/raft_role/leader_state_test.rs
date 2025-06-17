@@ -78,6 +78,7 @@ use tokio::sync::watch;
 use tonic::transport::Endpoint;
 use tonic::Code;
 use tonic::Status;
+use tracing::debug;
 
 struct ProcessRaftRequestTestContext {
     state: LeaderState<MockTypeConfig>,
@@ -2525,7 +2526,7 @@ async fn test_trigger_snapshot_transfer_case1_success() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels
@@ -2694,7 +2695,7 @@ async fn test_trigger_snapshot_transfer_case4_network_failure() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _| Err(SnapshotError::TransferFailed.into()));
+        .returning(|_, _, _, _, _| Err(SnapshotError::TransferFailed.into()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels
@@ -2718,7 +2719,8 @@ async fn test_trigger_snapshot_transfer_case4_network_failure() {
         .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
         .await;
 
-    assert!(result.is_ok(), "Should initiate transfer despite eventual failure");
+    debug!(?result);
+    assert!(result.is_err(), "Should failure if send snapshot fails");
 
     // Allow time for async task to complete
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2766,7 +2768,7 @@ async fn test_trigger_snapshot_transfer_case5_large_snapshot() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels
@@ -2826,7 +2828,12 @@ async fn test_handle_join_cluster_case1_success() {
         }]
     });
     raft_context.membership = Arc::new(membership);
-
+    let mut transport = MockTransport::new();
+    transport
+        .expect_install_snapshot()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    raft_context.transport = Arc::new(transport);
     // Mock peer channels
     let mut peer_channels = MockPeerChannels::new();
     peer_channels.expect_add_peer().returning(|_, _| Ok(()));
@@ -3136,8 +3143,8 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     let mut transport = MockTransport::new();
     transport
         .expect_install_snapshot()
-        .times(0)
-        .returning(|_, _, _, _| Ok(()));
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
     let mut raft_log = MockRaftLog::new();

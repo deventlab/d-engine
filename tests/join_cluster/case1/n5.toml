@@ -15,7 +15,8 @@ log_dir = "./logs/join_cluster/case1"
 prometheus_enabled = false
 
 [raft]
-general_raft_timeout_duration_in_ms = 10000
+general_raft_timeout_duration_in_ms = 10000 # 5min
+snapshot_rpc_timeout_ms = 300_000
 
 [raft.replication]
 rpc_append_entries_in_batch_threshold = 1
@@ -28,3 +29,5 @@ process_interval_ms = 100
 max_log_entries_before_snapshot = 10
 cleanup_retain_count = 2
 snapshots_dir = "./snapshots/join_cluster/case1/5"
+# 100bytes
+chunk_size = 100

@@ -14,6 +14,7 @@ use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
+use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
 use crate::MaybeCloneOneshotSender;
 use crate::NewCommitData;
@@ -38,6 +39,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs;
 use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
@@ -45,6 +47,8 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
+use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tonic::async_trait;
 use tonic::IntoRequest;
@@ -169,66 +173,125 @@ where
         current_term: u64,
         stream_request: Box<Streaming<SnapshotChunk>>,
         sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
+        config: &SnapshotConfig,
     ) -> Result<()> {
-        debug!(%current_term, ?stream_request, "install_snapshot_chunk");
+        let _timer = ScopedTimer::new("install_snapshot_chunk");
+        debug!(%current_term, "install_snapshot_chunk");
 
         // 1. Init SnapshotAssembler
         let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
 
-        // 2. Block processing loop (including network fault tolerance)
-        let mut term_check = None;
-        let mut metadata = None;
-        let mut total_chunks = None;
+        // 2. Configuration
+        let chunk_timeout = Duration::from_secs(10); // Timeout between chunks
+        let mut last_received = Instant::now();
 
+        // 3. Stream processing
         let mut stream = stream_request.into_request().into_inner();
+        let mut term_check = None;
+        let mut captured_metadata: Option<SnapshotMetadata> = None;
+        let mut total_chunks = None;
+        let mut count = 0;
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => {
+        loop {
+            // Receive next chunk with timeout
+            let chunk = match timeout(chunk_timeout, stream.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    last_received = Instant::now();
+                    chunk
+                }
+                Ok(Some(Err(e))) => {
+                    error!("install_snapshot_chunk stream.next error: {:?}", e);
                     let _ = sender.send(Err(e));
+                    return Ok(());
+                }
+                Ok(None) => {
+                    // Stream ended normally
+                    debug!("install_snapshot_chunk:: Stream ended normally");
+                    break;
+                }
+                Err(_) => {
+                    let elapsed = last_received.elapsed();
+                    warn!("No chunk received for {} seconds", elapsed.as_secs());
+                    let _ = sender.send(Err(Status::deadline_exceeded(format!(
+                        "No chunk received for {} seconds",
+                        elapsed.as_secs()
+                    ))));
                     return Ok(());
                 }
             };
 
-            // Verify the legitimacy of Leader
-            debug!(%chunk.seq, "chunk sequence");
+            debug!(seq = %chunk.seq, ?chunk.metadata, "install_snapshot_chunk");
 
+            // Verify leader legitimacy
             if let Some((term, leader_id)) = &term_check {
                 if chunk.term != *term || chunk.leader_id != *leader_id {
                     sender
                         .send(Err(Status::aborted("Leader changed")))
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
                     return Ok(());
                 }
             } else {
                 term_check = Some((chunk.term, chunk.leader_id));
-                metadata = chunk.metadata;
+                // Only capture metadata if present (should be first chunk only)
+                let first_metadata = match chunk.metadata {
+                    Some(m) => m,
+                    None => {
+                        // Handle missing metadata on first chunk immediately
+                        sender
+                            .send(Err(Status::internal(
+                                "First snapshot chunk is missing metadata".to_string(),
+                            )))
+                            .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
+                        return Ok(());
+                    }
+                };
+
+                captured_metadata = Some(first_metadata);
                 total_chunks = Some(chunk.total);
+
+                debug!(
+                    "Initial snapshot metadata: {:?}, total_chunks={}",
+                    captured_metadata,
+                    total_chunks.unwrap_or(0)
+                );
             }
 
+            debug!(?captured_metadata, "in process");
             // Checksum validation
             if !validate_checksum(&chunk.data, &chunk.checksum) {
+                warn!("validate_checksum failed");
                 sender
                     .send(Ok(SnapshotResponse {
                         term: current_term,
                         success: false,
                         next_chunk: chunk.seq,
                     }))
-                    .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
+                    .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
                 return Ok(());
             }
 
             // Write to temporary file
             if let Err(e) = assembler.write_chunk(chunk.seq, chunk.data).await {
+                warn!("assembler.write_chunk failed");
                 sender
                     .send(Err(Status::internal(e.to_string())))
-                    .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
+                    .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
                 return Ok(());
+            }
+
+            count += 1;
+
+            // Yield every 1 chunks to prevent starvation
+            if count % config.receiver_yield_every_n_chunks == 0 {
+                debug!(%count, "install_snapshot_chunk yield_now");
+                tokio::task::yield_now().await;
             }
         }
 
         let total = total_chunks.unwrap_or(0);
+
+        debug!(%total, "install_snapshot_chunk");
+
         if assembler.received_chunks() != total {
             sender
                 .send(Err(Status::internal(format!(
@@ -243,32 +306,68 @@ where
             return Ok(());
         }
 
-        if metadata.is_none() {
+        debug!(?captured_metadata, "done");
+        let final_metadata = match captured_metadata {
+            Some(meta) => meta.clone(),
+            None => {
+                sender
+                    .send(Err(Status::internal("Missing metadata in snapshot stream".to_string())))
+                    .map_err(|e| {
+                        warn!("Failed to send response: {:?}", e);
+                        SnapshotError::OperationFailed(format!("Send error: {e:?}"))
+                    })?;
+                return Ok(());
+            }
+        };
+
+        let snapshot_path = match assembler.finalize(&final_metadata).await {
+            Ok(path) => path,
+            Err(e) => {
+                sender
+                    .send(Err(Status::internal(format!("Finalize snapshot path failed: {:?}", e))))
+                    .map_err(|e| {
+                        warn!("Failed to send response: {:?}", e);
+                        SnapshotError::OperationFailed(format!("Send error: {e:?}"))
+                    })?;
+                return Ok(());
+            }
+        };
+
+        debug!(?final_metadata, ?snapshot_path, "before apply_snapshot_from_file");
+
+        if let Err(e) = self
+            .state_machine
+            .apply_snapshot_from_file(&final_metadata, snapshot_path)
+            .await
+        {
             sender
-                .send(Err(Status::internal(
-                    "Received snapshot chunk does not include metadata information".to_string(),
-                )))
+                .send(Err(Status::internal(format!(
+                    "Apply snapshot from file failed: {:?}",
+                    e
+                ))))
                 .map_err(|e| {
                     warn!("Failed to send response: {:?}", e);
-                    SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}"))
+                    SnapshotError::OperationFailed(format!("Send error: {e:?}"))
                 })?;
             return Ok(());
         }
-        // Application snapshot
-        let metadata = metadata.unwrap();
-        self.state_machine
-            .apply_snapshot_from_file(&metadata, assembler.finalize(&metadata).await?)
-            .await?;
 
         // Final confirmation
-        sender
-            .send(Ok(SnapshotResponse {
-                term: current_term,
-                success: true,
-                next_chunk: 0,
-            }))
-            .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
+        let response = Ok(SnapshotResponse {
+            term: current_term,
+            success: true,
+            next_chunk: 0,
+        });
 
+        match sender.send(response) {
+            Ok(_) => debug!("Snapshot response sent successfully"),
+            Err(send_error) => {
+                let error_msg = format!("Failed to send response: {:?}", send_error);
+                warn!("{}", error_msg);
+
+                return Err(SnapshotError::OperationFailed(error_msg.into()).into());
+            }
+        }
         Ok(())
     }
 
@@ -586,6 +685,7 @@ where
         &self,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
+        let _timer = ScopedTimer::new("install_snapshot_chunk");
         let last_included = metadata
             .last_included
             .ok_or_else(|| SnapshotError::OperationFailed("No last_included in metadata".to_string()))?;
@@ -646,6 +746,7 @@ where
         snapshot_file: PathBuf,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
+        let _timer = ScopedTimer::new("install_snapshot_chunk");
         let path_metadata = tokio::fs::metadata(&snapshot_file)
             .await
             .map_err(StorageError::IoError)?;
@@ -688,6 +789,7 @@ where
                     None
                 };
 
+                debug!(%seq, ?chunk_metadata, "create_snapshot_chunk_stream");
                 yield SnapshotChunk {
                     term,
                     leader_id: node_id,
