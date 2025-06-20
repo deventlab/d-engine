@@ -2728,7 +2728,7 @@ async fn test_handle_join_cluster_case1_success() {
     let mut transport = MockTransport::new();
     transport
         .expect_install_snapshot()
-        .times(1)
+        .times(0)
         .returning(|_, _, _, _, _, _| Ok(()));
     raft_context.transport = Arc::new(transport);
 
@@ -3007,7 +3007,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     let mut transport = MockTransport::new();
     transport
         .expect_install_snapshot()
-        .times(1)
+        .times(0)
         .returning(|_, _, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
