@@ -446,6 +446,9 @@ pub enum MembershipError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
+    #[error("Snapshot receiver lagging, dropping chunk")]
+    Backpressure,
+
     /// Snapshot chunk rejected during installation
     #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
     Rejected { last_chunk: u32 },

@@ -7,7 +7,9 @@
 // Protobuf GRPC service introduction
 // -----------------------------------------------------------------------------
 
+mod backgroup_snapshot_transfer;
 mod restartable_stream;
+pub(crate) use backgroup_snapshot_transfer::*;
 pub(crate) use restartable_stream::*;
 
 mod grpc_raft_service;

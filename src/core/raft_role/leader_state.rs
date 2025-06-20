@@ -10,6 +10,7 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::client_command_to_entry_payloads;
 use crate::cluster::is_majority;
+use crate::grpc::BackgroundSnapshotTransfer;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
@@ -30,6 +31,7 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::utils::cluster::error;
 use crate::AppendResults;
 use crate::BatchBuffer;
+use crate::ConnectionType;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
@@ -52,6 +54,7 @@ use crate::ReplicationError;
 use crate::ReplicationTimer;
 use crate::Result;
 use crate::RoleEvent;
+use crate::SnapshotConfig;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
@@ -67,6 +70,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tokio::time::Instant;
@@ -1412,8 +1416,29 @@ impl<T: TypeConfig> LeaderState<T> {
                 // 8. Trigger snapshot transmission (only when snapshot exists in Leader node)
                 debug!("8. Trigger snapshot transmission (only when snapshot exists in Leader node)");
                 if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
-                    self.trigger_snapshot_transfer(node_id, lastest_snapshot_metadata, ctx, membership)
-                        .await?;
+                    // Get a cloned version of the necessary parameters
+                    let membership_clone = membership.clone();
+                    let node_id_copy = node_id;
+                    let config = ctx.node_config.raft.snapshot.clone();
+                    let state_machine_handler = ctx.state_machine_handler().clone();
+                    // Start a completely independent asynchronous task
+                    tokio::spawn(async move {
+                        // Add a delayed start to avoid instantaneous pressure
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+
+                        // Asynchronously trigger snapshot transfer (do not wait for the result)
+                        if let Err(e) = Self::trigger_background_snapshot(
+                            node_id_copy,
+                            lastest_snapshot_metadata,
+                            state_machine_handler,
+                            membership_clone,
+                            config,
+                        )
+                        .await
+                        {
+                            error!("Background snapshot failed for {}: {:?}", node_id_copy, e);
+                        }
+                    });
                 }
             }
             Ok(false) => {
@@ -1524,6 +1549,49 @@ impl<T: TypeConfig> LeaderState<T> {
         transport
             .install_snapshot(node_id, metadata, data_stream, &retry, &config, membership)
             .await?;
+
+        Ok(())
+    }
+
+    pub(super) async fn trigger_background_snapshot(
+        node_id: u32,
+        metadata: SnapshotMetadata,
+        state_machine_handler: Arc<SMHOF<T>>,
+        membership: Arc<MOF<T>>,
+        config: SnapshotConfig,
+    ) -> Result<()> {
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // Delegate the actual transfer to a dedicated thread pool
+
+        tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Handle::current();
+            let result = rt.block_on(async move {
+                // Use a dedicated connection (non-critical path)
+                let bulk_channel = membership
+                    .get_peer_channel(node_id, ConnectionType::Bulk)
+                    .await
+                    .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
+
+                // Create independent data stream
+                let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
+
+                // Use background transfer
+                BackgroundSnapshotTransfer::start(node_id, metadata, data_stream, bulk_channel.channel, config).await
+            });
+
+            // Non-blocking send result
+            let _ = result_tx.send(result);
+        });
+
+        // Non-blocking check result
+        tokio::spawn(async move {
+            match result_rx.await {
+                Ok(Ok(_)) => info!("Snapshot to {} completed", node_id),
+                Ok(Err(e)) => error!("Snapshot to {} failed: {:?}", node_id, e),
+                Err(_) => warn!("Snapshot result channel closed unexpectedly"),
+            }
+        });
 
         Ok(())
     }

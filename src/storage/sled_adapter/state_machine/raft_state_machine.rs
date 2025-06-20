@@ -384,16 +384,22 @@ impl StateMachine for RaftStateMachine {
         Ok(checksum)
     }
 
+    #[instrument(skil(self))]
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         compressed_path: PathBuf,
     ) -> Result<()> {
         if let Some(new_last_included) = metadata.last_included {
+            debug!(
+                ?new_last_included,
+                "1. Acquire write lock to prevent concurrent snapshot generation/application"
+            );
             // 1. Acquire write lock to prevent concurrent snapshot generation/application
             //    This ensures atomic snapshot application per Raft requirements
             let _guard = self.snapshot_lock.write().await;
 
+            debug!("2. Validate snapshot version - only apply if newer than current state");
             // 2. Validate snapshot version - only apply if newer than current state
             if let Some(current_metadata) = self.snapshot_metadata() {
                 if let Some(current_last_included) = current_metadata.last_included {
@@ -404,19 +410,30 @@ impl StateMachine for RaftStateMachine {
                 }
             }
 
+            debug!(
+                ?compressed_path,
+                "3. Validate file format before processing (IMPROVEMENT ADDED)"
+            );
             // 3. Validate file format before processing (IMPROVEMENT ADDED)
             //    Verify the file is actually compressed using magic numbers or extension
             validate_compressed_format(&compressed_path)?;
 
+            debug!("4. Create temp directory for decompression");
             // 4. Create temp directory for decompression
             //    Using tempfile crate ensures secure cleanup
             let temp_dir = tempfile::tempdir().map_err(StorageError::IoError)?;
             let temp_dir_path = temp_dir.path().to_path_buf();
 
+            debug!(
+                ?compressed_path,
+                ?temp_dir_path,
+                "5. Decompress snapshot using proper chunking/validation"
+            );
             // 5. Decompress snapshot using proper chunking/validation
             //    Added compression format validation based on
             self.decompress_snapshot(&compressed_path, &temp_dir_path).await?;
 
+            debug!(?temp_dir_path, "6. CRITICAL SECURITY STEP: Validate checksum");
             // 6. CRITICAL SECURITY STEP: Validate checksum
             //    Prevents tampered or corrupted snapshots from being applied
             let computed_checksum = compute_checksum_from_folder_path(&temp_dir_path).await?;
@@ -438,7 +455,7 @@ impl StateMachine for RaftStateMachine {
 
                 return Err(SnapshotError::ChecksumMismatch.into());
             }
-
+            debug!(?temp_dir_path, "7. Initialize new state machine database");
             // 7. Initialize new state machine database
             //    Maintains ACID properties during state transition
             let db = init_sled_state_machine_db(&temp_dir_path).map_err(|e| StorageError::PathError {
@@ -446,11 +463,13 @@ impl StateMachine for RaftStateMachine {
                 source: e,
             })?;
 
-            // 7. Atomically replace current database
+            debug!("8. Atomically replace current database");
+            // 8. Atomically replace current database
             //    Critical for maintaining consistency per Raft spec
             self.db.store(Arc::new(db));
 
-            // 8. Update Raft metadata and indexes
+            debug!(?new_last_included, ?metadata, "9. Update Raft metadata and indexes");
+            // 9. Update Raft metadata and indexes
             //    Follows snapshot application procedure from
             self.update_last_applied(new_last_included);
             self.update_last_snapshot_metadata(&metadata)?;

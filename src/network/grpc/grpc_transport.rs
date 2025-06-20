@@ -429,7 +429,6 @@ where
         let metadata = metadata.clone();
         let retry = retry.clone();
         let config = config.clone();
-        let membership = membership.clone();
         let my_id = self.my_id;
 
         // Spawn the snapshot installation in a background task

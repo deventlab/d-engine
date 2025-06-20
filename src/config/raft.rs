@@ -358,6 +358,9 @@ pub struct SnapshotConfig {
     /// Number of chunks to process before yielding the task
     #[serde(default = "default_receiver_yield_every_n_chunks")]
     pub receiver_yield_every_n_chunks: usize,
+
+    #[serde(default = "default_max_bandwidth_mbps")]
+    pub max_bandwidth_mbps: u64,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -370,6 +373,7 @@ impl Default for SnapshotConfig {
             retained_log_entries: default_retained_log_entries(),
             sender_yield_every_n_chunks: default_sender_yield_every_n_chunks(),
             receiver_yield_every_n_chunks: default_receiver_yield_every_n_chunks(),
+            max_bandwidth_mbps: default_max_bandwidth_mbps(),
         }
     }
 }
@@ -473,5 +477,9 @@ fn default_sender_yield_every_n_chunks() -> usize {
 }
 
 fn default_receiver_yield_every_n_chunks() -> usize {
+    1
+}
+
+fn default_max_bandwidth_mbps() -> u64 {
     1
 }

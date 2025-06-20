@@ -362,7 +362,10 @@ where
         match sender.send(response) {
             Ok(_) => debug!("Snapshot response sent successfully"),
             Err(send_error) => {
-                let error_msg = format!("Failed to send response: {:?}", send_error);
+                let error_msg = format!(
+                    "[install_snapshot_chunk | {}]Failed to send response: {:?}",
+                    self.node_id, send_error
+                );
                 warn!("{}", error_msg);
 
                 return Err(SnapshotError::OperationFailed(error_msg.into()).into());

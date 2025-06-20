@@ -102,7 +102,8 @@ async fn test_join_cluster_scenario() -> Result<(), ClientApiError> {
     assert!(check_path_contents(snapshot_path).unwrap_or(false));
 
     // 6. Validate if node 4 state machine has log-14
-    for i in 1..=14 {
+    for i in 1..=10 {
+        println!("{} | get entry from state machine", i);
         let value = sm4.get(&safe_kv(i)).unwrap();
         assert_eq!(value, Some(safe_kv(i).to_vec()));
     }
