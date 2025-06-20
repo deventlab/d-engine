@@ -78,22 +78,33 @@ where
         .await;
     health_reporter.set_serving::<SnapshotServiceServer<Node<T>>>().await;
 
+    // Use control plane configuration for base parameters
+    // Rationale: Election RPCs need low latency and high reliability
+    let control_config = &config.network.control;
+
+    // Use data plane configuration for stream/flow control parameters
+    // Rationale: AppendEntries needs higher throughput when large logs are sent
+    let data_config = &config.network.data;
+
     let mut server_builder = tonic::transport::Server::builder()
-        .concurrency_limit_per_connection(config.network.concurrency_limit_per_connection)
-        .timeout(Duration::from_millis(config.network.connect_timeout_in_ms))
-        .initial_stream_window_size(config.network.initial_stream_window_size)
-        .initial_connection_window_size(config.network.initial_connection_window_size)
-        .max_concurrent_streams(config.network.max_concurrent_streams)
-        .tcp_keepalive(Some(Duration::from_secs(config.network.tcp_keepalive_in_secs)))
-        .tcp_nodelay(config.network.tcp_nodelay)
+        // Control-plane parameters for core RPC operations
+        // .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
+        .concurrency_limit_per_connection(control_config.concurrency_limit)
+        // .max_concurrent_streams(control_config.max_concurrent_streams)
+        .tcp_keepalive(Some(Duration::from_secs(control_config.tcp_keepalive_in_secs)))
         .http2_keepalive_interval(Some(Duration::from_secs(
-            config.network.http2_keep_alive_interval_in_secs,
+            control_config.http2_keep_alive_interval_in_secs,
         )))
         .http2_keepalive_timeout(Some(Duration::from_secs(
-            config.network.http2_keep_alive_timeout_in_secs,
+            control_config.http2_keep_alive_timeout_in_secs,
         )))
-        .http2_adaptive_window(Some(config.network.http2_adaptive_window))
-        .max_frame_size(Some(config.network.max_frame_size));
+        // Data-plane parameters for stream performance
+        .initial_stream_window_size(data_config.stream_window_size)
+        .initial_connection_window_size(data_config.connection_window_size)
+        .http2_adaptive_window(Some(data_config.adaptive_window))
+        // .max_frame_size(Some(data_config.max_frame_size))
+        // Common TCP parameters
+        .tcp_nodelay(config.network.tcp_nodelay);
 
     if config.tls.enable_tls {
         if config.tls.generate_self_signed_certificates {

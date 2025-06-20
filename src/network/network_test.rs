@@ -31,16 +31,22 @@ async fn test_rpc_task_with_exponential_backoff() {
         max_delay_ms: 3000,
     };
 
-    assert!(
-        task_with_timeout_and_exponential_backoff(|| async { async_ok(3).await }, policy,)
-            .await
-            .is_ok()
-    );
+    assert!(grpc_task_with_timeout_and_exponential_backoff(
+        "test_rpc_task_with_exponential_backoff",
+        || async { async_ok(3).await },
+        policy,
+    )
+    .await
+    .is_ok());
 
     // Case 2: when err task return error
-    assert!(task_with_timeout_and_exponential_backoff(async_err, policy)
-        .await
-        .is_err());
+    assert!(grpc_task_with_timeout_and_exponential_backoff(
+        "test_rpc_task_with_exponential_backoff",
+        async_err,
+        policy
+    )
+    .await
+    .is_err());
 
     // Case 3: when ok task always failed on timeout error
     let policy = BackoffPolicy {
@@ -49,9 +55,11 @@ async fn test_rpc_task_with_exponential_backoff() {
         base_delay_ms: 1,
         max_delay_ms: 3,
     };
-    assert!(
-        task_with_timeout_and_exponential_backoff(|| async { async_ok(3).await }, policy)
-            .await
-            .is_err()
-    );
+    assert!(grpc_task_with_timeout_and_exponential_backoff(
+        "test_rpc_task_with_exponential_backoff",
+        || async { async_ok(3).await },
+        policy
+    )
+    .await
+    .is_err());
 }

@@ -17,11 +17,11 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::enable_logger;
+use crate::test_utils::mock_membership;
 use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
-use crate::ChannelWithAddress;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
@@ -43,7 +43,6 @@ use std::thread::sleep;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tonic::transport::Endpoint;
 use tonic::Code;
 use tracing::debug;
 
@@ -57,9 +56,8 @@ async fn test_tick() {
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state.tick(&role_tx, &event_tx, peer_channels, &context).await.is_ok());
+    assert!(state.tick(&role_tx, &event_tx, &context).await.is_ok());
 }
 
 /// # Case 1: Receive Vote Request Event with term is higher than mine
@@ -89,13 +87,9 @@ async fn test_handle_raft_event_case1() {
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
 
     // handle_raft_event returns Ok()
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Update to request term
     assert_eq!(state.current_term(), requet_term);
@@ -116,12 +110,8 @@ async fn test_handle_raft_event_case2() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     let s = resp_rx.recv().await.unwrap().unwrap_err();
     assert_eq!(s.code(), Code::PermissionDenied);
@@ -165,12 +155,8 @@ async fn test_handle_raft_event_case3() {
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert!(response.success);
@@ -250,15 +236,12 @@ async fn test_handle_raft_event_case4_1() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
     // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validation criterias
     // 2. I should not receive BecomeFollower event
@@ -327,15 +310,12 @@ async fn test_handle_raft_event_case4_2() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
     // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validation criterias
     // 2. I should not receive any event
@@ -404,15 +384,12 @@ async fn test_handle_raft_event_case4_3() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
     // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criterias
     // 2. I should not receive any event
@@ -444,12 +421,9 @@ async fn test_handle_raft_event_case5() {
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     assert_eq!(
         resp_rx.recv().await.unwrap().unwrap().error,
@@ -473,10 +447,7 @@ async fn test_handle_raft_event_case6() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     assert_eq!(
         resp_rx.recv().await.unwrap().unwrap_err().code(),
@@ -505,9 +476,7 @@ async fn test_handle_raft_event_case8() {
     let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, role_tx).await;
 
     // Step 4: Verify the response
     // Should return Ok since we're just sending a response
@@ -540,7 +509,7 @@ async fn test_handle_raft_event_case9() {
 
     // Step 3: Call handle_raft_event
     let e = state
-        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .unwrap_err();
 
@@ -566,12 +535,7 @@ async fn test_handle_raft_event_case10() {
 
     // Step 3: Call handle_raft_event
     let result = state
-        .handle_raft_event(
-            raft_event,
-            Arc::new(mock_peer_channels()),
-            &context,
-            mpsc::unbounded_channel().0,
-        )
+        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
         .await;
 
     // Step 4: Verify the response
@@ -604,12 +568,7 @@ async fn test_handle_raft_event_case11() {
 
     // Step 3: Call handle_raft_event
     let result = state
-        .handle_raft_event(
-            raft_event,
-            Arc::new(mock_peer_channels()),
-            &context,
-            mpsc::unbounded_channel().0,
-        )
+        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
         .await;
 
     // Step 4: Verify the response
@@ -629,7 +588,7 @@ async fn test_handle_raft_event_case11() {
 async fn test_broadcast_discovery_case1_success() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (peer_channels, mut ctx) = mock_context("test_broadcast_discovery_case1_success", graceful_rx);
+    let mut ctx = mock_context("test_broadcast_discovery_case1_success", graceful_rx);
 
     let mut transport = MockTransport::new();
     // Single valid response
@@ -643,7 +602,7 @@ async fn test_broadcast_discovery_case1_success() {
     ctx.set_transport(Arc::new(transport));
 
     let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-    let result = state.broadcast_discovery(peer_channels.clone(), &ctx).await;
+    let result = state.broadcast_discovery(Arc::new(mock_membership()), &ctx).await;
 
     assert!(result.is_ok(), "Should return leader channel");
 }
@@ -653,7 +612,7 @@ async fn test_broadcast_discovery_case1_success() {
 async fn test_broadcast_discovery_case2_retry_exhaustion() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (peer_channels, mut ctx) = mock_context("test_broadcast_discovery_case2_retry_exhaustion", graceful_rx);
+    let mut ctx = mock_context("test_broadcast_discovery_case2_retry_exhaustion", graceful_rx);
 
     let mut transport = MockTransport::new();
     // Always return empty responses
@@ -661,7 +620,7 @@ async fn test_broadcast_discovery_case2_retry_exhaustion() {
     ctx.set_transport(Arc::new(transport));
 
     let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-    let result = state.broadcast_discovery(peer_channels.clone(), &ctx).await;
+    let result = state.broadcast_discovery(Arc::new(mock_membership()), &ctx).await;
 
     assert!(result.is_err(), "Should error after retries");
     assert!(matches!(
@@ -673,21 +632,12 @@ async fn test_broadcast_discovery_case2_retry_exhaustion() {
 fn mock_context(
     case_name: &str,
     shutdown_signal: watch::Receiver<()>,
-) -> (Arc<MockPeerChannels>, RaftContext<MockTypeConfig>) {
+) -> RaftContext<MockTypeConfig> {
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join(case_name);
     let raft_context = mock_raft_context(case_path.to_str().unwrap(), shutdown_signal, None);
 
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_voting_members().returning(DashMap::new);
-    peer_channels.expect_get_peer_channel().returning(move |_| {
-        Some(ChannelWithAddress {
-            address: "".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-
-    (Arc::new(peer_channels), raft_context)
+    raft_context
 }
 
 /// Tests leader selection with multiple valid responses
@@ -695,7 +645,7 @@ fn mock_context(
 async fn test_select_valid_leader_case1_priority() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (peer_channels, ctx) = mock_context("test_select_valid_leader_case1_priority", graceful_rx);
+    let ctx = mock_context("test_select_valid_leader_case1_priority", graceful_rx);
     let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
     let responses = vec![
@@ -716,11 +666,11 @@ async fn test_select_valid_leader_case1_priority() {
         }, // Same term, higher ID
     ];
 
-    let result = state.select_valid_leader(responses, peer_channels.clone()).await;
+    let result = state.select_valid_leader(responses).await;
 
     assert!(result.is_some());
     // Should select leader_id=5 (highest term)
-    assert_eq!(result.unwrap().0, 5);
+    assert_eq!(result.unwrap(), 5);
 }
 
 /// Tests filtering of invalid responses
@@ -728,7 +678,7 @@ async fn test_select_valid_leader_case1_priority() {
 async fn test_select_valid_leader_case2_invalid_responses() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (peer_channels, ctx) = mock_context("test_select_valid_leader_case2_invalid_responses", graceful_rx);
+    let ctx = mock_context("test_select_valid_leader_case2_invalid_responses", graceful_rx);
     let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
     let responses = vec![
@@ -744,7 +694,7 @@ async fn test_select_valid_leader_case2_invalid_responses() {
         }, // Invalid term
     ];
 
-    let result = state.select_valid_leader(responses, peer_channels.clone()).await;
+    let result = state.select_valid_leader(responses).await;
 
     assert!(result.is_none(), "Should filter invalid responses");
 }
@@ -762,18 +712,9 @@ async fn test_join_cluster_case1_success_known_leader() {
     membership.expect_current_leader_id().returning(|| Some(5));
     ctx.membership = Arc::new(membership);
 
-    // Mock peer channels to return leader channel
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "127.0.0.1:5005".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-
     // Mock transport to succeed
     let mut transport = MockTransport::new();
-    transport.expect_join_cluster().returning(|_, _, _| {
+    transport.expect_join_cluster().returning(|_, _, _, _| {
         Ok(JoinResponse {
             success: true,
             error: "".to_string(),
@@ -786,7 +727,7 @@ async fn test_join_cluster_case1_success_known_leader() {
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_ok(), "Join should succeed with known leader");
 }
@@ -804,33 +745,6 @@ async fn test_join_cluster_case2_success_after_discovery() {
     membership.expect_current_leader_id().returning(|| None);
     ctx.membership = Arc::new(membership);
 
-    // Mock peer channels for discovery
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "127.0.0.1:5005".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-    peer_channels.expect_voting_members().returning(|| {
-        let map = DashMap::new();
-        map.insert(
-            2,
-            ChannelWithAddress {
-                address: "".to_string(),
-                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-            },
-        );
-        map.insert(
-            3,
-            ChannelWithAddress {
-                address: "".to_string(),
-                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-            },
-        );
-        map
-    });
-
     // Mock transport for discovery and join
     let mut transport = MockTransport::new();
     transport.expect_discover_leader().returning(|_, _, _| {
@@ -840,7 +754,7 @@ async fn test_join_cluster_case2_success_after_discovery() {
             term: 3,
         }])
     });
-    transport.expect_join_cluster().returning(|_, _, _| {
+    transport.expect_join_cluster().returning(|_, _, _, _| {
         Ok(JoinResponse {
             success: true,
             error: "".to_string(),
@@ -853,7 +767,7 @@ async fn test_join_cluster_case2_success_after_discovery() {
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     debug!(?result);
 
@@ -886,7 +800,7 @@ async fn test_join_cluster_case3_discovery_timeout() {
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -908,25 +822,16 @@ async fn test_join_cluster_case4_join_rpc_failure() {
     membership.expect_current_leader_id().returning(|| Some(5));
     ctx.membership = Arc::new(membership);
 
-    // Mock peer channels to return leader channel
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "127.0.0.1:5005".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-
     // Mock transport to fail join RPC
     let mut transport = MockTransport::new();
     transport
         .expect_join_cluster()
-        .returning(|_, _, _| Err(NetworkError::ServiceUnavailable("Service unavailable".to_string()).into()));
+        .returning(|_, _, _, _| Err(NetworkError::ServiceUnavailable("Service unavailable".to_string()).into()));
 
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -948,18 +853,9 @@ async fn test_join_cluster_case5_invalid_join_response() {
     membership.expect_current_leader_id().returning(|| Some(5));
     ctx.membership = Arc::new(membership);
 
-    // Mock peer channels to return leader channel
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "127.0.0.1:5005".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-
     // Mock transport to return failure response
     let mut transport = MockTransport::new();
-    transport.expect_join_cluster().returning(|_, _, _| {
+    transport.expect_join_cluster().returning(|_, _, _, _| {
         Ok(JoinResponse {
             success: false,
             error: "Node rejected".to_string(),
@@ -969,7 +865,7 @@ async fn test_join_cluster_case5_invalid_join_response() {
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     debug!(?result);
     assert!(result.is_err());
@@ -992,18 +888,9 @@ async fn test_join_cluster_case6_leader_redirect() {
     membership.expect_current_leader_id().returning(|| Some(5));
     ctx.membership = Arc::new(membership);
 
-    // Mock peer channels to return leader channel
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "127.0.0.1:5005".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-
     // Mock transport to redirect to new leader
     let mut transport = MockTransport::new();
-    transport.expect_join_cluster().returning(|_, req, _| {
+    transport.expect_join_cluster().returning(|_, req, _, _| {
         // First call: redirect
         if req.node_id == 100 {
             Err(NetworkError::ServiceUnavailable("Not leader".to_string()).into())
@@ -1023,7 +910,7 @@ async fn test_join_cluster_case6_leader_redirect() {
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_ok(), "Should handle leader redirect");
 }
@@ -1041,39 +928,16 @@ async fn test_join_cluster_case7_large_cluster() {
     membership.expect_current_leader_id().returning(|| None);
     ctx.membership = Arc::new(membership);
 
-    // Create large peer set (100 nodes)
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "127.0.0.1:5005".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
-    peer_channels.expect_voting_members().returning(|| {
-        let map = DashMap::new();
-        for i in 1..=100 {
-            map.insert(
-                i,
-                ChannelWithAddress {
-                    address: "127.0.0.1:5005".to_string(),
-                    channel: Endpoint::from_static("http://dummy:50051").connect_lazy(),
-                },
-            );
-        }
-        map
-    });
-
     // Mock transport to handle large discovery
     let mut transport = MockTransport::new();
-    transport.expect_discover_leader().returning(|peers, _, _| {
-        assert_eq!(peers.len(), 100, "Should handle 100 peers");
+    transport.expect_discover_leader().returning(|_, _, _| {
         Ok(vec![LeaderDiscoveryResponse {
             leader_id: 5,
             leader_address: "127.0.0.1:5005".to_string(),
             term: 3,
         }])
     });
-    transport.expect_join_cluster().returning(|_, _, _| {
+    transport.expect_join_cluster().returning(|_, _, _, _| {
         Ok(JoinResponse {
             success: true,
             error: "".to_string(),
@@ -1086,7 +950,7 @@ async fn test_join_cluster_case7_large_cluster() {
     ctx.transport = Arc::new(transport);
 
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(Arc::new(peer_channels), &ctx).await;
+    let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_ok(), "Should handle large cluster");
 }

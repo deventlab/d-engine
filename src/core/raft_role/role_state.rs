@@ -1,7 +1,6 @@
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
-use crate::alias::POF;
 use crate::proto::common::EntryPayload;
 use crate::proto::election::VotedFor;
 use crate::proto::replication::AppendEntriesRequest;
@@ -22,7 +21,6 @@ use crate::Result;
 use crate::RoleEvent;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::async_trait;
@@ -95,7 +93,6 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         _payloads: Vec<EntryPayload>,
         _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
-        _peer_channels: Arc<POF<Self::T>>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumVerificationResult> {
         warn!("verify_internal_quorum NotLeader error");
@@ -107,7 +104,6 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         _payloads: Vec<EntryPayload>,
         _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
-        _peer_channels: Arc<POF<Self::T>>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
         warn!("verify_internal_quorum_with_retry NotLeader error");
@@ -116,7 +112,6 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
     async fn join_cluster(
         &self,
-        _peer_channels: Arc<POF<Self::T>>,
         _ctx: &RaftContext<Self::T>,
     ) -> Result<()> {
         warn!("join_cluster NotLearner error");
@@ -239,14 +234,12 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         event_tx: &mpsc::Sender<RaftEvent>,
-        peer_channels: Arc<POF<Self::T>>,
         ctx: &RaftContext<Self::T>,
     ) -> Result<()>;
 
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        peer_channels: Arc<POF<Self::T>>,
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>;

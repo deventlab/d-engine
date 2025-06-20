@@ -5,7 +5,7 @@ use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use super::LEADER;
-use crate::alias::POF;
+use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::client_command_to_entry_payloads;
@@ -37,7 +37,6 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
-use crate::PeerChannels;
 use crate::PeerUpdate;
 use crate::PurgeExecutor;
 use crate::QuorumVerificationResult;
@@ -289,7 +288,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         payloads: Vec<EntryPayload>,
         bypass_queue: bool,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
         let retry_policy = ctx.node_config.retry.internal_quorum;
@@ -302,7 +300,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         loop {
             match self
-                .verify_internal_quorum(payloads.clone(), bypass_queue, ctx, peer_channels.clone(), role_tx)
+                .verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx)
                 .await
             {
                 Ok(QuorumVerificationResult::Success) => return Ok(true),
@@ -360,7 +358,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         payloads: Vec<EntryPayload>,
         bypass_queue: bool,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumVerificationResult> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -372,7 +369,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender: resp_tx,
             },
             ctx,
-            peer_channels,
             bypass_queue,
             role_tx,
         )
@@ -484,7 +480,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         _raft_tx: &mpsc::Sender<RaftEvent>,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         let now = Instant::now();
@@ -502,7 +497,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 // Take out the batched messages and send them immediately
                 // Do not move batch out of this block
                 let batch = self.batch_buffer.take();
-                self.process_batch(batch, role_tx, ctx, peer_channels.clone()).await?;
+                self.process_batch(batch, role_tx, ctx).await?;
             }
         }
 
@@ -514,7 +509,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             // Do not move batch out of this block
             let batch = self.batch_buffer.take();
-            self.process_batch(batch, role_tx, ctx, peer_channels).await?;
+            self.process_batch(batch, role_tx, ctx).await?;
         }
 
         Ok(())
@@ -523,7 +518,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -641,7 +635,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             sender,
                         },
                         ctx,
-                        peer_channels,
                         false,
                         &role_tx,
                     )
@@ -671,7 +664,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                     if client_read_request.linear {
                         if !self
-                            .verify_internal_quorum_with_retry(vec![], true, ctx, peer_channels, &role_tx)
+                            .verify_internal_quorum_with_retry(vec![], true, ctx, &role_tx)
                             .await
                             .unwrap_or(false)
                         {
@@ -767,8 +760,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             // ----------------------
                             // Phase 2.1: Pre-Checks before sending Purge request
                             // ----------------------
-                            let peers = ctx.voting_members(peer_channels);
-                            if peers.is_empty() {
+                            let membership = ctx.membership();
+                            let members = membership.voters();
+                            if members.is_empty() {
                                 warn!("no peer found for leader({})", my_id);
                                 return Err(MembershipError::NoPeersAvailable.into());
                             }
@@ -779,7 +773,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             let transport = ctx.transport();
                             match transport
                                 .send_purge_requests(
-                                    peers,
                                     PurgeLogRequest {
                                         term: my_term,
                                         leader_id: my_id,
@@ -788,6 +781,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                         leader_commit: self.commit_index(),
                                     },
                                     &self.node_config.retry,
+                                    membership,
                                 )
                                 .await
                             {
@@ -819,8 +813,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::JoinCluster(join_request, sender) => {
                 debug!(?join_request, "Leader::RaftEvent::JoinCluster");
-                self.handle_join_cluster(join_request, sender, ctx, peer_channels.clone(), &role_tx)
-                    .await?;
+                self.handle_join_cluster(join_request, sender, ctx, &role_tx).await?;
             }
 
             RaftEvent::DiscoverLeader(request, sender) => {
@@ -890,7 +883,6 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         raft_request_with_signal: RaftRequestWithSignal,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
         execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -906,7 +898,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 batch.len()
             );
 
-            self.process_batch(batch, role_tx, ctx, peer_channels).await?;
+            self.process_batch(batch, role_tx, ctx).await?;
         }
 
         Ok(())
@@ -953,26 +945,20 @@ impl<T: TypeConfig> LeaderState<T> {
         batch: VecDeque<RaftRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
     ) -> Result<()> {
         // 1. Prepare batch data
         let entry_payloads: Vec<EntryPayload> = batch.iter().flat_map(|req| &req.payloads).cloned().collect();
         trace!(?entry_payloads, "process_batch..",);
 
         // 2. Execute the copy
-        let replication_members = ctx.voting_members(peer_channels);
-        let cluster_size = replication_members.len() + 1;
+        let membership = ctx.membership();
+        let members = membership.voters();
+        let cluster_size = members.len() + 1;
         trace!(%cluster_size);
 
         let result = ctx
             .replication_handler()
-            .handle_raft_request_in_batch(
-                entry_payloads,
-                self.state_snapshot(),
-                self.leader_state_snapshot(),
-                ctx,
-                replication_members,
-            )
+            .handle_raft_request_in_batch(entry_payloads, self.state_snapshot(), self.leader_state_snapshot(), ctx)
             .await;
         debug!(?result, "replication_handler::handle_raft_request_in_batch");
 
@@ -1374,15 +1360,15 @@ impl<T: TypeConfig> LeaderState<T> {
         join_request: JoinRequest,
         sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let node_id = join_request.node_id;
         let address = join_request.address;
+        let membership = ctx.membership();
 
         // 1. Validate join request
         debug!("1. Validate join request");
-        if ctx.membership().contains_node(node_id) {
+        if membership.contains_node(node_id) {
             let error_msg = format!("Node {} already exists in cluster", node_id);
             warn!(%error_msg);
             return self
@@ -1391,12 +1377,12 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         // 2. Add new peer to connection manager
-        debug!("2. Add new peer to connection manager");
-        peer_channels.add_peer(node_id, address.clone()).await?;
+        // debug!("2. Add new peer to connection manager");
+        // peer_channels.add_peer(node_id, address.clone()).await?;
 
         // 3. Add the node as Learner with Joining status
         debug!("3. Add the node as Learner with Joining status");
-        ctx.membership()
+        membership
             .add_learner(node_id, address.clone(), NodeStatus::Joining)
             .await?;
 
@@ -1410,13 +1396,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 5. Wait for quorum confirmation
         debug!("5. Wait for quorum confirmation");
         match self
-            .verify_internal_quorum_with_retry(
-                vec![EntryPayload::config(config_change)],
-                false,
-                ctx,
-                peer_channels.clone(),
-                role_tx,
-            )
+            .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -1432,7 +1412,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 // 8. Trigger snapshot transmission (only when snapshot exists in Leader node)
                 debug!("8. Trigger snapshot transmission (only when snapshot exists in Leader node)");
                 if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
-                    self.trigger_snapshot_transfer(node_id, lastest_snapshot_metadata, ctx, peer_channels.clone())
+                    self.trigger_snapshot_transfer(node_id, lastest_snapshot_metadata, ctx, membership)
                         .await?;
                 }
             }
@@ -1533,21 +1513,16 @@ impl<T: TypeConfig> LeaderState<T> {
         node_id: u32,
         metadata: SnapshotMetadata,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
+        membership: Arc<MOF<T>>,
     ) -> Result<()> {
         let transport = ctx.transport().clone();
-
-        // Get existing channel from peer manager
-        let channel_with_address = peer_channels
-            .get_peer_channel(node_id)
-            .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
 
         let data_stream = ctx.state_machine_handler().load_snapshot_data(metadata.clone()).await?;
         let retry = ctx.node_config.retry.install_snapshot.clone();
         let config = ctx.node_config.raft.snapshot.clone();
 
         transport
-            .install_snapshot(channel_with_address.channel, metadata, data_stream, &retry, &config)
+            .install_snapshot(node_id, metadata, data_stream, &retry, &config, membership)
             .await?;
 
         Ok(())

@@ -7,7 +7,6 @@ use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use super::FOLLOWER;
-use crate::alias::POF;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::common::LogId;
@@ -164,7 +163,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         _event_tx: &mpsc::Sender<RaftEvent>,
-        _peer_channels: Arc<POF<T>>,
         _ctx: &RaftContext<T>,
     ) -> Result<()> {
         debug!("reset timer");
@@ -185,7 +183,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        _peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {

@@ -6,6 +6,8 @@ use crate::cluster::is_leader;
 use crate::cluster::is_learner;
 use crate::leader_state::LeaderState;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::proto::election::VoteResponse;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_raft;
@@ -13,7 +15,6 @@ use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_RAFT_PORT_BASE;
 use crate::AppendResults;
-use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::ElectionError;
 use crate::Error;
@@ -396,24 +397,24 @@ async fn test_election_timeout_case4() {
         .await
         .expect("should succeed");
 
-    let requests_with_peer_address = vec![
-        ChannelWithAddressAndRole {
-            id: peer1_id,
-            channel_with_address: addr1.clone(),
-            role: FOLLOWER,
-        },
-        ChannelWithAddressAndRole {
-            id: peer2_id,
-            channel_with_address: addr1.clone(),
-            role: CANDIDATE,
-        },
-    ];
-
     // 4. Mock Raft Context
     let mut mock_membership = MockMembership::new();
-    mock_membership
-        .expect_voting_members()
-        .returning(move |_| requests_with_peer_address.clone());
+    mock_membership.expect_voters().returning(move || {
+        vec![
+            NodeMeta {
+                id: peer1_id,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: FOLLOWER,
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: peer2_id,
+                address: "http://127.0.0.1:55002".to_string(),
+                role: CANDIDATE,
+                status: NodeStatus::Active.into(),
+            },
+        ]
+    });
     mock_membership.expect_mark_leader_id().returning(|_| Ok(()));
     mock_membership
         .expect_get_peers_id_with_condition()
@@ -826,15 +827,6 @@ async fn test_handle_role_event_state_update_case1_3_2() {
         last_log_index: 0,
         last_log_term: 0,
     };
-    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RAFT_PORT_BASE + 2, vote_response, rx1)
-        .await
-        .expect("should succeed");
-
-    let requests_with_peer_address = vec![ChannelWithAddressAndRole {
-        id: 2,
-        channel_with_address: addr1.clone(),
-        role: FOLLOWER,
-    }];
 
     // Prepare Peers
     let mut membership = MockMembership::new();
@@ -842,15 +834,20 @@ async fn test_handle_role_event_state_update_case1_3_2() {
         .expect_get_peers_id_with_condition()
         .returning(|_| vec![2, 3])
         .times(1);
-    membership
-        .expect_voting_members()
-        .returning(move |_| requests_with_peer_address.clone());
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
+            id: 2,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active.into(),
+        }]
+    });
 
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     //Configure mock behavior
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -936,7 +933,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
     //Configure mock behavior
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -984,7 +981,7 @@ async fn test_handle_role_event_state_update_case1_5_1() {
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(move |_, _, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(move |_, _, _, _| Err(Error::Fatal("".to_string())));
 
     let mut raft_log = MockRaftLog::new();
     raft_log

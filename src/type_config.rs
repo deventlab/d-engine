@@ -3,8 +3,6 @@ use std::fmt::Debug;
 use crate::CommitHandler;
 use crate::ElectionCore;
 use crate::Membership;
-use crate::PeerChannels;
-use crate::PeerChannelsFactory;
 use crate::PurgeExecutor;
 use crate::RaftLog;
 use crate::ReplicationCore;
@@ -19,15 +17,13 @@ pub trait TypeConfig:
 {
     type R: RaftLog + Debug;
 
-    type TR: Transport + Debug;
+    type TR: Transport<Self> + Debug;
 
     type SM: StateMachine + Debug;
 
     type SS: StateStorage;
 
-    type M: Membership<Self>;
-
-    type P: PeerChannels + PeerChannelsFactory + Clone + Debug;
+    type M: Membership<Self> + Debug;
 
     type E: ElectionCore<Self> + Clone;
 
@@ -58,8 +54,6 @@ pub mod alias {
     pub type EOF<T> = <T as TypeConfig>::E;
 
     pub type REPOF<T> = <T as TypeConfig>::REP;
-
-    pub type POF<T> = <T as TypeConfig>::P;
 
     pub type COF<T> = <T as TypeConfig>::C;
 

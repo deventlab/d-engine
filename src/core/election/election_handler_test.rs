@@ -1,56 +1,39 @@
-use std::sync::Arc;
-
-use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tracing::debug;
-
 use crate::alias::ROF;
 use crate::alias::TROF;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::cluster::NodeStatus;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
+use crate::test_utils::mock_membership;
 use crate::test_utils::setup_raft_components;
-use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_ELECTION_HANDLER_PORT_BASE;
-use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionError;
 use crate::ElectionHandler;
 use crate::Error;
+use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::VoteResult;
 use crate::FOLLOWER;
+use std::sync::Arc;
+use tokio::sync::watch;
+use tracing::debug;
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,
-    voting_members: Vec<ChannelWithAddressAndRole>,
     raft_log_mock: ROF<MockTypeConfig>,
 }
-async fn setup(port: u64) -> TestConext {
+async fn setup() -> TestConext {
     let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
-
-    // 2. Prepare Peers fake address
-    //  Simulate ChannelWithAddress: prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr = MockNode::simulate_mock_service_without_reps(port, rx1, true)
-        .await
-        .expect("should succeed");
-
-    // Prepare AppendResults
-    let voting_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {
-        id: 2,
-        channel_with_address: addr,
-        role: FOLLOWER,
-    }];
 
     let raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
 
     TestConext {
         election_handler,
-        voting_members,
         raft_log_mock,
     }
 }
@@ -67,20 +50,41 @@ async fn test_broadcast_vote_requests_case1() {
 
     // 2.
     let term = 1;
-    let voting_members = Vec::new();
-    let raft_log_mock: Arc<ROF<MockTypeConfig>> = Arc::new(MockRaftLog::new());
-    let transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
+    let mut raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
+    raft_log_mock
+        .expect_get_last_entry_metadata()
+        .times(0)
+        .returning(|| (1, 1));
+
+    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
+    transport_mock
+        .expect_send_vote_requests()
+        .times(0)
+        .returning(|_, _, _| {
+            Ok(VoteResult {
+                peer_ids: vec![2].into_iter().collect(),
+                responses: vec![Ok(VoteResponse {
+                    term: 1,
+                    vote_granted: false,
+                    last_log_index: 1,
+                    last_log_term: 1,
+                })],
+            })
+        });
 
     let err = election_handler
         .broadcast_vote_requests(
             term,
-            voting_members,
-            &raft_log_mock,
-            &transport_mock,
+            Arc::new(mock_membership()),
+            &Arc::new(raft_log_mock),
+            &Arc::new(transport_mock),
             &ctx.arc_node_config,
         )
         .await
         .unwrap_err();
+
+    debug!(?err);
+
     assert!(matches!(
         err,
         Error::Consensus(ConsensusError::Election(ElectionError::NoVotingMemberFound {
@@ -97,18 +101,17 @@ async fn test_broadcast_vote_requests_case1() {
 async fn test_broadcast_vote_requests_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case2", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 1;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
         .expect_get_last_entry_metadata()
-        .times(1)
+        .times(0)
         .returning(|| (1, 1));
 
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
     transport_mock
         .expect_send_vote_requests()
-        .times(1)
+        .times(0)
         .returning(|_, _, _| {
             Ok(VoteResult {
                 peer_ids: vec![2].into_iter().collect(),
@@ -126,7 +129,7 @@ async fn test_broadcast_vote_requests_case2() {
         .election_handler
         .broadcast_vote_requests(
             term,
-            test_context.voting_members,
+            Arc::new(mock_membership()),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
             &ctx.arc_node_config,
@@ -153,8 +156,7 @@ async fn test_broadcast_vote_requests_case2() {
 async fn test_broadcast_vote_requests_case3() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case3", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 2;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
         .expect_get_last_entry_metadata()
@@ -177,12 +179,20 @@ async fn test_broadcast_vote_requests_case3() {
         });
 
     let term = 1;
-
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
+            id: 2,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active.into(),
+        }]
+    });
     let r = test_context
         .election_handler
         .broadcast_vote_requests(
             term,
-            test_context.voting_members,
+            Arc::new(membership),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
             &ctx.arc_node_config,
@@ -203,41 +213,16 @@ async fn test_broadcast_vote_requests_case3() {
 async fn test_broadcast_vote_requests_case4() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case4", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 3;
-    let mut test_context = setup(port).await;
+    let test_context = setup().await;
 
-    let peer1_id = 2;
-    let my_last_log_index = 1;
     let my_last_log_term = 3;
-
-    // Prepare my last log entry metadata
-    test_context
-        .raft_log_mock
-        .expect_get_last_entry_metadata()
-        .times(1)
-        .returning(move || (my_last_log_index, my_last_log_term));
-
-    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
-    transport_mock
-        .expect_send_vote_requests()
-        .times(1)
-        .returning(move |_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![peer1_id].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
-                    term: my_last_log_term + 1, // Prepare higher term response
-                    vote_granted: false,
-                    last_log_index: 1,
-                    last_log_term: my_last_log_term + 1,
-                })],
-            })
-        });
+    let transport_mock: TROF<MockTypeConfig> = MockTransport::new();
 
     let e = test_context
         .election_handler
         .broadcast_vote_requests(
             my_last_log_term,
-            test_context.voting_members,
+            Arc::new(mock_membership()),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
             &ctx.arc_node_config,
@@ -264,44 +249,17 @@ async fn test_broadcast_vote_requests_case4() {
 async fn test_broadcast_vote_requests_case5() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case5", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 4;
-    let mut test_context = setup(port).await;
-
-    let peer1_id = 2;
+    let test_context = setup().await;
     let my_last_log_index = 1;
     let my_last_log_term = 3;
-    // Prepare response which last log term is the same as candidate one, but last log index is higher
-    // than    candidate last log index
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: false,
-        last_log_index: my_last_log_index + 1,
-        last_log_term: my_last_log_term,
-    };
 
-    // Prepare my last log entry metadata
-    test_context
-        .raft_log_mock
-        .expect_get_last_entry_metadata()
-        .times(1)
-        .return_const((my_last_log_index, my_last_log_term));
-
-    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
-    transport_mock
-        .expect_send_vote_requests()
-        .times(1)
-        .returning(move |_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![peer1_id].into_iter().collect(),
-                responses: vec![Ok(vote_response)],
-            })
-        });
+    let transport_mock: TROF<MockTypeConfig> = MockTransport::new();
 
     let e = test_context
         .election_handler
         .broadcast_vote_requests(
             my_last_log_term,
-            test_context.voting_members,
+            Arc::new(mock_membership()),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
             &ctx.arc_node_config,
@@ -332,8 +290,7 @@ async fn test_broadcast_vote_requests_case5() {
 #[tokio::test]
 async fn test_handle_vote_request_case1() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 10;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
         .expect_get_last_entry_metadata()
@@ -374,8 +331,7 @@ async fn test_handle_vote_request_case1() {
 #[tokio::test]
 async fn test_handle_vote_request_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 11;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
         .expect_get_last_entry_metadata()

@@ -7,7 +7,6 @@ use crate::LogSizePolicy;
 use crate::RaftMembership;
 use crate::RaftStateMachine;
 use crate::ReplicationHandler;
-use crate::RpcPeerChannels;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::TypeConfig;
@@ -18,15 +17,13 @@ pub struct RaftTypeConfig;
 impl TypeConfig for RaftTypeConfig {
     type R = SledRaftLog;
 
-    type TR = GrpcTransport;
+    type TR = GrpcTransport<Self>;
 
     type SM = RaftStateMachine;
 
     type SS = SledStateStorage;
 
     type M = RaftMembership<Self>;
-
-    type P = RpcPeerChannels;
 
     type REP = ReplicationHandler<Self>;
 

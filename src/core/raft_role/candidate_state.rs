@@ -1,17 +1,3 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
 use super::RaftRole;
@@ -19,7 +5,6 @@ use super::Result;
 use super::SharedState;
 use super::StateSnapshot;
 use super::CANDIDATE;
-use crate::alias::POF;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::common::LogId;
@@ -42,6 +27,18 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 /// Candidate node's volatile state during leader election.
 ///
@@ -184,7 +181,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         _raft_event_tx: &mpsc::Sender<RaftEvent>,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         debug!("reset timer");
@@ -203,7 +199,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             .election_handler()
             .broadcast_vote_requests(
                 self.current_term(),
-                ctx.voting_members(peer_channels),
+                ctx.membership(),
                 ctx.raft_log(),
                 ctx.transport(),
                 &ctx.node_config(),
@@ -235,7 +231,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        _peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {

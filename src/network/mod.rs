@@ -30,12 +30,10 @@ use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::BackoffPolicy;
-use crate::ChannelWithAddress;
-use crate::ChannelWithAddressAndRole;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
-use tonic::transport::Channel;
+use crate::TypeConfig;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
@@ -103,7 +101,10 @@ pub struct ClusterUpdateResult {
 
 #[cfg_attr(test, automock)]
 #[async_trait]
-pub trait Transport: Send + Sync + 'static {
+pub trait Transport<T>: Send + Sync + 'static
+where
+    T: TypeConfig,
+{
     /// Propagates cluster configuration changes to voting members using Raft's joint consensus.
     ///
     /// # Protocol
@@ -112,9 +113,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - Automatically filters self-references and duplicates
     ///
     /// # Parameters
-    /// - `peers`: Target voting members (excluding learners)
     /// - `req`: Configuration change details with transition state
     /// - `retry`: Network retry policy with exponential backoff
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
     /// - `NetworkError::EmptyPeerList` if no peers provided
@@ -128,9 +129,9 @@ pub trait Transport: Send + Sync + 'static {
     #[allow(dead_code)]
     async fn send_cluster_update(
         &self,
-        peers: Vec<ChannelWithAddressAndRole>,
         req: ClusterConfChangeRequest,
         retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<ClusterUpdateResult>;
 
     /// Replicates log entries to followers and learners.
@@ -141,8 +142,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - Handles log consistency checks automatically
     ///
     /// # Parameters
-    /// - `requests_with_peer_address`: Target nodes with customized entries
+    /// - `requests`: Vector of (peer_id, AppendEntriesRequest)
     /// - `retry`: Network retry configuration
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Returns
     /// - On success: `Ok(AppendResult)` containing aggregated responses
@@ -162,8 +164,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - Non-blocking error handling
     async fn send_append_requests(
         &self,
-        requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
+        requests: Vec<(u32, AppendEntriesRequest)>,
         retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<AppendResult>;
 
     /// Initiates leader election by requesting votes from cluster peers.
@@ -174,9 +177,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - Validates log completeness requirements
     ///
     /// # Parameters
-    /// - `peers`: Voting-eligible cluster members
     /// - `req`: Election metadata with candidate's term and log state
     /// - `retry`: Election-specific retry strategy
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
     /// - `NetworkError::EmptyPeerList` for empty peer list
@@ -188,9 +191,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - Non-blocking partial failure handling
     async fn send_vote_requests(
         &self,
-        peers: Vec<ChannelWithAddressAndRole>,
         req: VoteRequest,
         retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<VoteResult>;
 
     /// Orchestrates log compaction across cluster peers after snapshot creation.
@@ -201,9 +204,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - Requires valid snapshot checksum
     ///
     /// # Parameters
-    /// - `peers`: Target followers and learners
     /// - `req`: Snapshot metadata with truncation index
     /// - `retry`: Purge-specific retry configuration
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
     /// - `NetworkError::EmptyPeerList` for empty peer list
@@ -215,28 +218,29 @@ pub trait Transport: Send + Sync + 'static {
     /// - Crash-safe persistence requirements
     async fn send_purge_requests(
         &self,
-        peers: Vec<ChannelWithAddressAndRole>,
         req: PurgeLogRequest,
         retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<Result<PurgeLogResponse>>>;
 
     /// Transfers snapshot to a follower node
     ///
     /// # Parameters
-    /// - `channel`: Pre-established gRPC channel
     /// - `metadata`: Snapshot metadata
     /// - `data_stream`: Stream of snapshot chunks
     /// - `retry`: Snapshot-specific retry configuration
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
     /// - `SnapshotError::TransferFailed`: On unrecoverable transfer failure
     async fn install_snapshot(
         &self,
-        channel: Channel,
+        node_id: u32,
         metadata: SnapshotMetadata,
         data_stream: futures::stream::BoxStream<'static, Result<SnapshotChunk>>,
         retry: &crate::InstallSnapshotBackoffPolicy,
         config: &crate::SnapshotConfig,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<()>;
 
     /// Initiates cluster join process for a learner node
@@ -248,12 +252,13 @@ pub trait Transport: Send + Sync + 'static {
     ///
     /// # Parameters
     /// - `leader_channel`: Pre-established gRPC channel to cluster leader
-    /// - [request](http://_vscodecontentref_/2): Join request with node metadata
-    /// - [retry](http://_vscodecontentref_/3): Join-specific retry configuration
+    /// - `request`: Join request with node metadata
+    /// - `retry`: Join-specific retry configuration
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
-    /// - [NetworkError::JoinFailed](http://_vscodecontentref_/4): On unrecoverable join failure
-    /// - [NetworkError::NotLeader](http://_vscodecontentref_/5): If contacted node isn't leader
+    /// - NetworkError::JoinFailed: On unrecoverable join failure
+    /// - NetworkError::NotLeader: If contacted node isn't leader
     ///
     /// # Guarantees
     /// - At-least-once delivery
@@ -261,9 +266,10 @@ pub trait Transport: Send + Sync + 'static {
     /// - Idempotent operation
     async fn join_cluster(
         &self,
-        leader_channel: Channel,
+        leader_id: u32,
         request: crate::proto::cluster::JoinRequest,
         retry: BackoffPolicy,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<crate::proto::cluster::JoinResponse>;
 
     /// Discovers current cluster leader
@@ -280,9 +286,9 @@ pub trait Transport: Send + Sync + 'static {
     /// - `NetworkError::DiscoveryTimeout`: When no response received
     async fn discover_leader(
         &self,
-        voting_members: dashmap::DashMap<u32, ChannelWithAddress>,
         request: crate::proto::cluster::LeaderDiscoveryRequest,
         rpc_enable_compression: bool,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<crate::proto::cluster::LeaderDiscoveryResponse>>;
 }
 
@@ -301,7 +307,8 @@ use tracing::warn;
 use crate::Error;
 
 /// As soon as task has return we should return from this function
-pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, U>(
+pub(crate) async fn grpc_task_with_timeout_and_exponential_backoff<F, T, U>(
+    task_name: &'static str,
     mut task: F,
     policy: BackoffPolicy,
 ) -> std::result::Result<tonic::Response<U>, Error>
@@ -318,7 +325,7 @@ where
 
     let mut last_error = NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
-        debug!("Attempt {} of {}", retries + 1, max_retries);
+        debug!("[{task_name}] Attempt {} of {}", retries + 1, max_retries);
         match timeout(timeout_duration, task()).await {
             Ok(Ok(r)) => {
                 return Ok(r); // Exit on success
@@ -326,29 +333,29 @@ where
             Ok(Err(status)) => {
                 last_error = match status.code() {
                     Code::Unavailable => {
-                        warn!("Service unavailable: {}", status.message());
+                        warn!("[{task_name}] Service unavailable: {}", status.message());
                         NetworkError::ServiceUnavailable(format!("Service unavailable: {}", status.message()))
                     }
                     _ => {
-                        warn!("RPC error: {}", status);
+                        warn!("[{task_name}] RPC error: {}", status);
                         NetworkError::TonicStatusError(Box::new(status))
                     }
                 };
             }
             Err(_e) => {
-                warn!("Task timed out after {:?}", timeout_duration);
+                warn!("[{task_name}] Task timed out after {:?}", timeout_duration);
                 last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };
 
         if retries < max_retries - 1 {
-            debug!("Retrying in {:?}...", current_delay);
+            debug!("[{task_name}] Retrying in {:?}...", current_delay);
             sleep(current_delay).await;
 
             // Exponential backoff (double the delay each time)
             current_delay = (current_delay * 2).min(max_delay);
         } else {
-            warn!("Task failed after {} retries", retries);
+            warn!("[{task_name}] Task failed after {} retries", retries);
             //bug: no need to return if the it is not a business logic error
             // return Err(Error::RetryTaskFailed("Task failed after max
             // retries".to_string())); // Return the last error after max
@@ -356,6 +363,6 @@ where
         }
         retries += 1;
     }
-    warn!("Task failed after {} retries", max_retries);
+    warn!("[{task_name}] Task failed after {} retries", max_retries);
     Err(last_error.into()) // Fallback error message if no task returns Ok
 }

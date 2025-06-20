@@ -275,7 +275,7 @@ impl NodeBuilder {
             Arc::new(SledStateStorage::new(Arc::new(state_storage_db)))
         });
 
-        let transport = self.transport.take().unwrap_or(GrpcTransport { my_id: node_id });
+        let transport = self.transport.take().unwrap_or(GrpcTransport::new(node_id));
 
         let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
             node_config.raft.snapshot.max_log_entries_before_snapshot,
@@ -292,11 +292,13 @@ impl NodeBuilder {
                 snapshot_policy,
             ))
         });
-
-        let membership = self
-            .membership
-            .take()
-            .unwrap_or_else(|| RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone()));
+        let membership = Arc::new(self.membership.take().unwrap_or_else(|| {
+            RaftMembership::new(
+                node_id,
+                node_config.cluster.initial_cluster.clone(),
+                node_config.clone(),
+            )
+        }));
 
         let purge_executor = self
             .purge_executor
@@ -307,8 +309,8 @@ impl NodeBuilder {
         let (event_tx, event_rx) = mpsc::channel(10240);
         let event_tx_clone = event_tx.clone(); // used in commit handler
 
-        let node_config_arc = Arc::new(node_config);
         let shutdown_signal = self.shutdown_signal.clone();
+        let node_config_arc = Arc::new(node_config);
         let mut raft_core = Raft::<RaftTypeConfig>::new(
             node_id,
             RaftStorageHandles::<RaftTypeConfig> {
@@ -323,7 +325,7 @@ impl NodeBuilder {
                 state_machine_handler: state_machine_handler.clone(),
                 purge_executor,
             },
-            Arc::new(membership),
+            membership.clone(),
             SignalParams {
                 role_tx,
                 role_rx,
@@ -353,6 +355,7 @@ impl NodeBuilder {
         let node = Node::<RaftTypeConfig> {
             node_id,
             raft_core: Arc::new(Mutex::new(raft_core)),
+            membership,
             event_tx: event_tx.clone(),
             ready: AtomicBool::new(false),
             node_config: node_config_arc,

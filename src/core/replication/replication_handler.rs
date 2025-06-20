@@ -1,6 +1,5 @@
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
-use crate::alias::POF;
 use crate::alias::ROF;
 use crate::proto::client::WriteCommand;
 use crate::proto::common::entry_payload::Payload;
@@ -14,9 +13,8 @@ use crate::proto::replication::ConflictResult;
 use crate::proto::replication::SuccessResult;
 use crate::utils::cluster::is_majority;
 use crate::AppendResults;
-use crate::ChannelWithAddress;
-use crate::ChannelWithAddressAndRole;
 use crate::LeaderStateSnapshot;
+use crate::Membership;
 use crate::PeerUpdate;
 use crate::RaftContext;
 use crate::RaftLog;
@@ -60,8 +58,6 @@ where
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &RaftContext<T>,
-        // peer_channels: Arc<POF<T>>,
-        replication_members: Vec<ChannelWithAddressAndRole>,
     ) -> Result<AppendResults> {
         debug!("-------- handle_raft_request_in_batch --------");
         trace!("entry_payloads: {:?}", &entry_payloads);
@@ -69,8 +65,9 @@ where
         // ----------------------
         // Phase 1: Pre-Checks
         // ----------------------
-        // let replication_members = ctx.voting_members(peer_channels);
-        if replication_members.is_empty() {
+        let membership = ctx.membership();
+        let members = membership.voters();
+        if members.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
             return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());
         }
@@ -108,9 +105,9 @@ where
         // ----------------------
         // Phase 4: Build Requests
         // ----------------------
-        let requests = replication_members
+        let requests = members
             .iter()
-            .map(|peer| self.build_append_request(raft_log, peer, &entries_per_peer, &replication_data))
+            .map(|m| self.build_append_request(raft_log, m.id, &entries_per_peer, &replication_data))
             .collect();
 
         // ----------------------
@@ -122,7 +119,7 @@ where
 
         match ctx
             .transport()
-            .send_append_requests(requests, &ctx.node_config.retry)
+            .send_append_requests(requests, &ctx.node_config.retry, membership)
             .await
         {
             Ok(append_result) => {
@@ -503,12 +500,10 @@ where
     pub(super) fn build_append_request(
         &self,
         raft_log: &Arc<ROF<T>>,
-        peer: &ChannelWithAddressAndRole,
+        peer_id: u32,
         entries_per_peer: &DashMap<u32, Vec<Entry>>,
         data: &ReplicationData,
-    ) -> (u32, ChannelWithAddress, AppendEntriesRequest) {
-        let peer_id = peer.id;
-
+    ) -> (u32, AppendEntriesRequest) {
         // Calculate prev_log metadata
         let (prev_log_index, prev_log_term) = data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
             let prev_index = next_id.saturating_sub(1);
@@ -528,7 +523,6 @@ where
 
         (
             peer_id,
-            peer.channel_with_address.clone(),
             AppendEntriesRequest {
                 term: data.current_term,
                 leader_id: self.my_id,

@@ -126,7 +126,7 @@ pub fn setup_raft_components(
     let last_applied_pair = sled_state_machine.last_applied();
     let sled_state_storage = SledStateStorage::new(state_storage_db);
 
-    let grpc_transport = GrpcTransport { my_id: id };
+    let grpc_transport = GrpcTransport::new(id);
 
     let peers_meta = if let Some(meta) = peers_meta_option {
         meta
@@ -179,7 +179,11 @@ pub fn setup_raft_components(
         state_machine,
         state_storage: Box::new(sled_state_storage),
         transport: Arc::new(grpc_transport),
-        membership: Arc::new(RaftMembership::new(id, arc_node_config.cluster.initial_cluster.clone())),
+        membership: Arc::new(RaftMembership::new(
+            id,
+            arc_node_config.cluster.initial_cluster.clone(),
+            node_config_clone.clone(),
+        )),
         election_handler: ElectionHandler::new(id),
         replication_handler: ReplicationHandler::new(id),
         node_config: node_config_clone,

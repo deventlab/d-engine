@@ -5,7 +5,7 @@ use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use super::LEARNER;
-use crate::alias::POF;
+use crate::alias::MOF;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::{ClusterConfUpdateResponse, JoinRequest, LeaderDiscoveryRequest, LeaderDiscoveryResponse};
 use crate::proto::election::VoteResponse;
@@ -13,6 +13,7 @@ use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
 use crate::NetworkError;
 use crate::RaftContext;
+use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RoleEvent;
 use crate::StateMachineHandler;
@@ -20,7 +21,6 @@ use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::{ConsensusError, Membership};
 use crate::{MembershipError, Result};
-use crate::{PeerChannels, RaftEvent};
 use crate::{RaftNodeConfig, Transport};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -29,7 +29,6 @@ use std::time::Duration;
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::async_trait;
-use tonic::transport::Channel;
 use tonic::Status;
 use tracing::error;
 use tracing::info;
@@ -145,7 +144,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         &mut self,
         _role_event_tx: &mpsc::UnboundedSender<RoleEvent>,
         _raft_tx: &mpsc::Sender<RaftEvent>,
-        _peer_channels: Arc<POF<T>>,
         _ctx: &RaftContext<T>,
     ) -> Result<()> {
         Ok(())
@@ -155,7 +153,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        _peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -349,22 +346,23 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
     async fn join_cluster(
         &self,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         // 1. Check if there is a Leader address (as specified in the configuration)
-        let leader_channel: Channel = match ctx.membership().current_leader_id() {
+        let membership = ctx.membership();
+        let leader_id = match membership.current_leader_id() {
             None => {
                 // 2. Trigger broadcast discovery
-                self.broadcast_discovery(peer_channels.clone(), ctx).await?
+                self.broadcast_discovery(membership.clone(), ctx).await?
             }
-            Some(leader_id) => match peer_channels.get_peer_channel(leader_id) {
-                Some(channel_with_address) => channel_with_address.channel,
-                None => {
-                    warn!(%leader_id, "peer_channels.get_peer_channel(leader_id) found none");
-                    return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
-                }
-            },
+            Some(leader_id) => leader_id,
+            // match membership.get_peer_channel(leader_id, ConnectionType::Control).await {
+            //     Some(channel_with_address) => channel_with_address.channel,
+            //     None => {
+            //         warn!(%leader_id, "peer_channels.get_peer_channel(leader_id) found none");
+            //         return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
+            //     }
+            // },
         };
 
         // 3. Continue the original Join process
@@ -372,12 +370,13 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         let response = ctx
             .transport()
             .join_cluster(
-                leader_channel,
+                leader_id,
                 JoinRequest {
                     node_id: node_config.cluster.node_id,
                     address: node_config.cluster.listen_address.to_string(),
                 },
                 node_config.retry.join_cluster,
+                membership,
             )
             .await?;
 
@@ -416,14 +415,13 @@ impl<T: TypeConfig> LearnerState<T> {
 
     pub(crate) async fn broadcast_discovery(
         &self,
-        peer_channels: Arc<POF<T>>,
+        membership: Arc<MOF<T>>,
         ctx: &RaftContext<T>,
-    ) -> Result<Channel> {
+    ) -> Result<u32> {
         let retry_policy = ctx.node_config.retry.auto_discovery;
         let mut retry_count = 0;
         let mut current_delay = Duration::from_millis(retry_policy.base_delay_ms);
 
-        let voting_members = peer_channels.voting_members();
         let request = LeaderDiscoveryRequest {
             node_id: ctx.node_id,
             requester_address: ctx.node_config.cluster.listen_address.to_string(),
@@ -435,7 +433,7 @@ impl<T: TypeConfig> LearnerState<T> {
             let discovery_result = tokio::time::timeout(
                 Duration::from_millis(retry_policy.timeout_ms),
                 ctx.transport
-                    .discover_leader(voting_members.clone(), request.clone(), rpc_enable_compression),
+                    .discover_leader(request.clone(), rpc_enable_compression, membership.clone()),
             )
             .await;
 
@@ -443,11 +441,9 @@ impl<T: TypeConfig> LearnerState<T> {
 
             match discovery_result {
                 Ok(responses) => {
-                    if let Some((leader_id, leader_channel)) =
-                        self.select_valid_leader(responses?, peer_channels.clone()).await
-                    {
+                    if let Some(leader_id) = self.select_valid_leader(responses?).await {
                         debug!(%leader_id, "find valid leader");
-                        return Ok(leader_channel);
+                        return Ok(leader_id);
                     }
                 }
                 Err(_) => {
@@ -484,8 +480,7 @@ impl<T: TypeConfig> LearnerState<T> {
     pub(super) async fn select_valid_leader(
         &self,
         responses: Vec<LeaderDiscoveryResponse>,
-        peer_channels: Arc<POF<T>>,
-    ) -> Option<(u32, Channel)> {
+    ) -> Option<u32> {
         // Filter invalid responses
         let mut valid_responses: Vec<_> = responses
             .into_iter()
@@ -502,11 +497,9 @@ impl<T: TypeConfig> LearnerState<T> {
         trace!(?valid_responses);
 
         // Select the response with the highest term
-        valid_responses.first().and_then(|resp| {
-            peer_channels
-                .get_peer_channel(resp.leader_id)
-                .map(|c| (resp.leader_id, c.channel))
-        })
+        let resp = valid_responses.first().unwrap();
+
+        Some(resp.leader_id)
     }
 }
 impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {

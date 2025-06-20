@@ -9,7 +9,7 @@ fn default_config_should_initialize_with_hardcoded_values() {
 
     assert_eq!(config.cluster.node_id, 1);
     assert_eq!(config.raft.election.election_timeout_min, 500);
-    assert_eq!(config.network.request_timeout_in_ms, 100);
+    assert_eq!(config.network.control.request_timeout_in_ms, 100);
     assert!(!config.tls.enable_tls);
 }
 

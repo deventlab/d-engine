@@ -1,6 +1,5 @@
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
-use crate::alias::POF;
 use crate::client_command_to_entry_payloads;
 use crate::convert::safe_kv;
 use crate::proto::client::ClientReadRequest;
@@ -25,7 +24,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::enable_logger;
-use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
@@ -36,14 +34,12 @@ use crate::test_utils::MOCK_LEADER_STATE_PORT_BASE;
 use crate::test_utils::MOCK_ROLE_STATE_PORT_BASE;
 use crate::AppendResults;
 use crate::ChannelWithAddress;
-use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotReceiver;
 use crate::MaybeCloneOneshotSender;
 use crate::MockMembership;
-use crate::MockPeerChannels;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -111,7 +107,7 @@ async fn setup_process_raft_request_test_context(
     replication_handler
         .expect_handle_raft_request_in_batch()
         .times(handle_raft_request_in_batch_expect_times)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -203,7 +199,7 @@ async fn test_process_raft_request_case1_1() {
     };
     let (tx, rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let peer_channels = Arc::new(mock_peer_channels());
+
     // Execute test operation
     let result = test_context
         .state
@@ -214,7 +210,6 @@ async fn test_process_raft_request_case1_1() {
                 sender: tx,
             },
             &test_context.raft_context,
-            peer_channels,
             false,
             &role_tx,
         )
@@ -278,7 +273,6 @@ async fn test_process_raft_request_case1_2() {
     let (tx2, rx2) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let peer_channels = Arc::new(mock_peer_channels());
     // Execute test operation
     let result1 = test_context
         .state
@@ -289,7 +283,6 @@ async fn test_process_raft_request_case1_2() {
                 sender: tx1,
             },
             &test_context.raft_context,
-            peer_channels.clone(),
             true,
             &role_tx,
         )
@@ -304,7 +297,6 @@ async fn test_process_raft_request_case1_2() {
                 sender: tx2,
             },
             &test_context.raft_context,
-            peer_channels,
             true,
             &role_tx,
         )
@@ -354,7 +346,6 @@ async fn test_process_raft_request_case2() {
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-    let peer_channels = Arc::new(mock_peer_channels());
     assert!(test_context
         .state
         .process_raft_request(
@@ -364,7 +355,6 @@ async fn test_process_raft_request_case2() {
                 sender: resp_tx,
             },
             &test_context.raft_context,
-            peer_channels,
             false,
             &role_tx
         )
@@ -421,8 +411,8 @@ async fn test_ensure_state_machine_upto_commit_index_case2() {
 fn setup_handle_raft_event_case1_params(
     resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
     term: u64,
-) -> (RaftEvent, Arc<POF<MockTypeConfig>>) {
-    let raft_event = RaftEvent::ReceiveVoteRequest(
+) -> RaftEvent {
+    RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term,
             candidate_id: 1,
@@ -430,9 +420,7 @@ fn setup_handle_raft_event_case1_params(
             last_log_term: 0,
         },
         resp_tx,
-    );
-    let peer_channels = Arc::new(mock_peer_channels());
-    (raft_event, peer_channels)
+    )
 }
 
 /// # Case 1.1: Receive Vote Request Event
@@ -454,12 +442,9 @@ async fn test_handle_raft_event_case1_1() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx, request_term);
+    let raft_event = setup_handle_raft_event_case1_params(resp_tx, request_term);
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Receive response with vote_granted = false
     assert!(!resp_rx.recv().await.unwrap().unwrap().vote_granted);
@@ -491,11 +476,9 @@ async fn test_handle_raft_event_case1_2() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx, updated_term);
+    let raft_event = setup_handle_raft_event_case1_params(resp_tx, updated_term);
 
-    let r = state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await;
+    let r = state.handle_raft_event(raft_event, &context, role_tx).await;
     println!("r:{r:?}");
     assert!(r.is_ok());
 
@@ -533,12 +516,8 @@ async fn test_handle_raft_event_case2() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     let m = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(m.nodes, vec![]);
@@ -572,12 +551,7 @@ async fn test_handle_raft_event_case3_1_reject_stale_term() {
     let raft_event = RaftEvent::ClusterConfUpdate(request, resp_tx);
 
     state
-        .handle_raft_event(
-            raft_event,
-            Arc::new(mock_peer_channels()),
-            &context,
-            mpsc::unbounded_channel().0,
-        )
+        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
         .await
         .unwrap();
 
@@ -615,10 +589,7 @@ async fn test_handle_raft_event_case3_2_update_step_down() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let raft_event = RaftEvent::ClusterConfUpdate(request, resp_tx);
 
-    state
-        .handle_raft_event(raft_event, Arc::new(mock_peer_channels()), &context, role_tx)
-        .await
-        .unwrap();
+    state.handle_raft_event(raft_event, &context, role_tx).await.unwrap();
 
     // Verify step down to follower
     assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(Some(2)))));
@@ -650,12 +621,12 @@ async fn test_handle_raft_event_case4_1() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Execute fun
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("should succeed");
 
@@ -701,14 +672,11 @@ async fn test_handle_raft_event_case4_2() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Test fun
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validate criterias: step down as Follower
     assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
@@ -730,7 +698,7 @@ async fn test_handle_raft_event_case5_1() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
@@ -754,12 +722,9 @@ async fn test_handle_raft_event_case5_1() {
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 }
 
 /// # Case 5.1: Test handle client propose request
@@ -778,7 +743,7 @@ async fn test_handle_raft_event_case6_1() {
     replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(|_, _, _, _| Err(Error::Fatal("".to_string())));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -799,10 +764,10 @@ async fn test_handle_raft_event_case6_1() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("should succeed");
 
@@ -831,7 +796,7 @@ async fn test_handle_raft_event_case6_2() {
     replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -879,10 +844,10 @@ async fn test_handle_raft_event_case6_2() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("should succeed");
 
@@ -926,7 +891,7 @@ async fn test_handle_raft_event_case6_3() {
     replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(1),
             )))
@@ -957,10 +922,10 @@ async fn test_handle_raft_event_case6_3() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("should succeed");
 
@@ -989,12 +954,9 @@ async fn test_handle_raft_event_case7() {
 
     let stream = crate_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
     let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criteria 1: The response should return an error
     // Assert that resp_rx receives permission_denied
@@ -1026,12 +988,9 @@ async fn test_handle_raft_event_case8() {
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criteria 1: The response should return an error
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -1066,19 +1025,14 @@ async fn test_handle_raft_event_case9_1() {
     });
     context.handlers.state_machine_handler = Arc::new(state_machine);
 
-    // Prepare leader peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 1, rx1, true)
-        .await
-        .expect("should succeed");
-
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
             id: 2,
-            channel_with_address: addr1.clone(),
+            address: "http://127.0.0.1:55001".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         }]
     });
     context.membership = Arc::new(membership);
@@ -1092,12 +1046,9 @@ async fn test_handle_raft_event_case9_1() {
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
     let raft_event = RaftEvent::CreateSnapshotEvent;
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criteria 2: No role event should be triggered
     assert!(role_rx.try_recv().is_err());
@@ -1129,17 +1080,13 @@ async fn test_handle_raft_event_case9_2() {
     context.handlers.state_machine_handler = Arc::new(state_machine);
 
     // Mock peer configuration
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 2, rx1, true)
-        .await
-        .expect("should succeed");
-
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
+    membership.expect_voters().returning(|| {
+        vec![NodeMeta {
             id: 2,
-            channel_with_address: addr1.clone(),
+            address: "".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         }]
     });
     context.membership = Arc::new(membership);
@@ -1174,12 +1121,12 @@ async fn test_handle_raft_event_case9_2() {
 
     // Trigger event
     let raft_event = RaftEvent::CreateSnapshotEvent;
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Execute
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should succeed");
 
@@ -1215,12 +1162,12 @@ async fn test_handle_raft_event_case9_3() {
 
     // Trigger event
     let raft_event = RaftEvent::CreateSnapshotEvent;
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Execute and validate error is handled gracefully
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should handle error without crashing");
 
@@ -1256,17 +1203,13 @@ async fn test_handle_raft_event_case9_4() {
     context.handlers.state_machine_handler = Arc::new(state_machine);
 
     // Mock peer configuration
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 4, rx1, true)
-        .await
-        .expect("should succeed");
-
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
             id: 2,
-            channel_with_address: addr1.clone(),
+            address: "http://127.0.0.1:55001".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         }]
     });
     context.membership = Arc::new(membership);
@@ -1292,12 +1235,12 @@ async fn test_handle_raft_event_case9_4() {
 
     // Trigger event
     let raft_event = RaftEvent::CreateSnapshotEvent;
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Execute
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should handle higher term response");
 
@@ -1341,11 +1284,13 @@ async fn test_handle_raft_event_case9_5() {
         .expect("should succeed");
 
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
+
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
             id: 2,
-            channel_with_address: addr1.clone(),
+            address: "http://127.0.0.1:55001".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         }]
     });
     context.membership = Arc::new(membership);
@@ -1371,12 +1316,12 @@ async fn test_handle_raft_event_case9_5() {
 
     // Trigger event
     let raft_event = RaftEvent::CreateSnapshotEvent;
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Execute
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should skip purge");
 
@@ -1410,28 +1355,20 @@ async fn test_handle_raft_event_case9_6() {
     context.handlers.state_machine_handler = Arc::new(state_machine);
 
     // Mock peer configuration (multiple peers)
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 6, rx1, true)
-        .await
-        .expect("should succeed");
-
-    let (_tx2, rx2) = oneshot::channel::<()>();
-    let addr2 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 7, rx2, true)
-        .await
-        .expect("should succeed");
-
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
+    membership.expect_voters().returning(move || {
         vec![
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 2,
-                channel_with_address: addr1.clone(),
+                address: "http://127.0.0.1:55001".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 3,
-                channel_with_address: addr2.clone(),
+                address: "http://127.0.0.1:55002".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
         ]
     });
@@ -1465,12 +1402,12 @@ async fn test_handle_raft_event_case9_6() {
 
     // Trigger event
     let raft_event = RaftEvent::CreateSnapshotEvent;
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Execute
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should succeed");
 
@@ -1511,11 +1448,10 @@ async fn test_handle_raft_event_case10_1_discover_leader_success() {
     };
     let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
 
-    let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should handle successfully");
 
@@ -1551,11 +1487,10 @@ async fn test_handle_raft_event_case10_2_discover_leader_metadata_not_found() {
     };
     let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
 
-    let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should panic during handling");
 }
@@ -1594,11 +1529,10 @@ async fn test_handle_raft_event_case10_4_different_leader_terms() {
     };
     let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
 
-    let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should handle successfully");
 
@@ -1639,11 +1573,10 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
     };
     let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
 
-    let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
+        .handle_raft_event(raft_event, &context, role_tx)
         .await
         .expect("Should handle successfully");
 
@@ -1773,7 +1706,7 @@ async fn test_process_batch_case1_quorum_achieved() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -1811,7 +1744,7 @@ async fn test_process_batch_case1_quorum_achieved() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let result = context
         .state
-        .process_batch(batch, &role_tx, &context.raft_context, Arc::new(mock_peer_channels()))
+        .process_batch(batch, &role_tx, &context.raft_context)
         .await;
 
     assert!(result.is_ok());
@@ -1840,7 +1773,7 @@ async fn test_process_batch_case2_quorum_failed() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([
@@ -1869,12 +1802,7 @@ async fn test_process_batch_case2_quorum_failed() {
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
     let result = context
         .state
-        .process_batch(
-            batch,
-            &mpsc::unbounded_channel().0,
-            &context.raft_context,
-            Arc::new(mock_peer_channels()),
-        )
+        .process_batch(batch, &mpsc::unbounded_channel().0, &context.raft_context)
         .await;
 
     assert!(result.is_ok());
@@ -1905,7 +1833,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(
@@ -1925,17 +1853,19 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .expect("should succeed");
 
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
+    membership.expect_voters().returning(move || {
         vec![
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 2,
-                channel_with_address: addr1.clone(),
                 role: FOLLOWER,
+                address: "127.0.0.1:0".to_string(),
+                status: NodeStatus::Active.into(),
             },
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 3,
-                channel_with_address: addr1.clone(),
                 role: FOLLOWER,
+                address: "127.0.0.1:0".to_string(),
+                status: NodeStatus::Active.into(),
             },
         ]
     });
@@ -1947,12 +1877,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
 
     let result = context
         .state
-        .process_batch(
-            batch,
-            &mpsc::unbounded_channel().0,
-            &context.raft_context,
-            Arc::new(mock_peer_channels()),
-        )
+        .process_batch(batch, &mpsc::unbounded_channel().0, &context.raft_context)
         .await;
 
     assert!(result.is_ok());
@@ -1979,7 +1904,7 @@ async fn test_process_batch_case3_higher_term() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(10), // Higher term
             )))
@@ -1990,7 +1915,7 @@ async fn test_process_batch_case3_higher_term() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let result = context
         .state
-        .process_batch(batch, &role_tx, &context.raft_context, Arc::new(mock_peer_channels()))
+        .process_batch(batch, &role_tx, &context.raft_context)
         .await;
 
     assert!(result.is_err());
@@ -2016,7 +1941,7 @@ async fn test_process_batch_case4_partial_timeouts() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(
@@ -2030,25 +1955,21 @@ async fn test_process_batch_case4_partial_timeouts() {
             })
         });
 
-    // Prepare leader peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 9, rx1, true)
-        .await
-        .expect("should succeed");
-
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
+    membership.expect_voters().returning(move || {
         vec![
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 2,
-                channel_with_address: addr1.clone(),
+                address: "http://127.0.0.1:55001".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 3,
-                channel_with_address: addr1.clone(),
+                address: "http://127.0.0.1:55002".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
         ]
     });
@@ -2058,12 +1979,7 @@ async fn test_process_batch_case4_partial_timeouts() {
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let result = context
         .state
-        .process_batch(
-            batch,
-            &mpsc::unbounded_channel().0,
-            &context.raft_context,
-            Arc::new(mock_peer_channels()),
-        )
+        .process_batch(batch, &mpsc::unbounded_channel().0, &context.raft_context)
         .await;
 
     assert!(result.is_ok());
@@ -2088,32 +2004,27 @@ async fn test_process_batch_case5_all_timeout() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([]),
             })
         });
-
-    // Prepare leader peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 10, rx1, true)
-        .await
-        .expect("should succeed");
-
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
+    membership.expect_voters().returning(move || {
         vec![
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 2,
-                channel_with_address: addr1.clone(),
+                address: "http://127.0.0.1:55001".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 3,
-                channel_with_address: addr1.clone(),
+                address: "http://127.0.0.1:55002".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
         ]
     });
@@ -2123,12 +2034,7 @@ async fn test_process_batch_case5_all_timeout() {
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let result = context
         .state
-        .process_batch(
-            batch,
-            &mpsc::unbounded_channel().0,
-            &context.raft_context,
-            Arc::new(mock_peer_channels()),
-        )
+        .process_batch(batch, &mpsc::unbounded_channel().0, &context.raft_context)
         .await;
 
     assert!(result.is_ok());
@@ -2153,18 +2059,13 @@ async fn test_process_batch_case6_fatal_error() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+        .returning(|_, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
 
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let result = context
         .state
-        .process_batch(
-            batch,
-            &mpsc::unbounded_channel().0,
-            &context.raft_context,
-            Arc::new(mock_peer_channels()),
-        )
+        .process_batch(batch, &mpsc::unbounded_channel().0, &context.raft_context)
         .await;
 
     assert!(result.is_err());
@@ -2217,7 +2118,7 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
@@ -2231,11 +2132,11 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
     raft_context.storage.raft_log = Arc::new(raft_log);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
@@ -2261,7 +2162,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
@@ -2269,11 +2170,11 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
         });
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
@@ -2298,47 +2199,45 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
             })
         });
 
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 11, rx1, true)
-        .await
-        .expect("should succeed");
-
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(move |_| {
+    membership.expect_voters().returning(move || {
         vec![
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 2,
-                channel_with_address: addr1.clone(),
+                address: "".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 3,
-                channel_with_address: addr1.clone(),
+                address: "".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
-            ChannelWithAddressAndRole {
+            NodeMeta {
                 id: 4,
-                channel_with_address: addr1.clone(),
+                address: "".to_string(),
                 role: FOLLOWER,
+                status: NodeStatus::Active.into(),
             },
         ]
     });
     raft_context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::LeadershipLost);
@@ -2363,7 +2262,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([
@@ -2374,11 +2273,11 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
         });
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
@@ -2399,7 +2298,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(2, PeerUpdate::failed()), (3, PeerUpdate::failed())]),
@@ -2407,11 +2306,10 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
         });
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
     let (role_tx, _) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
@@ -2432,18 +2330,18 @@ async fn test_verify_internal_quorum_case6_higher_term() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(10),
             )))
         });
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert!(result.is_err());
@@ -2473,14 +2371,14 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+        .returning(|_, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, _) = mpsc::unbounded_channel();
 
     let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, peer_channels, &role_tx)
+        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
         .await;
 
     assert!(result.is_err());
@@ -2526,18 +2424,17 @@ async fn test_trigger_snapshot_transfer_case1_success() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
+    let mut membership = MockMembership::new();
 
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 1, rx1).await;
-    peer_channels
+    membership
         .expect_get_peer_channel()
-        .returning(move |_| Some(addr.clone()));
+        .returning(move |_, _| Some(addr.clone()));
 
     // Prepare leader state
     let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2548,7 +2445,7 @@ async fn test_trigger_snapshot_transfer_case1_success() {
 
     // Execute test
     let result = state
-        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(membership))
         .await;
 
     assert!(result.is_ok(), "Transfer should initiate successfully");
@@ -2573,7 +2470,7 @@ async fn test_trigger_snapshot_transfer_case2_peer_not_found() {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler
         .expect_load_snapshot_data()
-        .times(0)
+        .times(1)
         .returning(|_| {
             let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
             let stream = crate_test_snapshot_stream(chunks);
@@ -2592,21 +2489,22 @@ async fn test_trigger_snapshot_transfer_case2_peer_not_found() {
 
     // Mock transport to succeed
     let mut transport = MockTransport::new();
-    transport.expect_install_snapshot().times(0); // Should not be called
+    transport
+        .expect_install_snapshot()
+        .times(1)
+        .returning(move |_, _, _, _, _, _| Err(NetworkError::PeerConnectionNotFound(node_id).into())); // Should not be called
     context.transport = Arc::new(transport);
 
     // Mock peer channels to return None for non-existent node
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
-    peer_channels
+    let mut membership = MockMembership::new();
+    membership
         .expect_get_peer_channel()
-        .with(eq(node_id))
-        .times(1)
-        .returning(move |_| None);
+        .times(0)
+        .returning(move |_, _| None);
 
     // Execute test
     let result = state
-        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(membership))
         .await;
 
     assert!(result.is_err());
@@ -2637,13 +2535,12 @@ async fn test_trigger_snapshot_transfer_case3_load_failure() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock transport to succeed
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
+    let mut membership = MockMembership::new();
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 3, rx1).await;
-    peer_channels
+    membership
         .expect_get_peer_channel()
-        .returning(move |_| Some(addr.clone()));
+        .returning(move |_, _| Some(addr.clone()));
 
     // Prepare leader state
     let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2654,7 +2551,7 @@ async fn test_trigger_snapshot_transfer_case3_load_failure() {
 
     // Execute test
     let result = state
-        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(membership))
         .await;
 
     assert!(result.is_err());
@@ -2695,17 +2592,16 @@ async fn test_trigger_snapshot_transfer_case4_network_failure() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _, _| Err(SnapshotError::TransferFailed.into()));
+        .returning(|_, _, _, _, _, _| Err(SnapshotError::TransferFailed.into()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
+    let mut membership = MockMembership::new();
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 4, rx1).await;
-    peer_channels
+    membership
         .expect_get_peer_channel()
-        .returning(move |_| Some(addr.clone()));
+        .returning(move |_, _| Some(addr.clone()));
 
     // Prepare leader state
     let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2716,7 +2612,7 @@ async fn test_trigger_snapshot_transfer_case4_network_failure() {
 
     // Execute test
     let result = state
-        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(membership))
         .await;
 
     debug!(?result);
@@ -2768,17 +2664,16 @@ async fn test_trigger_snapshot_transfer_case5_large_snapshot() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
     // Mock peer channels
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
+    let mut membership = MockMembership::new();
     let (_tx1, rx1) = oneshot::channel::<()>();
     let addr = mock_peer(MOCK_LEADER_STATE_PORT_BASE + 5, rx1).await;
-    peer_channels
+    membership
         .expect_get_peer_channel()
-        .returning(move |_| Some(addr.clone()));
+        .returning(move |_, _| Some(addr.clone()));
 
     // Prepare leader state
     let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2789,7 +2684,7 @@ async fn test_trigger_snapshot_transfer_case5_large_snapshot() {
 
     // Execute test
     let result = state
-        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(peer_channels))
+        .trigger_snapshot_transfer(node_id, metadata, &context, Arc::new(membership))
         .await;
 
     assert!(result.is_ok(), "Should handle large snapshot");
@@ -2807,12 +2702,15 @@ async fn test_handle_join_cluster_case1_success() {
     let node_id = 100;
     let address = "127.0.0.1:8080".to_string();
 
-    // Mock membership// Prepare leader peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_LEADER_STATE_PORT_BASE + 10, rx1, true)
-        .await
-        .expect("should succeed");
     let mut membership = MockMembership::new();
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
+            id: 2,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active.into(),
+        }]
+    });
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
@@ -2820,29 +2718,19 @@ async fn test_handle_join_cluster_case1_success() {
         .returning(|| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
-    membership.expect_voting_members().returning(move |_| {
-        vec![ChannelWithAddressAndRole {
-            id: 2,
-            channel_with_address: addr1.clone(),
-            role: FOLLOWER,
-        }]
+    membership.expect_get_peer_channel().returning(|_, _| {
+        Some(ChannelWithAddress {
+            address: "".to_string(),
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+        })
     });
     raft_context.membership = Arc::new(membership);
     let mut transport = MockTransport::new();
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _, _| Ok(()));
     raft_context.transport = Arc::new(transport);
-    // Mock peer channels
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
 
     // -->  perpare verify_internal_quorum returns success
     // Setup replication handler to return success
@@ -2851,7 +2739,7 @@ async fn test_handle_join_cluster_case1_success() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
@@ -2902,7 +2790,6 @@ async fn test_handle_join_cluster_case1_success() {
             },
             sender,
             &raft_context,
-            Arc::new(peer_channels),
             &mpsc::unbounded_channel().0,
         )
         .await;
@@ -2939,7 +2826,6 @@ async fn test_handle_join_cluster_case2_node_exists() {
             },
             sender,
             &context,
-            Arc::new(mock_peer_channels()),
             &mpsc::unbounded_channel().0,
         )
         .await;
@@ -2962,7 +2848,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _, _| Ok(()));
-    membership.expect_voting_members().returning(|_| vec![]); // Empty voting members will cause quorum failure
+    membership.expect_voters().returning(|| vec![]); // Empty voting members will cause quorum failure
     context.membership = Arc::new(membership);
 
     // Setup replication handler to simulate quorum not achieved
@@ -2971,21 +2857,12 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::new(),
             })
         });
-
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
 
     // Mock quorum verification to fail
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2998,7 +2875,6 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
             },
             sender,
             &context,
-            Arc::new(peer_channels),
             &mpsc::unbounded_channel().0,
         )
         .await;
@@ -3021,14 +2897,13 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _, _| Ok(()));
-    membership.expect_voting_members().returning(|_| {
-        vec![ChannelWithAddressAndRole {
+
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
             id: 2,
-            channel_with_address: ChannelWithAddress {
-                address: "".to_string(),
-                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-            },
+            address: "http://127.0.0.1:55001".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         }]
     });
     context.membership = Arc::new(membership);
@@ -3038,16 +2913,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Test error".to_string())));
-
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
+        .returning(|_, _, _, _| Err(Error::Fatal("Test error".to_string())));
 
     // Mock quorum verification to return error
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -3060,7 +2926,6 @@ async fn test_handle_join_cluster_case4_quorum_error() {
             },
             sender,
             &context,
-            Arc::new(peer_channels),
             &mpsc::unbounded_channel().0,
         )
         .await;
@@ -3092,14 +2957,13 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         .returning(|| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
-    membership.expect_voting_members().returning(|_| {
-        vec![ChannelWithAddressAndRole {
+
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
             id: 2,
-            channel_with_address: ChannelWithAddress {
-                address: "".to_string(),
-                channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-            },
+            address: "http://127.0.0.1:55001".to_string(),
             role: FOLLOWER,
+            status: NodeStatus::Active.into(),
         }]
     });
     context.membership = Arc::new(membership);
@@ -3132,7 +2996,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
@@ -3144,7 +3008,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     transport
         .expect_install_snapshot()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _, _| Ok(()));
     context.transport = Arc::new(transport);
 
     let mut raft_log = MockRaftLog::new();
@@ -3160,14 +3024,14 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         })
     });
     context.storage.state_machine = Arc::new(state_machine);
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_add_peer().returning(|_, _| Ok(()));
-    peer_channels.expect_get_peer_channel().returning(|_| {
-        Some(ChannelWithAddress {
-            address: "".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
+    // let mut peer_channels = MockPeerChannels::new();
+    // peer_channels.expect_add_peer().returning(|_, _| Ok(()));
+    // peer_channels.expect_get_peer_channel().returning(|_, _| {
+    //     Some(ChannelWithAddress {
+    //         address: "".to_string(),
+    //         channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+    //     })
+    // });
 
     // Mock quorum verification
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -3178,7 +3042,6 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
             JoinRequest { node_id, address },
             sender,
             &context,
-            Arc::new(peer_channels),
             &mpsc::unbounded_channel().0,
         )
         .await;

@@ -22,7 +22,6 @@ pub const LEARNER: i32 = 3;
 use super::RaftContext;
 use super::RaftEvent;
 use super::RoleEvent;
-use crate::alias::POF;
 use crate::proto::common::EntryPayload;
 use crate::proto::election::VotedFor;
 use crate::Result;
@@ -38,7 +37,6 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
@@ -182,10 +180,9 @@ impl<T: TypeConfig> RaftRole<T> {
 
     pub(crate) async fn join_cluster(
         &self,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        self.state().join_cluster(peer_channels, ctx).await
+        self.state().join_cluster(ctx).await
     }
 
     pub(crate) fn next_deadline(&self) -> Instant {
@@ -276,29 +273,25 @@ impl<T: TypeConfig> RaftRole<T> {
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         event_tx: &mpsc::Sender<RaftEvent>,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
         trace!("raft_role:tick");
-        self.state_mut().tick(role_tx, event_tx, peer_channels, ctx).await
+        self.state_mut().tick(role_tx, event_tx, ctx).await
     }
 
     pub(crate) async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
-        self.state_mut()
-            .handle_raft_event(raft_event, peer_channels, ctx, role_tx)
-            .await
+        self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
     }
 
     #[cfg(test)]
@@ -331,11 +324,10 @@ impl<T: TypeConfig> RaftRole<T> {
         payloads: Vec<EntryPayload>,
         bypass_queue: bool,
         ctx: &RaftContext<T>,
-        peer_channels: Arc<POF<T>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
         self.state_mut()
-            .verify_internal_quorum_with_retry(payloads, bypass_queue, ctx, peer_channels, role_tx)
+            .verify_internal_quorum_with_retry(payloads, bypass_queue, ctx, role_tx)
             .await
     }
 }

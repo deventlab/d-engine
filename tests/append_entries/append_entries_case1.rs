@@ -2,18 +2,18 @@
 //!
 //! Scenario:
 //!
-//! 1. Create a cluster with 3 nodes (A, B, C).
-//! 2. Node A appends 3 log entries with Term=1.
-//! 3. Node B appends 4 log entries with Term=1.
-//! 4. Node C appends 10 log entries with Term=2.
-//! 5. Node C becomes Leader
+//! 1. Create a cluster with 3 nodes (1, 2, 3).
+//! 2. Node 1 appends 3 log entries with Term=1.
+//! 3. Node 2 appends 4 log entries with Term=1.
+//! 4. Node 3 appends 10 log entries with Term=2.
+//! 5. Node 3 becomes Leader
 //! 6. Trigger a client write request
 //!
 //! Expected Result:
 //!
-//! - Node C becomes the leader
+//! - Node 3 becomes the leader
 //! - last_commit_index is 10
-//! - Node A and B's log-3's term is 2
+//! - Node 1 and 2's log-3's term is 2
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;

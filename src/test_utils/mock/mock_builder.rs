@@ -40,7 +40,7 @@ pub struct MockBuilder {
     pub raft_log: Option<MockRaftLog>,
     pub state_machine: Option<Arc<MockStateMachine>>,
     pub state_storage: Option<MockStateStorage>,
-    pub transport: Option<MockTransport>,
+    pub transport: Option<MockTransport<MockTypeConfig>>,
     pub membership: Option<Arc<MockMembership<MockTypeConfig>>>,
     pub purge_executor: Option<MockPurgeExecutor>,
     pub election_handler: Option<MockElectionCore<MockTypeConfig>>,
@@ -137,7 +137,6 @@ impl MockBuilder {
             replication_handler,
             state_machine_handler,
             membership,
-            peer_channels,
             purge_executor,
             node_config,
             role_tx,
@@ -155,7 +154,6 @@ impl MockBuilder {
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
-            self.peer_channels.unwrap_or_else(mock_peer_channels),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config
                 .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
@@ -209,8 +207,6 @@ impl MockBuilder {
             }),
         );
 
-        raft.init_peer_channels(Arc::new(peer_channels)).expect("join failed");
-
         raft
     }
 
@@ -218,9 +214,11 @@ impl MockBuilder {
         let raft = self.build_raft();
         let event_tx = raft.event_tx.clone();
         let node_config = raft.ctx.node_config.clone();
+        let membership = raft.ctx.membership.clone();
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
+            membership,
             event_tx,
             ready: AtomicBool::new(false),
             node_config,
@@ -235,7 +233,7 @@ impl MockBuilder {
         let event_tx = raft.event_tx.clone();
         let node_config =
             node_config_option.unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig"));
-
+        let membership = raft.ctx.membership.clone();
         trace!(
             node_config.raft.election.election_timeout_min,
             "build_node_with_rpc_server"
@@ -243,6 +241,7 @@ impl MockBuilder {
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
+            membership,
             event_tx,
             ready: AtomicBool::new(false),
             node_config: Arc::new(node_config.clone()),
@@ -284,7 +283,7 @@ impl MockBuilder {
 
     pub fn with_transport(
         mut self,
-        transport: MockTransport,
+        transport: MockTransport<MockTypeConfig>,
     ) -> Self {
         self.transport = Some(transport);
         self
@@ -372,7 +371,7 @@ pub fn mock_state_storage() -> MockStateStorage {
     state_storage
 }
 
-pub fn mock_transport() -> MockTransport {
+pub fn mock_transport() -> MockTransport<MockTypeConfig> {
     MockTransport::new()
 }
 
@@ -404,13 +403,11 @@ pub fn mock_purge_exewcutor() -> MockPurgeExecutor {
 }
 pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     let mut membership = MockMembership::new();
-    membership.expect_voting_members().returning(|_| vec![]);
-    membership
-        .expect_get_followers_candidates_channel_and_role()
-        .returning(|_| vec![]);
+    membership.expect_voters().returning(|| vec![]);
     membership.expect_reset_leader().returning(|| Ok(()));
     membership.expect_update_node_role().returning(|_, _| Ok(()));
     membership.expect_mark_leader_id().returning(|_| Ok(()));
+    membership.expect_check_cluster_is_ready().returning(|| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|| ClusterMembership {
@@ -430,7 +427,7 @@ pub fn mock_peer_channels() -> MockPeerChannels {
 fn mock_raft_context_internal(
     id: u32,
     storage: RaftStorageHandles<MockTypeConfig>,
-    transport: Arc<MockTransport>,
+    transport: Arc<MockTransport<MockTypeConfig>>,
     membership: Arc<MockMembership<MockTypeConfig>>,
     handlers: RaftCoreHandlers<MockTypeConfig>,
     node_config: RaftNodeConfig,

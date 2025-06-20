@@ -12,6 +12,7 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::HealthCheckResponse;
 use tracing::error;
 
+use crate::net::address_str;
 use crate::NetworkConfig;
 use crate::NetworkError;
 use crate::Result;
@@ -34,17 +35,18 @@ impl HealthChecker {
         addr: &str,
         settings: NetworkConfig,
     ) -> Result<Self> {
-        let channel = Channel::from_shared(addr.to_string())
+        let address = address_str(addr);
+        let channel = Channel::from_shared(address.clone())
             .map_err(|_| NetworkError::InvalidURI(addr.into()))?
-            .connect_timeout(Duration::from_millis(settings.connect_timeout_in_ms))
-            .timeout(Duration::from_millis(settings.request_timeout_in_ms))
-            .tcp_keepalive(Some(Duration::from_secs(settings.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(settings.http2_keep_alive_interval_in_secs))
-            .keep_alive_timeout(Duration::from_secs(settings.http2_keep_alive_timeout_in_secs))
+            .connect_timeout(Duration::from_millis(settings.control.connect_timeout_in_ms))
+            .timeout(Duration::from_millis(settings.control.request_timeout_in_ms))
+            .tcp_keepalive(Some(Duration::from_secs(settings.control.tcp_keepalive_in_secs)))
+            .http2_keep_alive_interval(Duration::from_secs(settings.control.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(settings.control.http2_keep_alive_timeout_in_secs))
             .connect()
             .await
             .map_err(|err| {
-                error!("connect to {} failed: {}", addr, err);
+                error!("connect to {} failed: {}", address, err);
                 eprintln!("{err:?}");
                 NetworkError::ConnectError
             })?;

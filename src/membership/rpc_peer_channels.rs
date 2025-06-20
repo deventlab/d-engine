@@ -19,6 +19,7 @@ use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::proto::cluster::NodeMeta;
 use crate::utils::net::address_str;
+use crate::ConnectionParams;
 use crate::MembershipError;
 use crate::NetworkConfig;
 use crate::NetworkError;
@@ -211,12 +212,42 @@ impl PeerChannels for RpcPeerChannels {
         Ok(())
     }
 
-    fn get_peer_channel(
+    // fn get_peer_channel(
+    //     &self,
+    //     node_id: u32,
+    // ) -> Option<ChannelWithAddress> {
+    //     self.channels.get(&node_id).map(|entry| entry.value().clone())
+    // }
+    fn get_address(
         &self,
         node_id: u32,
-    ) -> Option<ChannelWithAddress> {
-        self.channels.get(&node_id).map(|entry| entry.value().clone())
+    ) -> Option<String> {
+        self.channels.get(&node_id).map(|entry| entry.value().address.clone())
     }
+
+    // async fn get_peer_channel(
+    //     &self,
+    //     node_id: u32,
+    //     conn_type: ConnectionType,
+    // ) -> Option<ChannelWithAddress> {
+    //     let address = self.get_address(node_id)?;
+
+    //     let channel = match conn_type {
+    //         ConnectionType::Control => {
+    //             Self::connect_with_params(address.clone(), self.node_config.network.control.clone()).await
+    //         }
+    //         ConnectionType::Data => {
+    //             Self::connect_with_params(address.clone(), self.node_config.network.data.clone()).await
+    //         }
+    //         ConnectionType::Bulk => {
+    //             Self::connect_with_params(address.clone(), self.node_config.network.bulk.clone()).await
+    //         }
+    //     }
+    //     .ok()?;
+
+    //     debug!("Successfully connected with ({})", &address);
+    //     Some(ChannelWithAddress { address, channel })
+    // }
 }
 
 impl RpcPeerChannels {
@@ -306,22 +337,43 @@ impl RpcPeerChannels {
 
     async fn connect(
         address: String,
-        node_config: NetworkConfig,
+        config: NetworkConfig,
     ) -> Result<Channel> {
         let addr = address_str(&address);
 
         Endpoint::try_from(addr.clone())?
-            .connect_timeout(Duration::from_millis(node_config.connect_timeout_in_ms))
-            .timeout(Duration::from_millis(node_config.request_timeout_in_ms))
-            .tcp_keepalive(Some(Duration::from_secs(node_config.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(node_config.http2_keep_alive_interval_in_secs))
-            .keep_alive_timeout(Duration::from_secs(node_config.http2_keep_alive_timeout_in_secs))
-            .initial_connection_window_size(node_config.initial_connection_window_size) // 5MB initial connection window
-            .initial_stream_window_size(node_config.initial_stream_window_size) // 2MB initial stream window
+            .connect_timeout(Duration::from_millis(config.control.connect_timeout_in_ms))
+            .timeout(Duration::from_millis(config.control.request_timeout_in_ms))
+            .tcp_keepalive(Some(Duration::from_secs(config.control.tcp_keepalive_in_secs)))
+            .http2_keep_alive_interval(Duration::from_secs(config.control.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(config.control.http2_keep_alive_timeout_in_secs))
+            .initial_connection_window_size(config.control.connection_window_size)
+            .initial_stream_window_size(config.control.stream_window_size)
             .connect()
             .await
             .map_err(|err| {
                 error!("connect to {} failed: {}", &addr, err);
+                eprintln!("{err:?}");
+                NetworkError::ConnectError.into()
+            })
+    }
+
+    async fn connect_with_params(
+        address: String,
+        params: ConnectionParams,
+    ) -> Result<Channel> {
+        Endpoint::try_from(address.clone())?
+            .connect_timeout(Duration::from_millis(params.connect_timeout_in_ms))
+            .timeout(Duration::from_millis(params.request_timeout_in_ms))
+            .tcp_keepalive(Some(Duration::from_secs(params.tcp_keepalive_in_secs)))
+            .http2_keep_alive_interval(Duration::from_secs(params.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(params.http2_keep_alive_timeout_in_secs))
+            .initial_connection_window_size(params.connection_window_size)
+            .initial_stream_window_size(params.stream_window_size)
+            .connect()
+            .await
+            .map_err(|err| {
+                error!("connect to {} failed: {}", &address, err);
                 eprintln!("{err:?}");
                 NetworkError::ConnectError.into()
             })

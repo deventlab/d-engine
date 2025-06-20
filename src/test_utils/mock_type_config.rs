@@ -24,9 +24,7 @@ impl TypeConfig for MockTypeConfig {
 
     type E = MockElectionCore<Self>;
 
-    type P = MockPeerChannels;
-
-    type TR = MockTransport;
+    type TR = MockTransport<Self>;
 
     type SM = MockStateMachine;
 

@@ -13,19 +13,22 @@
 //! protocol decisions are made based on the state maintained here.
 
 use super::ChannelWithAddress;
-use super::PeerChannels;
-use crate::alias::POF;
-use crate::cluster::is_candidate;
-use crate::cluster::is_follower;
+use crate::async_task::task_with_timeout_and_exponential_backoff;
+use crate::membership::health_checker::HealthChecker;
+use crate::membership::health_checker::HealthCheckerApis;
+use crate::net::address_str;
 use crate::proto::cluster::cluster_conf_change_request::Change;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::cluster::NodeStatus;
-use crate::ChannelWithAddressAndRole;
+use crate::ConnectionParams;
+use crate::ConnectionType;
 use crate::Membership;
 use crate::MembershipError;
+use crate::NetworkError;
+use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
 use crate::API_SLO;
@@ -34,14 +37,21 @@ use crate::LEADER;
 use crate::LEARNER;
 use autometrics::autometrics;
 use dashmap::DashMap;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::time::Duration;
+use tokio::task;
 use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
@@ -53,6 +63,7 @@ where
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
     cluster_conf_version: AtomicU64,
+    config: RaftNodeConfig,
     _phantom: PhantomData<T>,
 }
 
@@ -72,13 +83,135 @@ impl<T> Membership<T> for RaftMembership<T>
 where
     T: TypeConfig,
 {
-    fn get_followers_candidates_channel_and_role(
-        &self,
-        channels: &DashMap<u32, ChannelWithAddress>,
-    ) -> Vec<ChannelWithAddressAndRole> {
-        self.get_peers_address_with_role_condition(channels, |peer_role| {
-            is_follower(peer_role) || is_candidate(peer_role)
-        })
+    fn members(&self) -> Vec<NodeMeta> {
+        let active_status = NodeStatus::Active as i32;
+        self.membership
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    fn peers(&self) -> Vec<NodeMeta> {
+        let active_status = NodeStatus::Active as i32;
+        self.membership
+            .iter()
+            .filter(|node_meta| node_meta.id != self.node_id)
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    fn voters(&self) -> Vec<NodeMeta> {
+        let active_status = NodeStatus::Active as i32;
+        self.membership
+            .iter()
+            .filter(|node_meta| node_meta.id != self.node_id && node_meta.status == active_status)
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    fn activate_node(
+        &mut self,
+        new_node_id: u32,
+    ) -> Result<()> {
+        // 1. Get current ACTIVE voters count (including self)
+        let current_voters = self
+            .membership
+            .iter()
+            .filter(|n| n.status == NodeStatus::Active as i32)
+            .count();
+
+        // 2. Verify safety BEFORE allowing activation
+        ensure_safe_join(current_voters)?;
+
+        // 3. Only update status if safe
+        if let Some(mut node) = self.membership.get_mut(&new_node_id) {
+            node.status = NodeStatus::Active as i32;
+        }
+        Ok(())
+    }
+
+    async fn check_cluster_is_ready(&self) -> Result<()> {
+        info!("check_cluster_is_ready...");
+        let mut tasks = FuturesUnordered::new();
+
+        let node_config = self.config.network.clone();
+        let raft = self.config.raft.clone();
+        let retry = self.config.retry.clone();
+
+        let mut peer_ids = Vec::new();
+        for peer in self.voters() {
+            let peer_id = peer.id;
+            debug!("check_cluster_is_ready for peer: {}", peer_id);
+            peer_ids.push(peer_id);
+            let addr: String = peer.address.clone();
+
+            let node_config = node_config.clone();
+            let cluster_healthcheck_probe_service_name = raft.membership.cluster_healthcheck_probe_service_name.clone();
+
+            let task_handle = task::spawn(async move {
+                match task_with_timeout_and_exponential_backoff(
+                    move || {
+                        HealthChecker::check_peer_is_ready(
+                            addr.clone(),
+                            node_config.clone(),
+                            cluster_healthcheck_probe_service_name.clone(),
+                        )
+                    },
+                    retry.membership,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        debug!("healthcheck: {:?} response: {:?}", peer.address, response);
+
+                        Ok(response)
+                    }
+                    Err(e) => {
+                        warn!("Received RPC error: {}", e);
+                        Err(e)
+                    }
+                }
+            });
+            tasks.push(task_handle.boxed());
+        }
+
+        // Wait for all tasks to complete
+        let mut success_count = 0;
+        while let Some(result) = tasks.next().await {
+            match result {
+                Ok(Ok(_)) => success_count += 1,
+                Ok(Err(e)) => error!("Task failed with error: {:?}", e),
+                Err(e) => error!("Task failed with error: {:?}", e),
+            }
+        }
+
+        if peer_ids.len() == success_count {
+            info!(
+                "
+
+                ... CLUSTER IS READY ...
+
+            "
+            );
+            println!(
+                "
+
+                ... CLUSTER IS READY ...
+
+            "
+            );
+
+            return Ok(());
+        } else {
+            error!(
+                "
+
+                ... CLUSTER IS NOT READY ...
+
+            "
+            );
+            return Err(MembershipError::ClusterIsNotReady.into());
+        }
     }
 
     fn get_peers_id_with_condition<F>(
@@ -155,15 +288,6 @@ where
             );
             Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
         }
-    }
-
-    // Joined PeerChannel with Membership
-    fn voting_members(
-        &self,
-        peer_channels: Arc<POF<T>>,
-    ) -> Vec<ChannelWithAddressAndRole> {
-        let peers = peer_channels.voting_members();
-        self.get_followers_candidates_channel_and_role(&peers)
     }
 
     fn current_leader_id(&self) -> Option<u32> {
@@ -405,6 +529,33 @@ where
     fn get_all_nodes(&self) -> Vec<NodeMeta> {
         self.membership.iter().map(|entry| entry.value().clone()).collect()
     }
+
+    async fn get_peer_channel(
+        &self,
+        node_id: u32,
+        conn_type: ConnectionType,
+    ) -> Option<ChannelWithAddress> {
+        let address = address_str(&self.get_address(node_id)?);
+
+        let channel = match conn_type {
+            ConnectionType::Control => {
+                Self::connect_with_params(address.clone(), self.config.network.control.clone()).await
+            }
+            ConnectionType::Data => Self::connect_with_params(address.clone(), self.config.network.data.clone()).await,
+            ConnectionType::Bulk => Self::connect_with_params(address.clone(), self.config.network.bulk.clone()).await,
+        }
+        .ok()?;
+
+        debug!("Successfully connected with ({})", &address);
+        Some(ChannelWithAddress { address, channel })
+    }
+
+    fn get_address(
+        &self,
+        node_id: u32,
+    ) -> Option<String> {
+        self.membership.get(&node_id).map(|entry| entry.value().address.clone())
+    }
 }
 
 impl<T> RaftMembership<T>
@@ -415,47 +566,36 @@ where
     pub fn new(
         node_id: u32,
         initial_cluster: Vec<NodeMeta>,
+        config: RaftNodeConfig,
     ) -> Self {
         Self {
             node_id,
             membership: into_map(initial_cluster),
             cluster_conf_version: AtomicU64::new(0),
+            config,
             _phantom: PhantomData,
         }
     }
 
-    pub(super) fn get_peers_address_with_role_condition<F>(
-        &self,
-        channels: &DashMap<u32, ChannelWithAddress>,
-        condition: F,
-    ) -> Vec<ChannelWithAddressAndRole>
-    where
-        F: Fn(i32) -> bool,
-    {
-        self.membership
-            .iter()
-            .filter_map(|entry| {
-                let node_id = *entry.key();
-                // Exclude own node
-                if node_id == self.node_id {
-                    return None;
-                }
-
-                let meta = entry.value();
-                // Apply role filter condition
-                if !condition(meta.role) {
-                    return None;
-                }
-
-                // Get channel information (assuming RpcPeerChannels is associated with
-                // membership)
-                channels.get(&node_id).map(|channel_entry| ChannelWithAddressAndRole {
-                    id: node_id,
-                    channel_with_address: channel_entry.value().clone(),
-                    role: meta.role,
-                })
+    pub(super) async fn connect_with_params(
+        address: String,
+        params: ConnectionParams,
+    ) -> Result<Channel> {
+        Endpoint::try_from(address.clone())?
+            .connect_timeout(Duration::from_millis(params.connect_timeout_in_ms))
+            .timeout(Duration::from_millis(params.request_timeout_in_ms))
+            .tcp_keepalive(Some(Duration::from_secs(params.tcp_keepalive_in_secs)))
+            .http2_keep_alive_interval(Duration::from_secs(params.http2_keep_alive_interval_in_secs))
+            .keep_alive_timeout(Duration::from_secs(params.http2_keep_alive_timeout_in_secs))
+            .initial_connection_window_size(params.connection_window_size)
+            .initial_stream_window_size(params.stream_window_size)
+            .connect()
+            .await
+            .map_err(|err| {
+                error!("connect to {} failed: {}", &address, err);
+                eprintln!("{err:?}");
+                NetworkError::ConnectError.into()
             })
-            .collect()
     }
 
     #[cfg(test)]
@@ -473,4 +613,15 @@ fn into_map(initial_cluster: Vec<NodeMeta>) -> DashMap<u32, NodeMeta> {
         dash_map.insert(node.id, node.clone());
     }
     dash_map
+}
+
+pub fn ensure_safe_join(current_voters: usize) -> Result<()> {
+    let new_size = current_voters + 1;
+    let new_quorum = new_size / 2 + 1;
+    let current_quorum = current_voters / 2 + 1;
+
+    if new_quorum > current_quorum {
+        return Err(MembershipError::JoinClusterError("Join operation would break quorum safety".to_string()).into());
+    }
+    Ok(())
 }

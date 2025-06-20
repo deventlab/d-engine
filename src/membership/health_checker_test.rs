@@ -1,12 +1,12 @@
-use tokio::net::TcpStream;
-use tokio::sync::oneshot;
-
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::{self};
+use crate::ConnectionParams;
 use crate::NetworkConfig;
+use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 
 /// Case 1: server is not ready
 #[tokio::test]
@@ -34,16 +34,18 @@ async fn test_check_peer_is_ready_case1() {
     }
 
     let settings = NetworkConfig {
-        connect_timeout_in_ms: 100,
-        request_timeout_in_ms: 100,
-        concurrency_limit_per_connection: 8192,
-        tcp_keepalive_in_secs: 3600,
-        http2_keep_alive_interval_in_secs: 300,
-        http2_keep_alive_timeout_in_secs: 20,
-        max_frame_size: 12582912,
-        initial_connection_window_size: 12582912,
-        initial_stream_window_size: 12582912,
-        buffer_size: 65536,
+        control: ConnectionParams {
+            connect_timeout_in_ms: 100,
+            request_timeout_in_ms: 100,
+            concurrency_limit: 8192,
+            tcp_keepalive_in_secs: 3600,
+            http2_keep_alive_interval_in_secs: 300,
+            http2_keep_alive_timeout_in_secs: 20,
+            max_frame_size: 12582912,
+            connection_window_size: 12582912,
+            stream_window_size: 12582912,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -81,16 +83,18 @@ async fn test_check_peer_is_ready_case2() {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
     let settings = NetworkConfig {
-        connect_timeout_in_ms: 100,
-        request_timeout_in_ms: 100,
-        concurrency_limit_per_connection: 8192,
-        tcp_keepalive_in_secs: 3600,
-        http2_keep_alive_interval_in_secs: 300,
-        http2_keep_alive_timeout_in_secs: 20,
-        max_frame_size: 12582912,
-        initial_connection_window_size: 12582912,
-        initial_stream_window_size: 12582912,
-        buffer_size: 65536,
+        control: ConnectionParams {
+            connect_timeout_in_ms: 100,
+            request_timeout_in_ms: 100,
+            concurrency_limit: 8192,
+            tcp_keepalive_in_secs: 3600,
+            http2_keep_alive_interval_in_secs: 300,
+            http2_keep_alive_timeout_in_secs: 20,
+            max_frame_size: 12582912,
+            connection_window_size: 12582912,
+            stream_window_size: 12582912,
+            ..Default::default()
+        },
         ..Default::default()
     };
 

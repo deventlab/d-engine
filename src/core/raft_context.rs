@@ -4,15 +4,12 @@ use std::sync::Arc;
 use crate::alias::EOF;
 use crate::alias::MOF;
 use crate::alias::PE;
-use crate::alias::POF;
 use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
-use crate::ChannelWithAddressAndRole;
-use crate::Membership;
 use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
@@ -98,13 +95,6 @@ where
 
     pub fn membership_ref(&self) -> &Arc<MOF<T>> {
         &self.membership
-    }
-
-    pub fn voting_members(
-        &self,
-        peer_channels: Arc<POF<T>>,
-    ) -> Vec<ChannelWithAddressAndRole> {
-        self.membership.voting_members(peer_channels)
     }
 
     #[cfg(test)]

@@ -2,27 +2,18 @@ mod health_checker;
 mod raft_membership;
 mod rpc_peer_channels;
 pub use raft_membership::*;
-pub use rpc_peer_channels::*;
+// pub use rpc_peer_channels::*;
 #[cfg(test)]
 mod health_checker_test;
 #[cfg(test)]
 mod raft_membership_test;
-#[cfg(test)]
-mod rpc_peer_channels_test;
-
+// #[cfg(test)]
+// mod rpc_peer_channels_test;
 use dashmap::DashMap;
 #[cfg(test)]
 use mockall::automock;
 use std::sync::Arc;
 
-///-----------------------------------------------
-/// Membership behavior definition
-use tonic::async_trait;
-///-----------------------------------------------
-/// Membership behavior definition
-use tonic::transport::Channel;
-
-use crate::alias::POF;
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
@@ -31,6 +22,20 @@ use crate::proto::cluster::NodeStatus;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
+///-----------------------------------------------
+/// Membership behavior definition
+use tonic::async_trait;
+///-----------------------------------------------
+/// Membership behavior definition
+use tonic::transport::Channel;
+
+// Add connection type management in RpcPeerChannels
+#[derive(Eq, Hash, PartialEq)]
+pub(crate) enum ConnectionType {
+    Control, // Used for key operations such as elections/heartbeats
+    Data,    // Used for log replication
+    Bulk,    // Used for high-traffic operations such as snapshot transmission
+}
 
 #[derive(Clone, Debug)]
 pub struct ChannelWithAddress {
@@ -73,11 +78,22 @@ pub trait PeerChannels: Sync + Send + 'static {
         address: String,
     ) -> Result<()>;
 
-    /// Get a specific peer's channel
-    fn get_peer_channel(
+    // fn get_peer_channel(
+    //     &self,
+    //     node_id: u32,
+    // ) -> Option<ChannelWithAddress>;
+
+    fn get_address(
         &self,
         node_id: u32,
-    ) -> Option<ChannelWithAddress>;
+    ) -> Option<String>;
+
+    // /// Get a specific peer's channel
+    // async fn get_peer_channel(
+    //     &self,
+    //     node_id: u32,
+    //     conn_type: ConnectionType,
+    // ) -> Option<ChannelWithAddress>;
 }
 
 #[cfg_attr(test, automock)]
@@ -86,15 +102,13 @@ pub trait Membership<T>: Sync + Send + 'static
 where
     T: TypeConfig,
 {
-    fn voting_members(
-        &self,
-        peer_channels: Arc<POF<T>>,
-    ) -> Vec<ChannelWithAddressAndRole>;
+    fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
-    fn get_followers_candidates_channel_and_role(
-        &self,
-        channels: &DashMap<u32, ChannelWithAddress>,
-    ) -> Vec<ChannelWithAddressAndRole>;
+    fn peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    fn voters(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    async fn check_cluster_is_ready(&self) -> Result<()>;
 
     fn get_peers_id_with_condition<F>(
         &self,
@@ -150,6 +164,12 @@ where
         status: NodeStatus,
     ) -> Result<()>;
 
+    /// Activate node
+    fn activate_node(
+        &mut self,
+        new_node_id: u32,
+    ) -> Result<()>;
+
     /// Update status of a node
     async fn update_node_status(
         &self,
@@ -182,6 +202,17 @@ where
 
     /// Get all node status
     fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    async fn get_peer_channel(
+        &self,
+        node_id: u32,
+        conn_type: ConnectionType,
+    ) -> Option<ChannelWithAddress>;
+
+    fn get_address(
+        &self,
+        node_id: u32,
+    ) -> Option<String>;
 }
 
 impl ClusterConfUpdateResponse {

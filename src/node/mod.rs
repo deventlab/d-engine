@@ -33,22 +33,19 @@ mod builder_test;
 #[cfg(test)]
 mod node_test;
 
-use std::fmt::Debug;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
-
-use crate::alias::POF;
-use crate::membership::PeerChannelsFactory;
-use crate::PeerChannels;
+use crate::alias::MOF;
+use crate::Membership;
 use crate::Raft;
 use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
+use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 /// Raft node container
 pub struct Node<T>
@@ -57,6 +54,9 @@ where
 {
     pub(crate) node_id: u32,
     pub(crate) raft_core: Arc<Mutex<Raft<T>>>,
+
+    // Cluster Membership
+    pub(crate) membership: Arc<MOF<T>>,
 
     // Network & Storage events, (copied from Raft)
     // TODO: find a better solution
@@ -82,16 +82,6 @@ impl<T> Node<T>
 where
     T: TypeConfig,
 {
-    async fn connect_with_peers(
-        node_id: u32,
-        node_config: Arc<RaftNodeConfig>,
-    ) -> Result<POF<T>> {
-        let mut peer_channels = T::P::create(node_id, node_config.clone());
-        peer_channels.connect_with_peers(node_id).await?;
-
-        Ok(peer_channels)
-    }
-
     /// Starts and runs the Raft node's main execution loop.
     ///
     /// # Workflow
@@ -117,10 +107,10 @@ where
     /// ```
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
-        let peer_channels = Self::connect_with_peers(self.node_id, self.node_config.clone()).await?;
+        // let peer_channels = Self::connect_with_peers(self.node_id, self.node_config.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
-        peer_channels.check_cluster_is_ready().await?;
+        self.membership.check_cluster_is_ready().await?;
 
         // 3. Set node is ready to run Raft protocol
         self.set_ready(true);
@@ -128,13 +118,13 @@ where
         let mut raft = self.raft_core.lock().await;
 
         // 4. Join the node with cluster
-        let peer_channels = Arc::new(peer_channels);
-        raft.init_peer_channels(peer_channels.clone())?;
+        // let peer_channels = Arc::new(peer_channels);
+        // raft.init_peer_channels(peer_channels.clone())?;
 
         // 5. if join as a new node
         if self.node_config.is_joining() {
             info!(%self.node_config.cluster.node_id, "Node is joining...");
-            raft.join_cluster(peer_channels.clone()).await?;
+            raft.join_cluster().await?;
         }
 
         // 6. Run the main event processing loop

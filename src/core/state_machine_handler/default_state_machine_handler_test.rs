@@ -2,7 +2,6 @@ use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
 use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
-use crate::file_io::create_parent_dir_if_not_exist;
 use crate::init_sled_state_machine_db;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
@@ -1231,7 +1230,7 @@ fn mock_node_with_rpc_service(
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::new(),

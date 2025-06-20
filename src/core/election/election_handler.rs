@@ -1,14 +1,5 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
-
 use super::ElectionCore;
+use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::cluster::is_majority;
@@ -16,8 +7,8 @@ use crate::if_higher_term_found;
 use crate::is_target_log_more_recent;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VotedFor;
-use crate::ChannelWithAddressAndRole;
 use crate::ElectionError;
+use crate::Membership;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -25,6 +16,14 @@ use crate::StateUpdate;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
@@ -41,21 +40,22 @@ where
     async fn broadcast_vote_requests(
         &self,
         term: u64,
-        voting_members: Vec<ChannelWithAddressAndRole>,
+        membership: Arc<MOF<T>>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
         settings: &Arc<RaftNodeConfig>,
     ) -> Result<()> {
         debug!("broadcast_vote_requests...");
 
-        if voting_members.is_empty() {
+        let members = membership.voters();
+        if members.is_empty() {
             error!("my(id={}) peers is empty.", self.my_id);
             return Err(ElectionError::NoVotingMemberFound {
                 candidate_id: self.my_id,
             }
             .into());
         } else {
-            debug!("going to send_vote_requests to: {:?}", &voting_members);
+            debug!("going to send_vote_requests to: {:?}", &members);
         }
 
         let (last_log_index, last_log_term) = raft_log.get_last_entry_metadata();
@@ -66,10 +66,7 @@ where
             last_log_term,
         };
 
-        match transport
-            .send_vote_requests(voting_members, request, &settings.retry)
-            .await
-        {
+        match transport.send_vote_requests(request, &settings.retry, membership).await {
             Ok(vote_result) => {
                 let mut succeed = 1;
                 for response in vote_result.responses {

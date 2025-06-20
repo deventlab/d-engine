@@ -18,11 +18,11 @@ use std::sync::Arc;
 use mockall::automock;
 use tonic::async_trait;
 
+use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VotedFor;
-use crate::ChannelWithAddressAndRole;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
@@ -54,7 +54,7 @@ where
     async fn broadcast_vote_requests(
         &self,
         term: u64,
-        voting_members: Vec<ChannelWithAddressAndRole>,
+        membership: Arc<MOF<T>>,
         raft_log: &Arc<ROF<T>>,
         transport: &Arc<TROF<T>>,
         settings: &Arc<RaftNodeConfig>,

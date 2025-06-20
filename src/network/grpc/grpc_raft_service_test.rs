@@ -187,7 +187,7 @@ async fn test_handle_rpc_services_successfully() {
     );
     let mut membership = MockMembership::<MockTypeConfig>::new();
     membership.expect_mark_leader_id().returning(|_| Ok(()));
-    membership.expect_voting_members().returning(|_| vec![]);
+    membership.expect_voters().returning(|| vec![]);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
         .expect_update_cluster_conf_from_leader()
@@ -211,7 +211,7 @@ async fn test_handle_rpc_services_successfully() {
         });
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::new(),

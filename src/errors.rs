@@ -111,6 +111,10 @@ pub enum NetworkError {
     #[error("Peer({0}) connection not found")]
     PeerConnectionNotFound(u32),
 
+    /// Peer address not found
+    #[error("Peer({0}) address not found")]
+    PeerAddressNotFound(u32),
+
     /// Malformed node addresses
     #[error("Invalid URI format: {0}")]
     InvalidURI(String),
@@ -435,6 +439,9 @@ pub enum MembershipError {
 
     #[error("Learner({0}) join cluster failed.")]
     JoinClusterFailed(u32),
+
+    #[error("Join cluster error: {0}")]
+    JoinClusterError(String),
 }
 
 #[derive(Debug, thiserror::Error)]

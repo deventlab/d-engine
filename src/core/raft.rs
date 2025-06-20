@@ -7,12 +7,10 @@ use super::RaftRole;
 use super::RaftStorageHandles;
 use super::RoleEvent;
 use crate::alias::MOF;
-use crate::alias::POF;
 use crate::alias::TROF;
 use crate::learner_state::LearnerState;
 use crate::proto::common::EntryPayload;
 use crate::Membership;
-use crate::MembershipError;
 use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
@@ -40,10 +38,6 @@ where
     pub(crate) node_id: u32,
     pub(crate) role: RaftRole<T>,
     pub(crate) ctx: RaftContext<T>,
-
-    // Channels with peers
-    // PeersChannel will be used inside Transport::spawn when sending peers messages
-    pub peer_channels: Option<Arc<POF<T>>>,
 
     // Network & Storage events
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
@@ -109,8 +103,6 @@ where
             ctx,
             role,
 
-            peer_channels: None,
-
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
 
@@ -148,19 +140,8 @@ where
         }
     }
 
-    pub fn init_peer_channels(
-        &mut self,
-        peer_channels: Arc<POF<T>>,
-    ) -> Result<()> {
-        self.peer_channels = Some(peer_channels);
-        Ok(())
-    }
-
-    pub async fn join_cluster(
-        &self,
-        peer_channels: Arc<POF<T>>,
-    ) -> Result<()> {
-        self.role.join_cluster(peer_channels, &self.ctx).await
+    pub async fn join_cluster(&self) -> Result<()> {
+        self.role.join_cluster(&self.ctx).await
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -186,13 +167,8 @@ where
                     trace!("receive tick");
                     let role_tx = &self.role_tx;
                     let event_tx = &self.event_tx;
-                    let (peer_channels, ctx) = {
-                        let pc = self.peer_channels()?;
-                        let ctx = &self.ctx;
-                        (pc, ctx)
-                    };
 
-                    if let Err(e) = self.role.tick(role_tx, event_tx, peer_channels, ctx).await {
+                    if let Err(e) = self.role.tick(role_tx, event_tx, &self.ctx).await {
                         error!("tick failed: {:?}", e);
                     } else {
                         trace!("tick success");
@@ -215,7 +191,7 @@ where
                     #[cfg(test)]
                     let event = raft_event_to_test_event(&raft_event);
 
-                    if let Err(e) = self.role.handle_raft_event(raft_event, self.peer_channels()?, &self.ctx, self.role_tx.clone()).await {
+                    if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
                         error!(%self.node_id, ?e, "handle_raft_event error");
                     }
 
@@ -264,13 +240,7 @@ where
                 //async action
                 if !self
                     .role
-                    .verify_internal_quorum_with_retry(
-                        vec![EntryPayload::noop()],
-                        true,
-                        &self.ctx,
-                        self.peer_channels()?,
-                        &self.role_tx,
-                    )
+                    .verify_internal_quorum_with_retry(vec![EntryPayload::noop()], true, &self.ctx, &self.role_tx)
                     .await
                     .unwrap_or(false)
                 {
@@ -308,12 +278,6 @@ where
         };
 
         Ok(())
-    }
-
-    pub(crate) fn peer_channels(&self) -> Result<Arc<POF<T>>> {
-        self.peer_channels
-            .clone()
-            .ok_or_else(|| MembershipError::SetupClusterConnectionFailed("handle_raft_event".to_string()).into())
     }
 
     pub(crate) fn register_new_commit_listener(
