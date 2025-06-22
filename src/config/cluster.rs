@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::validate_directory;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::Error;
 use crate::Result;
 use crate::FOLLOWER;

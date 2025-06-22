@@ -43,6 +43,8 @@ pub(crate) struct AppendResults {
     pub commit_quorum_achieved: bool,
     /// Updates to each peer's match_index and next_index
     pub peer_updates: HashMap<u32, PeerUpdate>,
+    /// Learner log catch-up progress
+    pub learner_progress: HashMap<u32, u64>,
 }
 
 impl AppendResults {

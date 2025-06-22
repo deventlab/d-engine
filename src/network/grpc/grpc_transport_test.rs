@@ -3,7 +3,7 @@ use crate::grpc::grpc_transport::GrpcTransport;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;

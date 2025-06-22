@@ -51,17 +51,11 @@ message ClusterMembership {
     repeated NodeMeta nodes = 2;
 }
 
-enum NodeStatus {
-  ACTIVE = 0; // Normal service
-  DRAINING = 1; // Prepare to go offline (not accepting new requests)
-  JOINING = 2; // Join cluster as new node
-}
-
 message NodeMeta {
     uint32 id = 1;
     string address = 2; //"ip:port"
     int32 role = 3;
-    NodeStatus status = 4; // Add new status fields (such as active/draining)
+    raft.common.NodeStatus status = 4; // Add new status fields (such as active/draining)
 }
 
 // Request from new node to join the cluster

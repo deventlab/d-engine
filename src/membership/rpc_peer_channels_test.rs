@@ -1,6 +1,6 @@
 use super::ChannelWithAddress;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::MockNode;

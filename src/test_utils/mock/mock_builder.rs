@@ -404,6 +404,8 @@ pub fn mock_purge_exewcutor() -> MockPurgeExecutor {
 pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     let mut membership = MockMembership::new();
     membership.expect_voters().returning(|| vec![]);
+    membership.expect_replication_peers().returning(|| vec![]);
+    membership.expect_members().returning(|| vec![]);
     membership.expect_reset_leader().returning(|| Ok(()));
     membership.expect_update_node_role().returning(|_, _| Ok(()));
     membership.expect_mark_leader_id().returning(|_| Ok(()));

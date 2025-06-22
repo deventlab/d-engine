@@ -175,7 +175,8 @@ fn type_mismatch_in_config_should_fail_gracefully() {
 /// Tests for node join status detection
 mod join_status_tests {
     use super::*;
-    use crate::proto::cluster::{NodeMeta, NodeStatus};
+    use crate::proto::cluster::NodeMeta;
+    use crate::proto::common::NodeStatus;
 
     /// # Case 1: Node is in joining status
     #[test]

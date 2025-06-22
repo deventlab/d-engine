@@ -214,6 +214,7 @@ async fn test_handle_rpc_services_successfully() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::new(),
             })
         });

@@ -7,7 +7,7 @@ use crate::cluster::is_learner;
 use crate::leader_state::LeaderState;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::proto::election::VoteResponse;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_raft;
@@ -850,6 +850,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
                     (
                         2,
@@ -936,6 +937,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
                     (
                         2,

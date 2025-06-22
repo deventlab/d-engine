@@ -2,6 +2,7 @@ use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::ROF;
 use crate::proto::client::WriteCommand;
+use crate::proto::common::NodeStatus;
 use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
@@ -66,11 +67,16 @@ where
         // Phase 1: Pre-Checks
         // ----------------------
         let membership = ctx.membership();
-        let members = membership.voters();
-        if members.is_empty() {
+        let replication_targets = membership.replication_peers();
+        if replication_targets.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
             return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());
         }
+
+        // Separate Voters and Learners
+        let (voters, learners): (Vec<_>, Vec<_>) = replication_targets
+            .iter()
+            .partition(|node| node.status == NodeStatus::Active as i32);
 
         // ----------------------
         // Phase 2: Process Client Commands
@@ -105,7 +111,7 @@ where
         // ----------------------
         // Phase 4: Build Requests
         // ----------------------
-        let requests = members
+        let requests = replication_targets
             .iter()
             .map(|m| self.build_append_request(raft_log, m.id, &entries_per_peer, &replication_data))
             .collect();
@@ -116,6 +122,7 @@ where
         let leader_current_term = state_snapshot.current_term;
         let mut successes = 1; // Include leader itself
         let mut peer_updates = HashMap::new();
+        let mut learner_progress = HashMap::new();
 
         match ctx
             .transport()
@@ -134,13 +141,23 @@ where
 
                             match append_response.result {
                                 Some(append_entries_response::Result::Success(success_result)) => {
-                                    successes += 1;
+                                    // Only count successful responses from Voters
+                                    if voters.iter().any(|n| n.id == append_response.node_id) {
+                                        successes += 1;
+                                    }
+
                                     let update = self.handle_success_response(
                                         append_response.node_id,
                                         append_response.term,
                                         success_result,
                                         leader_current_term,
                                     )?;
+
+                                    // Record Learner progress
+                                    if learners.iter().any(|n| n.id == append_response.node_id) {
+                                        learner_progress.insert(append_response.node_id, update.match_index);
+                                    }
+
                                     peer_updates.insert(append_response.node_id, update);
                                 }
 
@@ -179,10 +196,12 @@ where
                     &peer_ids, successes
                 );
 
-                let commit_quorum_achieved = is_majority(successes, peer_ids.len() + 1);
+                let total_voters = voters.len() + 1; // Leader + voter peers
+                let commit_quorum_achieved = is_majority(successes, total_voters);
                 Ok(AppendResults {
                     commit_quorum_achieved,
                     peer_updates,
+                    learner_progress,
                 })
             }
             Err(e) => return Err(e),

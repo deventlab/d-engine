@@ -107,9 +107,9 @@ impl BackgroundSnapshotTransfer {
         Ok(())
     }
 
-    async fn send_chunks(
+    pub(super) async fn send_chunks(
         mut stream: impl Stream<Item = Result<SnapshotChunk>> + Unpin,
-        mut tx: mpsc::Sender<SnapshotChunk>,
+        tx: mpsc::Sender<SnapshotChunk>,
         config: SnapshotConfig,
     ) -> Result<()> {
         let mut yield_counter = 0;

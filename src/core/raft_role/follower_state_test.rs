@@ -547,7 +547,7 @@ async fn test_handle_raft_event_case3_5() {
         .times(1)
         .returning(|_, _, _, _, _| {
             Err(Error::Consensus(ConsensusError::Membership(
-                MembershipError::UpdateFailed("test".to_string()),
+                MembershipError::ConfigChangeUpdateFailed("test".to_string()),
             )))
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);

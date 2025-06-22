@@ -22,7 +22,7 @@ use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::ConnectionParams;
 use crate::ConnectionType;
 use crate::Membership;
@@ -84,18 +84,18 @@ where
     T: TypeConfig,
 {
     fn members(&self) -> Vec<NodeMeta> {
-        let active_status = NodeStatus::Active as i32;
-        self.membership
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.membership.iter().map(|entry| entry.value().clone()).collect()
     }
 
-    fn peers(&self) -> Vec<NodeMeta> {
+    fn replication_peers(&self) -> Vec<NodeMeta> {
         let active_status = NodeStatus::Active as i32;
+        let pending_active_status = NodeStatus::PendingActive as i32;
         self.membership
             .iter()
-            .filter(|node_meta| node_meta.id != self.node_id)
+            .filter(|node_meta| {
+                node_meta.id != self.node_id
+                    && (node_meta.status == active_status || node_meta.status == pending_active_status)
+            })
             .map(|entry| entry.value().clone())
             .collect()
     }
@@ -105,6 +105,17 @@ where
         self.membership
             .iter()
             .filter(|node_meta| node_meta.id != self.node_id && node_meta.status == active_status)
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    fn nodes_with_status(
+        &self,
+        status: NodeStatus,
+    ) -> Vec<NodeMeta> {
+        self.membership
+            .iter()
+            .filter(|node_meta| node_meta.id != self.node_id && node_meta.status == (status as i32))
             .map(|entry| entry.value().clone())
             .collect()
     }
@@ -450,7 +461,7 @@ where
     /// Update node status
     #[autometrics(objective = API_SLO)]
     #[instrument(skip(self))]
-    async fn update_node_status(
+    fn update_node_status(
         &self,
         node_id: u32,
         status: NodeStatus,

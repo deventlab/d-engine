@@ -37,9 +37,9 @@ pub struct RaftConfig {
 
     /// Maximum allowed log entry gap between leader and learner nodes
     /// Learners with larger gaps than this value will trigger catch-up replication
-    /// Default value is set via default_learner_gap() function
-    #[serde(default = "default_learner_gap")]
-    pub learner_raft_log_gap: u64,
+    /// Default value is set via default_learner_catchup_threshold() function
+    #[serde(default = "default_learner_catchup_threshold")]
+    pub learner_catchup_threshold: u64,
 
     /// Base timeout duration (in milliseconds) for general Raft operations
     /// Used as fallback timeout when operation-specific timeouts are not set
@@ -72,7 +72,7 @@ impl Default for RaftConfig {
             membership: MembershipConfig::default(),
             commit_handler: CommitHandlerConfig::default(),
             snapshot: SnapshotConfig::default(),
-            learner_raft_log_gap: default_learner_gap(),
+            learner_catchup_threshold: default_learner_catchup_threshold(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
@@ -82,9 +82,9 @@ impl Default for RaftConfig {
 impl RaftConfig {
     /// Validates all Raft subsystem configurations
     pub fn validate(&self) -> Result<()> {
-        if self.learner_raft_log_gap == 0 {
+        if self.learner_catchup_threshold == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "learner_raft_log_gap must be greater than 0".into(),
+                "learner_catchup_threshold must be greater than 0".into(),
             )));
         }
 
@@ -104,7 +104,7 @@ impl RaftConfig {
     }
 }
 
-fn default_learner_gap() -> u64 {
+fn default_learner_catchup_threshold() -> u64 {
     10
 }
 // in ms
@@ -360,7 +360,7 @@ pub struct SnapshotConfig {
     pub receiver_yield_every_n_chunks: usize,
 
     #[serde(default = "default_max_bandwidth_mbps")]
-    pub max_bandwidth_mbps: u64,
+    pub max_bandwidth_mbps: u32,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -480,6 +480,6 @@ fn default_receiver_yield_every_n_chunks() -> usize {
     1
 }
 
-fn default_max_bandwidth_mbps() -> u64 {
+fn default_max_bandwidth_mbps() -> u32 {
     1
 }

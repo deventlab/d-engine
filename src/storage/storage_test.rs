@@ -3,7 +3,7 @@ use crate::convert::safe_kv;
 use crate::convert::skv;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::test_utils;
 use crate::FOLLOWER;
 use crate::LEARNER;

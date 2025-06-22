@@ -10,17 +10,20 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::client_command_to_entry_payloads;
 use crate::cluster::is_majority;
+use crate::ensure_safe_join;
 use crate::grpc::BackgroundSnapshotTransfer;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::LeaderDiscoveryResponse;
-use crate::proto::cluster::NodeStatus;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
+use crate::proto::common::BatchPromote;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
+use crate::proto::common::NodeStatus;
+use crate::proto::common::PromoteLearner;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
@@ -440,19 +443,19 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
             "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+                    =================================
+                    [{:?}<{:?}>] >>> switch to Follower now.\n
+                    =================================
+                    \n\n",
             self.node_id(),
             self.current_term(),
         );
         println!(
             "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+                    =================================
+                    [{:?}<{:?}>] >>> switch to Follower now.\n
+                    =================================
+                    \n\n",
             self.node_id(),
             self.current_term(),
         );
@@ -956,8 +959,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 2. Execute the copy
         let membership = ctx.membership();
-        let members = membership.voters();
-        let cluster_size = members.len() + 1;
+        let voters = membership.voters();
+        let cluster_size = voters.len() + 1;
         trace!(%cluster_size);
 
         let result = ctx
@@ -972,15 +975,22 @@ impl<T: TypeConfig> LeaderState<T> {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates,
+                learner_progress,
             }) => {
+                // 1. Update all peer index
                 self.update_peer_indexes(&peer_updates);
 
-                // Update commit index
+                // 2. Check Learner's catch-up status
+                if let Err(e) = self.check_learner_progress(&learner_progress, ctx, role_tx).await {
+                    error!(?e, "check_learner_progress failed");
+                };
+
+                // 3. Update commit index
                 if let Some(new_commit_index) = self.calculate_new_commit_index(ctx.raft_log(), &peer_updates) {
                     self.update_commit_index_with_signal(LEADER, self.current_term(), new_commit_index, role_tx)?;
                 }
 
-                // Notify all clients of success
+                // 4. Notify all clients of success
                 for request in batch {
                     let _ = request.sender.send(Ok(ClientResponse::write_success()));
                 }
@@ -990,10 +1000,17 @@ impl<T: TypeConfig> LeaderState<T> {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates,
+                learner_progress,
             }) => {
+                // 1. Update all peer index
                 self.update_peer_indexes(&peer_updates);
 
-                // Determine error code based on verifiability
+                // 2. Check Learner's catch-up status
+                if let Err(e) = self.check_learner_progress(&learner_progress, ctx, role_tx).await {
+                    error!(?e, "check_learner_progress failed");
+                };
+
+                // 3. Determine error code based on verifiability
                 let responses_received = peer_updates.len();
                 let error_code = if is_majority(responses_received, cluster_size) {
                     ErrorCode::RetryRequired
@@ -1001,7 +1018,7 @@ impl<T: TypeConfig> LeaderState<T> {
                     ErrorCode::ProposeFailed
                 };
 
-                // Notify all clients of failure
+                // 4. Notify all clients of failure
                 for request in batch {
                     let _ = request.sender.send(Ok(ClientResponse::client_error(error_code)));
                 }
@@ -1056,6 +1073,133 @@ impl<T: TypeConfig> LeaderState<T> {
             }
         }
     }
+    async fn check_learner_progress(
+        &mut self,
+        learner_progress: &HashMap<u32, u64>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        let leader_commit_index = self.commit_index();
+
+        let config = &ctx.node_config.raft;
+        for (node_id, match_index) in learner_progress {
+            // Check if the catch-up threshold is reached
+            if leader_commit_index - match_index <= config.learner_catchup_threshold {
+                // Trigger state transition: Joining → PendingActive
+                self.promote_learner(*node_id, NodeStatus::PendingActive, ctx, role_tx)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn promote_learner(
+        &mut self,
+        node_id: u32,
+        new_status: NodeStatus,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // 1. Determine optimal promotion status based on quorum safety
+        debug!("1. Determine optimal promotion status based on quorum safety");
+        let membership = ctx.membership();
+        let current_voters = membership.voters().len();
+        let pending_active_nodes = membership.nodes_with_status(NodeStatus::PendingActive);
+
+        // Calculate new cluster size if we promote this node
+        let new_active_count = current_voters + pending_active_nodes.len();
+        let new_size = new_active_count + 1; // +1 for the new node
+
+        // Check if we can promote directly to Active
+        let new_status = if ensure_safe_join(new_active_count).is_ok() {
+            NodeStatus::Active
+        } else {
+            NodeStatus::PendingActive
+        };
+
+        info!("Promoting node {} directly to {:?}", node_id, new_status);
+
+        // 2. Create configuration change payload
+        debug!("2. Create configuration change payload");
+        let config_change = Change::Promote(PromoteLearner {
+            node_id,
+            status: new_status.into(),
+        });
+
+        // 3. Submit config change, and wait for quorum confirmation
+        debug!("3. Submit config change, and wait for quorum confirmation");
+        match self
+            .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            .await
+        {
+            Ok(true) => {
+                // 4. Check if we should activate pending nodes
+                if new_status == NodeStatus::Active {
+                    self.try_activate_pending_nodes(ctx, role_tx).await?;
+                } else {
+                    // 4. Update learner status from Joing to $new_status
+                    debug!("4. Update learner status from Joing to $new_status");
+                    ctx.membership().update_node_status(node_id, new_status)?;
+                }
+
+                // 4. check if legal quorum reached by considering all pending active and active nodes
+            }
+            Ok(false) => {
+                warn!("Failed to commit config change for node {}", node_id);
+                return Err(MembershipError::ConfigChangeUpdateFailed(format!(
+                    "Failed to commit config change for node {}",
+                    node_id
+                ))
+                .into());
+            }
+            Err(e) => {
+                warn!("FaiError led to commit config change for node {}", node_id);
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Attempt to activate all pending nodes if quorum safety allows
+    async fn try_activate_pending_nodes(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        let membership = ctx.membership();
+        let current_voters = membership.voters().len();
+        let pending_nodes = membership.nodes_with_status(NodeStatus::PendingActive);
+
+        if pending_nodes.is_empty() {
+            return Ok(());
+        }
+
+        // Check if activating all pending nodes is safe
+        if ensure_safe_join(current_voters + pending_nodes.len()).is_ok() {
+            debug!("Activating {} pending nodes", pending_nodes.len());
+
+            // Create batch activation config change
+            let config_change = Change::BatchPromote(BatchPromote {
+                node_ids: pending_nodes.iter().map(|n| n.id).collect(),
+                new_status: NodeStatus::Active as i32,
+            });
+
+            // Submit batch activation
+            self.verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+                .await?;
+
+            // Update all pending active nodes to active
+            for node in pending_nodes {
+                if let Err(e) = ctx.membership().update_node_status(node.id, NodeStatus::Active) {
+                    error!(?e, %node.id, "update_node_status(node_id, NodeStatus::Active) failed");
+                }
+            }
+        }
+
+        Ok(())
+    }
 
     /// Calculate new submission index
     #[instrument(skip(self))]
@@ -1076,142 +1220,6 @@ impl<T: TypeConfig> LeaderState<T> {
         } else {
             None
         }
-    }
-
-    /// Processes the result of batched client proposals and updates leader
-    /// state accordingly.
-    ///
-    /// This function is placed in `LeaderState` rather than
-    /// `ReplicationHandler` because:
-    /// 1. **Single Responsibility Principle**: The handling of proposal results directly impacts
-    ///    core leader state (e.g., peer indexes, commit index, leader status). State mutations
-    ///    should be centralized in the component that owns the state - `LeaderState` is the
-    ///    authoritative source for leader-specific state management.
-    /// 2. **State Encapsulation**: The logic requires deep access to leader state fields
-    ///    (`next_index`, `match_index`, etc.). Keeping this in `LeaderState` maintains
-    ///    encapsulation and prevents exposing internal state details to the replication handler
-    ///    layer.
-    /// 3. **Decision Centralization**: Leadership-specific reactions to proposal outcomes (e.g.,
-    ///    stepping down on term conflicts) are inherently tied to leader state management and
-    ///    should be colocated with state ownership.
-    ///
-    /// The `ReplicationHandler` remains focused on protocol mechanics, while
-    /// state-aware result processing naturally belongs to the state owner.
-    pub(crate) fn process_raft_request_in_batch_result(
-        &mut self,
-        batch: VecDeque<RaftRequestWithSignal>,
-        append_result: Result<AppendResults>,
-        raft_log: &Arc<ROF<T>>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        match append_result {
-            Ok(AppendResults {
-                commit_quorum_achieved,
-                peer_updates,
-            }) => {
-                let peer_ids: Vec<u32> = peer_updates.keys().cloned().collect();
-
-                // Converate peer_updates to peer_index_updates
-                for (peer_id, peer_update) in peer_updates {
-                    if let Err(e) = self.update_next_index(peer_id, peer_update.next_index) {
-                        error!(
-                            "update_next_index({:?}, {:?}), {:?}",
-                            peer_id, peer_update.next_index, e
-                        );
-                    }
-                    if let Err(e) = self.update_match_index(peer_id, peer_update.match_index) {
-                        error!(
-                            "update_match_index({:?}, {:?}), {:?}",
-                            peer_id, peer_update.match_index, e
-                        );
-                    }
-                }
-
-                // Check if quorum achieved
-                if commit_quorum_achieved {
-                    let old_commit_index = self.commit_index();
-                    let current_term = self.current_term();
-                    let matched_ids: Vec<u64> = peer_ids.iter().map(|&id| self.match_index(id).unwrap_or(0)).collect();
-
-                    debug!("collected matched_ids:{:?}", &matched_ids);
-                    let calculated_matched_index =
-                        raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
-                    debug!("calculated_matched_index: {:?}", &calculated_matched_index);
-                    let (updated, commit_index) = self.if_update_commit_index(calculated_matched_index);
-
-                    debug!("old commit: {:?} , new commit: {:?}", old_commit_index, commit_index);
-                    //notify commit_success_receiver, new commit is ready to conver to KV store.
-                    if updated {
-                        if let Err(e) =
-                            self.update_commit_index_with_signal(LEADER, self.current_term(), commit_index, role_tx)
-                        {
-                            error!(
-                                "update_commit_index_with_signal,commit={}, error: {:?}",
-                                commit_index, e
-                            );
-                            return Err(e);
-                        }
-                    } else {
-                        debug!("no need to update commit index");
-                    }
-                }
-
-                for r in batch {
-                    if commit_quorum_achieved {
-                        if let Err(e) = r.sender.send(Ok(ClientResponse::write_success())) {
-                            error!("[{}]/append_result_signal_sender failed to send signal after receive majority confirmation: {:?}", r.id, e);
-                        } else {
-                            debug!("execute the client command successfully. (id: {})", r.id);
-                        }
-                    } else {
-                        debug!("notify client that replication failed.");
-                        if let Err(e) = r
-                            .sender
-                            .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
-                        {
-                            error!("r.sender.send response failed: {:?}", e);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Execute the client command failed with error: {:?}", e);
-                match e {
-                    Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(higher_term))) => {
-                        warn!("found higher term");
-                        self.update_current_term(higher_term);
-
-                        // if let Err(e) = role_tx.send(RoleEvent::BecomeFollower(None)) {
-                        //     error!("Send conflict leader signal failed with error: {:?}", e);
-                        // }
-                        if let Err(e) = self.send_become_follower_event(None, role_tx) {
-                            error!(?e, "Send conflict leader signal failed.");
-                        }
-
-                        for r in batch {
-                            if let Err(e) = r.sender.send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated))) {
-                                error!("r.sender.send response failed: {:?}", e);
-                            }
-                        }
-                    }
-                    _ => {
-                        error("process_raft_request_in_batch_result", &e);
-                        for r in batch {
-                            if let Err(e) = r
-                                .sender
-                                .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)))
-                            {
-                                error!("r.sender.send response failed: {:?}", e);
-                            }
-                        }
-                        return Err(e);
-                    }
-                }
-
-                return Err(e);
-            }
-        }
-        Ok(())
     }
 
     #[tracing::instrument]
@@ -1346,7 +1354,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> bool {
         let commit_index = self.commit_index();
         debug!(?self
-                .peer_purge_progress, ?commit_index, ?last_purge_index, ?last_included_in_snapshot, "can_purge_logs");
+                    .peer_purge_progress, ?commit_index, ?last_purge_index, ?last_included_in_snapshot, "can_purge_logs");
         let monotonic_check = last_purge_index
             .map(|lid| lid.index < last_included_in_snapshot.index)
             .unwrap_or(true);
@@ -1380,41 +1388,37 @@ impl<T: TypeConfig> LeaderState<T> {
                 .await;
         }
 
-        // 2. Add new peer to connection manager
-        // debug!("2. Add new peer to connection manager");
-        // peer_channels.add_peer(node_id, address.clone()).await?;
-
-        // 3. Add the node as Learner with Joining status
-        debug!("3. Add the node as Learner with Joining status");
+        // 2. Add the node as Learner with Joining status
+        debug!("2. Add the node as Learner with Joining status");
         membership
             .add_learner(node_id, address.clone(), NodeStatus::Joining)
             .await?;
 
-        // 4. Create configuration change payload
-        debug!("4. Create configuration change payload");
+        // 3. Create configuration change payload
+        debug!("3. Create configuration change payload");
         let config_change = Change::AddNode(AddNode {
             node_id,
             address: address.clone(),
         });
 
-        // 5. Wait for quorum confirmation
-        debug!("5. Wait for quorum confirmation");
+        // 4. Submit config change, and wait for quorum confirmation
+        debug!("4. Wait for quorum confirmation");
         match self
             .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
             .await
         {
             Ok(true) => {
-                // 6. Update node status to Active
-                debug!("6. Update node status to Active");
-                ctx.membership().update_node_status(node_id, NodeStatus::Active).await?;
+                // 5. Update node status to Active
+                debug!("5. Update node status to Active");
+                ctx.membership().update_node_status(node_id, NodeStatus::Active)?;
 
-                // 7. Send successful response
-                debug!("7. Send successful response");
+                // 6. Send successful response
+                debug!("6. Send successful response");
                 info!("Join config committed for node {}", node_id);
                 self.send_join_success(node_id, &address, sender, ctx).await?;
 
-                // 8. Trigger snapshot transmission (only when snapshot exists in Leader node)
-                debug!("8. Trigger snapshot transmission (only when snapshot exists in Leader node)");
+                // 7. Trigger snapshot transmission (only when snapshot exists in Leader node)
+                debug!("7. Trigger snapshot transmission (only when snapshot exists in Leader node)");
                 if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
                     // Get a cloned version of the necessary parameters
                     let membership_clone = membership.clone();
@@ -1567,16 +1571,13 @@ impl<T: TypeConfig> LeaderState<T> {
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
             let result = rt.block_on(async move {
-                // Use a dedicated connection (non-critical path)
                 let bulk_channel = membership
                     .get_peer_channel(node_id, ConnectionType::Bulk)
                     .await
                     .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
 
-                // Create independent data stream
                 let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
 
-                // Use background transfer
                 BackgroundSnapshotTransfer::start(node_id, metadata, data_stream, bulk_channel.channel, config).await
             });
 

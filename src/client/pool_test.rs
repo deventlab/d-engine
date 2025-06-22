@@ -6,7 +6,7 @@ use tonic::transport::Channel;
 
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::proto::error::ErrorCode;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;

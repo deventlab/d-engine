@@ -3,8 +3,8 @@ use crate::proto::cluster::cluster_conf_change_request::Change;
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
 use crate::proto::common::AddNode;
+use crate::proto::common::NodeStatus;
 use crate::proto::common::PromoteLearner;
 use crate::proto::common::RemoveNode;
 use crate::test_utils::MockTypeConfig;
@@ -243,7 +243,10 @@ async fn test_update_cluster_conf_from_leader_case3() {
         id: 2,
         term: 1,
         version: 1,
-        change: Some(Change::PromoteLearner(PromoteLearner { node_id: 3 })),
+        change: Some(Change::PromoteLearner(PromoteLearner {
+            node_id: 3,
+            status: NodeStatus::PendingActive.into(),
+        })),
     };
 
     let response = membership
@@ -279,7 +282,10 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
         id: 2,
         term: 1,
         version: 1,
-        change: Some(Change::PromoteLearner(PromoteLearner { node_id: 3 })),
+        change: Some(Change::PromoteLearner(PromoteLearner {
+            node_id: 3,
+            status: NodeStatus::PendingActive.into(),
+        })),
     };
 
     let result = membership

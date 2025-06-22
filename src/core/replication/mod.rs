@@ -100,6 +100,12 @@ where
     ///
     /// # Note
     /// - Leader state should be updated by LeaderState only(follows SRP).
+    ///
+    /// # Quorum
+    /// - If there are no voters (not even the leader), quorum is not possible.
+    /// - If the leader is the only voter, quorum is always achieved.
+    /// - If all nodes are learners, quorum is not achieved.
+    ///
     async fn handle_raft_request_in_batch(
         &self,
         entry_payloads: Vec<EntryPayload>,

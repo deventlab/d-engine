@@ -54,7 +54,7 @@ use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::test_utils::enable_logger;

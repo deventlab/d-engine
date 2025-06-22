@@ -619,27 +619,32 @@ async fn test_create_snapshot_case2() {
     let temp_path = temp_dir.path().join("test_create_snapshot_case2");
     let mut sm = MockStateMachine::new();
 
+    // Use Mutex for safe shared state
+    let attempt_counter = Arc::new(std::sync::Mutex::new(0));
+    let counter_clone = attempt_counter.clone();
+
     // Setup slow snapshot generation
-    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let (tx, _rx) = tokio::sync::oneshot::channel();
     sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
     sm.expect_entry_term().returning(|_| Some(1));
-    sm.expect_generate_snapshot_data().times(2).returning(move |path, _| {
-        std::thread::sleep(Duration::from_millis(50));
-        // Wait forever
-        if let Err(_e) = rx.try_recv() {
-            return Err(SnapshotError::OperationFailed("test failure".into()).into());
-        }
+    sm.expect_generate_snapshot_data()
+        .times(1..=2)
+        .returning(move |path, _| {
+            // Track invocation count
+            let mut count = counter_clone.lock().unwrap();
+            *count += 1;
 
-        debug!(?path, "generate_snapshot_data");
-
-        // Create the directory structure correctly
-        fs::create_dir_all(path.clone()).unwrap();
-        //Simulate sled to create a subdirectory
-        let db_path = path.join("state_machine");
-        fs::create_dir(&db_path).unwrap();
-
-        Ok([0; 32])
-    });
+            // Only succeed on first attempt
+            if *count == 1 {
+                debug!(?path, "generate_snapshot_data");
+                fs::create_dir_all(path.clone()).unwrap();
+                let db_path = path.join("state_machine");
+                fs::create_dir(&db_path).unwrap();
+                Ok([0; 32])
+            } else {
+                Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
+            }
+        });
 
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
@@ -664,15 +669,15 @@ async fn test_create_snapshot_case2() {
         h2.create_snapshot().await
     });
 
-    // Allow some time for execution
-    tokio::time::sleep(Duration::from_millis(20)).await;
-
-    let results = futures::future::join_all(vec![t1, t2]).await;
+    // Wait for both tasks with timeout
+    let results = tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(vec![t1, t2]))
+        .await
+        .expect("Test timed out");
     println!("{:?}", &results);
 
     // Verify only one successful creation
     let success_count = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
-    assert_eq!(success_count, 1);
+    assert_eq!(success_count, 1, "Expected exactly one successful snapshot creation");
     assert_eq!(count_snapshots(&temp_path), 1);
 }
 
@@ -1233,6 +1238,7 @@ fn mock_node_with_rpc_service(
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::new(),
             })
         });

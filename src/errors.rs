@@ -394,7 +394,7 @@ pub enum ReplicationError {
 pub enum MembershipError {
     /// Failed to reach consensus on configuration change
     #[error("Membership update consensus failure: {0}")]
-    UpdateFailed(String),
+    ConfigChangeUpdateFailed(String),
 
     /// Non-leader node attempted membership change
     #[error("Membership changes require leader role")]

@@ -18,7 +18,7 @@ use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
@@ -102,11 +102,22 @@ pub trait Membership<T>: Sync + Send + 'static
 where
     T: TypeConfig,
 {
+    /// All nodes (including itself)
     fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
-    fn peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+    /// All non-self nodes (including PendingActive and Active)
+    /// Note:
+    /// Joining node has not start its Raft event processing engine yet.
+    fn replication_peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
+    /// All non-self nodes in Active state
     fn voters(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    /// All pending active nodes in Active state
+    fn nodes_with_status(
+        &self,
+        status: NodeStatus,
+    ) -> Vec<crate::proto::cluster::NodeMeta>;
 
     async fn check_cluster_is_ready(&self) -> Result<()>;
 
@@ -171,7 +182,7 @@ where
     ) -> Result<()>;
 
     /// Update status of a node
-    async fn update_node_status(
+    fn update_node_status(
         &self,
         node_id: u32,
         status: NodeStatus,

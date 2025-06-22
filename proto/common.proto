@@ -32,6 +32,7 @@ message MembershipChange {
     AddNode add_node = 1; 
     RemoveNode remove_node = 2; 
     PromoteLearner promote = 3; 
+    BatchPromote batch_promote = 4;
   }
 }
 
@@ -46,8 +47,20 @@ message RemoveNode {
 
 message PromoteLearner { 
   uint32 node_id = 1;
+  NodeStatus status = 2;
 }
 
+message BatchPromote{ 
+  repeated uint32 node_ids = 1;
+  NodeStatus new_status = 2;
+}
+
+enum NodeStatus {
+  JOINING = 0;        // New node, catching up with logs
+  PENDING_ACTIVE = 1; // Logs have been caught up, waiting for quorum confirmation
+  ACTIVE = 2;         // Formal voting member
+  DRAINING = 3;       // Prepare to go offline (not accepting new requests)
+}
 
 message SnapshotEntry {
     bytes key = 1;

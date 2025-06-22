@@ -11,9 +11,9 @@ use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::LeaderDiscoveryRequest;
 use crate::proto::cluster::MetadataRequest;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
+use crate::proto::common::NodeStatus;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::error::ErrorCode;
@@ -128,6 +128,7 @@ async fn setup_process_raft_request_test_context(
                         },
                     ),
                 ]),
+                learner_progress: HashMap::new(),
             })
         });
 
@@ -701,6 +702,7 @@ async fn test_handle_raft_event_case5_1() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
             })
         });
@@ -817,6 +819,7 @@ async fn test_handle_raft_event_case6_2() {
                         },
                     ),
                 ]),
+                learner_progress: HashMap::new(),
             })
         });
 
@@ -1709,6 +1712,7 @@ async fn test_process_batch_case1_quorum_achieved() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
                     (
                         2,
@@ -1776,6 +1780,7 @@ async fn test_process_batch_case2_quorum_failed() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
                     (
                         2,
@@ -1844,6 +1849,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
                         success: true,
                     },
                 )]),
+                learner_progress: HashMap::new(),
             })
         });
     // Mock peer configuration (multiple peers)
@@ -1944,6 +1950,7 @@ async fn test_process_batch_case4_partial_timeouts() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(
                     2,
                     PeerUpdate {
@@ -2007,6 +2014,7 @@ async fn test_process_batch_case5_all_timeout() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([]),
             })
         });
@@ -2121,6 +2129,7 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
             })
         });
@@ -2165,6 +2174,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
             })
         });
@@ -2202,6 +2212,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
             })
         });
@@ -2265,6 +2276,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
                     (2, PeerUpdate::success(5, 6)),
                     (3, PeerUpdate::failed()), // Timeout
@@ -2301,6 +2313,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::failed()), (3, PeerUpdate::failed())]),
             })
         });
@@ -2742,6 +2755,7 @@ async fn test_handle_join_cluster_case1_success() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
             })
         });
@@ -2860,6 +2874,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::new(),
             })
         });
@@ -2999,6 +3014,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         .returning(|_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
+                learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
             })
         });
@@ -3024,14 +3040,6 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         })
     });
     context.storage.state_machine = Arc::new(state_machine);
-    // let mut peer_channels = MockPeerChannels::new();
-    // peer_channels.expect_add_peer().returning(|_, _| Ok(()));
-    // peer_channels.expect_get_peer_channel().returning(|_, _| {
-    //     Some(ChannelWithAddress {
-    //         address: "".to_string(),
-    //         channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-    //     })
-    // });
 
     // Mock quorum verification
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -3049,4 +3057,110 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     assert!(result.is_ok());
     let response = receiver.recv().await.unwrap().unwrap();
     assert!(response.success);
+}
+
+#[cfg(test)]
+mod trigger_background_snapshot_test {
+    use super::*;
+    use crate::core::raft_role::leader_state::LeaderState;
+    use crate::proto::storage::{SnapshotChunk, SnapshotMetadata};
+    use crate::NetworkError;
+    use crate::SnapshotConfig;
+    use futures::stream;
+    use std::sync::Arc;
+
+    fn mock_membership(should_fail: bool) -> MockMembership<MockTypeConfig> {
+        let mut membership = MockMembership::<MockTypeConfig>::new();
+        membership.expect_get_peer_channel().returning(move |_, _| {
+            if should_fail {
+                None
+            } else {
+                Some(crate::ChannelWithAddress {
+                    channel: tonic::transport::Endpoint::from_static("http://[::]:12345").connect_lazy(),
+                    address: "mock".to_string(),
+                })
+            }
+        });
+        membership
+    }
+
+    fn mock_state_machine_handler(should_fail: bool) -> MockStateMachineHandler<MockTypeConfig> {
+        let mut handler = MockStateMachineHandler::<MockTypeConfig>::new();
+        handler.expect_load_snapshot_data().returning(move |_| {
+            if should_fail {
+                Err(crate::SnapshotError::OperationFailed("mock error".to_string()).into())
+            } else {
+                let chunk = SnapshotChunk {
+                    data: vec![1, 2, 3],
+                    ..Default::default()
+                };
+                Ok(stream::iter(vec![Ok(chunk)]).boxed())
+            }
+        });
+
+        handler
+    }
+
+    fn default_snapshot_config() -> SnapshotConfig {
+        SnapshotConfig {
+            max_bandwidth_mbps: 0,
+            sender_yield_every_n_chunks: 2,
+            ..Default::default()
+        }
+    }
+
+    fn make_metadata() -> SnapshotMetadata {
+        SnapshotMetadata {
+            last_included: Some(crate::proto::common::LogId { index: 1, term: 1 }),
+            ..Default::default()
+        }
+    }
+
+    /// Test: background snapshot transfer completes successfully.
+    #[tokio::test]
+    async fn test_trigger_background_snapshot_success() {
+        let membership = Arc::new(mock_membership(false));
+        let sm_handler = Arc::new(mock_state_machine_handler(false));
+        let config = default_snapshot_config();
+        let metadata = make_metadata();
+
+        let result = LeaderState::<crate::test_utils::MockTypeConfig>::trigger_background_snapshot(
+            2, metadata, sm_handler, membership, config,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    /// Test: background snapshot transfer fails if peer channel is missing.
+    #[tokio::test]
+    async fn test_trigger_background_snapshot_peer_channel_missing() {
+        let membership = Arc::new(mock_membership(true));
+        let sm_handler = Arc::new(mock_state_machine_handler(false));
+        let config = default_snapshot_config();
+        let metadata = make_metadata();
+
+        let result = LeaderState::<crate::test_utils::MockTypeConfig>::trigger_background_snapshot(
+            2, metadata, sm_handler, membership, config,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    /// Test: background snapshot transfer fails if snapshot data stream fails.
+    #[tokio::test]
+    async fn test_trigger_background_snapshot_snapshot_stream_error() {
+        let membership = Arc::new(mock_membership(false));
+        let sm_handler = Arc::new(mock_state_machine_handler(true));
+        let config = default_snapshot_config();
+        let metadata = make_metadata();
+
+        let result = LeaderState::<crate::test_utils::MockTypeConfig>::trigger_background_snapshot(
+            2, metadata, sm_handler, membership, config,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
 }

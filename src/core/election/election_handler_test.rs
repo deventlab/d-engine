@@ -1,14 +1,13 @@
 use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::test_utils::mock_membership;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockTypeConfig;
-use crate::test_utils::MOCK_ELECTION_HANDLER_PORT_BASE;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionError;

@@ -35,7 +35,7 @@ use config::File;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::proto::cluster::NodeStatus;
+use crate::proto::common::NodeStatus;
 use crate::Error;
 use crate::Result;
 
