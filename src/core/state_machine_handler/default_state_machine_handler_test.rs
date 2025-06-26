@@ -8,8 +8,10 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
+use crate::proto::storage::snapshot_ack::ChunkStatus;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
 use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
@@ -34,7 +36,6 @@ use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::NetworkError;
 use crate::Node;
-use crate::RaftOneshot;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
@@ -55,6 +56,7 @@ use tempfile::TempDir;
 use tokio::fs::create_dir_all;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time;
 use tracing::debug;
@@ -276,14 +278,14 @@ fn listen_addr(port: u64) -> SocketAddr {
 
 /// Case1: Complete successful snapshot installation
 #[tokio::test]
-async fn test_install_snapshot_chunk_case1() {
+async fn test_install_snapshot_case1() {
     enable_logger();
 
     let port = MOCK_STATE_MACHINE_HANDLER_PORT_BASE + 1;
     // 1. Simulate node with RPC server running in a new thread
     let (graceful_tx, graceful_rx) = watch::channel(());
     let node = mock_node_with_rpc_service(
-        "/tmp/test_install_snapshot_chunk_case1",
+        "/tmp/test_install_snapshot_case1",
         listen_addr(port),
         false,
         graceful_rx,
@@ -354,11 +356,11 @@ fn create_test_handler(
 
 /// # Case 2: Successfully applies valid chunks
 #[tokio::test]
-async fn test_install_snapshot_chunk_case2() {
+async fn test_apply_snapshot_stream_from_leader_case2() {
     enable_logger();
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_install_snapshot_chunk_case2");
+    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case2");
     let mut state_machine_mock = MockStateMachine::new();
     state_machine_mock
         .expect_apply_snapshot_from_file()
@@ -404,76 +406,91 @@ async fn test_install_snapshot_chunk_case2() {
     // Read compressed data
     let compressed_data = tokio::fs::read(&compressed_path).await.unwrap();
     let chunk = SnapshotChunk {
-        term: 1,
+        leader_term: 1,
         leader_id: 1,
         metadata: Some(metadata.clone()),
         seq: 0,
-        total: total_chunks,
+        total_chunks,
         data: compressed_data.clone(),
-        checksum: crc32fast::hash(&compressed_data).to_be_bytes().to_vec(),
+        chunk_checksum: crc32fast::hash(&compressed_data).to_be_bytes().to_vec(),
     };
     chunks.push(chunk);
 
     let streaming_request = crate_test_snapshot_stream(chunks);
-    let (sender, receiver) = MaybeCloneOneshot::new();
-    let result = handler
-        .install_snapshot_chunk(
-            1,
-            Box::new(streaming_request),
-            sender,
-            &snapshot_config(temp_path.to_path_buf()),
-        )
-        .await;
-    assert!(result.is_ok());
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
+
+    // Spawn the handler in a separate task to prevent deadlock
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(1, Box::new(streaming_request), ack_tx, &config)
+                .await
+        }
+    });
+
+    // Verify intermediate response
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
 
     // Verify final response
-    let response = receiver.await.unwrap().unwrap();
-    assert!(response.success);
-    assert_eq!(response.next_chunk, 0);
-}
+    let final_ack = ack_rx.recv().await.unwrap();
+    assert_eq!(final_ack.status, ChunkStatus::Accepted as i32);
+    assert_eq!(final_ack.seq, u32::MAX);
 
+    // Ensure handler completes successfully
+    assert!(handler_task.await.unwrap().is_ok());
+}
 const TEST_TERM: u64 = 1;
 const TEST_LEADER_ID: u32 = 1;
 
 /// # Case 3: Rejects chunk with invalid checksum
 #[tokio::test]
-async fn test_install_snapshot_chunk_case3() {
+async fn test_apply_snapshot_stream_from_leader_case3() {
     enable_logger();
 
     let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_install_snapshot_chunk_case3");
+    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case3");
     create_dir_all(&temp_path).await.unwrap();
 
-    let handler = create_test_handler(&temp_path.clone(), None);
+    let handler = create_test_handler(&temp_path, None);
 
     // Create chunk with invalid checksum
     let mut bad_chunk = create_test_chunk(0, b"bad data", TEST_TERM, TEST_LEADER_ID, 1);
-    bad_chunk.checksum = vec![0xde, 0xad, 0xbe, 0xef]; // Corrupt checksum
+    bad_chunk.chunk_checksum = vec![0xde, 0xad, 0xbe, 0xef]; // Corrupt checksum
 
-    let (sender, receiver) = MaybeCloneOneshot::new();
+    // Create ACK channel
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
     let stream = crate_test_snapshot_stream(vec![bad_chunk]);
-    handler
-        .install_snapshot_chunk(
-            TEST_TERM,
-            Box::new(stream),
-            sender,
-            &snapshot_config(temp_path.to_path_buf()),
-        )
-        .await
-        .unwrap();
 
-    let response = receiver.await.unwrap().unwrap();
-    assert!(!response.success);
-    assert_eq!(response.next_chunk, 0); // Expect retry same chunk
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
+                .await
+        }
+    });
+
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::ChecksumMismatch as i32);
+
+    assert!(matches!(
+        handler_task.await,
+        Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::OperationFailed(msg)))))
+            if msg == "Checksum validation failed"));
 }
 
-/// # Case 4: aborts_when_leader_changes_during_stream
+/// # Case 4: Aborts when leader changes during stream
 #[tokio::test]
-async fn test_install_snapshot_chunk_case4() {
+async fn test_apply_snapshot_stream_from_leader_case4() {
+    enable_logger();
+
     let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_install_snapshot_chunk_case4");
+    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case4");
     create_dir_all(&temp_path).await.unwrap();
-    let handler = create_test_handler(&temp_path.clone(), None);
+
+    let handler = create_test_handler(&temp_path, None);
 
     // First chunk with term 1, second with term 2
     let chunks = vec![
@@ -481,79 +498,175 @@ async fn test_install_snapshot_chunk_case4() {
         create_test_chunk(1, b"chunk1", TEST_TERM + 1, TEST_LEADER_ID, 2),
     ];
 
-    let (sender, receiver) = MaybeCloneOneshot::new();
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
     let stream = crate_test_snapshot_stream(chunks);
-    handler
-        .install_snapshot_chunk(
-            TEST_TERM,
-            Box::new(stream),
-            sender,
-            &snapshot_config(temp_path.to_path_buf()),
-        )
-        .await
-        .unwrap();
 
-    let status = receiver.await.unwrap().unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Aborted);
-    assert_eq!(status.message(), "Leader changed");
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
+                .await
+        }
+    });
+
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::OutOfOrder as i32);
+
+    // Verify handler completes successfully
+    assert!(matches!(
+        handler_task.await,
+        Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::OperationFailed(msg)))))
+            if msg == "Leader changed during transfer"));
 }
 
-/// # Case 5: handles_stream_errors_gracefully
+/// # Case 5: Handles stream errors gracefully
 #[tokio::test]
-async fn test_install_snapshot_chunk_case5() {
+async fn test_apply_snapshot_stream_from_leader_case5() {
+    enable_logger();
+
     let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_install_snapshot_chunk_case5");
+    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case5");
     create_dir_all(&temp_path).await.unwrap();
-    let handler = create_test_handler(&temp_path.clone(), None);
+
+    let handler = create_test_handler(&temp_path, None);
 
     // Create stream that returns error after first chunk
+    // But we specify the total chunks is 2
     let chunks = vec![create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2)];
     let stream = crate_test_snapshot_stream(chunks);
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
-    let (sender, receiver) = MaybeCloneOneshot::new();
-    handler
-        .install_snapshot_chunk(
-            TEST_TERM,
-            Box::new(stream),
-            sender,
-            &snapshot_config(temp_path.to_path_buf()),
-        )
-        .await
-        .unwrap();
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
+                .await
+        }
+    });
 
-    // Should get error from receiver
-    let status = receiver.await.unwrap().unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Internal);
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::Failed as i32);
+
+    // Verify handler completes successfully
+    assert!(handler_task.await.unwrap().is_err());
 }
 
-/// # Case 6: rejects_chunks_with_missing_metadata
+/// # Case 6: Rejects chunks with missing metadata
 #[tokio::test]
-async fn test_install_snapshot_chunk_case6() {
+async fn test_apply_snapshot_stream_from_leader_case6() {
+    enable_logger();
+
     let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_install_snapshot_chunk_case6");
+    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case6");
     create_dir_all(&temp_path).await.unwrap();
-    let handler = create_test_handler(&temp_path.clone(), None);
+
+    let handler = create_test_handler(&temp_path, None);
 
     // First chunk missing metadata
     let mut invalid_chunk = create_test_chunk(0, b"data", TEST_TERM, TEST_LEADER_ID, 1);
     invalid_chunk.metadata = None;
 
-    let (sender, receiver) = MaybeCloneOneshot::new();
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
     let stream = crate_test_snapshot_stream(vec![invalid_chunk]);
-    handler
-        .install_snapshot_chunk(
-            TEST_TERM,
-            Box::new(stream),
-            sender,
-            &snapshot_config(temp_path.to_path_buf()),
-        )
-        .await
-        .unwrap();
 
-    let status = receiver.await.unwrap().unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Internal);
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
+                .await
+        }
+    });
+
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::Failed as i32);
+
+    // Verify handler completes successfully
+    assert!(handler_task.await.unwrap().is_err());
 }
 
+/// # Case 7: Handles successful snapshot stream with multiple chunks
+#[tokio::test]
+async fn test_apply_snapshot_stream_from_leader_case7() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case7");
+    create_dir_all(&temp_path).await.unwrap();
+
+    let mut state_machine_mock = MockStateMachine::new();
+    state_machine_mock
+        .expect_apply_snapshot_from_file()
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        snapshot_config(temp_path.to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    // Create multiple chunks for the snapshot stream
+    let total_chunks = 3;
+    let mut chunks: Vec<SnapshotChunk> = vec![];
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: vec![1; 32],
+    };
+
+    for seq in 0..total_chunks {
+        let chunk_data = format!("chunk_data_{seq}").into_bytes();
+        let chunk = SnapshotChunk {
+            leader_term: 1,
+            leader_id: 1,
+            metadata: if seq == 0 { Some(metadata.clone()) } else { None },
+            seq,
+            total_chunks,
+            data: chunk_data.clone(),
+            chunk_checksum: crc32fast::hash(&chunk_data).to_be_bytes().to_vec(),
+        };
+        chunks.push(chunk);
+    }
+
+    let streaming_request = crate_test_snapshot_stream(chunks);
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
+
+    // Spawn the handler in a separate task
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(1, Box::new(streaming_request), ack_tx, &config)
+                .await
+        }
+    });
+
+    // Verify intermediate ACKs
+    for seq in 0..total_chunks {
+        let ack = ack_rx.recv().await.unwrap();
+        assert_eq!(ack.seq, seq);
+        assert_eq!(ack.status, ChunkStatus::Accepted as i32);
+        assert_eq!(ack.next_requested, seq + 1);
+    }
+
+    // Verify final ACK
+    let final_ack = ack_rx.recv().await.unwrap();
+    assert_eq!(final_ack.seq, u32::MAX);
+    assert_eq!(final_ack.status, ChunkStatus::Accepted as i32);
+    assert_eq!(final_ack.next_requested, 0);
+
+    // Ensure handler completes successfully
+    assert!(handler_task.await.unwrap().is_ok());
+}
 /// # Case 1: Basic creation flow
 #[tokio::test]
 async fn test_create_snapshot_case1() {
@@ -1282,19 +1395,9 @@ fn mock_node_with_rpc_service(
     }
     // let state_machine_handler = Arc::new(state_machine_handler);
     let mut mock_state_machine_handler = MockStateMachineHandler::new();
-    mock_state_machine_handler.expect_install_snapshot_chunk().returning(
-        move |_current_term, _stream_request, sender, _| {
-            sender
-                .send(Ok(SnapshotResponse {
-                    term: 1,
-                    success: true,
-                    next_chunk: 0,
-                }))
-                .map_err(|e| SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}")))?;
-
-            Ok(())
-        },
-    );
+    mock_state_machine_handler
+        .expect_apply_snapshot_stream_from_leader()
+        .returning(move |_current_term, _stream_request, ack_tx, _| Ok(()));
 
     MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)
@@ -1341,12 +1444,12 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     // Verify chunks
     assert_eq!(chunks.len(), 1, "Should have one chunk");
     let chunk = &chunks[0];
-    assert_eq!(chunk.term, 1);
+    assert_eq!(chunk.leader_term, 1);
     assert_eq!(chunk.leader_id, 1);
     assert_eq!(chunk.seq, 0);
-    assert_eq!(chunk.total, 1);
+    assert_eq!(chunk.total_chunks, 1);
     assert_eq!(chunk.data, content);
-    assert_eq!(chunk.checksum, crc32fast::hash(content).to_be_bytes().to_vec());
+    assert_eq!(chunk.chunk_checksum, crc32fast::hash(content).to_be_bytes().to_vec());
     assert_eq!(chunk.metadata, Some(metadata));
 }
 
@@ -1383,7 +1486,7 @@ async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
     // Verify sequence numbers and metadata
     for (i, chunk) in chunks.iter().enumerate() {
         assert_eq!(chunk.seq, i as u32);
-        assert_eq!(chunk.total, 4);
+        assert_eq!(chunk.total_chunks, 4);
         // Only first chunk should have metadata
         if i == 0 {
             assert_eq!(chunk.metadata, Some(metadata.clone()));
@@ -1449,7 +1552,7 @@ async fn test_load_snapshot_data_case5_checksum() {
     let chunk = stream.next().await.unwrap().unwrap();
 
     let expected_checksum = crc32fast::hash(content).to_be_bytes().to_vec();
-    assert_eq!(chunk.checksum, expected_checksum);
+    assert_eq!(chunk.chunk_checksum, expected_checksum);
 }
 
 // Update test_load_snapshot_data_case6_read_error
@@ -1557,3 +1660,6 @@ async fn test_snapshot_compression() {
         uncompressed_size / 2
     );
 }
+
+#[cfg(test)]
+mod receive_snapshot_stream_from_leader_test {}

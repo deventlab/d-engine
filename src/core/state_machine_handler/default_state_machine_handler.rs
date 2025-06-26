@@ -9,14 +9,15 @@ use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::validate_checksum;
 use crate::proto::client::ClientResult;
 use crate::proto::common::LogId;
+use crate::proto::storage::snapshot_ack::ChunkStatus;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
-use crate::proto::storage::SnapshotResponse;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
-use crate::MaybeCloneOneshotSender;
+use crate::NetworkError;
 use crate::NewCommitData;
 use crate::RaftLog;
 use crate::Result;
@@ -45,20 +46,29 @@ use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tonic::async_trait;
-use tonic::IntoRequest;
-use tonic::Status;
 use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
-use tracing::warn;
+
+/// Unified snapshot metadata with precomputed values
+#[derive(Debug, Clone)]
+pub struct SnapshotTransferMeta {
+    pub metadata: SnapshotMetadata,
+    pub total_chunks: u32,
+    pub chunk_size: usize,
+    pub file_size: u64,
+    pub file_path: PathBuf,
+}
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
@@ -168,209 +178,39 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn install_snapshot_chunk(
+    async fn apply_snapshot_stream_from_leader(
         &self,
         current_term: u64,
-        stream_request: Box<Streaming<SnapshotChunk>>,
-        sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
+        stream: Box<Streaming<SnapshotChunk>>,
+        ack_tx: mpsc::Sender<SnapshotAck>, // ACK sender
         config: &SnapshotConfig,
     ) -> Result<()> {
-        let _timer = ScopedTimer::new("install_snapshot_chunk");
-        debug!(%current_term, "install_snapshot_chunk");
+        let _timer = ScopedTimer::new("receive_snapshot_stream_from_leader");
 
-        // 1. Init SnapshotAssembler
-        let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
-
-        // 2. Configuration
-        let chunk_timeout = Duration::from_secs(10); // Timeout between chunks
-        let mut last_received = Instant::now();
-
-        // 3. Stream processing
-        let mut stream = stream_request.into_request().into_inner();
-        let mut term_check = None;
-        let mut captured_metadata: Option<SnapshotMetadata> = None;
-        let mut total_chunks = None;
-        let mut count = 0;
-
-        loop {
-            // Receive next chunk with timeout
-            let chunk = match timeout(chunk_timeout, stream.next()).await {
-                Ok(Some(Ok(chunk))) => {
-                    last_received = Instant::now();
-                    chunk
-                }
-                Ok(Some(Err(e))) => {
-                    error!("install_snapshot_chunk stream.next error: {:?}", e);
-                    let _ = sender.send(Err(e));
-                    return Ok(());
-                }
-                Ok(None) => {
-                    // Stream ended normally
-                    debug!("install_snapshot_chunk:: Stream ended normally");
-                    break;
-                }
-                Err(_) => {
-                    let elapsed = last_received.elapsed();
-                    warn!("No chunk received for {} seconds", elapsed.as_secs());
-                    let _ = sender.send(Err(Status::deadline_exceeded(format!(
-                        "No chunk received for {} seconds",
-                        elapsed.as_secs()
-                    ))));
-                    return Ok(());
-                }
-            };
-
-            debug!(seq = %chunk.seq, ?chunk.metadata, "install_snapshot_chunk");
-
-            // Verify leader legitimacy
-            if let Some((term, leader_id)) = &term_check {
-                if chunk.term != *term || chunk.leader_id != *leader_id {
-                    sender
-                        .send(Err(Status::aborted("Leader changed")))
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
-                    return Ok(());
-                }
-            } else {
-                term_check = Some((chunk.term, chunk.leader_id));
-                // Only capture metadata if present (should be first chunk only)
-                let first_metadata = match chunk.metadata {
-                    Some(m) => m,
-                    None => {
-                        // Handle missing metadata on first chunk immediately
-                        sender
-                            .send(Err(Status::internal(
-                                "First snapshot chunk is missing metadata".to_string(),
-                            )))
-                            .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
-                        return Ok(());
-                    }
-                };
-
-                captured_metadata = Some(first_metadata);
-                total_chunks = Some(chunk.total);
-
-                debug!(
-                    "Initial snapshot metadata: {:?}, total_chunks={}",
-                    captured_metadata,
-                    total_chunks.unwrap_or(0)
-                );
-            }
-
-            debug!(?captured_metadata, "in process");
-            // Checksum validation
-            if !validate_checksum(&chunk.data, &chunk.checksum) {
-                warn!("validate_checksum failed");
-                sender
-                    .send(Ok(SnapshotResponse {
-                        term: current_term,
-                        success: false,
-                        next_chunk: chunk.seq,
-                    }))
-                    .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
-                return Ok(());
-            }
-
-            // Write to temporary file
-            if let Err(e) = assembler.write_chunk(chunk.seq, chunk.data).await {
-                warn!("assembler.write_chunk failed");
-                sender
-                    .send(Err(Status::internal(e.to_string())))
-                    .map_err(|e| SnapshotError::OperationFailed(format!("Send error: {e:?}")))?;
-                return Ok(());
-            }
-
-            count += 1;
-
-            // Yield every 1 chunks to prevent starvation
-            if count % config.receiver_yield_every_n_chunks == 0 {
-                debug!(%count, "install_snapshot_chunk yield_now");
-                tokio::task::yield_now().await;
-            }
-        }
-
-        let total = total_chunks.unwrap_or(0);
-
-        debug!(%total, "install_snapshot_chunk");
-
-        if assembler.received_chunks() != total {
-            sender
-                .send(Err(Status::internal(format!(
-                    "Received chunks({}) != total({})",
-                    assembler.received_chunks(),
-                    total
-                ))))
-                .map_err(|e| {
-                    warn!("Failed to send response: {:?}", e);
-                    SnapshotError::OperationFailed(format!("Send snapshot error: {e:?}"))
-                })?;
-            return Ok(());
-        }
-
-        debug!(?captured_metadata, "done");
-        let final_metadata = match captured_metadata {
-            Some(meta) => meta.clone(),
-            None => {
-                sender
-                    .send(Err(Status::internal("Missing metadata in snapshot stream".to_string())))
-                    .map_err(|e| {
-                        warn!("Failed to send response: {:?}", e);
-                        SnapshotError::OperationFailed(format!("Send error: {e:?}"))
-                    })?;
-                return Ok(());
-            }
-        };
-
-        let snapshot_path = match assembler.finalize(&final_metadata).await {
-            Ok(path) => path,
-            Err(e) => {
-                sender
-                    .send(Err(Status::internal(format!("Finalize snapshot path failed: {:?}", e))))
-                    .map_err(|e| {
-                        warn!("Failed to send response: {:?}", e);
-                        SnapshotError::OperationFailed(format!("Send error: {e:?}"))
-                    })?;
-                return Ok(());
-            }
-        };
+        info!(?ack_tx, %current_term, "receive_snapshot_stream_from_leader");
+        let (final_metadata, snapshot_path) = self.process_snapshot_stream(stream, ack_tx.clone(), config).await?;
 
         debug!(?final_metadata, ?snapshot_path, "before apply_snapshot_from_file");
 
-        if let Err(e) = self
-            .state_machine
+        self.state_machine
             .apply_snapshot_from_file(&final_metadata, snapshot_path)
-            .await
-        {
-            sender
-                .send(Err(Status::internal(format!(
-                    "Apply snapshot from file failed: {:?}",
-                    e
-                ))))
-                .map_err(|e| {
-                    warn!("Failed to send response: {:?}", e);
-                    SnapshotError::OperationFailed(format!("Send error: {e:?}"))
-                })?;
-            return Ok(());
-        }
+            .await?;
 
-        // Final confirmation
-        let response = Ok(SnapshotResponse {
-            term: current_term,
-            success: true,
-            next_chunk: 0,
-        });
+        // Send final ACK
+        let final_ack = SnapshotAck {
+            seq: u32::MAX, // Special value for completion
+            status: ChunkStatus::Accepted.into(),
+            next_requested: 0,
+        };
+        debug!(?final_ack, "going to send final ack");
 
-        match sender.send(response) {
-            Ok(_) => debug!("Snapshot response sent successfully"),
-            Err(send_error) => {
-                let error_msg = format!(
-                    "[install_snapshot_chunk | {}]Failed to send response: {:?}",
-                    self.node_id, send_error
-                );
-                warn!("{}", error_msg);
+        ack_tx.send(final_ack).await.map_err(|e| {
+            let error_str = format!("{e:?}");
+            error!("Failed to send final ACK: {}", error_str);
+            NetworkError::SingalSendFailed(error_str)
+        })?;
 
-                return Err(SnapshotError::OperationFailed(error_msg.into()).into());
-            }
-        }
+        info!("Snapshot stream successfully received and applied");
         Ok(())
     }
 
@@ -688,16 +528,95 @@ where
         &self,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
-        let _timer = ScopedTimer::new("install_snapshot_chunk");
-        let last_included = metadata
-            .last_included
-            .ok_or_else(|| SnapshotError::OperationFailed("No last_included in metadata".to_string()))?;
+        let _timer = ScopedTimer::new("load_snapshot_data");
+        let transfer_meta = self.prepare_transfer_meta(metadata).await?;
 
-        // Build path to compressed snapshot file
-        let snapshot_file = self.path_mgr.final_snapshot_path(&last_included);
+        debug!(
+            "Loading snapshot from file: {:?} ({} chunks)",
+            transfer_meta.file_path, transfer_meta.total_chunks
+        );
 
-        debug!("Loading snapshot from file: {:?}", snapshot_file);
-        self.create_snapshot_chunk_stream(snapshot_file, metadata).await
+        // Use zero-copy memory mapping for efficient reads
+        let file = tokio::fs::File::open(&transfer_meta.file_path)
+            .await
+            .map_err(StorageError::IoError)?;
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file).map_err(StorageError::IoError)? };
+        let mmap = Arc::new(mmap);
+
+        let node_id = self.node_id;
+        let leader_term = transfer_meta.metadata.last_included.map(|id| id.term).unwrap_or(0);
+        let chunk_size = transfer_meta.chunk_size;
+        let total_chunks = transfer_meta.total_chunks;
+        let metadata = transfer_meta.metadata;
+
+        let stream = try_stream! {
+            for seq in 0..total_chunks {
+                let start = (seq as usize) * chunk_size;
+                let end = std::cmp::min(start + chunk_size, mmap.len());
+
+                if start >= mmap.len() {
+                    break;
+                }
+
+                // Zero-copy slice from memory map
+                let chunk_data = &mmap[start..end];
+                let chunk_checksum = crc32fast::hash(chunk_data).to_be_bytes().to_vec();
+
+                yield SnapshotChunk {
+                    leader_term,
+                    leader_id: node_id,
+                    metadata: if seq == 0 { Some(metadata.clone()) } else { None },
+                    seq,
+                    total_chunks,
+                    data: chunk_data.to_vec(),
+                    chunk_checksum,
+                };
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    async fn load_snapshot_chunk(
+        &self,
+        metadata: &SnapshotMetadata,
+        seq: u32,
+    ) -> Result<SnapshotChunk> {
+        let _timer = ScopedTimer::new("load_snapshot_chunk");
+        let transfer_meta = self.prepare_transfer_meta(metadata.clone()).await?;
+        // Validate chunk index
+        if seq >= transfer_meta.total_chunks {
+            return Err(SnapshotError::ChunkOutOfRange(seq, transfer_meta.total_chunks).into());
+        }
+
+        // Calculate chunk boundaries
+        let start = (seq as u64) * transfer_meta.chunk_size as u64;
+        let end = std::cmp::min(start + transfer_meta.chunk_size as u64, transfer_meta.file_size);
+        let chunk_size = (end - start) as usize;
+
+        // Read directly without mapping the whole file
+        let mut file = tokio::fs::File::open(&transfer_meta.file_path)
+            .await
+            .map_err(StorageError::IoError)?;
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(StorageError::IoError)?;
+
+        let mut buffer = Vec::with_capacity(chunk_size);
+        buffer.resize(chunk_size, 0);
+        file.read_exact(&mut buffer).await.map_err(StorageError::IoError)?;
+
+        let chunk_checksum = crc32fast::hash(&buffer).to_be_bytes().to_vec();
+
+        Ok(SnapshotChunk {
+            leader_term: transfer_meta.metadata.last_included.map(|id| id.term).unwrap_or(0),
+            leader_id: self.node_id,
+            metadata: if seq == 0 { Some(transfer_meta.metadata) } else { None },
+            seq,
+            total_chunks: transfer_meta.total_chunks,
+            data: buffer,
+            chunk_checksum,
+        })
     }
 }
 
@@ -749,7 +668,7 @@ where
         snapshot_file: PathBuf,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
-        let _timer = ScopedTimer::new("install_snapshot_chunk");
+        let _timer = ScopedTimer::new("create_snapshot_chunk_stream");
         let path_metadata = tokio::fs::metadata(&snapshot_file)
             .await
             .map_err(StorageError::IoError)?;
@@ -764,10 +683,11 @@ where
 
         let chunk_size = self.snapshot_config.chunk_size;
         let node_id = self.node_id;
-        let term = metadata.last_included.map(|id| id.term).unwrap_or(0);
+        let leader_term = metadata.last_included.map(|id| id.term).unwrap_or(0);
 
-        // Open the compressed file
+        // Open the compressed file.
         let mut file = File::open(&snapshot_file).await.map_err(StorageError::IoError)?;
+
         let file_len = path_metadata.len();
         let total_chunks = ((file_len as usize) + chunk_size - 1) / chunk_size;
 
@@ -783,7 +703,7 @@ where
                 }
 
                 let chunk_data = buffer[..bytes_read].to_vec();
-                let checksum = crc32fast::hash(&chunk_data).to_be_bytes().to_vec();
+                let chunk_checksum = crc32fast::hash(&chunk_data).to_be_bytes().to_vec();
 
                 // Only first chunk contains metadata
                 let chunk_metadata = if seq == 0 {
@@ -794,13 +714,13 @@ where
 
                 debug!(%seq, ?chunk_metadata, "create_snapshot_chunk_stream");
                 yield SnapshotChunk {
-                    term,
+                    leader_term,
                     leader_id: node_id,
                     metadata: chunk_metadata,
                     seq,
-                    total: total_chunks as u32,
+                    total_chunks: total_chunks as u32,
                     data: chunk_data,
-                    checksum,
+                    chunk_checksum,
                 };
 
                 seq += 1;
@@ -808,6 +728,192 @@ where
         };
 
         Ok(Box::pin(stream))
+    }
+
+    /// Helper function to process snapshot stream
+    #[instrument(skip(self, stream))]
+    async fn process_snapshot_stream(
+        &self,
+        mut stream: Box<tonic::Streaming<SnapshotChunk>>,
+        ack_tx: mpsc::Sender<SnapshotAck>,
+        config: &SnapshotConfig,
+    ) -> Result<(SnapshotMetadata, PathBuf)> {
+        let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
+        let chunk_timeout = Duration::from_secs(10);
+        let mut last_received = Instant::now();
+        let mut term_check = None;
+        let mut captured_metadata: Option<SnapshotMetadata> = None;
+        let mut total_chunks = None;
+        let mut count = 0;
+
+        loop {
+            let chunk = match timeout(chunk_timeout, stream.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    debug!("receive new chunk.");
+                    last_received = Instant::now();
+                    chunk
+                }
+                Ok(Some(Err(e))) => {
+                    // Send stream error ACK
+                    ack_tx
+                        .send(SnapshotAck {
+                            seq: 0, // Best effort
+                            status: ChunkStatus::Failed.into(),
+                            next_requested: 0,
+                        })
+                        .await
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                    return Err(SnapshotError::OperationFailed(format!("Stream error: {:?}", e)).into());
+                }
+                Ok(None) => {
+                    debug!("no more chunks available...");
+
+                    break;
+                }
+                Err(_) => {
+                    // Send timeout ACK
+                    ack_tx
+                        .send(SnapshotAck {
+                            seq: 0, // Best effort
+                            status: ChunkStatus::Failed.into(),
+                            next_requested: 0,
+                        })
+                        .await
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                    let elapsed = last_received.elapsed();
+                    return Err(SnapshotError::OperationFailed(format!(
+                        "No chunk received for {} seconds",
+                        elapsed.as_secs()
+                    ))
+                    .into());
+                }
+            };
+
+            // Verify leader legitimacy
+            if let Some((term, leader_id)) = &term_check {
+                if chunk.leader_term != *term || chunk.leader_id != *leader_id {
+                    // Send leader changed ACK
+                    ack_tx
+                        .send(SnapshotAck {
+                            seq: chunk.seq,
+                            status: ChunkStatus::OutOfOrder.into(),
+                            next_requested: 0,
+                        })
+                        .await
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                    return Err(SnapshotError::OperationFailed("Leader changed during transfer".to_string()).into());
+                }
+            } else {
+                term_check = Some((chunk.leader_term, chunk.leader_id));
+                captured_metadata = chunk.metadata.clone();
+                total_chunks = Some(chunk.total_chunks);
+                debug!(?term_check, ?captured_metadata, ?total_chunks);
+
+                // Validate captured metadata
+                if captured_metadata.is_none() {
+                    ack_tx
+                        .send(SnapshotAck {
+                            seq: chunk.seq,
+                            status: ChunkStatus::Failed.into(),
+                            next_requested: 0,
+                        })
+                        .await
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                    return Err(
+                        SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string()).into(),
+                    );
+                }
+            }
+
+            // Checksum validation
+            if !validate_checksum(&chunk.data, &chunk.chunk_checksum) {
+                // Send checksum failure ACK
+                ack_tx
+                    .send(SnapshotAck {
+                        seq: chunk.seq,
+                        status: ChunkStatus::ChecksumMismatch.into(),
+                        next_requested: chunk.seq, // Request same chunk again
+                    })
+                    .await
+                    .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                return Err(SnapshotError::OperationFailed("Checksum validation failed".to_string()).into());
+            }
+
+            // Write to temporary file
+            assembler.write_chunk(chunk.seq, chunk.data).await?;
+
+            // Send ACK
+            let ack = SnapshotAck {
+                seq: chunk.seq,
+                status: ChunkStatus::Accepted.into(),
+                next_requested: chunk.seq + 1,
+            };
+            ack_tx
+                .send(ack)
+                .await
+                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+
+            count += 1;
+            if count % config.receiver_yield_every_n_chunks == 0 {
+                debug!(%count, %config.receiver_yield_every_n_chunks, "yield_now");
+
+                tokio::task::yield_now().await;
+            }
+        }
+
+        let total = total_chunks.unwrap_or(0);
+        debug!(%total, "expected total chunks");
+        if assembler.received_chunks() != total {
+            ack_tx
+                .send(SnapshotAck {
+                    seq: assembler.received_chunks(),
+                    status: ChunkStatus::Failed.into(),
+                    next_requested: 0,
+                })
+                .await
+                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+
+            return Err(SnapshotError::OperationFailed(format!(
+                "Received chunks({}) != total({})",
+                assembler.received_chunks(),
+                total
+            ))
+            .into());
+        }
+
+        debug!(?captured_metadata);
+
+        let final_metadata = captured_metadata
+            .ok_or_else(|| SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string()))?;
+
+        let snapshot_path = assembler.finalize(&final_metadata).await?;
+        Ok((final_metadata, snapshot_path))
+    }
+
+    /// Create transfer metadata with precomputed values
+    async fn prepare_transfer_meta(
+        &self,
+        metadata: SnapshotMetadata,
+    ) -> Result<SnapshotTransferMeta> {
+        let last_included = metadata
+            .last_included
+            .ok_or_else(|| SnapshotError::OperationFailed("No last_included in metadata".to_string()))?;
+
+        let file_path = self.path_mgr.final_snapshot_path(&last_included);
+        let file_meta = tokio::fs::metadata(&file_path).await.map_err(StorageError::IoError)?;
+        let file_size = file_meta.len();
+        let chunk_size = self.snapshot_config.chunk_size;
+
+        // Precompute total chunks once
+        let total_chunks = ((file_size + chunk_size as u64 - 1) / chunk_size as u64) as u32;
+
+        Ok(SnapshotTransferMeta {
+            metadata,
+            total_chunks,
+            chunk_size,
+            file_size,
+            file_path,
+        })
     }
 
     #[cfg(test)]
