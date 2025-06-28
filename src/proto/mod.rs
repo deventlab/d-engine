@@ -3,30 +3,32 @@
 //! This module contains auto-generated Rust types from Protobuf definitions,
 //! typically created using [`tonic-build`] or `protoc` compiler plugins.
 
+// include!("../generated/mod.rs");
+
 pub mod common {
-    tonic::include_proto!("raft.common");
+    include!("../generated/raft.common.rs");
 }
 
 pub mod error {
-    tonic::include_proto!("raft.error");
+    include!("../generated/raft.error.rs");
 }
 
 pub mod cluster {
-    tonic::include_proto!("raft.cluster");
+    include!("../generated/raft.cluster.rs");
 }
 
 pub mod replication {
-    tonic::include_proto!("raft.replication");
+    include!("../generated/raft.replication.rs");
 }
 
 pub mod election {
-    tonic::include_proto!("raft.election");
+    include!("../generated/raft.election.rs");
 }
 
 pub mod storage {
-    tonic::include_proto!("raft.storage");
+    include!("../generated/raft.storage.rs");
 }
 
 pub mod client {
-    tonic::include_proto!("raft.client");
+    include!("../generated/raft.client.rs");
 }
