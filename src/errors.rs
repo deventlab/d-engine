@@ -442,6 +442,9 @@ pub enum MembershipError {
 
     #[error("Join cluster error: {0}")]
     JoinClusterError(String),
+
+    #[error("Not leader")]
+    NoLeader,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -452,6 +455,9 @@ pub enum SnapshotError {
     /// Snapshot chunk rejected during installation
     #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
     Rejected { last_chunk: u32 },
+
+    #[error("Install snapshot RPC request been rejected")]
+    RemoteRejection,
 
     /// Snapshot transfer failed due to stream/network issues
     #[error("Install snapshot RPC request failed")]
@@ -480,6 +486,31 @@ pub enum SnapshotError {
     /// Invalid chunk sequence
     #[error("Invalid chunk sequence")]
     InvalidChunkSequence,
+
+    /// Stream receiver disconnected
+    #[error("Stream receiver disconnected")]
+    ReceiverDisconnected,
+
+    #[error("Invalid first snapshot stream chunk")]
+    InvalidFirstChunk,
+
+    #[error("Empty snapshot stream chunk")]
+    EmptySnapshot,
+
+    #[error("Incomplete snapshot error")]
+    IncompleteSnapshot,
+
+    #[error("Requested chunk {0} out of range (max: {1})")]
+    ChunkOutOfRange(u32, u32),
+
+    #[error("Chunk in stream is out of order")]
+    OutOfOrderChunk,
+
+    #[error("No metadata in chunk")]
+    MissingMetadata,
+
+    #[error("Chunk not cached: {0}")]
+    ChunkNotCached(u32),
 }
 
 // ============== Conversion Implementations ============== //

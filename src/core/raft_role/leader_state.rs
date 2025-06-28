@@ -11,7 +11,6 @@ use crate::alias::SMHOF;
 use crate::client_command_to_entry_payloads;
 use crate::cluster::is_majority;
 use crate::ensure_safe_join;
-use crate::grpc::BackgroundSnapshotTransfer;
 use crate::proto::client::ClientResponse;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
@@ -30,9 +29,12 @@ use crate::proto::error::ErrorCode;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
+use crate::stream::create_production_snapshot_stream;
 use crate::utils::cluster::error;
 use crate::AppendResults;
+use crate::BackgroundSnapshotTransfer;
 use crate::BatchBuffer;
 use crate::ConnectionType;
 use crate::ConsensusError;
@@ -64,6 +66,7 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use crate::FOLLOWER;
 use autometrics::autometrics;
 use nanoid::nanoid;
 use std::collections::HashMap;
@@ -844,7 +847,65 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     panic!("{}", msg);
                 }
             }
+            RaftEvent::StreamSnapshot(request, sender) => {
+                debug!("Leader::RaftEvent::StreamSnapshot");
+
+                // Get the latest snapshot metadata
+                if let Some(metadata) = ctx.state_machine().snapshot_metadata() {
+                    // Create response channel
+                    let (response_tx, response_rx) =
+                        mpsc::channel::<std::result::Result<Arc<SnapshotChunk>, Status>>(32);
+                    // Convert to properly encoded tonic stream
+                    let size = 1024 * 1024 * 1024; // 1GB max message size
+                    let response_stream = create_production_snapshot_stream(response_rx, size);
+                    // Immediately respond with the stream
+                    sender.send(Ok(response_stream)).map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Stream response failed: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                    // Spawn background transfer task
+                    let state_machine_handler = ctx.state_machine_handler().clone();
+                    let config = ctx.node_config.raft.snapshot.clone();
+                    // Load snapshot data stream
+                    let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
+
+                    tokio::spawn(async move {
+                        if let Err(e) = BackgroundSnapshotTransfer::<T>::run_pull_transfer(
+                            request,
+                            response_tx,
+                            data_stream,
+                            config,
+                        )
+                        .await
+                        {
+                            error!("StreamSnapshot failed: {:?}", e);
+                        }
+                    });
+                } else {
+                    warn!("No snapshot available for streaming");
+                    sender.send(Err(Status::not_found("Snapshot not found"))).map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Stream response failed: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+                }
+            }
+            RaftEvent::TriggerSnapshotPush { peer_id } => {
+                if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
+                    Self::trigger_background_snapshot(
+                        peer_id,
+                        lastest_snapshot_metadata,
+                        ctx.state_machine_handler().clone(),
+                        ctx.membership(),
+                        ctx.node_config.raft.snapshot.clone(),
+                    )
+                    .await?;
+                }
+            }
         }
+
         return Ok(());
     }
 }
@@ -1141,6 +1202,8 @@ impl<T: TypeConfig> LeaderState<T> {
                     // 4. Update learner status from Joing to $new_status
                     debug!("4. Update learner status from Joing to $new_status");
                     ctx.membership().update_node_status(node_id, new_status)?;
+                    // 5: Update the new leader's role
+                    ctx.membership().update_node_role(node_id, FOLLOWER)?;
                 }
 
                 // 4. check if legal quorum reached by considering all pending active and active nodes
@@ -1410,40 +1473,41 @@ impl<T: TypeConfig> LeaderState<T> {
             Ok(true) => {
                 // 5. Update node status to Active
                 debug!("5. Update node status to Active");
-                ctx.membership().update_node_status(node_id, NodeStatus::Active)?;
+                ctx.membership()
+                    .update_node_status(node_id, NodeStatus::PendingActive)?;
 
                 // 6. Send successful response
                 debug!("6. Send successful response");
                 info!("Join config committed for node {}", node_id);
                 self.send_join_success(node_id, &address, sender, ctx).await?;
 
-                // 7. Trigger snapshot transmission (only when snapshot exists in Leader node)
-                debug!("7. Trigger snapshot transmission (only when snapshot exists in Leader node)");
-                if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
-                    // Get a cloned version of the necessary parameters
-                    let membership_clone = membership.clone();
-                    let node_id_copy = node_id;
-                    let config = ctx.node_config.raft.snapshot.clone();
-                    let state_machine_handler = ctx.state_machine_handler().clone();
-                    // Start a completely independent asynchronous task
-                    tokio::spawn(async move {
-                        // Add a delayed start to avoid instantaneous pressure
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                // // 7. Trigger snapshot transmission (only when snapshot exists in Leader node)
+                // debug!("7. Trigger snapshot transmission (only when snapshot exists in Leader node)");
+                // if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
+                //     // Get a cloned version of the necessary parameters
+                //     let membership_clone = membership.clone();
+                //     let node_id_copy = node_id;
+                //     let config = ctx.node_config.raft.snapshot.clone();
+                //     let state_machine_handler = ctx.state_machine_handler().clone();
+                //     // Start a completely independent asynchronous task
+                //     tokio::spawn(async move {
+                //         // Add a delayed start to avoid instantaneous pressure
+                //         tokio::time::sleep(Duration::from_secs(1)).await;
 
-                        // Asynchronously trigger snapshot transfer (do not wait for the result)
-                        if let Err(e) = Self::trigger_background_snapshot(
-                            node_id_copy,
-                            lastest_snapshot_metadata,
-                            state_machine_handler,
-                            membership_clone,
-                            config,
-                        )
-                        .await
-                        {
-                            error!("Background snapshot failed for {}: {:?}", node_id_copy, e);
-                        }
-                    });
-                }
+                //         // Asynchronously trigger snapshot transfer (do not wait for the result)
+                //         if let Err(e) = Self::trigger_background_snapshot(
+                //             node_id_copy,
+                //             lastest_snapshot_metadata,
+                //             state_machine_handler,
+                //             membership_clone,
+                //             config,
+                //         )
+                //         .await
+                //         {
+                //             error!("Background snapshot failed for {}: {:?}", node_id_copy, e);
+                //         }
+                //     });
+                // }
             }
             Ok(false) => {
                 warn!("Failed to commit join config for node {}", node_id);
@@ -1537,6 +1601,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
+    /// TODO: To be deleted
     pub(super) async fn trigger_snapshot_transfer(
         &self,
         node_id: u32,
@@ -1567,7 +1632,6 @@ impl<T: TypeConfig> LeaderState<T> {
         let (result_tx, result_rx) = oneshot::channel();
 
         // Delegate the actual transfer to a dedicated thread pool
-
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
             let result = rt.block_on(async move {
@@ -1578,7 +1642,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
                 let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
 
-                BackgroundSnapshotTransfer::start(node_id, metadata, data_stream, bulk_channel.channel, config).await
+                BackgroundSnapshotTransfer::<T>::run_push_transfer(node_id, data_stream, bulk_channel.channel, config)
+                    .await
             });
 
             // Non-blocking send result

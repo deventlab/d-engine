@@ -1,56 +1,89 @@
 # Snapshot Module
 
-This module defines the interface and expected behaviors for snapshot generation and application in the Raft protocol implementation of `d-engine`.
 
-## Snapshot Design Philosophy
+Defines interface and behaviors for snapshot operations in `d-engine` Raft implementation.
 
-Snapshotting is a critical component of any Raft-based system. However, the exact strategy for generating and applying snapshots can vary widely depending on the type of storage engine, system requirements, and performance characteristics.
+## Design Philosophy
 
-Rather than enforce a single implementation, `d-engine` **intentionally leaves the snapshot generation strategy including snapshot policy customization open to the developer**. This provides flexibility for different use cases and backend storage systems.
+- **Pluggable strategy**: Intentional flexibility for snapshot policies and storage implementations
+- **Zero-enforced approach**: No default snapshot strategy - implement based on your storage needs
+- **Reference implementation**: `sled`-based demo included (not production-ready)
 
-### Pluggable Snapshot Strategy
+## Core Concepts
 
-Different databases and distributed systems adopt different approaches to snapshotting. For example:
+### Snapshot Transfer: Bidirectional Streaming Design
 
-- Some systems take full on-disk snapshots by pausing the world.
-- Others implement incremental snapshotting using copy-on-write or changelogs.
-- Some persist in-memory state periodically or through a background thread.
+```mermaid
+sequenceDiagram
+    participant Learner
+    participant Leader
+    
+    Learner->>Leader: 1. Request snapshot
+    Leader->>Learner: 2. Stream chunks
+    Learner->>Leader: 3. Send ACKs
+    Leader->>Learner: 4. Retransmit missing chunks
+```
 
-To accommodate this diversity, `d-engine` provides:
 
-- **A trait-based interface** that defines the core behaviors required by any snapshot implementation.
-- **A reference implementation** based on the `sled` embedded database to demonstrate how a snapshot strategy can be implemented.
+1. **Dual-channel communication**:
+    - Data channel: Leader → Learner (SnapshotChunk stream)
+    - Feedback channel: Learner → Leader (SnapshotAck stream)
+2. **Key benefits**:
+    - **Flow control**: ACKs regulate transmission speed
+    - **Reliability**: Per-chunk CRC verification
+    - **Resumability**: Selective retransmission of failed chunks
+    - **Backpressure**: Explicit backoff when receiver lags
+3. **Sequence**:
 
-### Included Example
+```mermaid
+sequenceDiagram
+    Learner->>Leader: StreamSnapshot(initial ACK)
+    Leader-->>Learner: Chunk 0 (metadata)
+    Learner->>Leader: ACK(seq=0, status=Accepted)
+    Leader-->>Learner: Chunk 1
+    Learner->>Leader: ACK(seq=1, status=ChecksumMismatch)
+    Leader-->>Learner: Chunk 1 (retransmit)
+    Learner->>Leader: ACK(seq=1, status=Accepted)
+    loop Remaining chunks
+        Leader-->>Learner: Chunk N
+        Learner->>Leader: ACK(seq=N)
+    end
+```
 
-The `sled`-based snapshot implementation included in `d-engine` is meant to serve as a **working demo**, not a production-ready solution. It demonstrates:
+#### The bidirectional snapshot transfer is implemented as a state machine, coordinating both data transmission (chunks) and control feedback (ACKs) between Leader and Learner.
 
-- How to implement the `SnapshotBuilder` and `SnapshotApplier` traits.
-- A simple full-state serialization approach using `sled` key-value pairs.
-- How to restore state from a binary snapshot blob.
+```mermaid
+stateDiagram-v2
+    [*] --> Waiting
+    Waiting --> ProcessingChunk: Data available
+    Waiting --> ProcessingAck: ACK received
+    Waiting --> Retrying: Retry timer triggered
+    ProcessingChunk --> Waiting
+    ProcessingAck --> Waiting
+    Retrying --> Waiting
+    Waiting --> Completed: All chunks sent & acknowledged
+```
 
-## **Generate Snapshot**
+**Data Flow Summary**:
+```
+Leader                          Learner
+  │                                │
+  │──► Stream<SnapshotChunk> ────►│
+  │                                │
+  │◄── Stream<SnapshotAck> ◄──────│
+  │                                │
+```
 
-### Snapshot Policy Configuration
 
-#### Custom Snapshot Policies
-The snapshot generation strategy is fully customizable through the SnapshotPolicy trait. Developers can implement their own policies based on specific requirements like:
+### **Snapshot Policies**
 
-- Log size thresholds
-- Time-based intervals
-- Combination of multiple conditions
-- External system metrics
+Fully customizable through **`SnapshotPolicy`** trait:
 
-```rust,ignore
-/// Trait to implement custom snapshot policies
-pub trait SnapshotPolicy: Send + Sync + 'static {
-    /// Determine if a snapshot should be generated
-    /// - ctx: Contains snapshot generation context (last applied index, term, etc.)
-    /// - config: Current node configuration
-    fn should_create_snapshot(&self, ctx: &SnapshotContext, config: &SnapshotConfig) -> bool;
+```rust
+pub trait SnapshotPolicy {
+    fn should_create_snapshot(&self, ctx: &SnapshotContext) -> bool;
 }
 
-/// Context for policy decision
 pub struct SnapshotContext {
     pub last_included_index: u64,
     pub last_applied_index: u64,
@@ -58,26 +91,19 @@ pub struct SnapshotContext {
     pub unapplied_entries: usize,
 }
 ```
-
-#### Implementing a Custom Policy
-1. Implement the trait:
+Enable customized snapshot policy:
 
 ```rust,ignore
-struct TimeBasedPolicy {
-    interval: Duration,
-}
-
-impl SnapshotPolicy for TimeBasedPolicy {
-    fn should_create_snapshot(&self, ctx: &SnapshotContext, _: &SnapshotConfig) -> bool {
-        SystemTime::now()
-            .duration_since(LAST_SNAPSHOT_TIME.load(Ordering::Relaxed))
-            .unwrap() >= self.interval
-    }
-}
+let node = NodeBuilder::new()
+    .with_snapshot_policy(Arc::new(TimeBasedPolicy {
+        interval: Duration::from_secs(3600),
+    }))
+    .build();
 ```
-2. Register with NodeBuilder:
 
-#### Install Snapshot Sequence Diagram
+By default, Size-Based Policy is enabled.
+
+#### Snaphot policy been used when generate new snapshot
 ```mermaid
 sequenceDiagram
     participant Leader
@@ -91,19 +117,15 @@ sequenceDiagram
     end
 ```
 
-## **Install Snapshot**
+**Common policy types**:
 
-```rust,ignore
-let node = NodeBuilder::new()
-    .with_snapshot_policy(Arc::new(TimeBasedPolicy {
-        interval: Duration::from_secs(3600),
-    }))
-    .build();
-```
+- Size-based (default)
+- Time-based intervals
+- Hybrid approaches
+- External metric triggers
 
-By default, Size-Based Policy is enabled.
 
-### Sequence diagram
+### Leader generate snapshot sequence diagram
 
 ```mermaid
 sequenceDiagram
@@ -121,46 +143,32 @@ sequenceDiagram
     Follower->>Leader: Return success response
 ```
 
-## **Snapshot Transfer**
+### **Transfer Mechanics**
 
-**Use Stream-based Chunking**:
+1. **Chunking**:
+    - Fixed-size chunks (configurable 4-16MB)
+    - First chunk contains metadata
+    - CRC32 checksum per chunk
+2. **Rate limiting**:
 
-1. **Memory Efficiency**: Transmit snapshots as a sequence of chunks via streaming RPC to avoid loading entire snapshots into memory.
-2. **Fault Tolerance**: Implement retry logic per chunk (e.g., CRC checks) and resume from the last failed chunk.
-3. **Parallelism**: Allow concurrent processing of received chunks (e.g., writing to disk while receiving).
-4. **Flow Control**: Dynamically adjust chunk size based on network conditions (e.g., 4MB–16MB chunks).
-    
+```rust
+if config.max_bandwidth_mbps > 0 {
+    let min_duration = chunk_size_mb / config.max_bandwidth_mbps;
+    tokio::time::sleep(min_duration).await;
+}
+```
 
-#### **Stream<Chunk> vs. Direct Chunk (Even Chunk Size Is Controlled)**
+1. **Error recovery**:
+    - Checksum mismatches trigger single-chunk retransmission
+    - Out-of-order detection resets stream position
+    - 10-second ACK timeout fails entire transfer
 
-| Criteria           | Stream<Chunk>                                    | Direct Chunk (One Chunk per Request)                       |
-|--------------------|--------------------------------------------------|------------------------------------------------------------|
-| Connection Overhead | Single long-lived connection for all chunks.    | New TCP/TLS handshake per chunk (high overhead).           |
-| Order Guarantee    | Chunks are sent/received in order (built-in).     | Requires manual tracking of chunk sequence.                |
-| Atomicity          | Stream can be canceled mid-transfer (e.g., leader change). | Partial failures leave inconsistent state (no cleanup). |
-| Error Recovery     | Resumable from last failed chunk (server retains state). | Client must track progress and retry manually.           |
-| Backpressure       | Built-in flow control (gRPC manages data pacing). | No backpressure; clients/server may overload.              |
-| Code Complexity    | Server handles chunks as a unified stream.       | Client must orchestrate chunk order and retries.           |
+### **Module Responsibilities**
 
-The Leader continuously sends snapshot chunks to the Follower through an RPC stream.
-
-```mermaid
-sequenceDiagram
-    participant Leader
-    participant Follower
-
-    %% Leader initiates the snapshot installation using a streaming RPC.
-    Leader->>Follower: Initiate InstallSnapshot (Streaming RPC)
-    loop Continuously send all chunks
-        %% Leader sends snapshot chunks sequentially (e.g., chunk 0 to 99).
-        Leader->>Follower: Send chunk 0-Total
-    end
-    %% After all chunks are sent, Follower responds with a final success message.
-    Follower->>Leader: Final response (success = true)
-
-```    
----
-### Module responsbilitiies - Statemachine and StateMachineHandler
+| **Component** | **Responsibilities** |
+| --- | --- |
+| **StateMachineHandler** | - Chunk validation- Temporary file management- ACK generation- Error handling- Snapshot finalization |
+| **StateMachine** | - Snapshot application- Online state replacement- Consistency guarantees |
 
 #### Generating a new snapshot:
 1. [**StateMachine**] Generate new DB based on the temporary file provided by the [**StateMachineHandler**] → 

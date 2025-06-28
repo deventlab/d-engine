@@ -17,9 +17,11 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::MaybeCloneOneshotSender;
+use crate::StreamResponseSender;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NewCommitData {
@@ -73,10 +75,14 @@ pub(crate) enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
 
+    // Response snapshot stream from Leader
     InstallSnapshotChunk(
         Box<tonic::Streaming<SnapshotChunk>>,
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
+
+    // Request snapshot stream from Leader
+    StreamSnapshot(Box<tonic::Streaming<SnapshotAck>>, StreamResponseSender),
 
     RaftLogCleanUp(
         PurgeLogRequest,
@@ -92,6 +98,11 @@ pub(crate) enum RaftEvent {
         LeaderDiscoveryRequest,
         MaybeCloneOneshotSender<std::result::Result<LeaderDiscoveryResponse, Status>>,
     ),
+
+    // Leader connect with peers and push snapshot stream
+    TriggerSnapshotPush {
+        peer_id: u32,
+    },
 
     // None RPC event
     #[allow(dead_code)]
@@ -116,11 +127,15 @@ pub(crate) enum TestEvent {
 
     InstallSnapshotChunk,
 
+    StreamSnapshot,
+
     RaftLogCleanUp(PurgeLogRequest),
 
     JoinCluster(JoinRequest),
 
     DiscoverLeader(LeaderDiscoveryRequest),
+
+    TriggerSnapshotPush { peer_id: u32 },
 
     // None RPC event
     CreateSnapshotEvent,
@@ -136,9 +151,11 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
         RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
+        RaftEvent::StreamSnapshot(_, _) => TestEvent::StreamSnapshot,
         RaftEvent::RaftLogCleanUp(req, _) => TestEvent::RaftLogCleanUp(req.clone()),
         RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
+        RaftEvent::TriggerSnapshotPush { peer_id } => TestEvent::TriggerSnapshotPush { peer_id: *peer_id },
     }
 }

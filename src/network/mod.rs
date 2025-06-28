@@ -225,16 +225,22 @@ where
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<Result<PurgeLogResponse>>>;
 
-    /// Transfers snapshot to a follower node
+    /// Transfers a snapshot to a follower node with retry logic and backpressure control.
     ///
     /// # Parameters
-    /// - `metadata`: Snapshot metadata
-    /// - `data_stream`: Stream of snapshot chunks
-    /// - `retry`: Snapshot-specific retry configuration
+    /// - `node_id`: Target follower node ID
+    /// - `metadata`: Snapshot metadata including last included index
+    /// - `data_stream`: Stream of snapshot chunks to send
+    /// - `retry`: Retry and timeout configuration
+    /// - `config`: Snapshot transfer configuration
     /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
-    /// - `SnapshotError::TransferFailed`: On unrecoverable transfer failure
+    /// Returns `SnapshotError` if:
+    /// - Connection fails
+    /// - Transfer times out
+    /// - gRPC call fails
+    /// - Follower rejects snapshot
     async fn install_snapshot(
         &self,
         node_id: u32,
@@ -292,6 +298,28 @@ where
         rpc_enable_compression: bool,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<crate::proto::cluster::LeaderDiscoveryResponse>>;
+
+    /// Requests and streams a snapshot from the current leader.
+    ///
+    /// # Parameters
+    /// - `leader_id`: Current leader node ID
+    /// - `retry`: Retry configuration (currently unused in implementation)
+    /// - `membership`: Cluster membership for channel resolution
+    ///
+    /// # Returns
+    /// Streaming of snapshot chunks from the leader
+    ///
+    /// # Errors
+    /// Returns `NetworkError` if:
+    /// - Connection to leader fails
+    /// - gRPC call fails
+    async fn request_snapshot_from_leader(
+        &self,
+        leader_id: u32,
+        ack_tx: tokio::sync::mpsc::Receiver<crate::proto::storage::SnapshotAck>,
+        retry: &crate::InstallSnapshotBackoffPolicy,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<Box<tonic::Streaming<SnapshotChunk>>>;
 }
 
 // Module level utils

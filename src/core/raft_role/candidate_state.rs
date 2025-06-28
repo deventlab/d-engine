@@ -477,6 +477,30 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
                 return Ok(());
             }
+
+            RaftEvent::StreamSnapshot(request, sender) => {
+                debug!(?request, "Candidate::RaftEvent::StreamSnapshot");
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Candidate should not receive StreamSnapshot event.",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                return Ok(());
+            }
+
+            RaftEvent::TriggerSnapshotPush { peer_id: _ } => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!("Candidate node {} receives RaftEvent::TriggerSnapshotPush", ctx.node_id),
+                }
+                .into());
+            }
         }
         return Ok(());
     }

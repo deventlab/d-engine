@@ -19,6 +19,9 @@ pub mod time;
 #[allow(dead_code)]
 pub mod scoped_timer;
 
+#[allow(dead_code)]
+pub mod stream;
+
 #[cfg(test)]
 mod utils_test;
 

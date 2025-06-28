@@ -31,9 +31,10 @@ pub(crate) const MOCK_REPLICATION_HANDLER_PORT_BASE: u64 = 60600;
 pub(crate) const MOCK_MEMBERSHIP_PORT_BASE: u64 = 60700;
 pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
 pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60900;
-pub(crate) const MOCK_INSTALL_SNAPSHOT_PORT_BASE: u64 = 61000;
+pub(crate) const MOCK_TRANSPORT_PORT_BASE: u64 = 61000;
 pub(crate) const MOCK_ROLE_STATE_PORT_BASE: u64 = 61100;
 pub(crate) const MOCK_LEADER_STATE_PORT_BASE: u64 = 61200;
+pub(crate) const MOCK_SNAPSHOT_PORT_BASE: u64 = 61300;
 pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
 pub struct MockNode;
@@ -218,12 +219,12 @@ impl MockNode {
 
     pub(crate) async fn simulate_snapshot_mock_server(
         port: u64,
-        response: SnapshotResponse,
+        response: std::result::Result<SnapshotResponse, tonic::Status>,
         rx: oneshot::Receiver<()>,
     ) -> Result<ChannelWithAddress> {
         //prepare learner's channel address inside membership config
         let mock_service = MockRpcService {
-            expected_snapshot_response: Some(Ok(response)),
+            expected_snapshot_response: Some(response),
             ..Default::default()
         };
         let addr = match Self::mock_listener(mock_service, port, rx, true).await {

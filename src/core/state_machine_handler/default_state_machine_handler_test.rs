@@ -312,7 +312,7 @@ async fn test_install_snapshot_case1() {
     let total_chunks = 3;
     let (tx, rx) = tokio::sync::mpsc::channel(10);
     // Generate valid chunks with seq 0..2
-    tokio::spawn(async move {
+    let h = tokio::spawn(async move {
         for seq in 0..total_chunks {
             let chunk = create_test_chunk(
                 seq,
@@ -340,6 +340,7 @@ async fn test_install_snapshot_case1() {
     // Release handler
     graceful_tx.send(()).expect("shutdown successfully!");
     raft_handle.await.expect("should succeed");
+    h.await.unwrap();
 }
 
 // Helper to create test handler

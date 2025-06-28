@@ -13,9 +13,11 @@ use crate::proto::election::raft_election_service_client::RaftElectionServiceCli
 use crate::proto::election::VoteRequest;
 use crate::proto::replication::raft_replication_service_client::RaftReplicationServiceClient;
 use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::storage::snapshot_ack::ChunkStatus;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::AppendResult;
@@ -23,6 +25,7 @@ use crate::BackoffPolicy;
 use crate::ClusterUpdateResult;
 use crate::ConnectionType;
 use crate::Error;
+use crate::InstallSnapshotBackoffPolicy;
 use crate::Membership;
 use crate::NetworkError;
 use crate::Result;
@@ -620,6 +623,39 @@ where
             .await;
         debug!("[discover_leader | {my_id} ] Discover leader results.");
         Ok(results.into_iter().flatten().collect())
+    }
+
+    // Add this to the Transport trait implementation
+    #[autometrics(objective = API_SLO)]
+    async fn request_snapshot_from_leader(
+        &self,
+        leader_id: u32,
+        ack_rx: mpsc::Receiver<SnapshotAck>,
+        _retry: &InstallSnapshotBackoffPolicy,
+        membership: Arc<MOF<T>>,
+    ) -> Result<Box<tonic::Streaming<SnapshotChunk>>> {
+        debug!("Fetching snapshot from leader {}", leader_id);
+
+        // Get bulk connection channel
+        let channel = membership
+            .get_peer_channel(leader_id, ConnectionType::Bulk)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?
+            .channel;
+
+        let channel = channel.clone();
+        let mut client = SnapshotServiceClient::new(channel)
+            .send_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+
+        // ReceiverStream adapts mpsc::Receiver to Stream type
+        let request_stream = ReceiverStream::new(ack_rx);
+        let response = client
+            .stream_snapshot(tonic::Request::new(request_stream))
+            .await
+            .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
+
+        Ok(Box::new(response.into_inner()))
     }
 }
 

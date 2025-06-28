@@ -24,12 +24,14 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::snapshot_service_server::SnapshotService;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::MaybeCloneOneshot;
 use crate::Node;
 use crate::RaftEvent;
 use crate::RaftOneshot;
+use crate::StreamResponseSender;
 use crate::TypeConfig;
 use crate::API_SLO;
 use autometrics::autometrics;
@@ -116,6 +118,34 @@ impl<T> SnapshotService for Node<T>
 where
     T: TypeConfig,
 {
+    type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
+
+    async fn stream_snapshot(
+        &self,
+        request: tonic::Request<tonic::Streaming<SnapshotAck>>,
+    ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
+        if !self.server_is_ready() {
+            warn!("stream_snapshot: Node-{} is not ready!", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = StreamResponseSender::new();
+
+        self.event_tx
+            .send(RaftEvent::StreamSnapshot(Box::new(request.into_inner()), resp_tx))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+
+        let timeout_duration = Duration::from_millis(self.node_config.raft.snapshot_rpc_timeout_ms);
+
+        handle_rpc_timeout(
+            async { resp_rx.await.map_err(|_| Status::internal("Response channel closed")) },
+            timeout_duration,
+            "stream_snapshot",
+        )
+        .await
+    }
+
     async fn install_snapshot(
         &self,
         request: tonic::Request<Streaming<SnapshotChunk>>,

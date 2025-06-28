@@ -3,8 +3,8 @@ use crate::grpc::grpc_transport::GrpcTransport;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::common::NodeStatus;
 use crate::proto::common::LogId;
+use crate::proto::common::NodeStatus;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::replication::AppendEntriesRequest;
@@ -22,9 +22,9 @@ use crate::test_utils::snapshot_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::MockTypeConfig;
-use crate::test_utils::MOCK_INSTALL_SNAPSHOT_PORT_BASE;
 use crate::test_utils::MOCK_PURGE_PORT_BASE;
 use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
+use crate::test_utils::MOCK_TRANSPORT_PORT_BASE;
 use crate::test_utils::{self};
 use crate::ChannelWithAddress;
 use crate::ChannelWithAddressAndRole;
@@ -1183,12 +1183,12 @@ async fn test_install_snapshot_case1_success() {
 
     // Start mock server
     let addr = MockNode::simulate_snapshot_mock_server(
-        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 1,
-        SnapshotResponse {
+        MOCK_TRANSPORT_PORT_BASE + 1,
+        Ok(SnapshotResponse {
             term: 1,
             success: true, // always succeed
             next_chunk: 1,
-        },
+        }),
         shutdown_rx,
     )
     .await
@@ -1237,12 +1237,12 @@ async fn test_install_snapshot_case2_retry_success() {
 
     // Start mock server that fails first attempt
     let addr = MockNode::simulate_snapshot_mock_server(
-        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 2,
-        SnapshotResponse {
+        MOCK_TRANSPORT_PORT_BASE + 2,
+        Ok(SnapshotResponse {
             term: 1,
             success: true, // always succeed
             next_chunk: 1,
-        },
+        }),
         shutdown_rx,
     )
     .await
@@ -1294,12 +1294,12 @@ async fn test_install_snapshot_case3_retry_failure() {
 
     // Start mock server that always fails
     let addr = MockNode::simulate_snapshot_mock_server(
-        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 3,
-        SnapshotResponse {
+        MOCK_TRANSPORT_PORT_BASE + 3,
+        Ok(SnapshotResponse {
             term: 1,
             success: false, // always fail
             next_chunk: 1,
-        },
+        }),
         shutdown_rx,
     )
     .await
@@ -1356,12 +1356,12 @@ async fn test_install_snapshot_case4_stream_failure() {
 
     // Start mock server
     let addr = MockNode::simulate_snapshot_mock_server(
-        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 4,
-        SnapshotResponse {
+        MOCK_TRANSPORT_PORT_BASE + 4,
+        Ok(SnapshotResponse {
             term: 1,
             success: true, // always succeed
             next_chunk: 1,
-        },
+        }),
         shutdown_rx,
     )
     .await
@@ -1419,12 +1419,12 @@ async fn test_install_snapshot_case5_large_transfer() {
 
     // Start mock server
     let addr = MockNode::simulate_snapshot_mock_server(
-        MOCK_INSTALL_SNAPSHOT_PORT_BASE + 5,
-        SnapshotResponse {
+        MOCK_TRANSPORT_PORT_BASE + 5,
+        Ok(SnapshotResponse {
             term: 1,
             success: true, // always succeed
             next_chunk: 1,
-        },
+        }),
         shutdown_rx,
     )
     .await

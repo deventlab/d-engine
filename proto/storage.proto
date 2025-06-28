@@ -4,25 +4,31 @@ package raft.storage;
 import "proto/common.proto";
 
 message SnapshotChunk {
-    // Protocol header (repeated in each block)
-    fixed64 term = 1; // compact binary encoding
-    fixed32 leader_id = 2; // digital node ID
+    // Leader's current term (for leadership validation)
+    uint64 leader_term = 1;
 
-    // Chunk metadata
-    fixed32 seq = 3; // Block sequence number starting from 0
-    fixed32 total = 4; // Total number of blocks
-    bytes checksum = 5; // 4-byte CRC32
+    // Leader's node ID (for identification)
+    uint32 leader_id = 2;
 
-    // Metaeata
-    SnapshotMetadata metadata = 6;
+    // Chunk sequence number (0-based)
+    uint32 seq = 3;
 
-    // Payload data
-    bytes data = 7; // 4MB is recommended
+    // Total number of chunks in this snapshot
+    uint32 total_chunks = 4;
+
+    // Chunk-specific checksum (CRC32)
+    bytes chunk_checksum = 5;
+
+    // Snapshot metadata (only present in first chunk)
+    optional SnapshotMetadata metadata = 6;
+
+    // Payload data (recommended 4MB chunks)
+    bytes data = 7;
 }
 
 message SnapshotMetadata {
     raft.common.LogId last_included = 1; // The last log index included in the snapshot
-    bytes checksum = 2;             // SHA-256 checksum
+    bytes checksum = 2;             // SHA-256 checksum// Total number of chunks in this snapshot
 }
 
 message SnapshotResponse {
@@ -45,8 +51,34 @@ message PurgeLogResponse {
     bool success = 3; // Whether to accept the request (non-asynchronous operation result)
     raft.common.LogId last_purged = 4; // Peer's current purged position (for Leader update progress)
 }
+
+
+message SnapshotAck {
+  // Received chunk sequence number
+  uint32 seq = 1;
   
+  // Status of this chunk
+  ChunkStatus status = 2;
+  
+  // Next requested chunk (for flow control)
+  uint32 next_requested = 3;
+  
+  enum ChunkStatus {
+    ACCEPTED = 0;
+    CHECKSUM_MISMATCH = 1;
+    OUT_OF_ORDER = 2;
+    REQUESTED = 3;
+    FAILED = 4;
+  }
+}
+
 service SnapshotService {
+  // Leader-driven snapshot streaming
   rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse);
+
+  // Learner-driven snapshot streaming
+  rpc StreamSnapshot(stream SnapshotAck) returns (stream SnapshotChunk);
+
+  // Log compaction request
   rpc PurgeLog(PurgeLogRequest) returns (PurgeLogResponse);
 }

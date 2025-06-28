@@ -12,7 +12,10 @@ use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::error::ErrorCode;
+use crate::proto::storage::snapshot_ack::ChunkStatus;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
+use crate::proto::storage::SnapshotResponse;
 use crate::utils::cluster::error;
 use crate::ConsensusError;
 use crate::ElectionCore;
@@ -351,10 +354,35 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
-                ctx.handlers
+                // Create ACK channel (follower sends ACKs to leader)
+                let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
+
+                // Spawn ACK handler to send final response
+                tokio::spawn(async move {
+                    match ack_rx.recv().await {
+                        Some(final_ack) => {
+                            let response = SnapshotResponse {
+                                term: my_term,
+                                success: final_ack.status == (ChunkStatus::Accepted as i32),
+                                next_chunk: final_ack.next_requested,
+                            };
+                            let _ = sender.send(Ok(response));
+                        }
+                        None => {
+                            let _ = sender.send(Err(Status::internal("ACK channel closed")));
+                        }
+                    }
+                });
+
+                if let Err(e) = ctx
+                    .handlers
                     .state_machine_handler
-                    .install_snapshot_chunk(self.current_term(), stream, sender, &ctx.node_config.raft.snapshot)
-                    .await?;
+                    .apply_snapshot_stream_from_leader(my_term, stream, ack_tx, &ctx.node_config.raft.snapshot)
+                    .await
+                {
+                    error!(?e, "Follower handle  RaftEvent::InstallSnapshotChunk");
+                    return Err(e);
+                }
             }
 
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
@@ -472,6 +500,30 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     })?;
 
                 return Ok(());
+            }
+
+            RaftEvent::StreamSnapshot(request, sender) => {
+                debug!(?request, "Follower::RaftEvent::StreamSnapshot");
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Follower should not receive StreamSnapshot event.",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                return Ok(());
+            }
+
+            RaftEvent::TriggerSnapshotPush { peer_id: _ } => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!("Follower node {} receives RaftEvent::TriggerSnapshotPush", ctx.node_id),
+                }
+                .into());
             }
         }
 

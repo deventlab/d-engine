@@ -7,9 +7,7 @@
 // Protobuf GRPC service introduction
 // -----------------------------------------------------------------------------
 
-mod backgroup_snapshot_transfer;
 mod restartable_stream;
-pub(crate) use backgroup_snapshot_transfer::*;
 pub(crate) use restartable_stream::*;
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
@@ -19,9 +17,6 @@ mod grpc_raft_service_test;
 
 #[cfg(test)]
 mod grpc_transport_test;
-
-#[cfg(test)]
-mod backgroup_snapshot_transfer_test;
 
 //-------------------------------------------------------------------------------
 // Start RPC Server

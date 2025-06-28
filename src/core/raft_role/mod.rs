@@ -185,6 +185,13 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().join_cluster(ctx).await
     }
 
+    pub(crate) async fn fetch_initial_snapshot(
+        &self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state().fetch_initial_snapshot(ctx).await
+    }
+
     pub(crate) fn next_deadline(&self) -> Instant {
         self.state().next_deadline()
     }

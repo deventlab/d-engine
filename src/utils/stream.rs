@@ -1,10 +1,13 @@
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
 use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
+use prost::encoding::{decode_key, DecodeContext, WireType};
+use prost::DecodeError;
 use prost::Message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -19,6 +22,27 @@ use tonic::{Code, Status, Streaming}; // Adjust path as needed
 /// - Buffer management
 pub(crate) struct GrpcStreamDecoder<T> {
     _marker: PhantomData<T>,
+}
+
+// Helper functions for varint encoding (prost uses these internally, but they're not public)
+fn encoded_len_varint(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
+fn encode_varint(
+    mut value: u64,
+    buf: &mut impl BufMut,
+) {
+    while value >= 0x80 {
+        buf.put_u8((value as u8) | 0x80);
+        value >>= 7;
+    }
+    buf.put_u8(value as u8);
 }
 
 impl<T> GrpcStreamDecoder<T> {
@@ -55,7 +79,7 @@ where
 /// 3. Backpressure through bounded channel
 /// 4. Efficient memory usage
 pub(crate) fn create_production_snapshot_stream<T>(
-    rx: mpsc::Receiver<Result<T, Status>>,
+    rx: mpsc::Receiver<Result<Arc<T>, Status>>,
     max_message_size: usize,
 ) -> Streaming<T>
 where
@@ -64,7 +88,9 @@ where
     // Create byte stream with proper gRPC framing
     let byte_stream = ReceiverStream::new(rx).map(|res| {
         match res {
-            Ok(chunk) => {
+            Ok(arc_chunk) => {
+                let chunk: &T = &*arc_chunk;
+
                 // Encode the T to bytes
                 let mut buf = Vec::new();
                 chunk

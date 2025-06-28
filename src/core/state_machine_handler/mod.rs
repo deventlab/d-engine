@@ -31,16 +31,22 @@
 //!   - Atomic visibility guarantees
 //!   - Linearizable read optimizations
 
+mod backgroup_snapshot_transfer;
 mod default_state_machine_handler;
 mod snapshot_assembler;
 mod snapshot_guard;
 mod snapshot_policy;
+// mod snapshot_stream_processor;
 
+pub(crate) use backgroup_snapshot_transfer::*;
 pub(crate) use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
 pub(crate) use snapshot_guard::*;
 pub(crate) use snapshot_policy::*;
+// pub(crate) use snapshot_stream_processor::*;
 
+#[cfg(test)]
+mod backgroup_snapshot_transfer_test;
 #[cfg(test)]
 mod default_state_machine_handler_test;
 #[cfg(test)]
@@ -58,7 +64,6 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
-use crate::proto::storage::SnapshotResponse;
 use crate::Result;
 use crate::TypeConfig;
 use futures::stream::BoxStream;
@@ -70,30 +75,36 @@ pub trait StateMachineHandler<T>: Send + Sync + 'static
 where
     T: TypeConfig,
 {
+    /// Updates the highest known committed log index that hasn't been applied yet
     fn update_pending(
         &self,
         new_commit: u64,
     );
 
+    /// Applies a batch of committed log entries to the state machine
     async fn apply_batch(
         &self,
         raft_log: Arc<ROF<T>>,
     ) -> Result<()>;
 
+    /// Reads values from the state machine for given keys
+    /// Returns None if any key doesn't exist
     fn read_from_state_machine(
         &self,
         keys: Vec<Vec<u8>>,
     ) -> Option<Vec<ClientResult>>;
 
-    async fn install_snapshot_chunk(
+    /// Receives and installs a snapshot stream pushed by the leader
+    /// Used when leader proactively sends snapshot updates to followers
+    async fn apply_snapshot_stream_from_leader(
         &self,
         current_term: u64,
-        stream_request: Box<tonic::Streaming<SnapshotChunk>>,
-        sender: crate::MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, tonic::Status>>,
+        stream: Box<tonic::Streaming<SnapshotChunk>>,
+        ack_tx: tokio::sync::mpsc::Sender<crate::proto::storage::SnapshotAck>,
         config: &crate::SnapshotConfig,
     ) -> Result<()>;
 
-    /// Validate if should generate snapshot now
+    /// Determines if a snapshot should be created based on new commit data
     fn should_snapshot(
         &self,
         new_commit_data: NewCommitData,
@@ -112,13 +123,14 @@ where
     /// been successfully created
     async fn create_snapshot(&self) -> Result<(SnapshotMetadata, std::path::PathBuf)>;
 
+    /// Cleans up old snapshots before specified version
     async fn cleanup_snapshot(
         &self,
         before_version: u64,
         snapshot_dir: &std::path::Path,
     ) -> crate::Result<()>;
 
-    /// Validate if purge request from Leader is legal or not
+    /// Validates if a log purge request from leader is authorized
     async fn validate_purge_request(
         &self,
         current_term: u64,
@@ -126,8 +138,7 @@ where
         req: &PurgeLogRequest,
     ) -> Result<bool>;
 
-    /// Function for none Leader nodes
-    #[allow(unused)]
+    /// Processes log purge requests (for non-leader nodes)
     async fn handle_purge_request(
         &self,
         current_term: u64,
@@ -137,20 +148,19 @@ where
         raft_log: &Arc<ROF<T>>,
     ) -> Result<PurgeLogResponse>;
 
-    /// Retrieves metadata of the latest available snapshot
-    ///
-    /// # Implementation Notes
-    /// - Should return `Some` only if a valid snapshot exists
-    /// - Snapshot metadata must include:
-    ///   - `last_included_index`: highest log index included in snapshot
-    ///   - `last_included_term`: term of the last included index
-    ///   - `checksum`: cryptographic hash of snapshot data
-    /// - For non-leader nodes, this should reflect the last applied snapshot
+    /// Retrieves metadata of the latest valid snapshot
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata>;
 
-    /// Load snapshot data as a stream of chunks
+    /// Loads snapshot data as a stream of chunks
     async fn load_snapshot_data(
         &self,
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>>;
+
+    /// Loads a specific chunk of snapshot data by sequence number
+    async fn load_snapshot_chunk(
+        &self,
+        metadata: &SnapshotMetadata,
+        seq: u32,
+    ) -> Result<SnapshotChunk>;
 }

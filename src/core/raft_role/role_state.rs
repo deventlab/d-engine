@@ -118,6 +118,14 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLearner.into())
     }
 
+    async fn fetch_initial_snapshot(
+        &self,
+        _ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        warn!("fetch_initial_snapshot NotLearner error");
+        Err(MembershipError::NotLearner.into())
+    }
+
     #[allow(dead_code)]
     fn is_follower(&self) -> bool {
         false

@@ -1,5 +1,3 @@
-use tonic::Streaming;
-
 use crate::proto::client::raft_client_service_server::RaftClientService;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
@@ -22,8 +20,14 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::snapshot_service_server::SnapshotService;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
+use crate::test_utils::crate_test_snapshot_stream;
+use tokio_stream::StreamExt;
+use tonic::Status;
+use tonic::Streaming;
+use tracing::debug;
 
 #[derive(Debug, Clone, Default)]
 pub struct MockRpcService {
@@ -35,6 +39,7 @@ pub struct MockRpcService {
     pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
+    pub expected_stream_snapshot_response: Option<Result<SnapshotChunk, tonic::Status>>,
     pub expected_purge_log_response: Option<Result<PurgeLogResponse, tonic::Status>>,
     pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
@@ -141,10 +146,36 @@ impl RaftClientService for MockRpcService {
 
 #[tonic::async_trait]
 impl SnapshotService for MockRpcService {
+    type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
+
+    async fn stream_snapshot(
+        &self,
+        _request: tonic::Request<tonic::Streaming<SnapshotAck>>,
+    ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
+        match &self.expected_stream_snapshot_response {
+            Some(Ok(response)) => {
+                let streaming: Self::StreamSnapshotStream = crate_test_snapshot_stream(vec![response.clone()]);
+                Ok(tonic::Response::new(streaming))
+            }
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown("No mock install_snapshot response set")),
+        }
+    }
     async fn install_snapshot(
         &self,
-        _request: tonic::Request<Streaming<SnapshotChunk>>,
+        request: tonic::Request<Streaming<SnapshotChunk>>,
     ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
+        let mut stream = request.into_inner();
+
+        while let Some(chunk) = stream.next().await {
+            let _chunk = chunk?;
+            debug!("-");
+            match &self.expected_snapshot_response {
+                Some(Ok(response)) => return Ok(tonic::Response::new(*response)),
+                Some(Err(status)) => return Err(status.clone()),
+                None => return Err(tonic::Status::unknown("No mock install_snapshot response set")),
+            }
+        }
         match &self.expected_snapshot_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),

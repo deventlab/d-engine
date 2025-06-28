@@ -101,5 +101,10 @@ pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         sender_yield_every_n_chunks: 1,
         receiver_yield_every_n_chunks: 1,
         max_bandwidth_mbps: 1,
+        push_queue_size: 1,
+        cache_size: 1,
+        max_retries: 1,
+        transfer_timeout_in_sec: 1,
+        retry_interval_in_ms: 1,
     }
 }

@@ -11,6 +11,9 @@ use crate::proto::cluster::{ClusterConfUpdateResponse, JoinRequest, LeaderDiscov
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
+use crate::proto::storage::snapshot_ack::ChunkStatus;
+use crate::proto::storage::SnapshotAck;
+use crate::proto::storage::SnapshotResponse;
 use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
@@ -274,10 +277,30 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
+                // Create ACK channel (follower sends ACKs to leader)
+                let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
+
+                // Spawn ACK handler to send final response
+                tokio::spawn(async move {
+                    match ack_rx.recv().await {
+                        Some(final_ack) => {
+                            let response = SnapshotResponse {
+                                term: my_term,
+                                success: final_ack.status == (ChunkStatus::Accepted as i32),
+                                next_chunk: final_ack.next_requested,
+                            };
+                            let _ = sender.send(Ok(response));
+                        }
+                        None => {
+                            let _ = sender.send(Err(Status::internal("ACK channel closed")));
+                        }
+                    }
+                });
+
                 if let Err(e) = ctx
                     .handlers
                     .state_machine_handler
-                    .install_snapshot_chunk(my_term, stream, sender, &ctx.node_config.raft.snapshot)
+                    .apply_snapshot_stream_from_leader(my_term, stream, ack_tx, &ctx.node_config.raft.snapshot)
                     .await
                 {
                     error!(?e, "Learner handle  RaftEvent::InstallSnapshotChunk");
@@ -340,6 +363,28 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
                 return Ok(());
             }
+            RaftEvent::StreamSnapshot(request, sender) => {
+                debug!(?request, "Learner::RaftEvent::StreamSnapshot");
+                sender
+                    .send(Err(Status::permission_denied(
+                        "Learner should not receive StreamSnapshot event.",
+                    )))
+                    .map_err(|e| {
+                        let error_str = format!("{e:?}");
+                        error!("Failed to send: {}", error_str);
+                        NetworkError::SingalSendFailed(error_str)
+                    })?;
+
+                return Ok(());
+            }
+            RaftEvent::TriggerSnapshotPush { peer_id: _ } => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!("Learner node {} receives RaftEvent::TriggerSnapshotPush", ctx.node_id),
+                }
+                .into());
+            }
         }
         return Ok(());
     }
@@ -356,13 +401,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 self.broadcast_discovery(membership.clone(), ctx).await?
             }
             Some(leader_id) => leader_id,
-            // match membership.get_peer_channel(leader_id, ConnectionType::Control).await {
-            //     Some(channel_with_address) => channel_with_address.channel,
-            //     None => {
-            //         warn!(%leader_id, "peer_channels.get_peer_channel(leader_id) found none");
-            //         return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
-            //     }
-            // },
         };
 
         // 3. Continue the original Join process
@@ -385,6 +423,42 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
         }
 
+        Ok(())
+    }
+
+    // Update the fetch_initial_snapshot method
+    async fn fetch_initial_snapshot(
+        &self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        let leader_id = ctx.membership().current_leader_id().ok_or(MembershipError::NoLeader)?;
+
+        // Create ACK channel (learner sends ACKs to leader)
+        let (ack_tx, ack_rx) = mpsc::channel(32);
+
+        // Get snapshot stream from leader (with ACK feedback)
+        let snapshot_stream = ctx
+            .transport()
+            .request_snapshot_from_leader(
+                leader_id,
+                ack_rx,
+                &ctx.node_config.retry.install_snapshot,
+                ctx.membership().clone(),
+            )
+            .await?;
+
+        // Install snapshot and handle ACK feedback
+        ctx.handlers
+            .state_machine_handler
+            .apply_snapshot_stream_from_leader(
+                self.current_term(),
+                snapshot_stream,
+                ack_tx,
+                &ctx.node_config.raft.snapshot,
+            )
+            .await?;
+
+        info!("Successfully fetched and installed initial snapshot");
         Ok(())
     }
 }

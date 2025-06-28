@@ -145,6 +145,14 @@ where
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        // Add snapshot handler before main loop
+        if self.ctx.node_config.is_joining() {
+            if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {
+                error!("Initial snapshot failed: {:?}", e);
+                return Err(e);
+            }
+        }
+
         if self.role.is_timer_expired() {
             self.role.reset_timer();
         }
