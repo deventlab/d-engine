@@ -1,14 +1,3 @@
-use std::path::Path;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use dashmap::DashMap;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::error;
-use tracing::trace;
-
 use super::MockTypeConfig;
 use crate::grpc;
 use crate::proto::cluster::ClusterMembership;
@@ -16,7 +5,6 @@ use crate::proto::common::LogId;
 use crate::ElectionConfig;
 use crate::MockElectionCore;
 use crate::MockMembership;
-use crate::MockPeerChannels;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -34,6 +22,14 @@ use crate::RaftNodeConfig;
 use crate::RaftStorageHandles;
 use crate::RoleEvent;
 use crate::SignalParams;
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::error;
+use tracing::trace;
 
 pub struct MockBuilder {
     pub id: Option<u32>,
@@ -46,7 +42,6 @@ pub struct MockBuilder {
     pub election_handler: Option<MockElectionCore<MockTypeConfig>>,
     pub replication_handler: Option<MockReplicationCore<MockTypeConfig>>,
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
-    pub peer_channels: Option<MockPeerChannels>,
     pub node_config: Option<RaftNodeConfig>,
     pub turn_on_election: Option<bool>,
     shutdown_signal: watch::Receiver<()>,
@@ -71,7 +66,6 @@ impl MockBuilder {
             election_handler: None,
             replication_handler: None,
             state_machine_handler: None,
-            peer_channels: None,
             node_config: None,
             turn_on_election: None,
             shutdown_signal,
@@ -416,12 +410,6 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
         });
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
-}
-
-pub fn mock_peer_channels() -> MockPeerChannels {
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_voting_members().returning(DashMap::new);
-    peer_channels
 }
 
 fn mock_raft_context_internal(

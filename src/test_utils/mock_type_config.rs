@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use crate::MockCommitHandler;
 use crate::MockElectionCore;
 use crate::MockMembership;
-use crate::MockPeerChannels;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -12,7 +9,6 @@ use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockStateStorage;
 use crate::MockTransport;
-use crate::PeerChannelsFactory;
 use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
@@ -51,25 +47,5 @@ impl Clone for MockRaftLog {
 impl Clone for MockElectionCore<MockTypeConfig> {
     fn clone(&self) -> Self {
         MockElectionCore::new()
-    }
-}
-impl Clone for MockPeerChannels {
-    fn clone(&self) -> Self {
-        MockPeerChannels::new()
-    }
-}
-
-impl PeerChannelsFactory for MockPeerChannels {
-    fn create(
-        _id: u32,
-        _settings: Arc<RaftNodeConfig>,
-    ) -> Self {
-        let mut peer_channels = MockPeerChannels::new();
-        peer_channels.expect_connect_with_peers().times(1).returning(|_| Ok(()));
-        peer_channels
-            .expect_check_cluster_is_ready()
-            .times(1)
-            .returning(|| Ok(()));
-        peer_channels
     }
 }

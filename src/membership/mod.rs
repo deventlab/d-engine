@@ -1,32 +1,22 @@
 mod health_checker;
 mod raft_membership;
-mod rpc_peer_channels;
 pub use raft_membership::*;
-// pub use rpc_peer_channels::*;
+
 #[cfg(test)]
 mod health_checker_test;
 #[cfg(test)]
 mod raft_membership_test;
-// #[cfg(test)]
-// mod rpc_peer_channels_test;
-use dashmap::DashMap;
-#[cfg(test)]
-use mockall::automock;
-use std::sync::Arc;
 
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::common::NodeStatus;
-use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
-///-----------------------------------------------
-/// Membership behavior definition
+#[cfg(test)]
+use mockall::automock;
 use tonic::async_trait;
-///-----------------------------------------------
-/// Membership behavior definition
 use tonic::transport::Channel;
 
 // Add connection type management in RpcPeerChannels

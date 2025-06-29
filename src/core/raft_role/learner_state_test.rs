@@ -26,7 +26,6 @@ use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MembershipError;
 use crate::MockMembership;
-use crate::MockPeerChannels;
 use crate::MockReplicationCore;
 use crate::MockTransport;
 use crate::NetworkError;
@@ -788,10 +787,6 @@ async fn test_join_cluster_case3_discovery_timeout() {
     membership.expect_current_leader_id().returning(|| None);
     membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
-
-    // Mock peer channels for discovery
-    let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_voting_members().returning(DashMap::new);
 
     // Mock transport to timeout during discovery
     let mut transport = MockTransport::new();
