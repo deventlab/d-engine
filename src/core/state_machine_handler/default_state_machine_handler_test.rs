@@ -1398,7 +1398,20 @@ fn mock_node_with_rpc_service(
     let mut mock_state_machine_handler = MockStateMachineHandler::new();
     mock_state_machine_handler
         .expect_apply_snapshot_stream_from_leader()
-        .returning(move |_current_term, _stream_request, ack_tx, _| Ok(()));
+        .returning(move |_current_term, _stream_request, ack_tx, _| {
+            let ack_tx = ack_tx.clone();
+            tokio::spawn(async move {
+                // Send final ack
+                let final_ack = SnapshotAck {
+                    status: ChunkStatus::Accepted as i32,
+                    seq: u32::MAX,
+                    next_requested: 0,
+                    ..Default::default()
+                };
+                ack_tx.send(final_ack).await.ok();
+            });
+            Ok(())
+        });
 
     MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)

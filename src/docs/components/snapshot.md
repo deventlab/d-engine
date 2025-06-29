@@ -65,13 +65,13 @@ stateDiagram-v2
 ```
 
 **Data Flow Summary**:
-```
+```text
 Leader                          Learner
-  │                                │
-  │──► Stream<SnapshotChunk> ────►│
-  │                                │
-  │◄── Stream<SnapshotAck> ◄──────│
-  │                                │
+  |                                |
+  |--> Stream<SnapshotChunk> ----> |
+  |                                |
+  |<-- Stream<SnapshotAck> <------ |
+  |                                |
 ```
 
 
@@ -79,7 +79,7 @@ Leader                          Learner
 
 Fully customizable through **`SnapshotPolicy`** trait:
 
-```rust
+```rust,ignore
 pub trait SnapshotPolicy {
     fn should_create_snapshot(&self, ctx: &SnapshotContext) -> bool;
 }
@@ -151,7 +151,7 @@ sequenceDiagram
     - CRC32 checksum per chunk
 2. **Rate limiting**:
 
-```rust
+```rust,ignore
 if config.max_bandwidth_mbps > 0 {
     let min_duration = chunk_size_mb / config.max_bandwidth_mbps;
     tokio::time::sleep(min_duration).await;

@@ -31,22 +31,16 @@
 //!   - Atomic visibility guarantees
 //!   - Linearizable read optimizations
 
-mod backgroup_snapshot_transfer;
 mod default_state_machine_handler;
 mod snapshot_assembler;
 mod snapshot_guard;
 mod snapshot_policy;
-// mod snapshot_stream_processor;
 
-pub(crate) use backgroup_snapshot_transfer::*;
 pub(crate) use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
 pub(crate) use snapshot_guard::*;
 pub(crate) use snapshot_policy::*;
-// pub(crate) use snapshot_stream_processor::*;
 
-#[cfg(test)]
-mod backgroup_snapshot_transfer_test;
 #[cfg(test)]
 mod default_state_machine_handler_test;
 #[cfg(test)]

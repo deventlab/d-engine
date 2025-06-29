@@ -710,6 +710,7 @@ async fn test_join_cluster_case1_success_known_leader() {
     // Mock membership to return known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| Some(5));
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock transport to succeed
@@ -743,6 +744,7 @@ async fn test_join_cluster_case2_success_after_discovery() {
     // Mock membership with no known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| None);
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock transport for discovery and join
@@ -785,6 +787,7 @@ async fn test_join_cluster_case3_discovery_timeout() {
     // Mock membership with no known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| None);
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock peer channels for discovery
@@ -820,6 +823,7 @@ async fn test_join_cluster_case4_join_rpc_failure() {
     // Mock membership to return known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| Some(5));
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock transport to fail join RPC
@@ -851,6 +855,7 @@ async fn test_join_cluster_case5_invalid_join_response() {
     // Mock membership to return known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| Some(5));
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock transport to return failure response
@@ -886,6 +891,7 @@ async fn test_join_cluster_case6_leader_redirect() {
     // Mock membership to return known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| Some(5));
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock transport to redirect to new leader
@@ -926,6 +932,7 @@ async fn test_join_cluster_case7_large_cluster() {
     // Mock membership with no known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| None);
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
     ctx.membership = Arc::new(membership);
 
     // Mock transport to handle large discovery

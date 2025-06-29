@@ -441,7 +441,7 @@ fn default_max_delay_ms() -> u64 {
     1000
 }
 fn default_per_chunk_timeout_ms() -> u64 {
-    1000
+    100
 }
 fn default_min_timeout_ms() -> u64 {
     100

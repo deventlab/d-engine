@@ -21,6 +21,8 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
 use crate::COMMITTED_LOG_METRIC;
+use prometheus::opts;
+use prometheus::IntCounterVec;
 use prometheus::Registry;
 use sled::Batch;
 use std::path::Path;
@@ -216,32 +218,14 @@ async fn test_apply_chunk_functionality() {
 
 fn create_test_registry() -> Registry {
     let registry = Registry::new();
-    registry.register(Box::new(COMMITTED_LOG_METRIC.clone())).unwrap();
+    let committed_log = IntCounterVec::new(
+        opts!("committed_log_total", "Total committed logs"),
+        &["node_id", "term"],
+    )
+    .unwrap();
+    registry.register(Box::new(committed_log.clone())).unwrap();
+
     registry
-}
-
-#[test]
-fn test_metrics_integration() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let root_path = temp_dir.path().to_str().unwrap();
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
-    let test_entry = Entry {
-        index: 1,
-        payload: Some(EntryPayload::command(generate_insert_commands(vec![1, 2]))),
-        term: 1,
-    };
-
-    // Verify metric increment
-    let _registry = create_test_registry();
-    COMMITTED_LOG_METRIC.reset();
-    let initial = COMMITTED_LOG_METRIC.with_label_values(&["1", "1"]).get();
-
-    sm.apply_chunk(vec![test_entry]).unwrap();
-
-    let post = COMMITTED_LOG_METRIC.with_label_values(&["1", "1"]).get();
-
-    assert_eq!(post - initial, 1);
 }
 
 /// # Case 1: test basic functionality

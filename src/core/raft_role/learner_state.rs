@@ -403,6 +403,8 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             Some(leader_id) => leader_id,
         };
 
+        debug!(%leader_id, "join_cluster, leadder_id");
+
         // 3. Continue the original Join process
         let node_config = ctx.node_config();
         let response = ctx
@@ -414,7 +416,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     address: node_config.cluster.listen_address.to_string(),
                 },
                 node_config.retry.join_cluster,
-                membership,
+                membership.clone(),
             )
             .await?;
 
@@ -422,6 +424,9 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         if !response.success {
             return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
         }
+
+        // 4. mark leader_id
+        membership.mark_leader_id(leader_id)?;
 
         Ok(())
     }

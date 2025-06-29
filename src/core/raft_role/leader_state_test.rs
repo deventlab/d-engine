@@ -2780,16 +2780,6 @@ async fn test_handle_join_cluster_case1_success() {
     state_machine_handler
         .expect_get_latest_snapshot_metadata()
         .returning(|| None);
-    state_machine_handler
-        .expect_load_snapshot_data()
-        .times(1)
-        .returning(|_| {
-            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
-            let stream = crate_test_snapshot_stream(chunks);
-            Ok(Box::pin(stream.map(|item| {
-                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
-            })))
-        });
     raft_context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock quorum verification
@@ -2992,16 +2982,6 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
                 last_included: Some(LogId { index: 100, term: 1 }),
                 checksum: vec![],
             })
-        });
-    state_machine_handler
-        .expect_load_snapshot_data()
-        .times(1)
-        .returning(|_| {
-            let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
-            let stream = crate_test_snapshot_stream(chunks);
-            Ok(Box::pin(stream.map(|item| {
-                item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
-            })))
         });
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
