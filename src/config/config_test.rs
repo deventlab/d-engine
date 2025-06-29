@@ -189,14 +189,12 @@ mod join_status_tests {
                 address: "127.0.0.1:8080".to_string(),
                 role: 1, // FOLLOWER
                 status: NodeStatus::Joining as i32,
-                ..Default::default()
             },
             NodeMeta {
                 id: 200,
                 address: "127.0.0.1:8081".to_string(),
                 role: 1, // FOLLOWER
                 status: NodeStatus::Active as i32,
-                ..Default::default()
             },
         ];
 

@@ -38,11 +38,8 @@
 //! - Failure scenario testing with real component interactions
 
 mod snapshot;
-use std::path::PathBuf;
-use std::sync::Arc;
-
+#[allow(unused)]
 pub(crate) use snapshot::*;
-use tokio::sync::watch;
 
 use super::generate_insert_commands;
 use crate::alias::MOF;
@@ -54,9 +51,9 @@ use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
-use crate::proto::common::NodeStatus;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
+use crate::proto::common::NodeStatus;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
 use crate::DefaultStateMachineHandler;
@@ -74,6 +71,9 @@ use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::watch;
 
 #[allow(dead_code)]
 pub struct TestContext<T>

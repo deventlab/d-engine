@@ -185,7 +185,7 @@ where
             .saturating_div(requests.len().max(1)); // Prevent zero division
 
         // Update log fields
-        tracing::Span::current().record("avg_request_size", &avg_request_size);
+        tracing::Span::current().record("avg_request_size", avg_request_size);
 
         for (peer_id, req) in requests {
             if peer_id == self.my_id || peer_ids.contains(&peer_id) {

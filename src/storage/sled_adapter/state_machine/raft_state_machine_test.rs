@@ -216,18 +216,6 @@ async fn test_apply_chunk_functionality() {
     assert_eq!(sm.last_applied(), LogId { index: 2, term: 1 });
 }
 
-fn create_test_registry() -> Registry {
-    let registry = Registry::new();
-    let committed_log = IntCounterVec::new(
-        opts!("committed_log_total", "Total committed logs"),
-        &["node_id", "term"],
-    )
-    .unwrap();
-    registry.register(Box::new(committed_log.clone())).unwrap();
-
-    registry
-}
-
 /// # Case 1: test basic functionality
 #[tokio::test]
 async fn test_generate_snapshot_data_case1() {
@@ -259,7 +247,7 @@ async fn test_generate_snapshot_data_case1() {
 
     // Check data entries
     for i in 1..=3 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(safe_kv(i)).unwrap().is_some());
     }
 
     // Check metadata (stored in same tree due to code limitation)
@@ -310,12 +298,12 @@ async fn test_generate_snapshot_data_case2() {
 
     // Entries <=3 should exist
     for i in 1..=3 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(safe_kv(i)).unwrap().is_some());
     }
 
     // Entries >3 should not exist
     for i in 4..=5 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_none());
+        assert!(tree.get(safe_kv(i)).unwrap().is_none());
     }
 }
 
@@ -372,7 +360,7 @@ async fn test_generate_snapshot_data_case4() {
 
     assert_eq!(tree.len(), 150);
     for i in 1..=150 {
-        assert!(tree.get(&safe_kv(i)).unwrap().is_some());
+        assert!(tree.get(safe_kv(i)).unwrap().is_some());
     }
 }
 
@@ -640,11 +628,6 @@ mod apply_snapshot_from_file_tests {
 
         let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
         assert!(result.is_err());
-
-        // assert!(matches!(
-        //     result,
-        //     Err(Error::System(SystemError::Storage(StorageError::InvalidFormat)))
-        // ));
     }
 }
 
@@ -670,44 +653,4 @@ async fn test_state_machine_drop() {
     // Verify flush occurred by checking persistence
     let reloaded_db = sled::open(temp_dir.path()).unwrap();
     assert!(!reloaded_db.open_tree(STATE_MACHINE_META_NAMESPACE).unwrap().is_empty());
-}
-
-/// Creates a fake compressed snapshot file for testing
-async fn create_fake_compressed_snapshot(
-    path: &Path,
-    content: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
-    use async_compression::tokio::write::GzipEncoder;
-    use tokio::io::AsyncWriteExt;
-
-    let mut file = File::create(path).await?;
-    let mut encoder = GzipEncoder::new(file);
-    encoder.write_all(content).await?;
-    encoder.shutdown().await?;
-    Ok(())
-}
-
-/// Creates a fake compressed snapshot with directory structure
-async fn create_fake_dir_compressed_snapshot(
-    path: &Path,
-    files: &[(&str, &[u8])],
-) -> Result<(), Box<dyn std::error::Error>> {
-    use async_compression::tokio::write::GzipEncoder;
-    use tokio_tar::Builder;
-
-    let file = File::create(path).await?;
-    let gzip_encoder = GzipEncoder::new(file);
-    let mut tar_builder = Builder::new(gzip_encoder);
-
-    let temp_dir = tempfile::tempdir()?;
-    for (file_name, content) in files {
-        let file_path = temp_dir.path().join(file_name);
-        tokio::fs::write(&file_path, content).await?;
-        tar_builder.append_path(&file_path).await?;
-    }
-
-    tar_builder.finish().await?;
-    let mut gzip_encoder = tar_builder.into_inner().await?;
-    gzip_encoder.shutdown().await?;
-    Ok(())
 }

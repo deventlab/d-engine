@@ -958,7 +958,7 @@ mod handle_raft_request_in_batch_test {
         context.transport = Arc::new(transport);
 
         let mut membership = MockMembership::new();
-        membership.expect_replication_peers().returning(move || vec![]);
+        membership.expect_replication_peers().returning(Vec::new);
         context.membership = Arc::new(membership);
 
         let e = handler
@@ -2348,7 +2348,7 @@ mod handle_raft_request_in_batch_test {
                 },
             ]
         });
-        membership.expect_voters().returning(move || vec![]);
+        membership.expect_voters().returning(Vec::new);
         context.membership = Arc::new(membership);
 
         // Mock raft log and transport
@@ -2435,8 +2435,8 @@ mod handle_raft_request_in_batch_test {
 
         // Membership: no other peers
         let mut membership = MockMembership::new();
-        membership.expect_replication_peers().returning(move || vec![]);
-        membership.expect_voters().returning(move || vec![]);
+        membership.expect_replication_peers().returning(Vec::new);
+        membership.expect_voters().returning(Vec::new);
         let context = {
             let mut c = context;
             c.membership = Arc::new(membership);
@@ -2706,7 +2706,7 @@ mod handle_raft_request_in_batch_test {
                 ..Default::default()
             }]
         });
-        membership.expect_voters().returning(move || vec![]);
+        membership.expect_voters().returning(Vec::new);
         context.membership = Arc::new(membership);
 
         // Mock raft log and transport

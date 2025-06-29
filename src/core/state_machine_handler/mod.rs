@@ -133,6 +133,7 @@ where
     ) -> Result<bool>;
 
     /// Processes log purge requests (for non-leader nodes)
+    #[allow(unused)]
     async fn handle_purge_request(
         &self,
         current_term: u64,
@@ -152,6 +153,7 @@ where
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>>;
 
     /// Loads a specific chunk of snapshot data by sequence number
+    #[allow(unused)]
     async fn load_snapshot_chunk(
         &self,
         metadata: &SnapshotMetadata,

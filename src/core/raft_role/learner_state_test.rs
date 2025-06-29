@@ -792,7 +792,7 @@ async fn test_join_cluster_case3_discovery_timeout() {
 
     // Mock peer channels for discovery
     let mut peer_channels = MockPeerChannels::new();
-    peer_channels.expect_voting_members().returning(|| DashMap::new());
+    peer_channels.expect_voting_members().returning(DashMap::new);
 
     // Mock transport to timeout during discovery
     let mut transport = MockTransport::new();

@@ -2728,7 +2728,7 @@ async fn test_handle_join_cluster_case1_success() {
     membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership::default());
+        .returning(ClusterMembership::default);
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
     membership.expect_get_peer_channel().returning(|_, _| {
@@ -2852,7 +2852,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _, _| Ok(()));
-    membership.expect_voters().returning(|| vec![]); // Empty voting members will cause quorum failure
+    membership.expect_voters().returning(Vec::new); // Empty voting members will cause quorum failure
     context.membership = Arc::new(membership);
 
     // Setup replication handler to simulate quorum not achieved
@@ -2959,7 +2959,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership::default());
+        .returning(ClusterMembership::default);
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
 

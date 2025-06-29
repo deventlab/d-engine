@@ -28,14 +28,10 @@ pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60300;
 pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60400;
 pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60500;
 pub(crate) const MOCK_REPLICATION_HANDLER_PORT_BASE: u64 = 60600;
-pub(crate) const MOCK_MEMBERSHIP_PORT_BASE: u64 = 60700;
-pub(crate) const MOCK_ELECTION_HANDLER_PORT_BASE: u64 = 60800;
 pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60900;
-pub(crate) const MOCK_TRANSPORT_PORT_BASE: u64 = 61000;
 pub(crate) const MOCK_ROLE_STATE_PORT_BASE: u64 = 61100;
 pub(crate) const MOCK_LEADER_STATE_PORT_BASE: u64 = 61200;
 pub(crate) const MOCK_SNAPSHOT_PORT_BASE: u64 = 61300;
-pub(crate) const MOCK_PEER_CHANNEL_PORT_BASE: u64 = 62000;
 
 pub struct MockNode;
 

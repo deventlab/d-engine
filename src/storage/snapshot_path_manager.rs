@@ -38,6 +38,7 @@ impl SnapshotPathManager {
     }
 
     /// Creates a new path manager with custom prefixes
+    #[allow(unused)]
     pub(crate) fn with_prefixes(
         base_dir: PathBuf,
         snapshot_prefix: String,
@@ -71,6 +72,7 @@ impl SnapshotPathManager {
     }
 
     /// Generates a versioned temporary path (for atomic writes)
+    #[allow(unused)]
     pub(crate) fn versioned_temp_path(
         &self,
         version: u64,
@@ -79,6 +81,7 @@ impl SnapshotPathManager {
     }
 
     /// Generates a versioned final path (for atomic writes)
+    #[allow(unused)]
     pub(crate) fn versioned_final_path(
         &self,
         version: u64,
@@ -91,6 +94,7 @@ impl SnapshotPathManager {
     }
 
     /// Extracts metadata from a snapshot filename
+    #[allow(unused)]
     pub(crate) fn parse_snapshot_filename(
         &self,
         filename: &str,

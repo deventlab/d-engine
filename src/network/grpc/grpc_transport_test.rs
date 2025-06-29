@@ -12,31 +12,22 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
-use crate::proto::storage::SnapshotMetadata;
-use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
-use crate::test_utils::create_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
-use crate::test_utils::snapshot_config;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_PURGE_PORT_BASE;
 use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
-use crate::test_utils::MOCK_TRANSPORT_PORT_BASE;
 use crate::test_utils::{self};
 use crate::ChannelWithAddress;
-use crate::ChannelWithAddressAndRole;
 use crate::ConnectionType;
-use crate::ConsensusError;
 use crate::Error;
-use crate::InstallSnapshotBackoffPolicy;
 use crate::MockMembership;
 use crate::NetworkError;
 use crate::RaftNodeConfig;
 use crate::RetryPolicies;
-use crate::SnapshotError;
 use crate::SystemError;
 use crate::Transport;
 use crate::CANDIDATE;
@@ -198,12 +189,6 @@ async fn test_send_cluster_update_case3() {
     };
 
     // Simulate RPC service
-    let (_tx, rx) = oneshot::channel::<()>();
-    let response = ClusterMembership {
-        version: 1,
-        nodes: vec![],
-    };
-
     let addr1 = ChannelWithAddress {
         address: "http://[::]:50051".to_string(),
         channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
@@ -560,12 +545,6 @@ async fn test_send_vote_requests_case2() {
     let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 10, vote_response, rx1)
         .await
         .expect("should succeed");
-    let requests_with_peer_address = vec![ChannelWithAddressAndRole {
-        id: my_id,
-        role: FOLLOWER,
-        channel_with_address: addr1.clone(),
-    }];
-
     let mut channels = HashMap::new();
     channels.insert((my_id, ConnectionType::Control), addr1.clone());
     let membership = mock_membership(vec![(my_id, FOLLOWER)], channels);
@@ -1154,6 +1133,7 @@ async fn test_purge_requests_case5_full_success() {
 }
 
 /// Helper to create a failing stream
+#[allow(unused)]
 fn create_failing_stream(fail_at: usize) -> BoxStream<'static, Result<SnapshotChunk>> {
     let mut chunks = vec![];
     for i in 0..5 {

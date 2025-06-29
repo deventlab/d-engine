@@ -1279,16 +1279,6 @@ async fn create_test_snapshot(
     });
 }
 
-// Helper functions
-async fn create_test_dirs(
-    temp_dir: &TempDir,
-    ids: &[u64],
-) {
-    for id in ids {
-        create_dir(temp_dir, &format!("{SNAPSHOT_DIR_PREFIX}{id}-1")).await;
-    }
-}
-
 async fn create_test_files(
     temp_dir: &TempDir,
     ids: &[u64],
@@ -1406,7 +1396,6 @@ fn mock_node_with_rpc_service(
                     status: ChunkStatus::Accepted as i32,
                     seq: u32::MAX,
                     next_requested: 0,
-                    ..Default::default()
                 };
                 ack_tx.send(final_ack).await.ok();
             });

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::pin::Pin;
 use std::task::Poll;
 
@@ -14,6 +15,8 @@ use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Code;
@@ -145,27 +148,42 @@ fn compute_checksum(data: &[u8]) -> Vec<u8> {
     hasher.finalize().to_be_bytes().to_vec()
 }
 
-// Helper struct to convert ReceiverStream to tonic::Streaming
-pub struct MockStreaming<T>(ReceiverStream<T>);
+/// Creates a fake compressed snapshot file for testing
+pub async fn create_fake_compressed_snapshot(
+    path: &Path,
+    content: &[u8],
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use async_compression::tokio::write::GzipEncoder;
+    use tokio::io::AsyncWriteExt;
 
-impl<T> MockStreaming<T> {
-    pub fn new(stream: ReceiverStream<T>) -> Self {
-        Self(stream)
-    }
+    let file = File::create(path).await?;
+    let mut encoder = GzipEncoder::new(file);
+    encoder.write_all(content).await?;
+    encoder.shutdown().await?;
+    Ok(())
 }
 
-#[tonic::async_trait]
-impl<T: Send + 'static> Stream for MockStreaming<T> {
-    type Item = std::result::Result<T, tonic::Status>;
+/// Creates a fake compressed snapshot with directory structure
+pub async fn create_fake_dir_compressed_snapshot(
+    path: &Path,
+    files: &[(&str, &[u8])],
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use async_compression::tokio::write::GzipEncoder;
+    use tokio_tar::Builder;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.0).poll_next(cx) {
-            Poll::Ready(Some(item)) => Poll::Ready(Some(Ok(item))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
+    let file = File::create(path).await?;
+    let gzip_encoder = GzipEncoder::new(file);
+    let mut tar_builder = Builder::new(gzip_encoder);
+
+    let temp_dir = tempfile::tempdir()?;
+    for (file_name, content) in files {
+        let file_path = temp_dir.path().join(file_name);
+        tokio::fs::write(&file_path, content).await?;
+        tar_builder.append_path(&file_path).await?;
     }
+
+    tar_builder.finish().await?;
+    let mut gzip_encoder = tar_builder.into_inner().await?;
+    gzip_encoder.shutdown().await?;
+    Ok(())
 }

@@ -9,7 +9,7 @@ pub use raft_log::*;
 #[doc(hidden)]
 pub use sled_adapter::*;
 #[doc(hidden)]
-pub use snapshot_path_manager::*;
+pub(crate) use snapshot_path_manager::*;
 #[doc(hidden)]
 pub use state_machine::*;
 #[doc(hidden)]
