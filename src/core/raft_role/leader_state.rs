@@ -1158,7 +1158,7 @@ impl<T: TypeConfig> LeaderState<T> {
     async fn promote_learner(
         &mut self,
         node_id: u32,
-        new_status: NodeStatus,
+        _new_status: NodeStatus,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -1170,7 +1170,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Calculate new cluster size if we promote this node
         let new_active_count = current_voters + pending_active_nodes.len();
-        let new_size = new_active_count + 1; // +1 for the new node
+        let _new_size = new_active_count + 1; // +1 for the new node
 
         // Check if we can promote directly to Active
         let new_status = if ensure_safe_join(new_active_count).is_ok() {
@@ -1612,7 +1612,7 @@ impl<T: TypeConfig> LeaderState<T> {
         let transport = ctx.transport().clone();
 
         let data_stream = ctx.state_machine_handler().load_snapshot_data(metadata.clone()).await?;
-        let retry = ctx.node_config.retry.install_snapshot.clone();
+        let retry = ctx.node_config.retry.install_snapshot;
         let config = ctx.node_config.raft.snapshot.clone();
 
         transport

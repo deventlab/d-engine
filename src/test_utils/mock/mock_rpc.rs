@@ -26,7 +26,6 @@ use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
 use tokio_stream::StreamExt;
 use tonic::Streaming;
-use tracing::debug;
 use tracing::trace;
 
 #[derive(Debug, Clone, Default)]

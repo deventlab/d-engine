@@ -377,7 +377,7 @@ where
     let temp_data_dir = tempfile::tempdir().unwrap();
     let db = init_sled_state_machine_db(temp_data_dir.path()).unwrap();
     data_setup(&db);
-    let checksum = compute_checksum_from_folder_path(&temp_data_dir.path()).await.unwrap();
+    let checksum = compute_checksum_from_folder_path(temp_data_dir.path()).await.unwrap();
 
     let file = File::create(path).await.unwrap();
     let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);

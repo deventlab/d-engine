@@ -13,7 +13,6 @@ use crate::proto::election::raft_election_service_client::RaftElectionServiceCli
 use crate::proto::election::VoteRequest;
 use crate::proto::replication::raft_replication_service_client::RaftReplicationServiceClient;
 use crate::proto::replication::AppendEntriesRequest;
-use crate::proto::storage::snapshot_ack::ChunkStatus;
 use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
@@ -284,13 +283,13 @@ where
                 }
             };
 
-            let req_clone = req.clone();
+            let req_clone = req;
             let closure = move || {
                 let channel = channel.clone();
                 let mut client = RaftElectionServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
-                async move { client.request_vote(tonic::Request::new(req_clone.clone())).await }
+                async move { client.request_vote(tonic::Request::new(req_clone)).await }
             };
             let policy = retry.election;
             let my_id = self.my_id;
@@ -430,7 +429,7 @@ where
             .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
 
         let metadata = metadata.clone();
-        let retry = retry.clone();
+        let retry = *retry;
         let config = config.clone();
         let my_id = self.my_id;
 
@@ -451,7 +450,7 @@ where
             // Calculate dynamic timeout based on remaining chunks
             let remaining_chunks = total_chunks.saturating_sub(last_successful_chunk.into());
             debug!(?retry, "install_snapshot retry");
-            let dynamic_timeout = Duration::from_millis(retry.per_chunk_timeout_ms * remaining_chunks as u64).clamp(
+            let dynamic_timeout = Duration::from_millis(retry.per_chunk_timeout_ms * remaining_chunks).clamp(
                 Duration::from_millis(retry.min_timeout_ms),
                 Duration::from_millis(retry.max_timeout_ms),
             );
@@ -499,7 +498,7 @@ where
                                 tokio::task::yield_now().await;
                             }
                         }
-                        Err(e) => return Err(SnapshotError::OperationFailed(format!("{:?}", e)).into()),
+                        Err(e) => return Err(SnapshotError::OperationFailed(format!("{:?}", e))),
                     }
                 }
                 Ok(last_chunk)
@@ -539,7 +538,7 @@ where
                     let response = response.into_inner();
                     if response.success {
                         debug!("[install_snapshot | {my_id}->{node_id}]Snapshot transferred successfully");
-                        return Ok(());
+                        Ok(())
                     } else {
                         last_successful_chunk = response.next_chunk;
                         warn!(
@@ -547,7 +546,7 @@ where
                             "[install_snapshot | {my_id}->{node_id}] Follower rejected snapshot at chunk {}",
                             response.next_chunk
                         );
-                        return Err(SnapshotError::TransferFailed.into());
+                        Err(SnapshotError::TransferFailed.into())
                     }
                 }
                 Err(status) => {
@@ -555,7 +554,7 @@ where
                         "[install_snapshot | {my_id}->{node_id}] Snapshot transfer failed: {:?}",
                         status
                     );
-                    return Err(SnapshotError::TransferFailed.into());
+                    Err(SnapshotError::TransferFailed.into())
                 }
             }
         });

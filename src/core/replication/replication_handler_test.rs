@@ -21,11 +21,8 @@ use crate::test_utils::generate_insert_commands;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::simulate_insert_command;
-use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
-use crate::test_utils::MOCK_REPLICATION_HANDLER_PORT_BASE;
 use crate::AppendResult;
-use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::Error;
 use crate::LeaderStateSnapshot;
@@ -48,7 +45,6 @@ use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 /// # Case 1: The peer3's next_index is equal to
@@ -351,18 +347,6 @@ async fn test_build_append_request_case() {
     let peer3_id = 3;
     let peer3_next_index = 1;
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
-
-    // Simulate ChannelWithAddress: prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_REPLICATION_HANDLER_PORT_BASE + 1, rx1, true)
-        .await
-        .expect("should succeed");
-    let peer: ChannelWithAddressAndRole = ChannelWithAddressAndRole {
-        id: peer2_id,
-        channel_with_address: addr1,
-        role: FOLLOWER,
-    };
-
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
     entries_per_peer.insert(

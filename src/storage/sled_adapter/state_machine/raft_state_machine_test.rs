@@ -20,18 +20,11 @@ use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
-use crate::COMMITTED_LOG_METRIC;
-use prometheus::opts;
-use prometheus::IntCounterVec;
-use prometheus::Registry;
 use sled::Batch;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::TempDir;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use tracing::debug;
 
 #[test]

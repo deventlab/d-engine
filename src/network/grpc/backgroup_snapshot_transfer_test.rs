@@ -39,7 +39,7 @@ fn create_snapshot_chunk(
 
 #[cfg(test)]
 mod run_push_transfer_test {
-    use crate::{ConsensusError, SystemError};
+    use crate::SystemError;
 
     use super::*;
 

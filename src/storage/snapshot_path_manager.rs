@@ -117,9 +117,4 @@ impl SnapshotPathManager {
         }
         None
     }
-
-    /// Standardized temporary directory pattern
-    pub(crate) fn temp_directory(&self) -> PathBuf {
-        self.base_dir.join(format!("{}.temp", self.temp_prefix))
-    }
 }

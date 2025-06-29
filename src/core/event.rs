@@ -100,6 +100,7 @@ pub(crate) enum RaftEvent {
     ),
 
     // Leader connect with peers and push snapshot stream
+    #[allow(unused)]
     TriggerSnapshotPush {
         peer_id: u32,
     },

@@ -228,7 +228,7 @@ where
 
         let last_included = last_snapshot_metadata
             .and_then(|meta| meta.last_included)
-            .unwrap_or_else(|| LogId { index: 0, term: 0 });
+            .unwrap_or(LogId { index: 0, term: 0 });
 
         self.snapshot_policy.should_trigger(&SnapshotContext {
             role: new_commit_data.role,
@@ -350,12 +350,12 @@ where
             let path = entry.path();
             debug!(?path, "cleanup_snapshot");
 
-            if path.extension().map_or(false, |ext| ext == "gz") {
+            if path.extension().is_some_and(|ext| ext == "gz") {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                     let parsed = parse_snapshot_dirname(file_name).or_else(|| {
                         file_name
                             .strip_suffix(".tar.gz")
-                            .and_then(|stripped| parse_snapshot_dirname(stripped))
+                            .and_then(parse_snapshot_dirname)
                     });
 
                     let (index, term) = if let Some(pair) = parsed {
@@ -602,8 +602,7 @@ where
             .await
             .map_err(StorageError::IoError)?;
 
-        let mut buffer = Vec::with_capacity(chunk_size);
-        buffer.resize(chunk_size, 0);
+        let mut buffer = vec![0; chunk_size];
         file.read_exact(&mut buffer).await.map_err(StorageError::IoError)?;
 
         let chunk_checksum = crc32fast::hash(&buffer).to_be_bytes().to_vec();
@@ -689,7 +688,7 @@ where
         let mut file = File::open(&snapshot_file).await.map_err(StorageError::IoError)?;
 
         let file_len = path_metadata.len();
-        let total_chunks = ((file_len as usize) + chunk_size - 1) / chunk_size;
+        let total_chunks = (file_len as usize).div_ceil(chunk_size);
 
         debug!(%total_chunks);
 
@@ -905,7 +904,7 @@ where
         let chunk_size = self.snapshot_config.chunk_size;
 
         // Precompute total chunks once
-        let total_chunks = ((file_size + chunk_size as u64 - 1) / chunk_size as u64) as u32;
+        let total_chunks = file_size.div_ceil(chunk_size as u64) as u32;
 
         Ok(SnapshotTransferMeta {
             metadata,

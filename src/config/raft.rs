@@ -426,7 +426,7 @@ impl SnapshotConfig {
         validate_directory(&self.snapshots_dir, "snapshots_dir")?;
 
         // chunk_size should be > 0
-        if self.chunk_size <= 0 {
+        if self.chunk_size == 0 {
             return Err(Error::Config(ConfigError::Message(format!(
                 "chunk_size must be at least {} bytes (got {})",
                 0, self.chunk_size

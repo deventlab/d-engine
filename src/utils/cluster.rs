@@ -20,7 +20,7 @@ pub(crate) fn is_majority(
     num: usize,
     total: usize,
 ) -> bool {
-    num >= (total / 2) + 1
+    num > (total / 2)
 }
 
 pub fn majority_count(total_nodes: usize) -> usize {

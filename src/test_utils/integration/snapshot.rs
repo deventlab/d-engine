@@ -1,6 +1,4 @@
 use std::path::Path;
-use std::pin::Pin;
-use std::task::Poll;
 
 use crate::stream::GrpcStreamDecoder;
 use crate::Result;
@@ -9,7 +7,6 @@ use bytes::BytesMut;
 use crc32fast::Hasher;
 use futures::stream;
 use futures::stream::BoxStream;
-use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use http_body::Frame;
@@ -86,6 +83,7 @@ where
     )
 }
 
+#[allow(unused)]
 pub(crate) fn crate_test_snapshot_stream_from_receiver<T>(receiver: mpsc::Receiver<T>) -> tonic::Streaming<T>
 where
     T: prost::Message + Default + 'static,
@@ -149,6 +147,7 @@ fn compute_checksum(data: &[u8]) -> Vec<u8> {
 }
 
 /// Creates a fake compressed snapshot file for testing
+#[allow(unused)]
 pub async fn create_fake_compressed_snapshot(
     path: &Path,
     content: &[u8],
@@ -164,6 +163,7 @@ pub async fn create_fake_compressed_snapshot(
 }
 
 /// Creates a fake compressed snapshot with directory structure
+#[allow(unused)]
 pub async fn create_fake_dir_compressed_snapshot(
     path: &Path,
     files: &[(&str, &[u8])],

@@ -1280,12 +1280,6 @@ async fn test_handle_raft_event_case9_5() {
     });
     context.handlers.state_machine_handler = Arc::new(state_machine);
 
-    // Mock peer configuration
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 5, rx1, true)
-        .await
-        .expect("should succeed");
-
     let mut membership = MockMembership::new();
 
     membership.expect_voters().returning(move || {
@@ -1852,11 +1846,6 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
                 learner_progress: HashMap::new(),
             })
         });
-    // Mock peer configuration (multiple peers)
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr1 = MockNode::simulate_mock_service_without_reps(MOCK_ROLE_STATE_PORT_BASE + 8, rx1, true)
-        .await
-        .expect("should succeed");
 
     let mut membership = MockMembership::new();
     membership.expect_voters().returning(move || {
@@ -3044,7 +3033,7 @@ mod trigger_background_snapshot_test {
     use super::*;
     use crate::core::raft_role::leader_state::LeaderState;
     use crate::proto::storage::{SnapshotChunk, SnapshotMetadata};
-    use crate::NetworkError;
+
     use crate::SnapshotConfig;
     use futures::stream;
     use std::sync::Arc;

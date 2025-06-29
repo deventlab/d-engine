@@ -1,74 +1,24 @@
 use crate::proto::storage::snapshot_ack::ChunkStatus;
-use crate::proto::storage::{snapshot_ack, SnapshotAck};
+use crate::proto::storage::SnapshotAck;
 use crate::{proto::storage::snapshot_service_client::SnapshotServiceClient, Result, SnapshotError};
 use crate::{proto::storage::SnapshotChunk, SnapshotConfig};
 use crate::{NetworkError, TypeConfig};
 use futures::StreamExt;
 use futures::{stream::BoxStream, Stream};
 use lru::LruCache;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::error::Error;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::pin::Pin;
-use std::{
-    sync::{atomic::AtomicU32, Arc},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::{interval, sleep, Instant};
+use tokio::time::{sleep, Instant};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::Status;
 use tracing::{debug, trace, warn};
-
-// Retry manager with exponential backoff and jitter
-pub(super) struct RetryManager {
-    max_retries: u32,
-    retry_states: HashMap<u32, ChunkRetryState>,
-}
-
-pub(super) struct ChunkRetryState {
-    retry_count: u32,
-    last_retry: Instant,
-}
-
-impl RetryManager {
-    pub(super) fn new(max_retries: u32) -> Self {
-        RetryManager {
-            max_retries,
-            retry_states: HashMap::new(),
-        }
-    }
-
-    pub(super) fn record_failure(
-        &mut self,
-        seq: u32,
-    ) -> Result<()> {
-        let state = self.retry_states.entry(seq).or_insert(ChunkRetryState {
-            retry_count: 0,
-            last_retry: Instant::now(),
-        });
-
-        state.retry_count += 1;
-        state.last_retry = Instant::now();
-
-        if state.retry_count > self.max_retries {
-            Err(SnapshotError::TransferFailed.into())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(super) fn record_success(
-        &mut self,
-        seq: u32,
-    ) {
-        self.retry_states.remove(&seq);
-    }
-}
 
 pub(crate) struct BackgroundSnapshotTransfer<T> {
     _marker: PhantomData<T>,
@@ -294,7 +244,7 @@ where
                     let needs_retry: Vec<u32> = pending_acks.iter()
                     .filter(|&&seq| {
                         // Only process blocks whose retry times are not exceeded
-                        retry_counts.get(&seq).map_or(true, |&c| c <= config.max_retries)
+                        retry_counts.get(&seq).is_none_or(|&c| c <= config.max_retries)
                     })
                     .copied()
                     .collect();

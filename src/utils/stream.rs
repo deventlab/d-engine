@@ -6,8 +6,6 @@ use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
-use prost::encoding::{decode_key, DecodeContext, WireType};
-use prost::DecodeError;
 use prost::Message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -89,7 +87,7 @@ where
     let byte_stream = ReceiverStream::new(rx).map(|res| {
         match res {
             Ok(arc_chunk) => {
-                let chunk: &T = &*arc_chunk;
+                let chunk: &T = &arc_chunk;
 
                 // Encode the T to bytes
                 let mut buf = Vec::new();

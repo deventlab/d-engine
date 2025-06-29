@@ -18,7 +18,6 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::enable_logger;
 use crate::test_utils::mock_membership;
-use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;

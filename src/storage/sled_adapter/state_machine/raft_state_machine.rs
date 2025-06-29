@@ -472,7 +472,7 @@ impl StateMachine for RaftStateMachine {
             // 9. Update Raft metadata and indexes
             //    Follows snapshot application procedure from
             self.update_last_applied(new_last_included);
-            self.update_last_snapshot_metadata(&metadata)?;
+            self.update_last_snapshot_metadata(metadata)?;
         } else {
             error!(
                 ?metadata,
@@ -600,7 +600,7 @@ impl RaftStateMachine {
         tree: sled::Tree,
         last_snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
-        let v = bincode::serialize(last_snapshot_metadata).map_err(|e| StorageError::BincodeError(e))?;
+        let v = bincode::serialize(last_snapshot_metadata).map_err(StorageError::BincodeError)?;
 
         tree.insert(LAST_SNAPSHOT_METADATA_KEY, v)?;
         info!("persist_last_snapshot_metadata_with_tree successfully!");

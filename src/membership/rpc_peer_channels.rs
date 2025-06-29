@@ -19,7 +19,6 @@ use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::proto::cluster::NodeMeta;
 use crate::utils::net::address_str;
-use crate::ConnectionParams;
 use crate::MembershipError;
 use crate::NetworkConfig;
 use crate::NetworkError;
@@ -356,35 +355,5 @@ impl RpcPeerChannels {
                 eprintln!("{err:?}");
                 NetworkError::ConnectError.into()
             })
-    }
-
-    async fn connect_with_params(
-        address: String,
-        params: ConnectionParams,
-    ) -> Result<Channel> {
-        Endpoint::try_from(address.clone())?
-            .connect_timeout(Duration::from_millis(params.connect_timeout_in_ms))
-            .timeout(Duration::from_millis(params.request_timeout_in_ms))
-            .tcp_keepalive(Some(Duration::from_secs(params.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(params.http2_keep_alive_interval_in_secs))
-            .keep_alive_timeout(Duration::from_secs(params.http2_keep_alive_timeout_in_secs))
-            .initial_connection_window_size(params.connection_window_size)
-            .initial_stream_window_size(params.stream_window_size)
-            .connect()
-            .await
-            .map_err(|err| {
-                error!("connect to {} failed: {}", &address, err);
-                eprintln!("{err:?}");
-                NetworkError::ConnectError.into()
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_peer_channel(
-        &self,
-        node_id: u32,
-        address: ChannelWithAddress,
-    ) {
-        self.channels.insert(node_id, address);
     }
 }

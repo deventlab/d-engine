@@ -47,15 +47,6 @@ pub(crate) struct AppendResults {
     pub learner_progress: HashMap<u32, u64>,
 }
 
-impl AppendResults {
-    pub fn if_leadership_maintained(
-        &self,
-        total_nodes: usize,
-    ) -> bool {
-        self.peer_updates.len() + 1 >= majority_count(total_nodes)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PeerUpdate {
     pub match_index: u64,
@@ -65,6 +56,7 @@ pub(crate) struct PeerUpdate {
 }
 
 impl PeerUpdate {
+    #[allow(unused)]
     pub fn success(
         match_index: u64,
         next_index: u64,
@@ -76,6 +68,7 @@ impl PeerUpdate {
         }
     }
 
+    #[allow(unused)]
     pub fn failed() -> Self {
         Self {
             match_index: 0,

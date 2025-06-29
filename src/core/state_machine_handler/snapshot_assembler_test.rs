@@ -163,7 +163,7 @@ async fn handle_existing_directory_conflict() {
     let mut count = 0;
 
     // Proper async way to count entries
-    while let Some(entry) = entries.next_entry().await.unwrap() {
+    while let Some(_entry) = entries.next_entry().await.unwrap() {
         count += 1;
     }
 

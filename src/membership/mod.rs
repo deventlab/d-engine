@@ -50,51 +50,51 @@ pub struct ChannelWithAddressAndRole {
     pub(crate) role: i32,
 }
 
-#[cfg_attr(test, automock)]
-pub trait PeerChannelsFactory {
-    fn create(
-        node_id: u32,
-        settings: Arc<RaftNodeConfig>,
-    ) -> Self;
-}
+// #[cfg_attr(test, automock)]
+// pub trait PeerChannelsFactory {
+//     fn create(
+//         node_id: u32,
+//         settings: Arc<RaftNodeConfig>,
+//     ) -> Self;
+// }
 
-#[cfg_attr(test, automock)]
-#[async_trait]
-pub trait PeerChannels: Sync + Send + 'static {
-    async fn connect_with_peers(
-        &mut self,
-        my_id: u32,
-    ) -> Result<()>;
+// #[cfg_attr(test, automock)]
+// #[async_trait]
+// pub trait PeerChannels: Sync + Send + 'static {
+//     async fn connect_with_peers(
+//         &mut self,
+//         my_id: u32,
+//     ) -> Result<()>;
 
-    async fn check_cluster_is_ready(&self) -> Result<()>;
+//     async fn check_cluster_is_ready(&self) -> Result<()>;
 
-    /// Get all peers channel regardless peer's role
-    fn voting_members(&self) -> DashMap<u32, ChannelWithAddress>;
+//     /// Get all peers channel regardless peer's role
+//     fn voting_members(&self) -> DashMap<u32, ChannelWithAddress>;
 
-    /// Dynamically add a peer connection
-    async fn add_peer(
-        &self,
-        node_id: u32,
-        address: String,
-    ) -> Result<()>;
+//     /// Dynamically add a peer connection
+//     async fn add_peer(
+//         &self,
+//         node_id: u32,
+//         address: String,
+//     ) -> Result<()>;
 
-    // fn get_peer_channel(
-    //     &self,
-    //     node_id: u32,
-    // ) -> Option<ChannelWithAddress>;
+//     // fn get_peer_channel(
+//     //     &self,
+//     //     node_id: u32,
+//     // ) -> Option<ChannelWithAddress>;
 
-    fn get_address(
-        &self,
-        node_id: u32,
-    ) -> Option<String>;
+//     fn get_address(
+//         &self,
+//         node_id: u32,
+//     ) -> Option<String>;
 
-    // /// Get a specific peer's channel
-    // async fn get_peer_channel(
-    //     &self,
-    //     node_id: u32,
-    //     conn_type: ConnectionType,
-    // ) -> Option<ChannelWithAddress>;
-}
+//     // /// Get a specific peer's channel
+//     // async fn get_peer_channel(
+//     //     &self,
+//     //     node_id: u32,
+//     //     conn_type: ConnectionType,
+//     // ) -> Option<ChannelWithAddress>;
+// }
 
 #[cfg_attr(test, automock)]
 #[async_trait]
@@ -103,6 +103,7 @@ where
     T: TypeConfig,
 {
     /// All nodes (including itself)
+    #[allow(unused)]
     fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     /// All non-self nodes (including PendingActive and Active)
@@ -288,6 +289,7 @@ impl ClusterConfUpdateResponse {
     }
 
     /// Generate a failed response (Malformed change request)
+    #[allow(unused)]
     pub(crate) fn invalid_change(
         node_id: u32,
         term: u64,

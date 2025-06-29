@@ -381,22 +381,6 @@ async fn test_election_timeout_case4() {
     let peer1_id = 2;
     let peer2_id = 3;
 
-    // 3. prepare mock service response
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-
-    // Note: the fake response here will not impact the test result
-    // The test only focus on the result from Transport::send_vote_requests
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: true,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-    let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RAFT_PORT_BASE + 1, vote_response, rx1)
-        .await
-        .expect("should succeed");
-
     // 4. Mock Raft Context
     let mut mock_membership = MockMembership::new();
     mock_membership.expect_voters().returning(move || {

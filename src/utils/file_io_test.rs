@@ -1,11 +1,3 @@
-use std::io::Write;
-use std::os::fd::AsRawFd;
-use nix::libc::flock;
-use nix::libc::LOCK_EX;
-use sha2::Digest;
-use sha2::Sha256;
-use tempfile::tempdir;
-use tempfile::NamedTempFile;
 use crate::file_io;
 use crate::file_io::compute_checksum_from_folder_path;
 use crate::file_io::convert_vec_checksum;
@@ -17,6 +9,14 @@ use crate::Error;
 use crate::FileError;
 use crate::StorageError;
 use crate::SystemError;
+use nix::libc::flock;
+use nix::libc::LOCK_EX;
+use sha2::Digest;
+use sha2::Sha256;
+use std::io::Write;
+use std::os::fd::AsRawFd;
+use tempfile::tempdir;
+use tempfile::NamedTempFile;
 
 /// Passed: "/tmp/files/data.txt"
 /// Expected: "/tmp/files" created
@@ -272,9 +272,8 @@ mod validate_compressed_format_tests {
         file_io::{create_valid_snapshot, validate_compressed_format},
         Result,
     };
-    use std::{fs::File, io::Write, path::PathBuf};
+    use std::{fs::File, io::Write};
     use tempfile::tempdir;
-    use tokio::io::AsyncWriteExt;
 
     /// Test valid GZIP files with supported extensions
     #[tokio::test]
@@ -285,7 +284,7 @@ mod validate_compressed_format_tests {
             ("data.snap", [0x1f, 0x8b]),
         ];
 
-        for (filename, header) in test_cases {
+        for (filename, _header) in test_cases {
             let dir = tempdir().unwrap();
             let path = dir.path().join(filename);
             let _checksum = create_valid_snapshot(&path, |db| {
