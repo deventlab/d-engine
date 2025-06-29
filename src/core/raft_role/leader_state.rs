@@ -1642,8 +1642,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
                 let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
 
-                BackgroundSnapshotTransfer::<T>::run_push_transfer(node_id, data_stream, bulk_channel.channel, config)
-                    .await
+                BackgroundSnapshotTransfer::<T>::run_push_transfer(node_id, data_stream, bulk_channel, config).await
             });
 
             // Non-blocking send result

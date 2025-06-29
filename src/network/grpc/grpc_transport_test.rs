@@ -12,6 +12,7 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
+use crate::test_utils;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
@@ -20,8 +21,6 @@ use crate::test_utils::MockRpcService;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_PURGE_PORT_BASE;
 use crate::test_utils::MOCK_RPC_CLIENT_PORT_BASE;
-use crate::test_utils::{self};
-use crate::ChannelWithAddress;
 use crate::ConnectionType;
 use crate::Error;
 use crate::MockMembership;
@@ -39,12 +38,13 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
+use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tonic::Status;
 
 fn mock_membership(
     peers: Vec<(u32, i32)>, //(node_id, role_i32)
-    channels: HashMap<(u32, ConnectionType), ChannelWithAddress>,
+    channels: HashMap<(u32, ConnectionType), Channel>,
 ) -> Arc<MockMembership<MockTypeConfig>> {
     let mut membership = MockMembership::<MockTypeConfig>::new();
     membership.expect_voters().returning(move || {
@@ -70,19 +70,19 @@ async fn simulate_append_entries_mock_server(
     port: u64,
     response: std::result::Result<AppendEntriesResponse, Status>,
     rx: oneshot::Receiver<()>,
-) -> Result<ChannelWithAddress> {
+) -> Result<Channel> {
     //prepare learner's channel address inside membership config
     let mock_service = MockRpcService {
         expected_append_entries_response: Some(response),
         ..Default::default()
     };
-    let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, true).await {
+    match test_utils::MockNode::mock_listener(mock_service, port, rx, true).await {
         Ok(a) => a,
         Err(e) => {
             panic!("error: {e:?}");
         }
     };
-    Ok(test_utils::MockNode::mock_channel_with_address(addr.to_string(), port).await)
+    Ok(test_utils::MockNode::mock_channel_with_address(port).await)
 }
 
 // # Case 1: no peers passed
@@ -189,13 +189,10 @@ async fn test_send_cluster_update_case3() {
     };
 
     // Simulate RPC service
-    let addr1 = ChannelWithAddress {
-        address: "http://[::]:50051".to_string(),
-        channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-    };
+    let channel = Endpoint::from_static("http://[::]:50051").connect_lazy();
     let mut channels = HashMap::new();
-    channels.insert((peer1_id, ConnectionType::Control), addr1.clone());
-    channels.insert((peer2_id, ConnectionType::Control), addr1.clone());
+    channels.insert((peer1_id, ConnectionType::Control), channel.clone());
+    channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(vec![(peer1_id, FOLLOWER), (peer2_id, CANDIDATE)], channels);
 
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -814,72 +811,6 @@ async fn test_send_vote_requests_case5() {
         Err(_) => panic!(),
     }
 }
-
-// // # Case 6: High term found in vote response
-// //
-// // ## Setup:
-// // 1. prepare two peers, one success while another failed with higher term
-// //
-// // ## Criterias:
-// // 1. return Error
-// //
-// #[tokio::test]
-// async fn test_send_vote_requests_case6() {
-//     test_utils::enable_logger();
-
-//     let my_id = 1;
-//     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-
-//     let peer1_id = 2;
-//     let peer2_id = 3;
-//     //prepare rpc service for getting peer address
-//     let (_tx1, rx1) = oneshot::channel::<()>();
-//     let (_tx2, rx2) = oneshot::channel::<()>();
-//     let peer1_response = VoteResponse {
-//         term: 1,
-//         vote_granted: true,
-//         last_log_index: 0,
-//         last_log_term: 0,
-//     };
-//     let peer2_response = VoteResponse {
-//         term: 100,
-//         vote_granted: false,
-//         last_log_index: 0,
-//         last_log_term: 0,
-//     };
-//     let request = VoteRequest {
-//         term: 1,
-//         candidate_id: my_id,
-//         last_log_index: 1,
-//         last_log_term: 1,
-//     };
-//     let addr1 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 27,
-// peer1_response, rx1)         .await
-//         .expect("should succeed");
-//     let addr2 = MockNode::simulate_send_votes_mock_server(MOCK_RPC_CLIENT_PORT_BASE + 28,
-// peer2_response, rx2)         .await
-//         .expect("should succeed");
-//     let requests_with_peer_address = vec![
-//         ChannelWithAddressAndRole {
-//             id: peer1_id,
-//             channel_with_address: addr1.clone(),
-//             role: FOLLOWER,
-//         },
-//         ChannelWithAddressAndRole {
-//             id: peer2_id,
-//             channel_with_address: addr2.clone(),
-//             role: CANDIDATE,
-//         },
-//     ];
-//     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-//     match client
-//         .send_vote_requests(requests_with_peer_address, request, &node_config.retry)
-//         .await
-//     {
-//         Ok(_) => panic!(),
-//         Err(e) => assert!(matches!(e, Error::HigherTermFoundError(_higher_term))),
-//     }
-// }
 
 // # Case 1: empty peer list
 //

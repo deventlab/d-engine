@@ -9,7 +9,6 @@ use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockStateStorage;
 use crate::MockTransport;
-use crate::RaftNodeConfig;
 use crate::TypeConfig;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]

@@ -18,7 +18,6 @@ mod network_test;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::cluster::majority_count;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::election::VoteRequest;

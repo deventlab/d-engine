@@ -31,9 +31,7 @@ use crate::test_utils::MockBuilder;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::MOCK_LEADER_STATE_PORT_BASE;
-use crate::test_utils::MOCK_ROLE_STATE_PORT_BASE;
 use crate::AppendResults;
-use crate::ChannelWithAddress;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
@@ -71,6 +69,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tonic::Code;
 use tonic::Status;
@@ -2393,7 +2392,7 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
 async fn mock_peer(
     port: u64,
     rx: oneshot::Receiver<()>,
-) -> ChannelWithAddress {
+) -> Channel {
     MockNode::simulate_mock_service_without_reps(port, rx, true)
         .await
         .expect("should succeed")
@@ -2720,12 +2719,9 @@ async fn test_handle_join_cluster_case1_success() {
         .returning(ClusterMembership::default);
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
-    membership.expect_get_peer_channel().returning(|_, _| {
-        Some(ChannelWithAddress {
-            address: "".to_string(),
-            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
-        })
-    });
+    membership
+        .expect_get_peer_channel()
+        .returning(|_, _| Some(Endpoint::from_static("http://[::]:50051").connect_lazy()));
     raft_context.membership = Arc::new(membership);
     let mut transport = MockTransport::new();
     transport
@@ -3044,10 +3040,7 @@ mod trigger_background_snapshot_test {
             if should_fail {
                 None
             } else {
-                Some(crate::ChannelWithAddress {
-                    channel: tonic::transport::Endpoint::from_static("http://[::]:12345").connect_lazy(),
-                    address: "mock".to_string(),
-                })
+                Some(tonic::transport::Endpoint::from_static("http://[::]:12345").connect_lazy())
             }
         });
         membership

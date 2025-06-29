@@ -102,7 +102,7 @@ where
 
             // Real-time connection fetch for control operations
             let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await {
-                Some(chan) => chan.channel,
+                Some(chan) => chan,
                 None => {
                     error!("Failed to get control channel for peer {}", peer_id);
                     continue;
@@ -194,7 +194,7 @@ where
 
             // Real-time connection fetch for data operations
             let channel = match membership.get_peer_channel(peer_id, ConnectionType::Data).await {
-                Some(chan) => chan.channel,
+                Some(chan) => chan,
                 None => {
                     error!("Failed to get data channel for peer {}", peer_id);
                     continue;
@@ -276,7 +276,7 @@ where
 
             // Real-time connection fetch for control operations
             let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await {
-                Some(chan) => chan.channel,
+                Some(chan) => chan,
                 None => {
                     error!("Failed to get control channel for peer {}", peer_id);
                     continue;
@@ -357,7 +357,7 @@ where
 
             // Real-time connection fetch for data operations
             let channel = match membership.get_peer_channel(peer_id, ConnectionType::Data).await {
-                Some(chan) => chan.channel,
+                Some(chan) => chan,
                 None => {
                     error!("Failed to get data channel for peer {}", peer_id);
                     continue;
@@ -423,7 +423,7 @@ where
         debug!("Starting snapshot installation to node {}", node_id);
 
         // Clone all necessary variables for the spawned task
-        let channel_with_address = membership
+        let channel = membership
             .get_peer_channel(node_id, ConnectionType::Bulk)
             .await
             .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
@@ -435,7 +435,7 @@ where
 
         // Spawn the snapshot installation in a background task
         let handle = tokio::spawn(async move {
-            let mut client = SnapshotServiceClient::new(channel_with_address.channel)
+            let mut client = SnapshotServiceClient::new(channel)
                 .send_compressed(CompressionEncoding::Gzip)
                 .accept_compressed(CompressionEncoding::Gzip);
 
@@ -583,7 +583,7 @@ where
             .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?;
 
         let closure = move || {
-            let channel = channel.channel.clone();
+            let channel = channel.clone();
             let mut client = ClusterManagementServiceClient::new(channel)
                 .send_compressed(CompressionEncoding::Gzip)
                 .accept_compressed(CompressionEncoding::Gzip);
@@ -639,8 +639,7 @@ where
         let channel = membership
             .get_peer_channel(leader_id, ConnectionType::Bulk)
             .await
-            .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?
-            .channel;
+            .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?;
 
         let channel = channel.clone();
         let mut client = SnapshotServiceClient::new(channel)
@@ -693,7 +692,7 @@ where
     ) -> Option<LeaderDiscoveryResponse> {
         match membership.get_peer_channel(member_id, ConnectionType::Control).await {
             Some(channel) => {
-                let mut client = ClusterManagementServiceClient::new(channel.channel);
+                let mut client = ClusterManagementServiceClient::new(channel);
                 if rpc_enable_compression {
                     client = client
                         .send_compressed(CompressionEncoding::Gzip)

@@ -51,7 +51,7 @@ mod run_push_transfer_test {
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 1,
             Ok(SnapshotResponse {
                 term: 1,
@@ -63,13 +63,8 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-            1,
-            Box::pin(stream),
-            addr_channel.channel,
-            config,
-        )
-        .await;
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
 
         debug!(?result);
 
@@ -88,7 +83,7 @@ mod run_push_transfer_test {
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 2,
             Err(Status::unavailable("Service is not ready")),
             shutdown_rx,
@@ -96,13 +91,8 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-            1,
-            combined_stream,
-            addr_channel.channel,
-            config,
-        )
-        .await;
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, combined_stream, channel, config).await;
 
         assert!(result.is_err());
     }
@@ -120,7 +110,7 @@ mod run_push_transfer_test {
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 3,
             Ok(SnapshotResponse {
                 term: 1,
@@ -133,13 +123,8 @@ mod run_push_transfer_test {
         .unwrap();
 
         let start = Instant::now();
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-            1,
-            Box::pin(stream),
-            addr_channel.channel,
-            config,
-        )
-        .await;
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
 
         debug!(?result);
         assert!(result.is_ok());
@@ -166,7 +151,7 @@ mod run_push_transfer_test {
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 4,
             Ok(SnapshotResponse {
                 term: 1,
@@ -178,9 +163,7 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
-                .await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
 
         assert!(result.is_err());
         assert!(matches!(
@@ -201,7 +184,7 @@ mod run_push_transfer_test {
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 5,
             Ok(SnapshotResponse {
                 term: 1,
@@ -213,9 +196,7 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
-                .await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
 
         assert!(result.is_err());
         assert!(matches!(
@@ -235,7 +216,7 @@ mod run_push_transfer_test {
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 6,
             Ok(SnapshotResponse {
                 term: 1,
@@ -247,9 +228,7 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
-                .await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
 
         assert!(result.is_err());
         assert!(matches!(
@@ -267,7 +246,7 @@ mod run_push_transfer_test {
 
         // Start mock server that returns gRPC error
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 7,
             Err(Status::internal("Internal server error")),
             shutdown_rx,
@@ -275,13 +254,8 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-            1,
-            Box::pin(stream),
-            addr_channel.channel,
-            config,
-        )
-        .await;
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
 
         assert!(result.is_err());
         debug!(?result);
@@ -308,7 +282,7 @@ mod run_push_transfer_test {
 
         // Start mock server that processes slowly
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 8,
             Ok(SnapshotResponse {
                 term: 1,
@@ -320,9 +294,7 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
-                .await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
 
         debug!(?result);
 
@@ -345,7 +317,7 @@ mod run_push_transfer_test {
 
         // Start mock server that returns failure response
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let addr_channel = MockNode::simulate_snapshot_mock_server(
+        let channel = MockNode::simulate_snapshot_mock_server(
             MOCK_SNAPSHOT_PORT_BASE + 9,
             Ok(SnapshotResponse {
                 term: 1,
@@ -357,13 +329,8 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-            1,
-            Box::pin(stream),
-            addr_channel.channel,
-            config,
-        )
-        .await;
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
 
         debug!(?result);
         assert!(result.is_err());

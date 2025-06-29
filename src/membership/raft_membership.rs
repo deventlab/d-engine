@@ -12,7 +12,6 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
-use super::ChannelWithAddress;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
@@ -545,7 +544,7 @@ where
         &self,
         node_id: u32,
         conn_type: ConnectionType,
-    ) -> Option<ChannelWithAddress> {
+    ) -> Option<Channel> {
         let address = address_str(&self.get_address(node_id)?);
 
         let channel = match conn_type {
@@ -558,7 +557,7 @@ where
         .ok()?;
 
         debug!("Successfully connected with ({})", &address);
-        Some(ChannelWithAddress { address, channel })
+        Some(channel)
     }
 
     fn get_address(

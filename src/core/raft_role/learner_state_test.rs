@@ -35,7 +35,6 @@ use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
 use crate::SystemError;
-use dashmap::DashMap;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;

@@ -27,65 +27,6 @@ pub(crate) enum ConnectionType {
     Bulk,    // Used for high-traffic operations such as snapshot transmission
 }
 
-#[derive(Clone, Debug)]
-pub struct ChannelWithAddress {
-    pub(crate) address: String,
-    pub(crate) channel: Channel,
-}
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct ChannelWithAddressAndRole {
-    pub(crate) id: u32,
-    pub(crate) channel_with_address: ChannelWithAddress,
-    pub(crate) role: i32,
-}
-
-// #[cfg_attr(test, automock)]
-// pub trait PeerChannelsFactory {
-//     fn create(
-//         node_id: u32,
-//         settings: Arc<RaftNodeConfig>,
-//     ) -> Self;
-// }
-
-// #[cfg_attr(test, automock)]
-// #[async_trait]
-// pub trait PeerChannels: Sync + Send + 'static {
-//     async fn connect_with_peers(
-//         &mut self,
-//         my_id: u32,
-//     ) -> Result<()>;
-
-//     async fn check_cluster_is_ready(&self) -> Result<()>;
-
-//     /// Get all peers channel regardless peer's role
-//     fn voting_members(&self) -> DashMap<u32, ChannelWithAddress>;
-
-//     /// Dynamically add a peer connection
-//     async fn add_peer(
-//         &self,
-//         node_id: u32,
-//         address: String,
-//     ) -> Result<()>;
-
-//     // fn get_peer_channel(
-//     //     &self,
-//     //     node_id: u32,
-//     // ) -> Option<ChannelWithAddress>;
-
-//     fn get_address(
-//         &self,
-//         node_id: u32,
-//     ) -> Option<String>;
-
-//     // /// Get a specific peer's channel
-//     // async fn get_peer_channel(
-//     //     &self,
-//     //     node_id: u32,
-//     //     conn_type: ConnectionType,
-//     // ) -> Option<ChannelWithAddress>;
-// }
-
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
@@ -209,7 +150,7 @@ where
         &self,
         node_id: u32,
         conn_type: ConnectionType,
-    ) -> Option<ChannelWithAddress>;
+    ) -> Option<Channel>;
 
     fn get_address(
         &self,
@@ -309,6 +250,7 @@ impl ClusterConfUpdateResponse {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn is_higher_term(&self) -> bool {
         self.error_code == <ErrorCode as Into<i32>>::into(ErrorCode::TermOutdated)
     }
