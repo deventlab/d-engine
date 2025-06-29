@@ -28,3 +28,4 @@ config/local.toml
 .vscode/settings.json
 
 snapshots
+.cargo
