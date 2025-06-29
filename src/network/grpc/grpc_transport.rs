@@ -2,7 +2,6 @@
 //! We also want to refactor all the APIs based its similar parttern.
 
 use crate::alias::MOF;
-use crate::grpc::RestartableStream;
 use crate::grpc_task_with_timeout_and_exponential_backoff;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 use crate::proto::cluster::ClusterConfChangeRequest;
@@ -18,7 +17,6 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
-use crate::proto::storage::SnapshotMetadata;
 use crate::AppendResult;
 use crate::BackoffPolicy;
 use crate::ClusterUpdateResult;
@@ -29,7 +27,6 @@ use crate::Membership;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
-use crate::SnapshotError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::VoteResult;
@@ -41,14 +38,11 @@ use futures::StreamExt;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task;
-use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
-use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

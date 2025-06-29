@@ -27,7 +27,6 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
-use crate::proto::storage::SnapshotMetadata;
 use crate::BackoffPolicy;
 use crate::NetworkError;
 use crate::Result;
