@@ -108,6 +108,7 @@ where
     ) -> Result<()>;
 
     /// Activate node
+    #[allow(unused)]
     fn activate_node(
         &mut self,
         new_node_id: u32,
@@ -138,12 +139,14 @@ where
     ) -> Result<()>;
 
     /// Forcefully remove faulty nodes
+    #[allow(unused)]
     async fn force_remove_node(
         &self,
         node_id: u32,
     ) -> Result<()>;
 
     /// Get all node status
+    #[allow(unused)]
     fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     async fn get_peer_channel(

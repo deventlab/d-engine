@@ -1601,27 +1601,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    /// TODO: To be deleted
-    pub(super) async fn trigger_snapshot_transfer(
-        &self,
-        node_id: u32,
-        metadata: SnapshotMetadata,
-        ctx: &RaftContext<T>,
-        membership: Arc<MOF<T>>,
-    ) -> Result<()> {
-        let transport = ctx.transport().clone();
-
-        let data_stream = ctx.state_machine_handler().load_snapshot_data(metadata.clone()).await?;
-        let retry = ctx.node_config.retry.install_snapshot;
-        let config = ctx.node_config.raft.snapshot.clone();
-
-        transport
-            .install_snapshot(node_id, metadata, data_stream, &retry, &config, membership)
-            .await?;
-
-        Ok(())
-    }
-
     pub(super) async fn trigger_background_snapshot(
         node_id: u32,
         metadata: SnapshotMetadata,

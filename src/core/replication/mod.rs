@@ -45,6 +45,7 @@ use mockall::automock;
 /// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]
 pub struct RaftRequestWithSignal {
+    #[allow(unused)]
     pub id: String,
     pub payloads: Vec<EntryPayload>,
     pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,

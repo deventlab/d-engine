@@ -217,32 +217,6 @@ where
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<Result<PurgeLogResponse>>>;
 
-    /// Transfers a snapshot to a follower node with retry logic and backpressure control.
-    ///
-    /// # Parameters
-    /// - `node_id`: Target follower node ID
-    /// - `metadata`: Snapshot metadata including last included index
-    /// - `data_stream`: Stream of snapshot chunks to send
-    /// - `retry`: Retry and timeout configuration
-    /// - `config`: Snapshot transfer configuration
-    /// - `membership`: Cluster membership for channel resolution
-    ///
-    /// # Errors
-    /// Returns `SnapshotError` if:
-    /// - Connection fails
-    /// - Transfer times out
-    /// - gRPC call fails
-    /// - Follower rejects snapshot
-    async fn install_snapshot(
-        &self,
-        node_id: u32,
-        metadata: SnapshotMetadata,
-        data_stream: futures::stream::BoxStream<'static, Result<SnapshotChunk>>,
-        retry: &crate::InstallSnapshotBackoffPolicy,
-        config: &crate::SnapshotConfig,
-        membership: std::sync::Arc<crate::alias::MOF<T>>,
-    ) -> Result<()>;
-
     /// Initiates cluster join process for a learner node
     ///
     /// # Protocol

@@ -130,22 +130,6 @@ impl MockNode {
         format!("http://{addr}")
     }
 
-    pub(crate) async fn simulate_mock_service_without_reps(
-        port: u64,
-        rx: oneshot::Receiver<()>,
-        server_is_ready: bool,
-    ) -> Result<Channel> {
-        //prepare learner's channel address inside membership config
-        let mock_service = MockRpcService::default();
-        let addr = match Self::mock_listener(mock_service, port, rx, server_is_ready).await {
-            Ok(a) => a,
-            Err(e) => {
-                panic!("error: {e:?}");
-            }
-        };
-        Ok(Self::mock_channel_with_address(port).await)
-    }
-
     pub(crate) async fn simulate_send_votes_mock_server(
         port: u64,
         response: VoteResponse,

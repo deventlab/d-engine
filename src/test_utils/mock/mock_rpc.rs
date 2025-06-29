@@ -108,7 +108,7 @@ impl ClusterManagementService for MockRpcService {
 
     async fn discover_leader(
         &self,
-        request: tonic::Request<LeaderDiscoveryRequest>,
+        _request: tonic::Request<LeaderDiscoveryRequest>,
     ) -> std::result::Result<tonic::Response<LeaderDiscoveryResponse>, tonic::Status> {
         match &self.expected_discover_leader_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),

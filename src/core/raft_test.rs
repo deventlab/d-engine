@@ -801,15 +801,6 @@ async fn test_handle_role_event_state_update_case1_3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_state_update_case1_3_2", graceful_rx, None);
 
-    // Simulate peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: true,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-
     // Prepare Peers
     let mut membership = MockMembership::new();
     membership
