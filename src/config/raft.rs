@@ -376,6 +376,15 @@ pub struct SnapshotConfig {
 
     #[serde(default = "default_retry_interval_in_ms")]
     pub retry_interval_in_ms: u64,
+
+    #[serde(default = "default_snapshot_push_backoff_in_ms")]
+    pub snapshot_push_backoff_in_ms: u64,
+
+    #[serde(default = "default_snapshot_push_max_retry")]
+    pub snapshot_push_max_retry: u32,
+
+    #[serde(default = "default_push_timeout_in_ms")]
+    pub push_timeout_in_ms: u64,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -394,6 +403,9 @@ impl Default for SnapshotConfig {
             max_retries: default_max_retries(),
             transfer_timeout_in_sec: default_transfer_timeout_in_sec(),
             retry_interval_in_ms: default_retry_interval_in_ms(),
+            snapshot_push_backoff_in_ms: default_snapshot_push_backoff_in_ms(),
+            snapshot_push_max_retry: default_snapshot_push_max_retry(),
+            push_timeout_in_ms: default_push_timeout_in_ms(),
         }
     }
 }
@@ -439,6 +451,20 @@ impl SnapshotConfig {
             return Err(Error::Config(ConfigError::Message(format!(
                 "receiver_yield_every_n_chunks must be >= 1, (got {})",
                 self.receiver_yield_every_n_chunks
+            ))));
+        }
+
+        if self.push_queue_size < 1 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "push_queue_size must be >= 1, (got {})",
+                self.push_queue_size
+            ))));
+        }
+
+        if self.snapshot_push_max_retry < 1 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "snapshot_push_max_retry must be >= 1, (got {})",
+                self.snapshot_push_max_retry
             ))));
         }
 
@@ -519,4 +545,13 @@ fn default_transfer_timeout_in_sec() -> u64 {
 }
 fn default_retry_interval_in_ms() -> u64 {
     10
+}
+fn default_snapshot_push_backoff_in_ms() -> u64 {
+    100
+}
+fn default_snapshot_push_max_retry() -> u32 {
+    3
+}
+fn default_push_timeout_in_ms() -> u64 {
+    300_000
 }

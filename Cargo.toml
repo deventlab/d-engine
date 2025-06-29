@@ -118,3 +118,12 @@ overflow-checks = true
 lto = true # Eliminate redundant code and reduce size
 codegen-units = 1 # Reduce parallel code generation units to improve optimization effect
 
+
+[profile.test]
+incremental = true
+codegen-units = 16 # Take advantage of M2 multi-core
+split-debuginfo = "unpacked" # macOS-specific optimization
+debug = 1 # Reduce debug information
+
+[profile.test.build-override]
+opt-level = 3 # Full optimization of dependencies

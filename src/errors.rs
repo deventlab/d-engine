@@ -511,6 +511,9 @@ pub enum SnapshotError {
 
     #[error("Chunk not cached: {0}")]
     ChunkNotCached(u32),
+
+    #[error("Background stream push task died")]
+    BackgroundTaskDied,
 }
 
 // ============== Conversion Implementations ============== //

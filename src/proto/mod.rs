@@ -3,8 +3,6 @@
 //! This module contains auto-generated Rust types from Protobuf definitions,
 //! typically created using [`tonic-build`] or `protoc` compiler plugins.
 
-// include!("../generated/mod.rs");
-
 pub mod common {
     include!("../generated/raft.common.rs");
 }

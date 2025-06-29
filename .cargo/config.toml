@@ -1,0 +1,5 @@
+
+
+# Limit parallel code generation (to relieve memory pressure)
+[target.x86_64-unknown-linux-gnu]
+codegen-units = 1

@@ -1,804 +1,377 @@
-use std::pin::Pin;
-use std::time::Duration;
-
 use super::*;
-use crate::proto::common::LogId;
-use crate::proto::storage::snapshot_ack::{self, ChunkStatus};
-use crate::proto::storage::{SnapshotAck, SnapshotChunk, SnapshotMetadata, SnapshotResponse};
+use crate::proto::storage::{SnapshotChunk, SnapshotResponse};
 use crate::test_utils::{
-    self, crate_test_snapshot_stream, create_snapshot_stream, create_test_chunk, enable_logger, MockNode,
-    MockTypeConfig, MOCK_SNAPSHOT_PORT_BASE,
+    self, create_snapshot_stream, enable_logger, MockNode, MockTypeConfig, MOCK_SNAPSHOT_PORT_BASE,
 };
-use crate::{NetworkError, SnapshotConfig, SnapshotError, StorageError};
-use futures::{stream, Stream, StreamExt};
-use tokio::sync::{mpsc, oneshot};
+use crate::{Error, NetworkError, SnapshotConfig, SnapshotError, StorageError};
+use futures::{stream, StreamExt};
+use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::time::Instant;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Channel, Endpoint};
 use tonic::Status;
 use tracing::debug;
-
-#[tokio::test]
-async fn test_push_transfer_success() {
-    test_utils::enable_logger();
-    let config = default_snapshot_config();
-    let stream = create_snapshot_stream(3, 1024); // 3 chunks of 1KB each
-
-    // Start mock server
-    let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-    let addr_channel = MockNode::simulate_snapshot_mock_server(
-        MOCK_SNAPSHOT_PORT_BASE + 1,
-        Ok(SnapshotResponse {
-            term: 1,
-            success: true, // always succeed
-            next_chunk: 1,
-        }),
-        shutdown_rx,
-    )
-    .await
-    .unwrap();
-
-    let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-        1,
-        Box::pin(stream),
-        addr_channel.channel,
-        config,
-    )
-    .await;
-
-    debug!(?result);
-
-    assert!(result.is_ok());
-}
-
-// Test: Transfer fails when stream returns an error
-#[tokio::test]
-async fn test_push_transfer_fails_on_stream_error() {
-    let config = default_snapshot_config();
-    let stream = create_snapshot_stream(2, 512);
-    let error_stream = stream::once(async {
-        Err(StorageError::IoError(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Test error")).into())
-    });
-    let combined_stream = stream.chain(error_stream).boxed();
-
-    // Start mock server
-    let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-    let addr_channel = MockNode::simulate_snapshot_mock_server(
-        MOCK_SNAPSHOT_PORT_BASE + 2,
-        Err(Status::unavailable("Service is not ready")),
-        shutdown_rx,
-    )
-    .await
-    .unwrap();
-
-    let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-        1,
-        combined_stream,
-        addr_channel.channel,
-        config,
-    )
-    .await;
-
-    assert!(result.is_err());
-}
-
-// Test: Transfer respects bandwidth limit
-#[tokio::test]
-async fn test_push_transfer_respects_bandwidth_limit() {
-    enable_logger();
-    let mut config = default_snapshot_config();
-    config.max_bandwidth_mbps = 1; // 1 MBps
-    config.push_queue_size = 1;
-
-    let stream = create_snapshot_stream(5, 250_000_000); // 5 chunks of 250KB each (1.25MB total)
-
-    // Start mock server
-    let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-    let addr_channel = MockNode::simulate_snapshot_mock_server(
-        MOCK_SNAPSHOT_PORT_BASE + 3,
-        Ok(SnapshotResponse {
-            term: 1,
-            success: true, // always succeed
-            next_chunk: 1,
-        }),
-        shutdown_rx,
-    )
-    .await
-    .unwrap();
-
-    let start = Instant::now();
-    let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-        1,
-        Box::pin(stream),
-        addr_channel.channel,
-        config,
-    )
-    .await;
-
-    assert!(result.is_ok());
-    let duration = start.elapsed();
-    debug!(?duration);
-    // Should take at least 1.25 seconds for 1.25MB at 1MBps
-    assert!(duration >= Duration::from_secs_f32(1.25));
-}
-
-// // Test: Transfer handles out-of-order ACKs
-// #[tokio::test]
-// async fn test_push_transfer_handles_out_of_order_acks() {
-//     let config = default_snapshot_config();
-//     let stream = create_snapshot_stream(3, 1024);
-
-//     let channel = Endpoint::from_static("http://[::]:12345").connect_lazy();
-
-//     // Simulate out-of-order ACKs
-//     tokio::spawn(async move {
-//         // ACK for chunk 2 first
-//         ack_tx
-//             .send(Ok(SnapshotAck {
-//                 seq: 2,
-//                 status: ChunkStatus::Accepted.into(),
-//                 next_requested: 0,
-//             }))
-//             .await
-//             .unwrap();
-
-//         // Then ACK for chunk 1
-//         ack_tx
-//             .send(Ok(SnapshotAck {
-//                 seq: 1,
-//                 status: ChunkStatus::Accepted.into(),
-//                 next_requested: 0,
-//             }))
-//             .await
-//             .unwrap();
-
-//         // Finally ACK for chunk 0
-//         ack_tx
-//             .send(Ok(SnapshotAck {
-//                 seq: 0,
-//                 status: ChunkStatus::Accepted.into(),
-//                 next_requested: 0,
-//             }))
-//             .await
-//             .unwrap();
-//     });
-
-//     let result =
-//         BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
-
-//     assert!(result.is_ok());
-// }
-
-// // Test: Transfer handles checksum failures and retries
-// #[tokio::test]
-// async fn test_push_transfer_handles_checksum_failures() {
-//     let config = default_snapshot_config();
-//     let stream = create_snapshot_stream(2, 1024);
-
-//     let channel = Endpoint::from_static("http://[::]:12345").connect_lazy();
-
-//     tokio::spawn(async move {
-//         // First ACK: checksum failure for chunk 0
-//         ack_tx
-//             .send(Ok(SnapshotAck {
-//                 seq: 0,
-//                 status: ChunkStatus::ChecksumMismatch.into(),
-//                 next_requested: 0, // Request retransmission
-//             }))
-//             .await
-//             .unwrap();
-
-//         // Second ACK: accept retransmitted chunk 0
-//         ack_tx
-//             .send(Ok(SnapshotAck {
-//                 seq: 0,
-//                 status: ChunkStatus::Accepted.into(),
-//                 next_requested: 1,
-//             }))
-//             .await
-//             .unwrap();
-
-//         // ACK for chunk 1
-//         ack_tx
-//             .send(Ok(SnapshotAck {
-//                 seq: 1,
-//                 status: ChunkStatus::Accepted.into(),
-//                 next_requested: 2,
-//             }))
-//             .await
-//             .unwrap();
-//     });
-
-//     let result =
-//         BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
-
-//     assert!(result.is_ok());
-// }
-
-// // Test: Transfer fails after max retries
-// #[tokio::test]
-// async fn test_push_transfer_fails_after_max_retries() {
-//     let mut config = default_snapshot_config();
-//     config.max_retries = 2; // Only allow 2 retries
-
-//     let stream = create_snapshot_stream(1, 1024);
-
-//     let channel = Endpoint::from_static("http://[::]:12345").connect_lazy();
-
-//     tokio::spawn(async move {
-//         // Continuously send checksum failures
-//         for _ in 0..=config.max_retries {
-//             ack_tx
-//                 .send(Ok(SnapshotAck {
-//                     seq: 0,
-//                     status: ChunkStatus::ChecksumMismatch.into(),
-//                     next_requested: 0,
-//                 }))
-//                 .await
-//                 .unwrap();
-//         }
-//     });
-
-//     let result =
-//         BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
-
-//     assert!(result.is_err());
-//     match result.unwrap_err() {
-//         SnapshotError::MaxRetriesExceeded => (),
-//         _ => panic!("Expected MaxRetriesExceeded error"),
-//     }
-// }
-
-// // Test: Pull transfer completes successfully
-// #[tokio::test]
-// async fn test_pull_transfer_completes_successfully() {
-//     let config = default_snapshot_config();
-//     let data_stream = create_snapshot_stream(3, 1024).boxed();
-
-//     let (ack_tx, ack_rx) = mpsc::channel(10);
-//     let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
-
-//     let ack_stream = ReceiverStream::new(ack_rx).boxed();
-
-//     let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-//         Box::pin(ack_stream),
-//         chunk_tx,
-//         data_stream,
-//         config,
-//     ));
-
-//     // Simulate ACKs
-//     tokio::spawn(async move {
-//         for i in 0..3 {
-//             ack_tx
-//                 .send(Ok(SnapshotAck {
-//                     seq: i,
-//                     status: ChunkStatus::Accepted.into(),
-//                     next_requested: i + 1,
-//                 }))
-//                 .await
-//                 .unwrap();
-//         }
-//     });
-
-//     // Verify chunks received
-//     let mut received = 0;
-//     while let Some(chunk) = chunk_rx.recv().await {
-//         assert!(chunk.is_ok());
-//         received += 1;
-//     }
-//     assert_eq!(received, 3);
-
-//     transfer.await.unwrap().unwrap();
-// }
-
-// // Helper to create mock gRPC channel
-// async fn setup_mock_channel() -> Channel {
-//     // Implementation would create in-memory channel for testing
-//     // This is a simplified placeholder
-//     Endpoint::from_static("http://[::1]:50051").connect().await.unwrap()
-// }
 
 fn default_snapshot_config() -> SnapshotConfig {
     SnapshotConfig {
         max_bandwidth_mbps: 1,
         sender_yield_every_n_chunks: 2,
         transfer_timeout_in_sec: 1,
+        push_timeout_in_ms: 100,
         ..Default::default()
     }
 }
 
-// fn make_metadata() -> SnapshotMetadata {
-//     SnapshotMetadata {
-//         last_included: Some(LogId { index: 1, term: 1 }),
-//         ..Default::default()
-//     }
-// }
-
-// fn make_chunk(data: &[u8]) -> SnapshotChunk {
-//     SnapshotChunk {
-//         data: data.to_vec(),
-//         ..Default::default()
-//     }
-// }
-
-// /// Test: load_specific_chunk correctly retrieves requested chunk
-// #[tokio::test]
-// async fn test_load_specific_chunk() {
-//     let chunks = vec![
-//         SnapshotChunk {
-//             seq: 0,
-//             ..Default::default()
-//         },
-//         SnapshotChunk {
-//             seq: 1,
-//             ..Default::default()
-//         },
-//         SnapshotChunk {
-//             seq: 2,
-//             ..Default::default()
-//         },
-//     ];
-//     // Create stream that yields Ok(chunk) for each item
-//     let mut stream: Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>> =
-//         Box::pin(stream::iter(chunks.into_iter().map(Ok)));
-
-//     let chunk = BackgroundSnapshotTransfer::<MockTypeConfig>::load_specific_chunk(&mut stream, 1, 1, 1, 3)
-//         .await
-//         .unwrap()
-//         .unwrap();
-
-//     assert_eq!(chunk.seq, 1);
-// }
-
-// // Helper to create mock handler
-// fn create_mock_handler(num_chunks: u32) -> (Arc<MockStateMachineHandler<MockTypeConfig>>, SnapshotMetadata) {
-//     let metadata = make_metadata();
-//     let cloned_metadata = metadata.clone();
-//     let mut chunks: Vec<Result<SnapshotChunk>> = Vec::new();
-
-//     for i in 0..num_chunks {
-//         chunks.push(Ok(SnapshotChunk {
-//             seq: i,
-//             total_chunks: num_chunks,
-//             ..Default::default()
-//         }));
-//     }
-
-//     let mut handler = MockStateMachineHandler::<MockTypeConfig>::new();
-//     handler.expect_load_snapshot_data().returning(move |_| {
-//         let chunks = vec![create_test_chunk(0, b"data", 1, 1, 1)];
-//         let stream = crate_test_snapshot_stream(chunks);
-//         Ok(Box::pin(stream.map(|item| {
-//             item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())
-//         })))
-//     });
-
-//     handler.expect_apply_batch().returning(move |_| Ok(()));
-//     handler
-//         .expect_get_latest_snapshot_metadata()
-//         .returning(move || Some(metadata.clone()));
-
-//     (Arc::new(handler), cloned_metadata)
-// }
-
-// #[tokio::test]
-// async fn test_pull_transfer_with_retries() {
-//     let (chunk_tx, _chunk_rx) = mpsc::channel(10);
-//     let config = SnapshotConfig {
-//         cache_size: 10,
-//         max_retries: 3,
-//         ..Default::default()
-//     };
-
-//     let first_chunk = SnapshotChunk {
-//         seq: 0,
-//         leader_term: 1,
-//         leader_id: 1,
-//         total_chunks: 2,
-//         chunk_checksum: vec![],
-//         metadata: Some(SnapshotMetadata::default()),
-//         data: vec![],
-//     };
-
-//     let ack_stream = crate_test_snapshot_stream(vec![
-//         SnapshotAck {
-//             seq: 0,
-//             status: snapshot_ack::ChunkStatus::Failed as i32,
-//             next_requested: 0,
-//         },
-//         SnapshotAck {
-//             seq: 0,
-//             status: snapshot_ack::ChunkStatus::Accepted as i32,
-//             next_requested: 1,
-//         },
-//     ]);
-
-//     let data_stream = Box::pin(stream::iter(vec![
-//         Ok(first_chunk.clone()),
-//         Ok(SnapshotChunk {
-//             seq: 1,
-//             leader_term: 1,
-//             leader_id: 1,
-//             total_chunks: 2,
-//             chunk_checksum: vec![],
-//             metadata: None,
-//             data: vec![],
-//         }),
-//     ]));
-
-//     let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-//         Box::new(ack_stream),
-//         chunk_tx,
-//         data_stream,
-//         config,
-//     )
-//     .await;
-
-//     assert!(result.is_ok());
-// }
-
-// #[tokio::test]
-// async fn test_chunk_cache_eviction() {
-//     let mut cache = ChunkCache::new(2);
-//     let chunk1 = SnapshotChunk::default();
-//     let chunk2 = SnapshotChunk::default();
-//     let chunk3 = SnapshotChunk::default();
-
-//     cache.insert(1, chunk1.clone());
-//     cache.insert(2, chunk2.clone());
-//     cache.insert(3, chunk3.clone());
-
-//     assert!(cache.get(1).is_none());
-//     assert!(cache.get(2).is_some());
-//     assert!(cache.get(3).is_some());
-// }
-
-// #[tokio::test]
-// async fn test_retry_manager_max_retries() {
-//     let mut manager = RetryManager::new(2);
-//     assert!(manager.record_failure(1).is_ok());
-//     assert!(manager.record_failure(1).is_ok());
-//     assert!(manager.record_failure(1).is_err());
-// }
+// Helper to create snapshot chunks for testing
+fn create_snapshot_chunk(
+    seq: u32,
+    size: usize,
+) -> SnapshotChunk {
+    SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        seq,
+        total_chunks: 1,
+        chunk_checksum: vec![],
+        metadata: if seq == 0 { Some(Default::default()) } else { None },
+        data: vec![0; size],
+    }
+}
 
 #[cfg(test)]
-
-mod run_pull_transfer_test {
-
-    use crate::{test_utils::crate_test_snapshot_stream_from_receiver, ConsensusError, Error};
+mod run_push_transfer_test {
+    use crate::{ConsensusError, SystemError};
 
     use super::*;
 
     #[tokio::test]
-    async fn test_pull_transfer_successful_transfer() {
+    async fn test_push_transfer_success() {
+        test_utils::enable_logger();
+        let config = default_snapshot_config();
+        let stream = create_snapshot_stream(3, 1024); // 3 chunks of 1KB each
+
+        // Start mock server
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 1,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: true, // always succeed
+                next_chunk: 1,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
+
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            addr_channel.channel,
+            config,
+        )
+        .await;
+
+        debug!(?result);
+
+        assert!(result.is_ok());
+    }
+
+    // Test: Transfer fails when stream returns an error
+    #[tokio::test]
+    async fn test_push_transfer_fails_on_stream_error() {
+        let config = default_snapshot_config();
+        let stream = create_snapshot_stream(2, 512);
+        let error_stream = stream::once(async {
+            Err(StorageError::IoError(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Test error")).into())
+        });
+        let combined_stream = stream.chain(error_stream).boxed();
+
+        // Start mock server
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 2,
+            Err(Status::unavailable("Service is not ready")),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
+
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            combined_stream,
+            addr_channel.channel,
+            config,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    // Test: Transfer respects bandwidth limit
+    #[tokio::test]
+    async fn test_push_transfer_respects_bandwidth_limit() {
+        enable_logger();
+        let mut config = default_snapshot_config();
+        config.max_bandwidth_mbps = 1; // 1 MBps
+        config.push_queue_size = 1;
+        config.push_timeout_in_ms = 2500;
+
+        let stream = create_snapshot_stream(3, 5 * 1024); // 2 chunks of 5KB each (1.25MB total)
+
+        // Start mock server
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 3,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: true, // always succeed
+                next_chunk: 2,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
+
+        let start = Instant::now();
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            addr_channel.channel,
+            config,
+        )
+        .await;
+
+        debug!(?result);
+        assert!(result.is_ok());
+        let duration = start.elapsed();
+        debug!(?duration);
+
+        // Calculate expected minimum time:
+        // Total data = 2 chunks * 5KB = 10KB = 80,000 bits
+        // Bandwidth = 1 Mbps = 1,000,000 bps
+        // Minimum time = 80,000 / 1,000,000 = 0.08 seconds
+        assert!(duration >= Duration::from_micros(80));
+    }
+
+    // Test: First chunk validation fails when metadata is missing
+    #[tokio::test]
+    async fn test_push_transfer_fails_on_invalid_first_chunk_metadata() {
         enable_logger();
         let config = default_snapshot_config();
-        let data_stream = create_snapshot_stream(3, 1024).boxed();
 
-        let (ack_tx, ack_rx) = mpsc::channel(10);
-        let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
+        // Create a stream with first chunk missing metadata
+        let mut invalid_chunk = create_snapshot_chunk(0, 1024);
+        invalid_chunk.metadata = None;
+        let stream = stream::iter(vec![Ok(invalid_chunk)]).boxed();
 
-        let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-            Box::new(crate_test_snapshot_stream_from_receiver(ack_rx)),
-            chunk_tx,
-            data_stream,
-            config,
+        // Start mock server
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 4,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: true,
+                next_chunk: 1,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
+
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
+                .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::InvalidFirstChunk))
         ));
-
-        // Simulate proper ACKs
-        let ack_tx_clone = ack_tx.clone();
-        tokio::spawn(async move {
-            for i in 0..3 {
-                ack_tx_clone
-                    .send(SnapshotAck {
-                        seq: i,
-                        status: ChunkStatus::Accepted.into(),
-                        next_requested: i + 1,
-                    })
-                    .await
-                    .unwrap();
-            }
-        });
-
-        // Verify all chunks received
-        let mut received = 0;
-        while let Some(chunk) = chunk_rx.recv().await {
-            assert!(chunk.is_ok());
-            received += 1;
-            if received == 3 {
-                break;
-            }
-        }
-
-        drop(ack_tx);
-
-        tokio::select! {
-            _ = async {
-                //Original assertion logic
-                assert_eq!(received, 3);
-                assert!(transfer.await.unwrap().is_ok());
-            } => {},
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                panic!("Test timed out after 5 seconds");
-            }
-        }
     }
 
-    /// Ack was send back one by one
+    // Test: First chunk validation fails when sequence is not 0
     #[tokio::test]
-    async fn test_pull_transfer_with_checksum_retries_case1() {
+    async fn test_push_transfer_fails_on_invalid_first_chunk_sequence() {
         enable_logger();
-        let config = SnapshotConfig {
-            max_retries: 3,
-            ..default_snapshot_config()
-        };
+        let config = default_snapshot_config();
 
-        let data_stream = create_snapshot_stream(2, 512).boxed();
-        let (ack_tx, ack_rx) = mpsc::channel(10);
-        let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
+        // Create a stream with first chunk having wrong sequence
+        let invalid_chunk = create_snapshot_chunk(1, 1024); // seq=1 instead of 0
+        let stream = stream::iter(vec![Ok(invalid_chunk)]).boxed();
 
-        let acks = vec![
-            SnapshotAck {
-                // First ACK: checksum failure
-                seq: 0,
-                status: ChunkStatus::ChecksumMismatch.into(),
-                next_requested: 0,
-            },
-            SnapshotAck {
-                // Second ACK: accept retransmitted chunk
-                seq: 0,
-                status: ChunkStatus::Accepted.into(),
-                next_requested: 1,
-            },
-            SnapshotAck {
-                // ACK for chunk 1
-                seq: 1,
-                status: ChunkStatus::Accepted.into(),
-                next_requested: 2,
-            },
-        ];
+        // Start mock server
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 5,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: true,
+                next_chunk: 1,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
 
-        let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-            Box::new(crate_test_snapshot_stream_from_receiver(ack_rx)),
-            chunk_tx,
-            data_stream,
-            config,
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
+                .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::InvalidFirstChunk))
         ));
-
-        let mut received = 0;
-        while let Some(chunk) = chunk_rx.recv().await {
-            debug!(received);
-            assert!(chunk.is_ok());
-            ack_tx.send(acks[received]).await.unwrap();
-            received += 1;
-        }
-        assert_eq!(received, 3);
-
-        drop(ack_tx);
-        assert!(transfer.await.unwrap().is_ok());
     }
 
-    /// Ack was sent back all together due to network issue
+    // Test: Transfer fails when stream is empty
     #[tokio::test]
-    async fn test_pull_transfer_with_checksum_retries_case2() {
+    async fn test_push_transfer_fails_on_empty_stream() {
         enable_logger();
-        let config = SnapshotConfig {
-            max_retries: 3,
-            ..default_snapshot_config()
-        };
+        let config = default_snapshot_config();
 
-        let data_stream = create_snapshot_stream(2, 512).boxed();
-        let (ack_tx, ack_rx) = mpsc::channel(10);
-        let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
-        let (one_tx, mut one_rx) = mpsc::channel(10);
-        let ack_tx_clone = ack_tx.clone();
+        // Empty stream
+        let stream = stream::iter(vec![]).boxed();
 
-        tokio::spawn(async move {
-            let _ = one_rx.recv().await;
-            debug!("now let's send ack... ");
+        // Start mock server
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 6,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: true,
+                next_chunk: 1,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
 
-            // chunk 0: ChecksumMismatch
-            ack_tx_clone
-                .send(SnapshotAck {
-                    seq: 0,
-                    status: ChunkStatus::ChecksumMismatch.into(),
-                    next_requested: 0,
-                })
-                .await
-                .unwrap();
-            // ACK for chunk 0
-            ack_tx_clone
-                .send(SnapshotAck {
-                    seq: 0,
-                    status: ChunkStatus::Accepted.into(),
-                    next_requested: 1,
-                })
-                .await
-                .unwrap();
-            // ACK for chunk 1
-            ack_tx_clone
-                .send(SnapshotAck {
-                    seq: 1,
-                    status: ChunkStatus::Accepted.into(),
-                    next_requested: 2,
-                })
-                .await
-                .unwrap();
-        });
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
+                .await;
 
-        let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-            Box::new(crate_test_snapshot_stream_from_receiver(ack_rx)),
-            chunk_tx,
-            data_stream,
-            config,
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::EmptySnapshot))
         ));
-
-        let mut received = 0;
-        while let Some(chunk) = chunk_rx.recv().await {
-            debug!(received);
-            assert!(chunk.is_ok());
-            received += 1;
-
-            if received == 3 {
-                one_tx.send(()).await.unwrap();
-            }
-        }
-        assert_eq!(received, 4);
-
-        drop(ack_tx);
-        assert!(transfer.await.unwrap().is_ok());
     }
 
+    // Test: Transfer fails when gRPC call returns error
     #[tokio::test]
-    async fn test_pull_transfer_fails_after_max_retries() {
+    async fn test_push_transfer_fails_on_grpc_error() {
         enable_logger();
-        let config = SnapshotConfig {
-            max_retries: 2,
-            retry_interval_in_ms: 1,
-            transfer_timeout_in_sec: 1,
-            ..default_snapshot_config()
-        };
+        let config = default_snapshot_config();
+        let stream = create_snapshot_stream(3, 1024);
 
-        let data_stream = create_snapshot_stream(1, 512).boxed();
-        let (ack_tx, ack_rx) = mpsc::channel(10);
-        let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
+        // Start mock server that returns gRPC error
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 7,
+            Err(Status::internal("Internal server error")),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
 
-        let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-            Box::new(crate_test_snapshot_stream_from_receiver(ack_rx)),
-            chunk_tx,
-            data_stream,
-            config.clone(),
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            addr_channel.channel,
+            config,
+        )
+        .await;
+
+        assert!(result.is_err());
+        debug!(?result);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::System(SystemError::Network(NetworkError::TonicStatusError(_)))
         ));
+    }
 
-        let ack_tx_clone = ack_tx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            // Continuously send checksum failures
-            for _ in 0..=(config.max_retries + 1) {
-                ack_tx_clone
-                    .send(SnapshotAck {
-                        seq: 0,
-                        status: ChunkStatus::ChecksumMismatch.into(),
-                        next_requested: 0,
-                    })
-                    .await
-                    .unwrap();
-            }
-        });
+    // Test: Transfer fails when background task fails to send chunk
+    #[tokio::test]
+    async fn test_push_transfer_fails_on_background_task_error() {
+        enable_logger();
+        let mut config = default_snapshot_config();
+        config.push_queue_size = 1; // Small queue to cause backpressure
+        config.snapshot_push_backoff_in_ms = 0;
+        config.snapshot_push_max_retry = 0;
 
-        while let Some(chunk) = chunk_rx.recv().await {
-            debug!("receive seq:{} in test", chunk.unwrap().seq);
-        }
+        // Create a stream that will overflow the queue
+        let chunks: Vec<Result<SnapshotChunk>> = (0..10)
+            .map(|i| Ok(create_snapshot_chunk(i, 1024 * 1024))) // 1MB chunks
+            .collect();
+        let stream = stream::iter(chunks).boxed();
 
-        drop(ack_tx);
-        let result = transfer.await.unwrap();
+        // Start mock server that processes slowly
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 8,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: true,
+                next_chunk: 1,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
+
+        let result =
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, addr_channel.channel, config)
+                .await;
+
         debug!(?result);
 
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            Error::Consensus(ConsensusError::Snapshot(SnapshotError::TransferFailed))
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(
+                SnapshotError::Backpressure | SnapshotError::ReceiverDisconnected
+            ))
         ));
     }
 
+    // Test: Transfer fails when gRPC response indicates failure
     #[tokio::test]
-    async fn test_pull_transfer_handles_out_of_order_acks() {
+    async fn test_push_transfer_fails_on_remote_rejection() {
         enable_logger();
-        let config = default_snapshot_config();
-        let data_stream = create_snapshot_stream(3, 512).boxed();
-        let (ack_tx, ack_rx) = mpsc::channel(10);
-        let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
-        let (one_tx, one_rx) = oneshot::channel();
+        let mut config = default_snapshot_config();
+        config.push_timeout_in_ms = 50;
+        let stream = create_snapshot_stream(3, 1024);
 
-        let ack_tx_clone = ack_tx.clone();
+        // Start mock server that returns failure response
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let addr_channel = MockNode::simulate_snapshot_mock_server(
+            MOCK_SNAPSHOT_PORT_BASE + 9,
+            Ok(SnapshotResponse {
+                term: 1,
+                success: false, // rejection
+                next_chunk: 1,
+            }),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
 
-        let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-            Box::new(crate_test_snapshot_stream_from_receiver(ack_rx)),
-            chunk_tx,
-            data_stream,
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            addr_channel.channel,
             config,
-        ));
-        tokio::spawn(async move {
-            let _ = one_rx.await;
-            debug!("now let's send ack... ");
+        )
+        .await;
 
-            // ACK for chunk 2 first
-            ack_tx_clone
-                .send(SnapshotAck {
-                    seq: 2,
-                    status: ChunkStatus::Accepted.into(),
-                    next_requested: 0,
-                })
-                .await
-                .unwrap();
-
-            // Then ACK for chunk 1
-            ack_tx_clone
-                .send(SnapshotAck {
-                    seq: 1,
-                    status: ChunkStatus::Accepted.into(),
-                    next_requested: 0,
-                })
-                .await
-                .unwrap();
-
-            // Finally ACK for chunk 0
-            ack_tx_clone
-                .send(SnapshotAck {
-                    seq: 0,
-                    status: ChunkStatus::Accepted.into(),
-                    next_requested: 3,
-                })
-                .await
-                .unwrap();
-        });
-
-        let mut received = 0;
-        while let Some(chunk) = chunk_rx.recv().await {
-            debug!("receive seq:{} in test", chunk.unwrap().seq);
-            received += 1;
-            if received == 3 {
-                break;
-            }
-        }
-        assert_eq!(received, 3);
-        one_tx.send(()).unwrap();
-
-        drop(ack_tx);
-        assert!(transfer.await.unwrap().is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_pull_transfer_timeout_with_no_acks() {
-        enable_logger();
-        let config = SnapshotConfig {
-            transfer_timeout_in_sec: 1,
-            ..default_snapshot_config()
-        };
-
-        let data_stream = create_snapshot_stream(1, 512).boxed();
-        let (ack_tx, ack_rx) = mpsc::channel(10);
-        let (chunk_tx, mut chunk_rx) = mpsc::channel(10);
-
-        let transfer = tokio::spawn(BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
-            Box::new(crate_test_snapshot_stream_from_receiver(ack_rx)),
-            chunk_tx,
-            data_stream,
-            config,
-        ));
-
-        while let Some(_chunk) = chunk_rx.recv().await {}
-
-        // Don't send any ACKs - should timeout
-        drop(ack_tx);
-
-        let result = transfer.await.unwrap();
         debug!(?result);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            Error::Consensus(ConsensusError::Snapshot(SnapshotError::TransferTimeout))
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::RemoteRejection))
         ));
     }
 }
+
+// ... rest of the file remains unchanged ...

@@ -106,5 +106,8 @@ pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         max_retries: 1,
         transfer_timeout_in_sec: 1,
         retry_interval_in_ms: 1,
+        snapshot_push_backoff_in_ms: 1,
+        snapshot_push_max_retry: 1,
+        push_timeout_in_ms: 100,
     }
 }

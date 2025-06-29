@@ -25,9 +25,9 @@ use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
 use tokio_stream::StreamExt;
-use tonic::Status;
 use tonic::Streaming;
 use tracing::debug;
+use tracing::trace;
 
 #[derive(Debug, Clone, Default)]
 pub struct MockRpcService {
@@ -167,19 +167,15 @@ impl SnapshotService for MockRpcService {
     ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
         let mut stream = request.into_inner();
 
-        while let Some(chunk) = stream.next().await {
-            let _chunk = chunk?;
-            debug!("-");
-            match &self.expected_snapshot_response {
-                Some(Ok(response)) => return Ok(tonic::Response::new(*response)),
-                Some(Err(status)) => return Err(status.clone()),
-                None => return Err(tonic::Status::unknown("No mock install_snapshot response set")),
-            }
+        while let Some(_chunk) = stream.next().await {
+            trace!("install_snapshot receive chunk - ");
         }
+        trace!("install_snapshot no more to receive!");
+
         match &self.expected_snapshot_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
-            Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock install_snapshot response set")),
+            Some(Ok(response)) => return Ok(tonic::Response::new(*response)),
+            Some(Err(status)) => return Err(status.clone()),
+            None => return Err(tonic::Status::unknown("No mock install_snapshot response set")),
         }
     }
 

@@ -15,9 +15,9 @@ use std::{
     sync::{atomic::AtomicU32, Arc},
     time::Duration,
 };
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::{sleep, Instant};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{interval, sleep, Instant};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
@@ -102,7 +102,7 @@ where
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip);
 
-        Self::push_transfer_loop(client, first_chunk, data_stream, config).await?;
+        Self::push_transfer_loop(node_id, client, first_chunk, data_stream, config).await?;
 
         debug!(%node_id, "Push snapshot transfer completed");
         Ok(())
@@ -110,6 +110,7 @@ where
 
     // Dedicated push logic
     async fn push_transfer_loop(
+        node_id: u32,
         mut client: SnapshotServiceClient<Channel>,
         first_chunk: SnapshotChunk,
         mut data_stream: Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
@@ -125,31 +126,76 @@ where
             .map_err(|e| NetworkError::SingalSendFailed(format!("{:?}", e)))?;
 
         // 3. Start the background task to send the remaining blocks
+        let (error_tx, mut error_rx) = mpsc::channel(1);
+
+        // # Bug fix: request_tx can not be cloned.
+        // let mut bg_request_tx = request_tx.clone();
+        let bg_config = config.clone();
         tokio::spawn(async move {
-            while let Some(chunk) = data_stream.next().await {
-                if let Ok(chunk) = chunk {
-                    if let Err(e) = Self::send_chunk_with_retry(&mut request_tx, Arc::new(chunk), &config).await {
-                        break;
+            let result = async {
+                while let Some(chunk) = data_stream.next().await {
+                    match chunk {
+                        Ok(chunk) => {
+                            Self::send_chunk_with_retry(&mut request_tx, Arc::new(chunk), &bg_config).await?;
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
+                Ok(())
             }
+            .await;
+
+            debug!("finished send snapshot stream!");
+
+            // Only send error if one occurred
+            if let Err(e) = result {
+                let _ = error_tx.send(e).await;
+            }
+            // Otherwise, let error_tx drop naturally
         });
 
         // 4. Create a gRPC request stream
-        //  Lazy cloning - clone only when needed to send:
         let request_stream = ReceiverStream::new(request_rx).map(|arc_chunk| (*arc_chunk).clone());
 
-        // 5. Initiate a gRPC call (key point!)
-        let response = client
-            .install_snapshot(request_stream)
-            .await
-            .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
+        // 5. Initiate gRPC call with timeout and error handling
+        let grpc_fut = client.install_snapshot(request_stream);
+        tokio::pin!(grpc_fut);
 
-        // 6. Check the response
-        if response.into_inner().success {
-            Ok(())
-        } else {
-            Err(SnapshotError::RemoteRejection.into())
+        debug!(config.push_timeout_in_ms);
+        let timeout_duration = Duration::from_millis(config.push_timeout_in_ms);
+        let timeout_fut = tokio::time::sleep(timeout_duration);
+        tokio::pin!(timeout_fut);
+
+        loop {
+            tokio::select! {
+                // Check for background errors
+                bg_error = error_rx.recv() => {
+                    match bg_error {
+                        Some(e) => return Err(e),
+                        None => continue, // No error yet, or background task completed without error, keep waiting
+                    }
+                }
+
+                response = &mut grpc_fut => {
+                    trace!("normal response ...");
+                    match response {
+                        Ok(response) => {
+                            if response.into_inner().success {
+                                return Ok(());
+                            } else {
+                                return Err(SnapshotError::RemoteRejection.into());
+                            }
+                        }
+                        Err(e) => return Err(NetworkError::TonicStatusError(Box::new(e)).into()),
+                    }
+                }
+
+                // Handle timeout
+                 _ = &mut timeout_fut => {
+                    trace!("timeout ...");
+                    return Err(NetworkError::Timeout{node_id, duration: timeout_duration}.into());
+                }
+            }
         }
     }
 
@@ -403,27 +449,34 @@ where
         chunk: Arc<SnapshotChunk>,
         config: &SnapshotConfig,
     ) -> Result<()> {
-        const MAX_RETRIES: u32 = 3;
         let mut attempt = 0;
-        let mut backoff = Duration::from_millis(100);
+        // let mut backoff = Duration::from_millis(config.snapshot_push_backoff_in_ms);
+        let max_retry = config.snapshot_push_max_retry;
 
         loop {
-            debug!(?attempt);
+            trace!(?attempt);
             match tx.try_send(chunk.clone()) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    trace!("send chunk.");
+                    return Ok(());
+                }
                 Err(TrySendError::Full(_)) => {
-                    if attempt >= MAX_RETRIES {
+                    trace!("queue is full!");
+                    if attempt >= max_retry {
                         return Err(SnapshotError::Backpressure.into());
                     }
-
+                    let start = Instant::now();
                     // Apply rate limiting before retry
                     Self::apply_rate_limit(&chunk, config.max_bandwidth_mbps).await;
+                    let duration = start.elapsed();
 
-                    sleep(backoff).await;
-                    backoff = backoff.mul_f32(2.0).min(Duration::from_secs(1));
                     attempt += 1;
+                    trace!(?attempt, ?duration, "apply_rate_limit=");
                 }
-                Err(_) => return Err(SnapshotError::ReceiverDisconnected.into()),
+                Err(e) => {
+                    trace!(?e, "unknown error");
+                    return Err(SnapshotError::ReceiverDisconnected.into());
+                }
             }
         }
     }
@@ -434,9 +487,17 @@ where
         max_bandwidth_mbps: u32,
     ) {
         if max_bandwidth_mbps > 0 {
-            let chunk_size_mb = chunk.data.len() as f64 / 1_000_000.0;
-            let min_duration = Duration::from_secs_f64(chunk_size_mb / max_bandwidth_mbps as f64);
-            debug!(?chunk_size_mb, ?min_duration);
+            let chunk_size_bits = chunk.data.len() as f64 * 8.0;
+            let bandwidth_bps = max_bandwidth_mbps as f64 * 1_000_000.0;
+            let min_duration_secs = chunk_size_bits / bandwidth_bps;
+
+            let min_duration = Duration::from_secs_f64(min_duration_secs);
+            debug!(
+                chunk_size_bytes = chunk.data.len(),
+                max_bandwidth_mbps,
+                min_duration_secs,
+                min_duration = ?min_duration
+            );
             sleep(min_duration).await;
         }
     }
@@ -474,303 +535,4 @@ where
         }
         Ok(None)
     }
-
-    // pub(super) async fn send_chunks(
-    //     mut stream: impl Stream<Item = Result<SnapshotChunk>> + Unpin,
-    //     tx: mpsc::Sender<SnapshotChunk>,
-    //     config: SnapshotConfig,
-    // ) -> Result<()> {
-    //     let mut yield_counter = 0;
-    //     while let Some(chunk) = stream.next().await {
-    //         let chunk = chunk?;
-
-    //         //Apply rate limit
-    //         if config.max_bandwidth_mbps > 0 {
-    //             let chunk_size_mb = chunk.data.len() as f64 / 1_000_000.0;
-    //             let min_duration = Duration::from_secs_f64(chunk_size_mb / config.max_bandwidth_mbps as f64);
-    //             tokio::time::sleep(min_duration).await;
-    //         }
-
-    //         // Non-blocking send
-    //         if tx.try_send(chunk).is_err() {
-    //             warn!("Snapshot receiver lagging, dropping chunk");
-    //             return Err(SnapshotError::Backpressure.into());
-    //         }
-
-    //         // Yield control every N chunks
-    //         yield_counter += 1;
-    //         if yield_counter % config.sender_yield_every_n_chunks == 0 {
-    //             tokio::task::yield_now().await;
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    // /// Production-ready handler for streaming snapshot requests
-    // pub(crate) async fn run_pull_transfer(
-    //     leader_term: u64,
-    //     leader_id: u32,
-    //     mut ack_stream_request: Box<tonic::Streaming<SnapshotAck>>,
-    //     chunk_tx: mpsc::Sender<std::result::Result<SnapshotChunk, Status>>,
-    //     mut data_stream: BoxStream<'static, Result<SnapshotChunk>>,
-    //     metadata: SnapshotMetadata,
-    //     config: SnapshotConfig,
-    // ) -> Result<()> {
-    //     // Create transfer instance for tracking
-    //     let transfer = Arc::new(Self {
-    //         node_id: 0, // Not used in this context
-    //         metadata: metadata.clone(),
-    //         config: Arc::new(config.clone()),
-    //         status: Arc::new(AtomicU32::new(SnapshotStatus::Pending as u32)),
-    //         _marker: PhantomData,
-    //     });
-
-    //     // Preload the first chunk and verify
-    //     let first_chunk = match data_stream.next().await {
-    //         Some(Ok(chunk)) if chunk.seq == 0 && chunk.metadata.is_some() => {
-    //             // Verify required fields
-    //             if chunk.total_chunks == 0 || chunk.leader_id != 0 || chunk.leader_term != 0 {
-    //                 return Err(SnapshotError::InvalidFirstChunk.into());
-    //             }
-    //             chunk
-    //         }
-    //         Some(Ok(_)) => return Err(SnapshotError::InvalidFirstChunk.into()),
-    //         Some(Err(e)) => return Err(e),
-    //         None => return Err(SnapshotError::EmptySnapshot.into()),
-    //     };
-
-    //     // Get total_chunks from the first chunk
-    //     let total_chunks = first_chunk.total_chunks;
-
-    //     // Send the first chunk (note to update the leader information)
-    //     let mut first_chunk = first_chunk;
-    //     first_chunk.leader_id = leader_id;
-    //     first_chunk.leader_term = leader_term;
-    //     let checksum = crc32fast::hash(&first_chunk.data);
-    //     first_chunk.chunk_checksum = checksum.to_be_bytes().to_vec();
-    //     Self::send_chunk(&chunk_tx, first_chunk, &config).await?;
-
-    //     let mut next_chunk_index = 0; // Start from the second chunk
-    //     let mut chunks_sent = 1; // 1 chunk has been sent (the first chunk)
-
-    //     let mut last_ack_time = Instant::now();
-    //     let mut retransmit_queue: VecDeque<u32> = VecDeque::new();
-
-    //     let mut retry_states: HashMap<u32, ChunkRetryState> = HashMap::new();
-    //     const MAX_RETRIES: u32 = 5;
-    //     const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
-    //     // Main transfer loop
-    //     while next_chunk_index < total_chunks || !retransmit_queue.is_empty() {
-    //         tokio::select! {
-    //             // Handle incoming ACKs
-    //             ack = ack_stream_request.message() => match ack {
-    //                 Ok(Some(ack)) => {
-    //                     last_ack_time = Instant::now();
-
-    //                     match ack.status() {
-    //                         snapshot_ack::ChunkStatus::Accepted => {
-    //                             debug!("Chunk {} accepted", ack.seq);
-    //                         }
-    //                         snapshot_ack::ChunkStatus::ChecksumMismatch => {
-    //                             warn!("Checksum mismatch for chunk {}, resending", ack.seq);
-    //                             retransmit_queue.push_back(ack.seq);
-    //                         }
-    //                         snapshot_ack::ChunkStatus::OutOfOrder => {
-    //                             warn!("Out-of-order chunk {}, resetting to {}", ack.seq, ack.next_requested);
-    //                             next_chunk_index = ack.next_requested;
-    //                             retransmit_queue.clear();
-    //                         }
-    //                         snapshot_ack::ChunkStatus::Requested => {
-    //                             debug!("Explicit request for chunk {}", ack.next_requested);
-    //                             if ack.next_requested < next_chunk_index {
-    //                                 // If the requested chunk has been sent, process it from the retransmit queue
-    //                                 retransmit_queue.push_back(ack.next_requested);
-    //                             } else {
-    //                                 // If the requested chunk has not been sent, jump directly to that position
-    //                                 next_chunk_index = ack.next_requested;
-    //                                 retransmit_queue.clear();
-    //                             }
-    //                         }
-    //                         snapshot_ack::ChunkStatus::Failed => {
-    //                             let retry_state = retry_states.entry(ack.seq).or_insert(ChunkRetryState {
-    //                                 retry_count: 0,
-    //                                 last_retry: Instant::now() - INITIAL_RETRY_DELAY,
-    //                             });
-
-    //                             // Apply exponential backoff
-    //                             let next_retry_time = retry_state.last_retry +
-    //                                 INITIAL_RETRY_DELAY * 2u32.pow(retry_state.retry_count);
-
-    //                             if Instant::now() >= next_retry_time {
-    //                                 retry_state.retry_count += 1;
-    //                                 retry_state.last_retry = Instant::now();
-
-    //                                 if retry_state.retry_count > MAX_RETRIES {
-    //                                     error!("Chunk {} failed after {} retries, aborting transfer", ack.seq, MAX_RETRIES);
-    //                                     transfer.status.store(SnapshotStatus::Failed as u32, Ordering::Release);
-    //                                     return Err(SnapshotError::TransferFailed.into());
-    //                                 }
-
-    //                                 warn!("Chunk {} failed (attempt {}/{}), resending",
-    //                                 ack.seq, retry_state.retry_count, MAX_RETRIES);
-    //                                 retransmit_queue.push_back(ack.seq);
-    //                             } else {
-    //                                 // Schedule for later retry
-    //                                 retransmit_queue.push_back(ack.seq);
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //                 Ok(None) => break, // Stream closed by learner
-    //                 Err(e) => {
-    //                     transfer.status.store(SnapshotStatus::Failed as u32, Ordering::Release);
-    //                     return Err(NetworkError::TonicStatusError(Box::new(e)).into());
-    //                 }
-    //             },
-
-    //             // Send next chunk or retransmit
-    //             _ = async {
-    //                 if let Some(seq) = retransmit_queue.pop_front() {
-    //                     // Retransmit specific chunk
-    //                     if let Some(chunk) = Self::load_specific_chunk(
-    //                         &mut data_stream,
-    //                         seq,
-    //                         leader_term,
-    //                         leader_id,
-    //                         total_chunks
-    //                     ).await? {
-    //                         Self::send_chunk(&chunk_tx, chunk, &config).await?;
-    //                     }
-    //                 } else if next_chunk_index < total_chunks {
-    //                     // Send next chunk in sequence
-    //                     if let Some(chunk) = Self::load_next_chunk(
-    //                         &mut data_stream,
-    //                         next_chunk_index,
-    //                         leader_term,
-    //                         leader_id,
-    //                         &transfer,
-    //                         total_chunks
-    //                     ).await? {
-    //                         Self::send_chunk(&chunk_tx, chunk, &config).await?;
-    //                         next_chunk_index += 1;
-    //                     }
-    //                     chunks_sent += 1;
-    //                 }
-    //                 Ok::<(), Box<dyn Error + Send + Sync>>(())
-    //             } => {},
-
-    //             // Handle timeout
-    //             _ = tokio::time::sleep(Duration::from_secs(5)) => {
-    //                 if last_ack_time.elapsed() > Duration::from_secs(10) {
-    //                     transfer.status.store(SnapshotStatus::Failed as u32, Ordering::Release);
-    //                     return Err(SnapshotError::TransferTimeout.into());
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     transfer
-    //         .status
-    //         .store(SnapshotStatus::Completed as u32, Ordering::Release);
-    //     Ok(())
-    // }
-
-    // async fn load_next_chunk(
-    //     data_stream: &mut Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
-    //     seq: u32,
-    //     leader_term: u64,
-    //     leader_id: u32,
-    //     transfer: &Arc<Self>,
-    //     total_chunks: u32,
-    // ) -> Result<Option<SnapshotChunk>> {
-    //     match data_stream.next().await {
-    //         Some(Ok(mut chunk)) => {
-    //             // Update chunk metadata
-    //             chunk.leader_id = leader_id;
-    //             chunk.leader_term = leader_term;
-    //             chunk.seq = seq;
-    //             chunk.total_chunks = total_chunks;
-
-    //             // Add metadata only for first chunk
-    //             if seq == 0 {
-    //                 chunk.metadata = Some(transfer.metadata.clone());
-    //             }
-
-    //             // Calculate and set checksum
-    //             chunk.chunk_checksum = crc32fast::hash(&chunk.data).to_be_bytes().to_vec();
-
-    //             Ok(Some(chunk))
-    //         }
-    //         Some(Err(e)) => Err(e),
-    //         None => Ok(None),
-    //     }
-    // }
-
-    // pub(super) async fn load_specific_chunk(
-    //     data_stream: &mut Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
-    //     seq: u32,
-    //     leader_term: u64,
-    //     leader_id: u32,
-    //     total_chunks: u32,
-    // ) -> Result<Option<SnapshotChunk>> {
-    //     while let Some(Ok(mut chunk)) = data_stream.next().await {
-    //         if chunk.seq == seq {
-    //             chunk.leader_term = leader_term;
-    //             chunk.leader_id = leader_id;
-    //             chunk.total_chunks = total_chunks;
-    //             return Ok(Some(chunk));
-    //         }
-    //     }
-    //     Ok(None)
-    // }
-
-    // async fn send_chunk(
-    //     chunk_tx: &mpsc::Sender<std::result::Result<SnapshotChunk, Status>>,
-    //     chunk: SnapshotChunk,
-    //     config: &SnapshotConfig,
-    // ) -> Result<()> {
-    //     // Apply rate limiting
-    //     if config.max_bandwidth_mbps > 0 {
-    //         let chunk_size_mb = chunk.data.len() as f64 / 1_000_000.0;
-    //         let min_duration = Duration::from_secs_f64(chunk_size_mb / config.max_bandwidth_mbps as f64);
-    //         tokio::time::sleep(min_duration).await;
-    //     }
-
-    //     // Send with bounded channel backpressure
-    //     match chunk_tx.send(Ok(chunk)).await {
-    //         Ok(_) => Ok(()),
-    //         Err(e) => {
-    //             warn!(?e, "Failed to send chunk: receiver disconnected");
-    //             Err(SnapshotError::ReceiverDisconnected.into())
-    //         }
-    //     }
-    // }
-
-    // / Create snapshot block
-    // fn create_chunk(
-    //     &self,
-    //     leader_term: u64,
-    //     leader_id: u32,
-    //     seq: u32,
-    //     data: Option<Vec<u8>>,
-    //     is_first: bool,
-    //     total_chunks: u32,
-    // ) -> Result<SnapshotChunk> {
-    //     let data = data.unwrap_or_default();
-
-    //     // Calculate checksum
-    //     let mut hasher = crc32fast::Hasher::new();
-    //     hasher.update(&data);
-    //     let checksum = hasher.finalize().to_be_bytes().to_vec();
-
-    //     Ok(SnapshotChunk {
-    //         leader_term,
-    //         leader_id,
-    //         seq,
-    //         total_chunks,
-    //         chunk_checksum: checksum,
-    //         metadata: if is_first { Some(self.metadata.clone()) } else { None },
-    //         data,
-    //     })
-    // }
 }
