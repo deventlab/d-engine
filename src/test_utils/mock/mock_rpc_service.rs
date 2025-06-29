@@ -20,13 +20,12 @@ use tonic::transport::Channel;
 use tonic_health::server::health_reporter;
 use tracing::info;
 
-pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60200;
-pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60300;
-pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60400;
-pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60500;
-pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60900;
-pub(crate) const MOCK_LEADER_STATE_PORT_BASE: u64 = 61200;
-pub(crate) const MOCK_SNAPSHOT_PORT_BASE: u64 = 61300;
+pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60100;
+pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60200;
+pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60300;
+pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60400;
+pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60500;
+pub(crate) const MOCK_SNAPSHOT_PORT_BASE: u64 = 60600;
 
 pub struct MockNode;
 

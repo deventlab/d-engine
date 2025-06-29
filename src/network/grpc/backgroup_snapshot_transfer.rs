@@ -360,39 +360,6 @@ where
         Ok(())
     }
 
-    // Send next chunk in sequence
-    async fn send_next_chunk(
-        seq: u32,
-        data_stream: &mut Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
-        chunk_tx: &mpsc::Sender<std::result::Result<Arc<SnapshotChunk>, Status>>,
-        config: &SnapshotConfig,
-        chunk_cache: &mut LruCache<u32, Arc<SnapshotChunk>>,
-        total_chunks: u32,
-        leader_term: u64,
-        leader_id: u32,
-    ) -> Result<()> {
-        let mut chunk = match data_stream.next().await {
-            Some(Ok(chunk)) => chunk,
-            Some(Err(e)) => return Err(e),
-            None => return Err(SnapshotError::IncompleteSnapshot.into()),
-        };
-
-        // Update chunk metadata
-        chunk.seq = seq;
-        chunk.leader_term = leader_term;
-        chunk.leader_id = leader_id;
-        chunk.total_chunks = total_chunks;
-
-        // Calculate and set checksum
-        let checksum = crc32fast::hash(&chunk.data);
-        chunk.chunk_checksum = checksum.to_be_bytes().to_vec();
-
-        let arc_chunk = Arc::new(chunk);
-        chunk_cache.put(seq, arc_chunk.clone());
-        Self::send_chunk(chunk_tx, arc_chunk.clone(), config.max_bandwidth_mbps).await?;
-        Ok(())
-    }
-
     // Send chunk with retry logic for push mode
     async fn send_chunk_with_retry(
         tx: &mut mpsc::Sender<Arc<SnapshotChunk>>,

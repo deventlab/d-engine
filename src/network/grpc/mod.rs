@@ -10,7 +10,6 @@
 mod backgroup_snapshot_transfer;
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
-mod restartable_stream;
 
 pub(crate) use backgroup_snapshot_transfer::*;
 

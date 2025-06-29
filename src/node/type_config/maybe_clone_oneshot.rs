@@ -227,15 +227,15 @@ impl StreamResponseSender {
     pub fn send(
         self,
         value: std::result::Result<tonic::Streaming<SnapshotChunk>, Status>,
-    ) -> Result<(), std::result::Result<tonic::Streaming<SnapshotChunk>, Status>> {
+    ) -> Result<(), Box<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>> {
         #[cfg(not(test))]
-        return self.inner.send(value);
+        return self.inner.send(value).map_err(Box::new);
 
         #[cfg(test)]
         if let Some(tx) = self.test_inner {
-            tx.send(value).map(|_| ()).map_err(|e| e.0)
+            tx.send(value).map(|_| ()).map_err(|e| Box::new(e.0))
         } else {
-            self.inner.send(value)
+            self.inner.send(value).map_err(Box::new)
         }
     }
 }
