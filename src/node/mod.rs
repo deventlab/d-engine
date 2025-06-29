@@ -33,6 +33,14 @@ mod builder_test;
 #[cfg(test)]
 mod node_test;
 
+use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
+
 use crate::alias::MOF;
 use crate::Membership;
 use crate::Raft;
@@ -40,17 +48,10 @@ use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
-use std::fmt::Debug;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
 
 /// Raft node container
 pub struct Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) node_id: u32,
     pub(crate) raft_core: Arc<Mutex<Raft<T>>>,
@@ -68,8 +69,7 @@ where
 }
 
 impl<T> Debug for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn fmt(
         &self,
@@ -79,8 +79,7 @@ where
     }
 }
 impl<T> Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Starts and runs the Raft node's main execution loop.
     ///

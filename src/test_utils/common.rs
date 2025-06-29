@@ -1,3 +1,10 @@
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use prost::Message;
+
 use crate::alias::ROF;
 use crate::convert::safe_kv;
 use crate::proto::client::WriteCommand;
@@ -6,11 +13,6 @@ use crate::proto::common::EntryPayload;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SnapshotConfig;
-use prost::Message;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     let mut buffer = Vec::new();

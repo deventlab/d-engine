@@ -7,6 +7,11 @@ mod health_checker_test;
 #[cfg(test)]
 mod raft_membership_test;
 
+#[cfg(test)]
+use mockall::automock;
+use tonic::async_trait;
+use tonic::transport::Channel;
+
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
@@ -14,10 +19,6 @@ use crate::proto::cluster::ClusterMembership;
 use crate::proto::common::NodeStatus;
 use crate::Result;
 use crate::TypeConfig;
-#[cfg(test)]
-use mockall::automock;
-use tonic::async_trait;
-use tonic::transport::Channel;
 
 // Add connection type management in RpcPeerChannels
 #[derive(Eq, Hash, PartialEq)]
@@ -30,8 +31,7 @@ pub(crate) enum ConnectionType {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// All nodes (including itself)
     #[allow(unused)]

@@ -1,8 +1,9 @@
-use crate::Error;
-use crate::Result;
 use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::Error;
+use crate::Result;
 
 /// Hierarchical network configuration for different Raft connection types
 ///

@@ -1,3 +1,35 @@
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_compression::tokio::write::GzipEncoder;
+use async_stream::try_stream;
+use autometrics::autometrics;
+use futures::stream::BoxStream;
+use tokio::fs;
+use tokio::fs::remove_dir_all;
+use tokio::fs::remove_file;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tokio_stream::StreamExt;
+use tonic::async_trait;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+
 use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
@@ -29,36 +61,6 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
-use async_compression::tokio::write::GzipEncoder;
-use async_stream::try_stream;
-use autometrics::autometrics;
-use futures::stream::BoxStream;
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::fs;
-use tokio::fs::remove_dir_all;
-use tokio::fs::remove_file;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tokio_stream::StreamExt;
-use tonic::async_trait;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -72,8 +74,7 @@ pub struct SnapshotTransferMeta {
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     // last_applied, as an application progress indicator, may fall under the responsibility of the
@@ -103,8 +104,7 @@ pub(crate) struct CleanupSnapshotMeta {
 
 #[async_trait]
 impl<T> StateMachineHandler<T> for DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Update pending commit index
     fn update_pending(
@@ -352,11 +352,8 @@ where
 
             if path.extension().is_some_and(|ext| ext == "gz") {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                    let parsed = parse_snapshot_dirname(file_name).or_else(|| {
-                        file_name
-                            .strip_suffix(".tar.gz")
-                            .and_then(parse_snapshot_dirname)
-                    });
+                    let parsed = parse_snapshot_dirname(file_name)
+                        .or_else(|| file_name.strip_suffix(".tar.gz").and_then(parse_snapshot_dirname));
 
                     let (index, term) = if let Some(pair) = parsed {
                         pair
@@ -620,8 +617,7 @@ where
 }
 
 impl<T> DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,

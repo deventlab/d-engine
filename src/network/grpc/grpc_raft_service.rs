@@ -2,6 +2,21 @@
 //! and client requests. Implements core Raft protocol logic for leader election,
 //! log replication, and cluster configuration management.
 
+use std::future::Future;
+use std::time::Duration;
+
+use autometrics::autometrics;
+use tokio::select;
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
+use tonic::Request;
+use tonic::Response;
+use tonic::Status;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
+
 use crate::proto::client::raft_client_service_server::RaftClientService;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
@@ -34,24 +49,10 @@ use crate::RaftOneshot;
 use crate::StreamResponseSender;
 use crate::TypeConfig;
 use crate::API_SLO;
-use autometrics::autometrics;
-use std::future::Future;
-use std::time::Duration;
-use tokio::select;
-use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
-use tonic::Request;
-use tonic::Response;
-use tonic::Status;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Handles RequestVote RPC calls from candidate nodes during leader elections
     /// # Raft Protocol Logic
@@ -80,8 +81,7 @@ where
 }
 #[tonic::async_trait]
 impl<T> RaftReplicationService for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Processes AppendEntries RPC calls from cluster leader
     /// # Raft Protocol Logic
@@ -115,8 +115,7 @@ where
 
 #[tonic::async_trait]
 impl<T> SnapshotService for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
 
@@ -191,8 +190,7 @@ where
 
 #[tonic::async_trait]
 impl<T> ClusterManagementService for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Handles cluster membership changes (joint consensus)
     /// # Raft Protocol Logic
@@ -296,8 +294,7 @@ where
 }
 #[tonic::async_trait]
 impl<T> RaftClientService for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic

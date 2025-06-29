@@ -1,3 +1,26 @@
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+
+use autometrics::autometrics;
+use nanoid::nanoid;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::time::sleep;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+use tracing::warn;
+
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
 use super::LeaderStateSnapshot;
@@ -67,27 +90,6 @@ use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
 use crate::FOLLOWER;
-use autometrics::autometrics;
-use nanoid::nanoid;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::time::sleep;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
 
 /// Leader node's state in Raft consensus algorithm.
 ///
@@ -362,7 +364,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///
     /// 7. Critical failure (e.g., system or logic error):
     ///    - Return: original error
-    ///
     async fn verify_internal_quorum(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -1206,7 +1207,8 @@ impl<T: TypeConfig> LeaderState<T> {
                     ctx.membership().update_node_role(node_id, FOLLOWER)?;
                 }
 
-                // 4. check if legal quorum reached by considering all pending active and active nodes
+                // 4. check if legal quorum reached by considering all pending active and active
+                //    nodes
             }
             Ok(false) => {
                 warn!("Failed to commit config change for node {}", node_id);
@@ -1482,11 +1484,11 @@ impl<T: TypeConfig> LeaderState<T> {
                 self.send_join_success(node_id, &address, sender, ctx).await?;
 
                 // // 7. Trigger snapshot transmission (only when snapshot exists in Leader node)
-                // debug!("7. Trigger snapshot transmission (only when snapshot exists in Leader node)");
-                // if let Some(lastest_snapshot_metadata) = ctx.state_machine().snapshot_metadata() {
-                //     // Get a cloned version of the necessary parameters
-                //     let membership_clone = membership.clone();
-                //     let node_id_copy = node_id;
+                // debug!("7. Trigger snapshot transmission (only when snapshot exists in Leader
+                // node)"); if let Some(lastest_snapshot_metadata) =
+                // ctx.state_machine().snapshot_metadata() {     // Get a cloned
+                // version of the necessary parameters     let membership_clone =
+                // membership.clone();     let node_id_copy = node_id;
                 //     let config = ctx.node_config.raft.snapshot.clone();
                 //     let state_machine_handler = ctx.state_machine_handler().clone();
                 //     // Start a completely independent asynchronous task

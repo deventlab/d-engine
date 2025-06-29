@@ -1,3 +1,12 @@
+use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tracing::debug;
+
 use crate::learner_state::LearnerState;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
@@ -35,13 +44,6 @@ use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
 use crate::SystemError;
-use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tracing::debug;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]

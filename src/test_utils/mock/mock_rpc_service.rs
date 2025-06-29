@@ -2,6 +2,13 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+use tonic_health::server::health_reporter;
+use tracing::info;
+
 use super::MockRpcService;
 use crate::proto::client::raft_client_service_server::RaftClientServiceServer;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementServiceServer;
@@ -13,12 +20,6 @@ use crate::proto::storage::snapshot_service_server::SnapshotServiceServer;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotResponse;
 use crate::Result;
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-use tonic_health::server::health_reporter;
-use tracing::info;
 
 pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60100;
 pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60200;

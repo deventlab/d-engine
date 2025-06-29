@@ -1,3 +1,13 @@
+use std::collections::HashMap;
+
+use futures::stream;
+use futures::stream::BoxStream;
+use futures::StreamExt;
+use tokio::sync::oneshot;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+use tonic::Status;
+
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::proto::cluster::ClusterConfChangeRequest;
@@ -33,14 +43,6 @@ use crate::CANDIDATE;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
-use futures::stream;
-use futures::stream::BoxStream;
-use futures::StreamExt;
-use std::collections::HashMap;
-use tokio::sync::oneshot;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tonic::Status;
 
 fn mock_membership(
     peers: Vec<(u32, i32)>, //(node_id, role_i32)

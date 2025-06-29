@@ -1,5 +1,6 @@
 use super::*;
-use crate::proto::cluster::{cluster_conf_update_response::ErrorCode, ClusterConfUpdateResponse};
+use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
+use crate::proto::cluster::ClusterConfUpdateResponse;
 
 async fn async_ok(number: u64) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
     sleep(Duration::from_millis(number)).await;

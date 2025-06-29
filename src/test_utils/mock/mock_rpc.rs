@@ -1,3 +1,7 @@
+use tokio_stream::StreamExt;
+use tonic::Streaming;
+use tracing::trace;
+
 use crate::proto::client::raft_client_service_server::RaftClientService;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
@@ -24,9 +28,6 @@ use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
-use tokio_stream::StreamExt;
-use tonic::Streaming;
-use tracing::trace;
 
 #[derive(Debug, Clone, Default)]
 pub struct MockRpcService {

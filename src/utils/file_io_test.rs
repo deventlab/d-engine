@@ -1,3 +1,13 @@
+use std::io::Write;
+use std::os::fd::AsRawFd;
+
+use nix::libc::flock;
+use nix::libc::LOCK_EX;
+use sha2::Digest;
+use sha2::Sha256;
+use tempfile::tempdir;
+use tempfile::NamedTempFile;
+
 use crate::file_io;
 use crate::file_io::compute_checksum_from_folder_path;
 use crate::file_io::convert_vec_checksum;
@@ -9,14 +19,6 @@ use crate::Error;
 use crate::FileError;
 use crate::StorageError;
 use crate::SystemError;
-use nix::libc::flock;
-use nix::libc::LOCK_EX;
-use sha2::Digest;
-use sha2::Sha256;
-use std::io::Write;
-use std::os::fd::AsRawFd;
-use tempfile::tempdir;
-use tempfile::NamedTempFile;
 
 /// Passed: "/tmp/files/data.txt"
 /// Expected: "/tmp/files" created
@@ -266,14 +268,16 @@ fn test_convert_vec_checksum_preserves_byte_order() {
 
 #[cfg(test)]
 mod validate_compressed_format_tests {
-    use super::*;
-    use crate::{
-        constants::STATE_MACHINE_TREE,
-        file_io::{create_valid_snapshot, validate_compressed_format},
-        Result,
-    };
-    use std::{fs::File, io::Write};
+    use std::fs::File;
+    use std::io::Write;
+
     use tempfile::tempdir;
+
+    use super::*;
+    use crate::constants::STATE_MACHINE_TREE;
+    use crate::file_io::create_valid_snapshot;
+    use crate::file_io::validate_compressed_format;
+    use crate::Result;
 
     /// Test valid GZIP files with supported extensions
     #[tokio::test]
@@ -518,9 +522,8 @@ mod compute_checksum_from_folder_path_tests {
 
 #[cfg(test)]
 mod compute_checksum_from_file_path_tests {
-    use crate::file_io::compute_checksum_from_file_path;
-
     use super::*;
+    use crate::file_io::compute_checksum_from_file_path;
 
     /// Test computing checksum for an empty file
     #[tokio::test]

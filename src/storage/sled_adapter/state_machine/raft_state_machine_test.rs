@@ -1,3 +1,11 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use sled::Batch;
+use tokio::fs::File;
+use tracing::debug;
+
 use super::*;
 use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
 use crate::constants::STATE_MACHINE_META_NAMESPACE;
@@ -20,12 +28,6 @@ use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
-use sled::Batch;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::fs::File;
-use tracing::debug;
 
 #[test]
 fn test_start_stop() {
@@ -360,11 +362,10 @@ async fn test_generate_snapshot_data_case4() {
 #[cfg(test)]
 mod apply_snapshot_from_file_tests {
     use super::*;
-    use crate::{
-        file_io::{create_valid_snapshot, validate_compressed_format},
-        test_utils::enable_logger,
-        FileError,
-    };
+    use crate::file_io::create_valid_snapshot;
+    use crate::file_io::validate_compressed_format;
+    use crate::test_utils::enable_logger;
+    use crate::FileError;
 
     /// # Case 1: Basic snapshot application
     #[tokio::test]

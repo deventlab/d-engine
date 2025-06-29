@@ -1,3 +1,11 @@
+use std::sync::Arc;
+
+use tempfile::tempdir;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+
 use super::follower_state::FollowerState;
 use super::HardState;
 use crate::proto::client::ClientReadRequest;
@@ -44,12 +52,6 @@ use crate::RoleEvent;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::SystemError;
-use std::sync::Arc;
-use tempfile::tempdir;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
 
 /// # Case 1: assume it is fresh cluster start
 ///

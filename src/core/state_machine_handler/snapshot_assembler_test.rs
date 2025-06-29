@@ -1,9 +1,12 @@
-use crate::proto::common::LogId;
-use crate::proto::storage::SnapshotMetadata;
-use crate::{SnapshotAssembler, SnapshotPathManager};
 use std::sync::Arc;
+
 use tempfile::tempdir;
 use tokio::fs::read;
+
+use crate::proto::common::LogId;
+use crate::proto::storage::SnapshotMetadata;
+use crate::SnapshotAssembler;
+use crate::SnapshotPathManager;
 
 #[tokio::test]
 async fn sequential_chunks_assembly() {

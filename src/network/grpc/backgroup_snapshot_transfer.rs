@@ -1,24 +1,36 @@
-use crate::proto::storage::snapshot_ack::ChunkStatus;
-use crate::proto::storage::SnapshotAck;
-use crate::{proto::storage::snapshot_service_client::SnapshotServiceClient, Result, SnapshotError};
-use crate::{proto::storage::SnapshotChunk, SnapshotConfig};
-use crate::{NetworkError, TypeConfig};
-use futures::StreamExt;
-use futures::{stream::BoxStream, Stream};
-use lru::LruCache;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::pin::Pin;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::stream::BoxStream;
+use futures::Stream;
+use futures::StreamExt;
+use lru::LruCache;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::{sleep, Instant};
+use tokio::time::sleep;
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::Status;
-use tracing::{debug, trace, warn};
+use tracing::debug;
+use tracing::trace;
+use tracing::warn;
+
+use crate::proto::storage::snapshot_ack::ChunkStatus;
+use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
+use crate::proto::storage::SnapshotAck;
+use crate::proto::storage::SnapshotChunk;
+use crate::NetworkError;
+use crate::Result;
+use crate::SnapshotConfig;
+use crate::SnapshotError;
+use crate::TypeConfig;
 
 pub(crate) struct BackgroundSnapshotTransfer<T> {
     _marker: PhantomData<T>,
@@ -26,8 +38,7 @@ pub(crate) struct BackgroundSnapshotTransfer<T> {
 
 #[allow(unused)]
 impl<T> BackgroundSnapshotTransfer<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     // Unified push transfer entry point
     pub(crate) async fn run_push_transfer(

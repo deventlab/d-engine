@@ -1,3 +1,12 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::timeout;
+
 use super::*;
 use crate::candidate_state::CandidateState;
 use crate::cluster::is_candidate;
@@ -25,13 +34,6 @@ use crate::MockTransport;
 use crate::PeerUpdate;
 use crate::RaftOneshot;
 use crate::VoteResult;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time;
-use tokio::time::timeout;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
@@ -824,22 +826,16 @@ async fn test_handle_role_event_state_update_case1_3_2() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 11,
-                            next_index: 12,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 11,
-                            next_index: 12,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 11,
+                        next_index: 12,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 11,
+                        next_index: 12,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -911,22 +907,16 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });

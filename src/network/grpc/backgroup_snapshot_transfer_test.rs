@@ -1,15 +1,26 @@
-use super::*;
-use crate::proto::storage::{SnapshotChunk, SnapshotResponse};
-use crate::test_utils::{
-    self, create_snapshot_stream, enable_logger, MockNode, MockTypeConfig, MOCK_SNAPSHOT_PORT_BASE,
-};
-use crate::{Error, NetworkError, SnapshotConfig, SnapshotError, StorageError};
-use futures::{stream, StreamExt};
 use std::time::Duration;
+
+use futures::stream;
+use futures::StreamExt;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tonic::Status;
 use tracing::debug;
+
+use super::*;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotResponse;
+use crate::test_utils::create_snapshot_stream;
+use crate::test_utils::enable_logger;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockTypeConfig;
+use crate::test_utils::MOCK_SNAPSHOT_PORT_BASE;
+use crate::test_utils::{self};
+use crate::Error;
+use crate::NetworkError;
+use crate::SnapshotConfig;
+use crate::SnapshotError;
+use crate::StorageError;
 
 fn default_snapshot_config() -> SnapshotConfig {
     SnapshotConfig {
@@ -39,9 +50,8 @@ fn create_snapshot_chunk(
 
 #[cfg(test)]
 mod run_push_transfer_test {
-    use crate::SystemError;
-
     use super::*;
+    use crate::SystemError;
 
     #[tokio::test]
     async fn test_push_transfer_success() {

@@ -1,17 +1,19 @@
-use crate::proto::storage::SnapshotMetadata;
-use crate::Result;
-use crate::SnapshotError;
-use crate::SnapshotPathManager;
-use crate::StorageError;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::debug;
+
+use crate::proto::storage::SnapshotMetadata;
+use crate::Result;
+use crate::SnapshotError;
+use crate::SnapshotPathManager;
+use crate::StorageError;
 
 pub(crate) struct SnapshotAssembler {
     temp_file: File,
@@ -33,9 +35,7 @@ impl SnapshotAssembler {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| {
-                    StorageError::IoError(std::io::Error::other(
-                        format!("SystemTime before UNIX EPOCH: {}", e),
-                    ))
+                    StorageError::IoError(std::io::Error::other(format!("SystemTime before UNIX EPOCH: {}", e)))
                 })?
                 .as_nanos();
 

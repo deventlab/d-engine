@@ -2,18 +2,26 @@
 //! receives a snapshot, and successfully installs it.  
 //! The test completes when the node transitions its role to `Follower`.
 
-use crate::{
-    common::{
-        check_cluster_is_ready, check_path_contents, init_state_storage, manipulate_log, manipulate_state_machine,
-        prepare_raft_log, prepare_state_machine, prepare_state_storage, reset, start_node, WAIT_FOR_NODE_READY_IN_SEC,
-    },
-    JOIN_CLUSTER_PORT_BASE,
-};
+use std::sync::Arc;
+use std::time::Duration;
+
 use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::StateMachine;
-use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
+
+use crate::common::check_cluster_is_ready;
+use crate::common::check_path_contents;
+use crate::common::init_state_storage;
+use crate::common::manipulate_log;
+use crate::common::manipulate_state_machine;
+use crate::common::prepare_raft_log;
+use crate::common::prepare_state_machine;
+use crate::common::prepare_state_storage;
+use crate::common::reset;
+use crate::common::start_node;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::JOIN_CLUSTER_PORT_BASE;
 
 #[tracing::instrument]
 #[tokio::test]

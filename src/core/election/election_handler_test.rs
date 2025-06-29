@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use tokio::sync::watch;
+use tracing::debug;
+
 use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::proto::cluster::NodeMeta;
@@ -18,9 +23,6 @@ use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::VoteResult;
 use crate::FOLLOWER;
-use std::sync::Arc;
-use tokio::sync::watch;
-use tracing::debug;
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,

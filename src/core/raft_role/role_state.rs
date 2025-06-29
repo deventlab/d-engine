@@ -1,3 +1,11 @@
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
+
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
@@ -21,13 +29,6 @@ use crate::Result;
 use crate::RoleEvent;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
 
 #[async_trait]
 pub(crate) trait RaftRoleState: Send + Sync + 'static {

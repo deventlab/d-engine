@@ -12,6 +12,28 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use autometrics::autometrics;
+use dashmap::DashMap;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use tokio::task;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+use tracing::warn;
+
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
@@ -34,30 +56,9 @@ use crate::API_SLO;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
-use autometrics::autometrics;
-use dashmap::DashMap;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use tokio::task;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
 
 pub struct RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
@@ -79,8 +80,7 @@ impl<T: TypeConfig> Debug for RaftMembership<T> {
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn members(&self) -> Vec<NodeMeta> {
         self.membership.iter().map(|entry| entry.value().clone()).collect()
@@ -569,8 +569,7 @@ where
 }
 
 impl<T> RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Creates a new `RaftMembership` instance.
     pub fn new(

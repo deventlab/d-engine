@@ -1,3 +1,13 @@
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::error;
+use tracing::trace;
+
 use super::MockTypeConfig;
 use crate::grpc;
 use crate::proto::cluster::ClusterMembership;
@@ -22,14 +32,6 @@ use crate::RaftNodeConfig;
 use crate::RaftStorageHandles;
 use crate::RoleEvent;
 use crate::SignalParams;
-use std::path::Path;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::error;
-use tracing::trace;
 
 pub struct MockBuilder {
     pub id: Option<u32>,

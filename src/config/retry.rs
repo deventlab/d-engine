@@ -189,7 +189,8 @@ impl Default for RetryPolicies {
                 max_delay_ms: 1000,
             },
             internal_quorum: BackoffPolicy {
-                // Minimum must be 3: the first quorum check may fail if the leader is newly elected and followers haven't yet advanced their next_index
+                // Minimum must be 3: the first quorum check may fail if the leader is newly elected and followers
+                // haven't yet advanced their next_index
                 max_retries: 3,
                 timeout_ms: 100,
                 base_delay_ms: 50,

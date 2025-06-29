@@ -1,3 +1,16 @@
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use futures::StreamExt;
+use mockall::predicate::eq;
+use nanoid::nanoid;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::transport::Endpoint;
+use tonic::Code;
+use tonic::Status;
+
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::client_command_to_entry_payloads;
@@ -55,17 +68,6 @@ use crate::RoleEvent;
 use crate::SnapshotError;
 use crate::FOLLOWER;
 use crate::LEADER;
-use futures::StreamExt;
-use mockall::predicate::eq;
-use nanoid::nanoid;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::transport::Endpoint;
-use tonic::Code;
-use tonic::Status;
 
 struct ProcessRaftRequestTestContext {
     state: LeaderState<MockTypeConfig>,
@@ -102,22 +104,16 @@ async fn setup_process_raft_request_test_context(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -793,22 +789,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 3,
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 4,
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 3,
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 4,
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -1699,22 +1689,16 @@ async fn test_process_batch_case1_quorum_achieved() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 6,
-                            next_index: 7,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 6,
-                            next_index: 7,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: 6,
+                        next_index: 7,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 6,
+                        next_index: 7,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -1767,22 +1751,16 @@ async fn test_process_batch_case2_quorum_failed() {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: 5,
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: 0,
-                            next_index: 1,
-                            success: false,
-                        },
-                    ), // Failed
+                    (2, PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: 0,
+                        next_index: 1,
+                        success: false,
+                    }), // Failed
                 ]),
             })
         });
@@ -1826,14 +1804,11 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(
-                    peer2_id,
-                    PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    },
-                )]),
+                peer_updates: HashMap::from([(peer2_id, PeerUpdate {
+                    match_index: 5,
+                    next_index: 6,
+                    success: true,
+                })]),
                 learner_progress: HashMap::new(),
             })
         });
@@ -1931,14 +1906,11 @@ async fn test_process_batch_case4_partial_timeouts() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(
-                    2,
-                    PeerUpdate {
-                        match_index: 6,
-                        next_index: 7,
-                        success: true,
-                    },
-                )]),
+                peer_updates: HashMap::from([(2, PeerUpdate {
+                    match_index: 6,
+                    next_index: 7,
+                    success: true,
+                })]),
             })
         });
 
@@ -2705,13 +2677,15 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
 
 #[cfg(test)]
 mod trigger_background_snapshot_test {
+    use std::sync::Arc;
+
+    use futures::stream;
+
     use super::*;
     use crate::core::raft_role::leader_state::LeaderState;
-    use crate::proto::storage::{SnapshotChunk, SnapshotMetadata};
-
+    use crate::proto::storage::SnapshotChunk;
+    use crate::proto::storage::SnapshotMetadata;
     use crate::SnapshotConfig;
-    use futures::stream;
-    use std::sync::Arc;
 
     fn mock_membership(should_fail: bool) -> MockMembership<MockTypeConfig> {
         let mut membership = MockMembership::<MockTypeConfig>::new();

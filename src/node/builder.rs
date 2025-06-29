@@ -17,7 +17,7 @@
 //!
 //! ## Example
 //! ```ignore
-//!
+//! 
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
@@ -31,6 +31,16 @@
 //! ## Notes
 //! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
+
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
 
 use super::RaftTypeConfig;
 use crate::alias::COF;
@@ -70,14 +80,6 @@ use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::SystemError;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
 
 pub enum NodeMode {
     Joiner,
@@ -398,8 +400,8 @@ impl NodeBuilder {
     /// which processes committed log entries and applies them to the state machine.
     ///
     /// # Arguments
-    /// * `handler` - custom state machine handler that must implement the
-    ///   `StateMachineHandler` trait
+    /// * `handler` - custom state machine handler that must implement the `StateMachineHandler`
+    ///   trait
     ///
     /// # Notes
     /// - The handler must be thread-safe as it will be shared across multiple threads

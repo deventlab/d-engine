@@ -1,3 +1,25 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use mockall::predicate::eq;
+use mockall::Sequence;
+use tempfile::tempdir;
+use tempfile::TempDir;
+use tokio::fs::create_dir_all;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time;
+use tracing::debug;
+
 use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
 use super::StateMachineHandler;
@@ -38,26 +60,6 @@ use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
 use crate::SystemError;
-use futures::StreamExt;
-use mockall::predicate::eq;
-use mockall::Sequence;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fs;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tempfile::tempdir;
-use tempfile::TempDir;
-use tokio::fs::create_dir_all;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time;
-use tracing::debug;
 
 // Case 1: normal update
 #[test]

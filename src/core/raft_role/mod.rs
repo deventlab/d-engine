@@ -19,13 +19,8 @@ pub const CANDIDATE: i32 = 1;
 pub const LEADER: i32 = 2;
 pub const LEARNER: i32 = 3;
 
-use super::RaftContext;
-use super::RaftEvent;
-use super::RoleEvent;
-use crate::proto::common::EntryPayload;
-use crate::proto::election::VotedFor;
-use crate::Result;
-use crate::TypeConfig;
+use std::collections::HashMap;
+
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
@@ -36,11 +31,18 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
 use tracing::trace;
+
+use super::RaftContext;
+use super::RaftEvent;
+use super::RoleEvent;
+use crate::proto::common::EntryPayload;
+use crate::proto::election::VotedFor;
+use crate::Result;
+use crate::TypeConfig;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -356,9 +358,7 @@ impl Serialize for HardState {
 
 impl<'de> Deserialize<'de> for HardState {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         #[derive(Deserialize)]
         struct HardStateDe {
             current_term: u64,

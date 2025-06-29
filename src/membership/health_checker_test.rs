@@ -1,3 +1,6 @@
+use tokio::net::TcpStream;
+use tokio::sync::oneshot;
+
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::test_utils::MockNode;
@@ -5,8 +8,6 @@ use crate::test_utils::MockRpcService;
 use crate::test_utils::{self};
 use crate::ConnectionParams;
 use crate::NetworkConfig;
-use tokio::net::TcpStream;
-use tokio::sync::oneshot;
 
 /// Case 1: server is not ready
 #[tokio::test]

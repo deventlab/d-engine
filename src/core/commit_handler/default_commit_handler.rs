@@ -1,14 +1,6 @@
-use super::CommitHandler;
-use crate::alias::ROF;
-use crate::alias::SMHOF;
-use crate::utils::cluster::error;
-use crate::NewCommitData;
-use crate::RaftEvent;
-use crate::Result;
-use crate::StateMachineHandler;
-use crate::TypeConfig;
 use std::sync::Arc;
 use std::time::Duration;
+
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
@@ -18,10 +10,19 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
+use super::CommitHandler;
+use crate::alias::ROF;
+use crate::alias::SMHOF;
+use crate::utils::cluster::error;
+use crate::NewCommitData;
+use crate::RaftEvent;
+use crate::Result;
+use crate::StateMachineHandler;
+use crate::TypeConfig;
+
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
@@ -37,8 +38,7 @@ where
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn run(&mut self) -> Result<()> {
         let mut batch_counter = 0;
@@ -91,8 +91,7 @@ where
 }
 
 impl<T> DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         state_machine_handler: Arc<SMHOF<T>>,

@@ -1,7 +1,8 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use bytes::{BufMut, BytesMut};
+use bytes::BufMut;
+use bytes::BytesMut;
 use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
@@ -10,7 +11,9 @@ use prost::Message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use tonic::{Code, Status, Streaming}; // Adjust path as needed
+use tonic::Code;
+use tonic::Status;
+use tonic::Streaming; // Adjust path as needed
 
 /// Generic gRPC stream decoder for any protobuf message
 ///
@@ -50,8 +53,7 @@ impl<T> GrpcStreamDecoder<T> {
 }
 
 impl<T> tonic::codec::Decoder for GrpcStreamDecoder<T>
-where
-    T: prost::Message + Default + 'static,
+where T: prost::Message + Default + 'static
 {
     type Item = T;
     type Error = Status;

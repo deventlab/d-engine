@@ -22,7 +22,11 @@ pub(crate) use state_machine_handler::*;
 pub(crate) use timer::*;
 use tracing::instrument;
 
-use crate::proto::common::{entry_payload::Payload, membership_change::Change, EntryPayload, MembershipChange, Noop};
+use crate::proto::common::entry_payload::Payload;
+use crate::proto::common::membership_change::Change;
+use crate::proto::common::EntryPayload;
+use crate::proto::common::MembershipChange;
+use crate::proto::common::Noop;
 
 #[cfg(test)]
 mod raft_oneshot_test;

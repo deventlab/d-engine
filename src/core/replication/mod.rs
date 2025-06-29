@@ -17,6 +17,15 @@ mod replication_handler_test;
 
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use dashmap::DashMap;
+#[cfg(test)]
+use mockall::automock;
+use tonic::async_trait;
+use tonic::Status;
+
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
@@ -33,14 +42,6 @@ use crate::AppendResults;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::TypeConfig;
-use dashmap::DashMap;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tonic::async_trait;
-use tonic::Status;
-
-#[cfg(test)]
-use mockall::automock;
 
 /// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]
@@ -62,8 +63,7 @@ pub struct AppendResponseWithUpdates {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// As Leader, send replications to peers (combines regular heartbeats and client proposals).
     ///
@@ -77,22 +77,21 @@ where
     /// - `Err` for unrecoverable errors
     ///
     /// # Return Result Semantics
-    /// 1. **Insufficient Quorum**:  
-    ///    Returns `Ok(AppendResults)` with `commit_quorum_achieved = false` when:  
-    ///    - Responses received from all nodes but majority acceptance not achieved  
-    ///    - Partial timeouts reduce successful responses below majority  
+    /// 1. **Insufficient Quorum**:   Returns `Ok(AppendResults)` with `commit_quorum_achieved =
+    ///    false` when:
+    ///    - Responses received from all nodes but majority acceptance not achieved
+    ///    - Partial timeouts reduce successful responses below majority
     ///
-    /// 2. **Timeout Handling**:  
-    ///    - Partial timeouts: Returns `Ok` with `commit_quorum_achieved = false`  
-    ///    - Complete timeout: Returns `Ok` with `commit_quorum_achieved = false`  
-    ///    - Timeout peers are EXCLUDED from `peer_updates`  
+    /// 2. **Timeout Handling**:
+    ///    - Partial timeouts: Returns `Ok` with `commit_quorum_achieved = false`
+    ///    - Complete timeout: Returns `Ok` with `commit_quorum_achieved = false`
+    ///    - Timeout peers are EXCLUDED from `peer_updates`
     ///
-    /// 3. **Error Conditions**:  
-    ///    Returns `Err` ONLY for:  
-    ///    - Empty voting members (`ReplicationError::NoPeerFound`)  
-    ///    - Log generation failures (`generate_new_entries` errors)  
-    ///    - Higher term detected in peer response (`ReplicationError::HigherTerm`)  
-    ///    - Critical response handling errors  
+    /// 3. **Error Conditions**:   Returns `Err` ONLY for:
+    ///    - Empty voting members (`ReplicationError::NoPeerFound`)
+    ///    - Log generation failures (`generate_new_entries` errors)
+    ///    - Higher term detected in peer response (`ReplicationError::HigherTerm`)
+    ///    - Critical response handling errors
     ///
     /// # Guarantees
     /// - Only peers with successful responses appear in `peer_updates`
@@ -106,7 +105,6 @@ where
     /// - If there are no voters (not even the leader), quorum is not possible.
     /// - If the leader is the only voter, quorum is always achieved.
     /// - If all nodes are learners, quorum is not achieved.
-    ///
     async fn handle_raft_request_in_batch(
         &self,
         entry_payloads: Vec<EntryPayload>,

@@ -1,5 +1,6 @@
-use crate::proto::common::LogId;
 use std::path::PathBuf;
+
+use crate::proto::common::LogId;
 
 /// Centralized manager for all snapshot-related path generation and naming conventions.
 ///

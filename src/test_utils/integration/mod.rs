@@ -38,8 +38,12 @@
 //! - Failure scenario testing with real component interactions
 
 mod snapshot;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 #[allow(unused)]
 pub(crate) use snapshot::*;
+use tokio::sync::watch;
 
 use super::generate_insert_commands;
 use crate::alias::MOF;
@@ -71,14 +75,10 @@ use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::watch;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub id: u32,
 

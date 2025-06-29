@@ -8,34 +8,41 @@
 //! 4. Node 3 appends 10 log entries with Term=2.
 //! 5. All three node state machine has log1, 2, 3
 //! 6. Node 3 will be Leader
-//! 7. According to the config `max_log_entries_before_snapshot = 1`, snapshot should be generated in node 3
+//! 7. According to the config `max_log_entries_before_snapshot = 1`, snapshot should be generated
+//!    in node 3
 //!
 //! Expected Result:
 //!
 //! - Node 3 becomes the leader
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
-//!
 
-use crate::{
-    common::{
-        check_cluster_is_ready, check_path_contents, init_state_storage, manipulate_log, manipulate_state_machine,
-        prepare_raft_log, prepare_state_machine, prepare_state_storage, reset, start_node, WAIT_FOR_NODE_READY_IN_SEC,
-    },
-    SNAPSHOT_PORT_BASE,
-};
+use std::sync::Arc;
+use std::time::Duration;
+
 use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::RaftLog;
 use d_engine::storage::StateMachine;
-use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
+
+use crate::common::check_cluster_is_ready;
+use crate::common::check_path_contents;
+use crate::common::init_state_storage;
+use crate::common::manipulate_log;
+use crate::common::manipulate_state_machine;
+use crate::common::prepare_raft_log;
+use crate::common::prepare_state_machine;
+use crate::common::prepare_state_storage;
+use crate::common::reset;
+use crate::common::start_node;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::SNAPSHOT_PORT_BASE;
 
 /// The current test relies on the following snapshot configuration:
 /// When the number of log entries exceeds 1, a snapshot will be triggered.
 /// [raft.snapshot]
 /// max_log_entries_before_snapshot = 1
-///
 #[tracing::instrument]
 #[tokio::test]
 async fn test_snapshot_scenario() -> Result<(), ClientApiError> {

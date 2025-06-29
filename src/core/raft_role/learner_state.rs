@@ -1,3 +1,18 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -7,36 +22,30 @@ use super::StateSnapshot;
 use super::LEARNER;
 use crate::alias::MOF;
 use crate::proto::client::ClientResponse;
-use crate::proto::cluster::{ClusterConfUpdateResponse, JoinRequest, LeaderDiscoveryRequest, LeaderDiscoveryResponse};
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
 use crate::proto::storage::snapshot_ack::ChunkStatus;
 use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotResponse;
+use crate::ConsensusError;
+use crate::Membership;
+use crate::MembershipError;
 use crate::NetworkError;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
+use crate::RaftNodeConfig;
+use crate::Result;
 use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
+use crate::Transport;
 use crate::TypeConfig;
-use crate::{ConsensusError, Membership};
-use crate::{MembershipError, Result};
-use crate::{RaftNodeConfig, Transport};
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::{self};
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-use tracing::{debug, trace};
 
 /// Learner node's state in Raft cluster.
 ///

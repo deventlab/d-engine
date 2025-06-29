@@ -46,6 +46,9 @@ mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;
 
+use std::sync::Arc;
+
+use futures::stream::BoxStream;
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
@@ -60,14 +63,11 @@ use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::Result;
 use crate::TypeConfig;
-use futures::stream::BoxStream;
-use std::sync::Arc;
 
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait StateMachineHandler<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Updates the highest known committed log index that hasn't been applied yet
     fn update_pending(

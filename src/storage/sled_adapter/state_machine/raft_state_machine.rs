@@ -1,5 +1,30 @@
 //! It works as KV storage for client business CRUDs.
 
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Instant;
+
+use arc_swap::ArcSwap;
+use async_compression::tokio::bufread::GzipDecoder;
+use autometrics::autometrics;
+use parking_lot::Mutex;
+use prost::Message;
+use sled::Batch;
+use tokio::fs::File;
+use tokio::io::BufReader;
+use tokio::sync::RwLock;
+use tokio_tar::Archive;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
+
 use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX;
 use crate::constants::STATE_MACHINE_META_KEY_LAST_APPLIED_TERM;
@@ -26,29 +51,6 @@ use crate::StateMachineIter;
 use crate::StorageError;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
-use arc_swap::ArcSwap;
-use async_compression::tokio::bufread::GzipDecoder;
-use autometrics::autometrics;
-use parking_lot::Mutex;
-use prost::Message;
-use sled::Batch;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::fs::File;
-use tokio::io::BufReader;
-use tokio::sync::RwLock;
-use tokio_tar::Archive;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::warn;
 
 pub struct RaftStateMachine {
     node_id: u32,
@@ -244,8 +246,9 @@ impl StateMachine for RaftStateMachine {
                 }
                 Some(Payload::Config(_config_change)) => {
                     debug!("Ignoring config change in state machine at index {}", entry.index);
-                    // Update only the configuration state of the Raft layer, without writing to the state machine
-                    // Example: raft.update_cluster_config(config_change);
+                    // Update only the configuration state of the Raft layer, without writing to the
+                    // state machine Example: raft.
+                    // update_cluster_config(config_change);
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }
@@ -395,8 +398,8 @@ impl StateMachine for RaftStateMachine {
                 ?new_last_included,
                 "1. Acquire write lock to prevent concurrent snapshot generation/application"
             );
-            // 1. Acquire write lock to prevent concurrent snapshot generation/application
-            //    This ensures atomic snapshot application per Raft requirements
+            // 1. Acquire write lock to prevent concurrent snapshot generation/application This ensures atomic
+            //    snapshot application per Raft requirements
             let _guard = self.snapshot_lock.write().await;
 
             debug!("2. Validate snapshot version - only apply if newer than current state");
@@ -414,13 +417,12 @@ impl StateMachine for RaftStateMachine {
                 ?compressed_path,
                 "3. Validate file format before processing (IMPROVEMENT ADDED)"
             );
-            // 3. Validate file format before processing (IMPROVEMENT ADDED)
-            //    Verify the file is actually compressed using magic numbers or extension
+            // 3. Validate file format before processing (IMPROVEMENT ADDED) Verify the file is actually
+            //    compressed using magic numbers or extension
             validate_compressed_format(&compressed_path)?;
 
             debug!("4. Create temp directory for decompression");
-            // 4. Create temp directory for decompression
-            //    Using tempfile crate ensures secure cleanup
+            // 4. Create temp directory for decompression Using tempfile crate ensures secure cleanup
             let temp_dir = tempfile::tempdir().map_err(StorageError::IoError)?;
             let temp_dir_path = temp_dir.path().to_path_buf();
 
@@ -429,13 +431,13 @@ impl StateMachine for RaftStateMachine {
                 ?temp_dir_path,
                 "5. Decompress snapshot using proper chunking/validation"
             );
-            // 5. Decompress snapshot using proper chunking/validation
-            //    Added compression format validation based on
+            // 5. Decompress snapshot using proper chunking/validation Added compression format validation based
+            //    on
             self.decompress_snapshot(&compressed_path, &temp_dir_path).await?;
 
             debug!(?temp_dir_path, "6. CRITICAL SECURITY STEP: Validate checksum");
-            // 6. CRITICAL SECURITY STEP: Validate checksum
-            //    Prevents tampered or corrupted snapshots from being applied
+            // 6. CRITICAL SECURITY STEP: Validate checksum Prevents tampered or corrupted snapshots from being
+            //    applied
             let computed_checksum = compute_checksum_from_folder_path(&temp_dir_path).await?;
 
             if metadata.checksum != computed_checksum {
@@ -444,33 +446,27 @@ impl StateMachine for RaftStateMachine {
                     computed_checksum, metadata.checksum
                 );
 
-                metrics::counter!(
-                    "snapshot.checksum_failures",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("snapshot_index", new_last_included.index.to_string()),
-                    ]
-                )
+                metrics::counter!("snapshot.checksum_failures", &[
+                    ("node_id", self.node_id.to_string()),
+                    ("snapshot_index", new_last_included.index.to_string()),
+                ])
                 .increment(1);
 
                 return Err(SnapshotError::ChecksumMismatch.into());
             }
             debug!(?temp_dir_path, "7. Initialize new state machine database");
-            // 7. Initialize new state machine database
-            //    Maintains ACID properties during state transition
+            // 7. Initialize new state machine database Maintains ACID properties during state transition
             let db = init_sled_state_machine_db(&temp_dir_path).map_err(|e| StorageError::PathError {
                 path: temp_dir_path,
                 source: e,
             })?;
 
             debug!("8. Atomically replace current database");
-            // 8. Atomically replace current database
-            //    Critical for maintaining consistency per Raft spec
+            // 8. Atomically replace current database Critical for maintaining consistency per Raft spec
             self.db.store(Arc::new(db));
 
             debug!(?new_last_included, ?metadata, "9. Update Raft metadata and indexes");
-            // 9. Update Raft metadata and indexes
-            //    Follows snapshot application procedure from
+            // 9. Update Raft metadata and indexes Follows snapshot application procedure from
             self.update_last_applied(new_last_included);
             self.update_last_snapshot_metadata(metadata)?;
         } else {

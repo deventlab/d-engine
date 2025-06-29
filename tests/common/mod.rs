@@ -291,7 +291,8 @@ pub async fn check_cluster_is_ready(
     }
 }
 
-/// Checks whether the given snapshot path exists, is a directory, and contains any files or subdirectories.
+/// Checks whether the given snapshot path exists, is a directory, and contains any files or
+/// subdirectories.
 ///
 /// # Arguments
 ///

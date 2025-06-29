@@ -1,14 +1,19 @@
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, error, instrument};
+use tracing::debug;
+use tracing::error;
+use tracing::instrument;
 
 use super::ClientInner;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
-use crate::proto::cluster::{JoinRequest, JoinResponse, NodeMeta};
-use crate::{ClientApiError, Result};
-use std::fmt::Debug;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::NodeMeta;
+use crate::ClientApiError;
+use crate::Result;
 
 /// Cluster administration interface
 ///
