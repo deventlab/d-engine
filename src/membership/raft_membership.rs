@@ -58,7 +58,8 @@ use crate::LEADER;
 use crate::LEARNER;
 
 pub struct RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     node_id: u32,
     membership: DashMap<u32, NodeMeta>, //stores all members meta
@@ -80,7 +81,8 @@ impl<T: TypeConfig> Debug for RaftMembership<T> {
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn members(&self) -> Vec<NodeMeta> {
         self.membership.iter().map(|entry| entry.value().clone()).collect()
@@ -569,7 +571,8 @@ where T: TypeConfig
 }
 
 impl<T> RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Creates a new `RaftMembership` instance.
     pub fn new(

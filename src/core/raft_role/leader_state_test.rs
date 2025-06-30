@@ -104,16 +104,22 @@ async fn setup_process_raft_request_test_context(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -789,16 +795,22 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 3,
-                        next_index: 4,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 4,
-                        next_index: 5,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 3,
+                            next_index: 4,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 4,
+                            next_index: 5,
+                            success: true,
+                        },
+                    ),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -1689,16 +1701,22 @@ async fn test_process_batch_case1_quorum_achieved() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 6,
-                        next_index: 7,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 6,
-                        next_index: 7,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 6,
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 6,
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });
@@ -1751,16 +1769,22 @@ async fn test_process_batch_case2_quorum_failed() {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 0,
-                        next_index: 1,
-                        success: false,
-                    }), // Failed
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 0,
+                            next_index: 1,
+                            success: false,
+                        },
+                    ), // Failed
                 ]),
             })
         });
@@ -1804,11 +1828,14 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(peer2_id, PeerUpdate {
-                    match_index: 5,
-                    next_index: 6,
-                    success: true,
-                })]),
+                peer_updates: HashMap::from([(
+                    peer2_id,
+                    PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    },
+                )]),
                 learner_progress: HashMap::new(),
             })
         });
@@ -1906,11 +1933,14 @@ async fn test_process_batch_case4_partial_timeouts() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate {
-                    match_index: 6,
-                    next_index: 7,
-                    success: true,
-                })]),
+                peer_updates: HashMap::from([(
+                    2,
+                    PeerUpdate {
+                        match_index: 6,
+                        next_index: 7,
+                        success: true,
+                    },
+                )]),
             })
         });
 

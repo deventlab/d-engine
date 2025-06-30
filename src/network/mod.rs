@@ -95,7 +95,8 @@ pub struct ClusterUpdateResult {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Transport<T>: Send + Sync + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Propagates cluster configuration changes to voting members using Raft's joint consensus.
     ///

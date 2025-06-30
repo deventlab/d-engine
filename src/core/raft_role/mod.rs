@@ -358,7 +358,9 @@ impl Serialize for HardState {
 
 impl<'de> Deserialize<'de> for HardState {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         #[derive(Deserialize)]
         struct HardStateDe {
             current_term: u64,

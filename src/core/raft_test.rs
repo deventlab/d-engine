@@ -826,16 +826,22 @@ async fn test_handle_role_event_state_update_case1_3_2() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 11,
-                        next_index: 12,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 11,
-                        next_index: 12,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 11,
+                            next_index: 12,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 11,
+                            next_index: 12,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });
@@ -907,16 +913,22 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });

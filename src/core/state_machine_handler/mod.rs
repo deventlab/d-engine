@@ -67,7 +67,8 @@ use crate::TypeConfig;
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait StateMachineHandler<T>: Send + Sync + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Updates the highest known committed log index that hasn't been applied yet
     fn update_pending(
