@@ -124,8 +124,7 @@ impl ConnectionParams {
         // Timeout validation
         if self.connect_timeout_in_ms == 0 {
             return Err(Error::Config(ConfigError::Message(format!(
-                "{} connection timeout must be > 0",
-                conn_type
+                "{conn_type} connection timeout must be > 0",
             ))));
         }
 

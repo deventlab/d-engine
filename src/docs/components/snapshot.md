@@ -77,7 +77,7 @@ Leader                          Learner
 
 ### **Snapshot Policies**
 
-Fully customizable through **`SnapshotPolicy`** trait:
+Fully customizable through **`SnapshotPolicy`** trait:
 
 ```rust,ignore
 pub trait SnapshotPolicy {

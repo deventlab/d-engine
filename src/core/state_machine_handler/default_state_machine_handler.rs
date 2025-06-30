@@ -68,6 +68,7 @@ pub struct SnapshotTransferMeta {
     pub metadata: SnapshotMetadata,
     pub total_chunks: u32,
     pub chunk_size: usize,
+    #[allow(unused)]
     pub file_size: u64,
     pub file_path: PathBuf,
 }
