@@ -111,7 +111,7 @@ async fn test_join_cluster_scenario() -> Result<(), ClientApiError> {
 
     // 6. Validate if node 4 state machine has log-14
     for i in 1..=10 {
-        println!("{} | get entry from state machine", i);
+        println!("{i} | get entry from state machine");
         let value = sm4.get(&safe_kv(i)).unwrap();
         assert_eq!(value, Some(safe_kv(i).to_vec()));
     }

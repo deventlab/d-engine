@@ -388,7 +388,7 @@ mod apply_snapshot_from_file_tests {
 
         // Get file size
         let file_size = std::fs::metadata(&temp_path).unwrap().len();
-        assert!(file_size > 100, "File too small: {} bytes", file_size);
+        assert!(file_size > 100, "File too small: {file_size} bytes",);
 
         let last_included = LogId { index: 5, term: 2 };
         let metadata = SnapshotMetadata {

@@ -562,8 +562,7 @@ impl RaftStateMachine {
                 }
                 Err(e) => {
                     return Err(SnapshotError::OperationFailed(format!(
-                        "state:load_snapshot_metadata deserialize error. {}",
-                        e
+                        "state:load_snapshot_metadata deserialize error. {e}"
                     ))
                     .into());
                 }

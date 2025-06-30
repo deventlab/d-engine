@@ -315,7 +315,7 @@ async fn test_handle_rpc_services_successfully() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let (_, service_response) = tokio::join!(raft_handle, service_handler,);
-    println!("{:?}", service_response);
+    println!("{service_response:?}",);
 
     // Assert if the handle client propose result is ok.
     assert!(service_response.is_ok());

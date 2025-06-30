@@ -78,7 +78,7 @@ impl SnapshotPathManager {
         &self,
         version: u64,
     ) -> PathBuf {
-        self.base_dir.join(format!(".temp-{}", version))
+        self.base_dir.join(format!(".temp-{version}"))
     }
 
     /// Generates a versioned final path (for atomic writes)

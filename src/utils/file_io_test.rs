@@ -272,6 +272,7 @@ mod validate_compressed_format_tests {
     use std::io::Write;
 
     use tempfile::tempdir;
+    use tracing::trace;
 
     use super::*;
     use crate::constants::STATE_MACHINE_TREE;
@@ -299,7 +300,7 @@ mod validate_compressed_format_tests {
 
             // Execute validation
             let result = validate_compressed_format(&path);
-            assert!(result.is_ok(), "Failed case: {}", filename);
+            assert!(result.is_ok(), "Failed case: {filename}",);
         }
 
         Ok(())
@@ -324,15 +325,14 @@ mod validate_compressed_format_tests {
             .await;
             let result = validate_compressed_format(&path);
 
-            println!("{:?}", result);
+            trace!("{result:?}",);
             assert!(
                 matches!(
                     result,
                     Err(Error::System(SystemError::Storage(StorageError::File(FileError::InvalidExt(msg)))))
                     if msg.contains("Invalid compression extension") || msg.contains("Invalid file extension")
                 ),
-                "Failed case: {}",
-                filename
+                "Failed case: {filename}",
             );
         }
     }
@@ -350,7 +350,7 @@ mod validate_compressed_format_tests {
         }
 
         let result = validate_compressed_format(&path);
-        println!("{:?}", result);
+        trace!("{result:?}",);
         assert!(matches!(
             result,
             Err(Error::System(SystemError::Storage(StorageError::File(FileError::InvalidGzipHeader(msg)))))
@@ -368,7 +368,7 @@ mod validate_compressed_format_tests {
 
         File::create(&path).unwrap(); // Empty file
         let result = validate_compressed_format(&path);
-        println!("{:?}", result);
+        trace!("{result:?}",);
 
         assert!(matches!(
             result,

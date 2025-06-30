@@ -134,13 +134,13 @@ async fn run_node(
     node_id: u32,
     node: Arc<Node<RaftTypeConfig>>,
 ) -> std::result::Result<(), ClientApiError> {
-    println!("Run node: {}", node_id);
+    println!("Run node: {node_id}",);
     // Run the node until shutdown
     if let Err(e) = node.run().await {
         error!("Node error: {:?}", e);
     }
 
-    debug!("Exiting program: {:?}", node_id);
+    debug!("Exiting program: {node_id}");
     drop(node);
     Ok(())
 }
@@ -308,13 +308,13 @@ pub fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> 
 
     // Check if path exists first
     if !path.exists() {
-        println!("Path '{}' does not exist", snapshot_path);
+        println!("Path '{snapshot_path}' does not exist",);
         return Ok(false);
     }
 
     // Check if it's a directory
     if !path.is_dir() {
-        println!("Path '{}' is not a directory", snapshot_path);
+        println!("Path '{snapshot_path}' is not a directory");
         return Ok(false);
     }
 
@@ -336,7 +336,7 @@ pub fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> 
     }
 
     if !has_contents {
-        println!("Path '{}' is empty (no files or subdirectories)", snapshot_path);
+        println!("Path '{snapshot_path}' is empty (no files or subdirectories)",);
     }
 
     Ok(has_contents)

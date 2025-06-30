@@ -281,7 +281,7 @@ where T: TypeConfig
         // let compressed_path = final_path.with_extension("tar.gz");
         let compressed_file = File::create(&final_path)
             .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create compressed file: {}", e)))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}")))?;
         let gzip_encoder = GzipEncoder::new(compressed_file);
         let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
 
@@ -289,28 +289,28 @@ where T: TypeConfig
         tar_builder
             .append_dir_all(".", &temp_path)
             .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create tar archive: {}", e)))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}")))?;
 
         // Finish writing and flush all data
         tar_builder
             .finish()
             .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to finish tar archive: {}", e)))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}")))?;
 
         // Get inner GzipEncoder and shutdown to ensure all data is written
         let mut gzip_encoder = tar_builder
             .into_inner()
             .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to get inner encoder: {}", e)))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}")))?;
         gzip_encoder
             .shutdown()
             .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {}", e)))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}")))?;
 
         // 6. Remove the original uncompressed directory
         remove_dir_all(&temp_path)
             .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to remove temp directory: {}", e)))?;
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to remove temp directory: {e}")))?;
 
         // 7: cleanup old versions
         debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 5: cleanup old versions");
@@ -758,8 +758,8 @@ where T: TypeConfig
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
-                    return Err(SnapshotError::OperationFailed(format!("Stream error: {:?}", e)).into());
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
+                    return Err(SnapshotError::OperationFailed(format!("Stream error: {e:?}")).into());
                 }
                 Ok(None) => {
                     debug!("no more chunks available...");
@@ -775,7 +775,7 @@ where T: TypeConfig
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
                     let elapsed = last_received.elapsed();
                     return Err(SnapshotError::OperationFailed(format!(
                         "No chunk received for {} seconds",
@@ -796,7 +796,7 @@ where T: TypeConfig
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
                     return Err(SnapshotError::OperationFailed("Leader changed during transfer".to_string()).into());
                 }
             } else {
@@ -814,7 +814,7 @@ where T: TypeConfig
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
                     return Err(
                         SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string()).into(),
                     );
@@ -831,7 +831,7 @@ where T: TypeConfig
                         next_requested: chunk.seq, // Request same chunk again
                     })
                     .await
-                    .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                    .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
                 return Err(SnapshotError::OperationFailed("Checksum validation failed".to_string()).into());
             }
 
@@ -847,7 +847,7 @@ where T: TypeConfig
             ack_tx
                 .send(ack)
                 .await
-                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
 
             count += 1;
             if count % config.receiver_yield_every_n_chunks == 0 {
@@ -867,7 +867,7 @@ where T: TypeConfig
                     next_requested: 0,
                 })
                 .await
-                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {}", e)))?;
+                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
 
             return Err(SnapshotError::OperationFailed(format!(
                 "Received chunks({}) != total({})",

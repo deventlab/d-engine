@@ -35,7 +35,7 @@ impl SnapshotAssembler {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| {
-                    StorageError::IoError(std::io::Error::other(format!("SystemTime before UNIX EPOCH: {}", e)))
+                    StorageError::IoError(std::io::Error::other(format!("SystemTime before UNIX EPOCH: {e}")))
                 })?
                 .as_nanos();
 

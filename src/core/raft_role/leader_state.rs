@@ -1213,8 +1213,7 @@ impl<T: TypeConfig> LeaderState<T> {
             Ok(false) => {
                 warn!("Failed to commit config change for node {}", node_id);
                 return Err(MembershipError::ConfigChangeUpdateFailed(format!(
-                    "Failed to commit config change for node {}",
-                    node_id
+                    "Failed to commit config change for node {node_id}"
                 ))
                 .into());
             }
@@ -1446,7 +1445,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 1. Validate join request
         debug!("1. Validate join request");
         if membership.contains_node(node_id) {
-            let error_msg = format!("Node {} already exists in cluster", node_id);
+            let error_msg = format!("Node {node_id} already exists in cluster");
             warn!(%error_msg);
             return self
                 .send_join_error(sender, MembershipError::NodeAlreadyExists(node_id))

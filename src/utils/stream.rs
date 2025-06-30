@@ -95,7 +95,7 @@ where
                 let mut buf = Vec::new();
                 chunk
                     .encode(&mut buf)
-                    .map_err(|e| Status::new(Code::Internal, format!("Snapshot encoding failed: {}", e)))?;
+                    .map_err(|e| Status::new(Code::Internal, format!("Snapshot encoding failed: {e}")))?;
 
                 // Create gRPC frame with header
                 let mut frame = BytesMut::with_capacity(5 + buf.len());

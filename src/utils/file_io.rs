@@ -218,8 +218,7 @@ pub fn convert_vec_checksum(checksum: Vec<u8>) -> Result<[u8; 32]> {
 
         // All other length mismatches
         len => Err(ConvertError::ConversionFailure(format!(
-            "Invalid checksum length: expected 32 bytes, got {} bytes",
-            len
+            "Invalid checksum length: expected 32 bytes, got {len} bytes"
         ))
         .into()),
     }
@@ -353,7 +352,7 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
         .ok_or_else(|| FileError::InvalidExt("Invalid file extension".into()))?;
 
     if !matches!(ext.to_lowercase().as_str(), "gz" | "tgz" | "snap") {
-        return Err(FileError::InvalidExt(format!("Invalid compression extension: {}", ext)).into());
+        return Err(FileError::InvalidExt(format!("Invalid compression extension: {ext}")).into());
     }
 
     // 4. Verify magic numbers (GZIP header checks)

@@ -84,7 +84,7 @@ where T: TypeConfig
         request_tx
             .send(Arc::new(first_chunk))
             .await
-            .map_err(|e| NetworkError::SingalSendFailed(format!("{:?}", e)))?;
+            .map_err(|e| NetworkError::SingalSendFailed(format!("{e:?}")))?;
 
         // 3. Start the background task to send the remaining blocks
         let (error_tx, mut error_rx) = mpsc::channel(1);
