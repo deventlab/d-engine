@@ -445,6 +445,9 @@ pub enum MembershipError {
 
     #[error("Not leader")]
     NoLeader,
+
+    #[error("Mark leader id failed: {0}")]
+    MarkLeaderIdFailed(String),
 }
 
 #[derive(Debug, thiserror::Error)]

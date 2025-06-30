@@ -956,3 +956,44 @@ async fn test_join_cluster_case7_large_cluster() {
 
     assert!(result.is_ok(), "Should handle large cluster");
 }
+
+/// # Case 8: Join failure - marking leader ID fails
+#[tokio::test]
+async fn test_join_cluster_case8_mark_leader_failure() {
+    enable_logger();
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case8", graceful_rx, None);
+    let node_id = 100;
+
+    // Mock membership to return known leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| Some(5));
+    membership
+        .expect_mark_leader_id()
+        .returning(|_| Err(MembershipError::MarkLeaderIdFailed("test mark leader failure".to_string()).into()));
+    ctx.membership = Arc::new(membership);
+
+    // Mock transport to return success
+    let mut transport = MockTransport::new();
+    transport.expect_join_cluster().returning(|_, _, _, _| {
+        Ok(JoinResponse {
+            success: true,
+            error: "".to_string(),
+            config: None,
+            config_version: 1,
+            snapshot_metadata: None,
+            leader_id: 3,
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let result = state.join_cluster(&ctx).await;
+
+    // Verify error propagation
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Membership(MembershipError::MarkLeaderIdFailed(_)))
+    ));
+}
