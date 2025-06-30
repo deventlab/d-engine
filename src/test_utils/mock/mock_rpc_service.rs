@@ -21,12 +21,13 @@ use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotResponse;
 use crate::Result;
 
+// ports for unit tests
 pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60100;
-pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60200;
-pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60300;
-pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60400;
-pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 60500;
-pub(crate) const MOCK_SNAPSHOT_PORT_BASE: u64 = 60600;
+pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60400;
+pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60600;
+pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60700;
+pub(crate) const MOCK_PURGE_PORT_BASE: u64 = 61000;
+pub(crate) const MOCK_SNAPSHOT_PORT_BASE: u64 = 61200;
 
 pub struct MockNode;
 

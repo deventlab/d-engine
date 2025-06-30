@@ -82,7 +82,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
-    println!("Cluster started. Running tests...");
+    println!("[test_out_of_sync_peer_scenario] Cluster started. Running tests...");
 
     // 3. Trigger client request
     let bootstrap_urls: Vec<String> = vec![

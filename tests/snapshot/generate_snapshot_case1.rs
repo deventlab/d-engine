@@ -98,7 +98,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
-    println!("Cluster started. Running tests...");
+    println!("[test_snapshot_scenario] Cluster started. Running tests...");
 
     sleep(Duration::from_secs(3)).await;
     let leader_snapshot_metadata = sm3.snapshot_metadata().unwrap();

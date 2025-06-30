@@ -62,13 +62,13 @@ async fn test_leader_election_based_on_log_term_and_index() -> std::result::Resu
         check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
     }
 
-    println!("Cluster started. Running tests...");
+    println!("[test_leader_election_based_on_log_term_and_index] Cluster started. Running tests...");
 
     // 2. Verify Leader is Node 2
     let bootstrap_urls: Vec<String> = vec![
-        format!("http://127.0.0.1:{}", port1),
-        format!("http://127.0.0.1:{}", port2),
-        format!("http://127.0.0.1:{}", port3),
+        format!("http://127.0.0.1:{port1}",),
+        format!("http://127.0.0.1:{port2}",),
+        format!("http://127.0.0.1:{port3}",),
     ];
 
     let client_manager = ClientManager::new(&bootstrap_urls).await?;

@@ -80,7 +80,7 @@ async fn test_join_cluster_scenario() -> Result<(), ClientApiError> {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
-    println!("Cluster started. Running tests...");
+    println!("[test_join_cluster_scenario] Cluster started. Running tests...");
 
     // 3. Wait for snapshot generation
     sleep(Duration::from_secs(3)).await;

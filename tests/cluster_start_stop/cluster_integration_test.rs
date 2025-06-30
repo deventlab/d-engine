@@ -11,6 +11,7 @@ use crate::common::ClientCommands;
 use crate::common::ITERATIONS;
 use crate::common::LATENCY_IN_MS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::CLUSTER_PORT_BASE;
 
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster
@@ -20,10 +21,13 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
 
     reset("cluster_start_stop/case1").await?;
 
+    let port1 = CLUSTER_PORT_BASE + 1; //30101
+    let port2 = CLUSTER_PORT_BASE + 2; //30102
+    let port3 = CLUSTER_PORT_BASE + 3; //30103
     let bootstrap_urls: Vec<String> = vec![
-        "http://127.0.0.1:9083".to_string(),
-        "http://127.0.0.1:9082".to_string(),
-        "http://127.0.0.1:9081".to_string(),
+        format!("http://127.0.0.1:{port1}",),
+        format!("http://127.0.0.1:{port2}",),
+        format!("http://127.0.0.1:{port3}",),
     ];
 
     let (graceful_tx3, node_n3) = start_node("./tests/cluster_start_stop/case1/n3", None, None, None).await?;
@@ -31,9 +35,11 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case1/n1", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
-    for port in [9081, 9082, 9083] {
+    for port in [port1, port2, port3] {
         check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
     }
+
+    println!("[test_cluster_put_and_lread_case2] Cluster started. Running tests...");
 
     // Perform test actions (e.g., CLI commands, cluster verification, etc.)
     println!("Cluster started. Running tests...");
@@ -118,15 +124,19 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
 
     reset("cluster_start_stop/case2").await?;
 
+    let port1 = CLUSTER_PORT_BASE + 11; //30111
+    let port2 = CLUSTER_PORT_BASE + 12; //30112
+    let port3 = CLUSTER_PORT_BASE + 13; //30113
+
     let bootstrap_urls: Vec<String> = vec![
-        "http://127.0.0.1:19083".to_string(),
-        "http://127.0.0.1:19082".to_string(),
-        "http://127.0.0.1:19081".to_string(),
+        format!("http://127.0.0.1:{port1}",),
+        format!("http://127.0.0.1:{port2}",),
+        format!("http://127.0.0.1:{port3}",),
     ];
 
     let bootstrap_urls_without_n1: Vec<String> = vec![
-        "http://127.0.0.1:19083".to_string(),
-        "http://127.0.0.1:19082".to_string(),
+        format!("http://127.0.0.1:{port2}",),
+        format!("http://127.0.0.1:{port3}",),
     ];
 
     let (graceful_tx1, node_n1) = start_node("./tests/cluster_start_stop/case2/n1", None, None, None).await?;
@@ -134,9 +144,12 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     let (graceful_tx3, node_n3) = start_node("./tests/cluster_start_stop/case2/n3", None, None, None).await?;
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
-    for port in [19081, 19082, 19083] {
+    for port in [port1, port2, port3] {
         check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
     }
+
+    println!("[test_cluster_put_and_lread_case2] Cluster started. Running tests...");
+
     // T1: PUT and linearizable reads
     println!("------------------T1-----------------");
     let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
