@@ -380,6 +380,11 @@ where
     data_setup(&db);
     let checksum = compute_checksum_from_folder_path(temp_data_dir.path()).await.unwrap();
 
+    // Ensure parent directory exists before file creation
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.unwrap();
+    }
+
     let file = File::create(path).await.unwrap();
     let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
     let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);

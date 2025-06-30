@@ -26,7 +26,7 @@ use crate::SystemError;
 async fn test_create_parent_dir_for_file() {
     enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path();
+    let temp_path = temp_dir.path().join("test_create_parent_dir_for_file");
 
     // File path: create parent directory
     let file_path = temp_path.join("files").join("data.txt");
@@ -46,7 +46,9 @@ async fn test_create_parent_dir_for_file() {
 async fn test_create_parent_dir_for_directory_without_trailing_separator() {
     enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path();
+    let temp_path = temp_dir
+        .path()
+        .join("test_create_parent_dir_for_directory_without_trailing_separator");
 
     // Directory path (explicit trailing separator)
     let dir_path = temp_path.join("dir").join("subdir");
@@ -64,7 +66,9 @@ async fn test_create_parent_dir_for_directory_without_trailing_separator() {
 async fn test_create_parent_dir_for_directory_with_trailing_separator() {
     enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path();
+    let temp_path = temp_dir
+        .path()
+        .join("test_create_parent_dir_for_directory_with_trailing_separator");
 
     // Directory path (explicit trailing separator)
     let dir_path = temp_path.join("dir").join("subdir").join(""); // Trailing separator
@@ -127,7 +131,9 @@ async fn test_delete_directory() {
 async fn test_delete_busy_file() {
     // Create temp file
     let temp_dir = tempfile::tempdir().unwrap();
-    let dir_path = temp_dir.path().to_owned();
+    let temp_path = temp_dir.path().join("test_delete_busy_file");
+    let dir_path = temp_path.to_owned();
+    tokio::fs::create_dir_all(&dir_path).await.unwrap();
 
     // Create a test file
     let file_path = dir_path.join("test_file.txt");
@@ -183,7 +189,9 @@ async fn test_delete_permission_denied() {
 
     // Create temp file
     let temp_dir = tempfile::tempdir().unwrap();
-    let dir_path = temp_dir.path().to_owned();
+    let temp_path = temp_dir.path().join("test_delete_permission_denied");
+    let dir_path = temp_path.to_owned();
+    tokio::fs::create_dir_all(&dir_path).await.unwrap();
 
     // Create a test file
     let file_path = dir_path.join("test_file.txt");
@@ -214,7 +222,7 @@ async fn test_delete_permission_denied() {
 async fn test_move_directory() {
     enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path();
+    let temp_path = temp_dir.path().join("test_move_directory");
 
     // Old directory path with trailing separator
     let old_path = temp_path.join("old").join("a").join("b").join(""); // Mark as directory

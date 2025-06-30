@@ -18,7 +18,7 @@ use crate::common::ClientCommands;
 use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
-const RETRY_DELAY_MS: u64 = 50;
+const RETRY_DELAY_MS: u64 = 100;
 
 #[derive(Clone)]
 pub struct ClientManager {

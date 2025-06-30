@@ -1157,9 +1157,10 @@ fn test_get_last_entry_metadata_case2() {
 #[tokio::test]
 async fn test_raft_log_drop() {
     let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_raft_log_drop");
 
     {
-        let db = Arc::new(sled::open(temp_dir.path()).unwrap());
+        let db = Arc::new(sled::open(case_path.clone()).unwrap());
         // Create real instance instead of mock
         let raft_log = Arc::new(SledRaftLog::new(db.clone(), 0));
 
@@ -1171,6 +1172,6 @@ async fn test_raft_log_drop() {
     }
 
     // Verify flush occurred by checking persistence
-    let reloaded_db = sled::open(temp_dir.path()).unwrap();
+    let reloaded_db = sled::open(case_path).unwrap();
     assert!(!reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().is_empty());
 }
