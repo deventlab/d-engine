@@ -121,6 +121,15 @@ where
             .collect()
     }
 
+    fn get_node_status(
+        &self,
+        node_id: u32,
+    ) -> Option<NodeStatus> {
+        self.membership
+            .get(&node_id)
+            .and_then(|node_meta| NodeStatus::try_from(node_meta.status).ok())
+    }
+
     fn activate_node(
         &mut self,
         new_node_id: u32,

@@ -8,7 +8,10 @@ use std::time::UNIX_EPOCH;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::debug;
+use tracing::trace;
+use tracing::warn;
 
+use crate::file_io::create_parent_dir_if_not_exist;
 use crate::proto::storage::SnapshotMetadata;
 use crate::Result;
 use crate::SnapshotError;
@@ -42,6 +45,7 @@ impl SnapshotAssembler {
             let backup_filename = format!("{}{}_{}", path_mgr.temp_prefix, "snapshot.part", timestamp);
             let backup_path = path_mgr.base_dir.join(backup_filename);
 
+            trace!(?temp_file_path, ?backup_path, "Rename directory (move)");
             // Rename directory (move)
             tokio::fs::rename(&temp_file_path, &backup_path).await.map_err(|e| {
                 StorageError::IoError(std::io::Error::new(
@@ -56,12 +60,15 @@ impl SnapshotAssembler {
             })?;
 
             // Optional: Log that the old directory has been moved
-            tracing::warn!(
+            warn!(
                 "Moved existing directory {} to {}",
                 temp_file_path.display(),
                 backup_path.display()
             );
         }
+
+        create_parent_dir_if_not_exist(&temp_file_path)?;
+        trace!("open: {:?}", &temp_file_path);
 
         let file = tokio::fs::OpenOptions::new()
             .create(true)

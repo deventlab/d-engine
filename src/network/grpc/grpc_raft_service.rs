@@ -109,7 +109,7 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.retry.election.timeout_ms);
+        let timeout_duration = Duration::from_millis(self.node_config.retry.append_entries.timeout_ms);
 
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }

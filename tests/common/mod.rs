@@ -1,12 +1,16 @@
+use d_engine::config::BackoffPolicy;
+use d_engine::storage::StateMachine;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-
+use config::Config;
 use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
 use d_engine::alias::SSOF;
+use d_engine::config::ClusterConfig;
+use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
 use d_engine::convert::safe_kv;
 use d_engine::node::Node;
@@ -20,7 +24,6 @@ use d_engine::storage::RaftLog;
 use d_engine::storage::RaftStateMachine;
 use d_engine::storage::SledRaftLog;
 use d_engine::storage::SledStateStorage;
-use d_engine::storage::StateMachine;
 use d_engine::storage::StateStorage;
 use d_engine::ClientApiError;
 use d_engine::HardState;
@@ -29,9 +32,12 @@ use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
+use tokio::sync::watch::Sender;
+use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
+use crate::client_manager::ClientManager;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -49,12 +55,98 @@ pub enum ClientCommands {
     Lread,
     Delete,
 }
+
+pub struct TestContext {
+    pub graceful_txs: Vec<Sender<()>>,
+    pub node_handles: Vec<JoinHandle<Result<(), ClientApiError>>>,
+}
+
+impl TestContext {
+    pub async fn shutdown(self) -> Result<(), ClientApiError> {
+        for tx in self.graceful_txs {
+            tx.send(())
+                .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+        }
+
+        for handle in self.node_handles {
+            handle.await??;
+        }
+
+        Ok(())
+    }
+}
+
+pub async fn create_node_config(
+    node_id: u64,
+    port: u16,
+    cluster_ports: &[u16],
+    db_root_dir: &str,
+    log_dir: &str,
+) -> String {
+    let initial_cluster_entries = cluster_ports
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let id = i as u64 + 1;
+            format!("{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}")
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ");
+
+    format!(
+        r#"
+        node_id = {node_id}
+        listen_address = '127.0.0.1:{port}'
+        initial_cluster = [
+            {initial_cluster_entries}
+        ]
+        db_root_dir = '{db_root_dir}'
+        log_dir = '{log_dir}'
+        "#
+    )
+}
+
+pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
+    let mut config = RaftNodeConfig::default();
+
+    let settings = Config::builder()
+        .add_source(config::File::from_str(cluster_toml, config::FileFormat::Toml))
+        .build()
+        .unwrap();
+
+    let cluster: ClusterConfig = settings.try_deserialize().unwrap();
+
+    println!("Parsed cluster: {:#?}", cluster);
+
+    let mut raft = RaftConfig::default();
+    raft.general_raft_timeout_duration_in_ms = 10000;
+    raft.snapshot_rpc_timeout_ms = 300_000;
+
+    raft.replication.rpc_append_entries_in_batch_threshold = 1;
+
+    raft.commit_handler.batch_size = 1;
+    raft.commit_handler.process_interval_ms = 100;
+
+    raft.snapshot.max_log_entries_before_snapshot = 1;
+    raft.snapshot.cleanup_retain_count = 2;
+    raft.snapshot.retained_log_entries = 1;
+
+    let mut append_policy = BackoffPolicy::default();
+    append_policy.max_retries = 2;
+    append_policy.timeout_ms = 200;
+
+    config.cluster = cluster;
+    config.raft = raft;
+    config.retry.append_entries = append_policy;
+    config
+}
+
 #[allow(dead_code)]
-pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result<(), ClientApiError> {
+pub async fn start_cluster(nodes_config: Vec<RaftNodeConfig>) -> std::result::Result<(), ClientApiError> {
     // Start all nodes
     let mut controllers = vec![];
-    for config_path in nodes_config_paths {
-        let (tx, handle) = start_node(config_path, None, None, None).await?;
+    for config in nodes_config {
+        let (tx, handle) = start_node(config, None, None, None).await?;
         controllers.push((tx, handle));
     }
 
@@ -69,7 +161,7 @@ pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result
     Ok(())
 }
 pub async fn start_node(
-    config_path: &str,
+    config: RaftNodeConfig,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
     state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
@@ -82,9 +174,7 @@ pub async fn start_node(
 > {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let root_path = get_root_path();
-    let config_path = format!("{}", root_path.join(config_path).display());
-    let node = build_node(&config_path, graceful_rx, state_machine, raft_log, state_storage).await?;
+    let node = build_node(config, graceful_rx, state_machine, raft_log, state_storage).await?;
 
     let node_clone = node.clone();
     let node_id = node.node_config.cluster.node_id;
@@ -94,20 +184,14 @@ pub async fn start_node(
 }
 
 async fn build_node(
-    config_path: &str,
+    config: RaftNodeConfig,
     graceful_rx: watch::Receiver<()>,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
     state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
-    // Load configuration from the specified path
-    let config = RaftNodeConfig::default();
-    config
-        .with_override_config(config_path)
-        .expect("Overwrite config successfully.");
-
     // Prepare raft log entries
-    let mut builder = NodeBuilder::new(Some(config_path), graceful_rx);
+    let mut builder = NodeBuilder::init(config, graceful_rx);
     if let Some(r) = raft_log {
         // let sled_raft_log = prepare_raft_log(&config_path, last_applied_index);
         // manipulate_log(&sled_raft_log, ids, term);
@@ -223,6 +307,31 @@ pub fn init_state_storage(
             voted_for,
         })
         .is_ok());
+}
+
+pub async fn test_put_get(
+    client_manager: &mut ClientManager,
+    key: u64,
+    value: u64,
+) -> Result<(), ClientApiError> {
+    println!("put {} {}", key, value);
+    assert!(
+        client_manager
+            .execute_command(ClientCommands::Put, key, Some(value))
+            .await
+            .is_ok(),
+        "Put command failed for key {} value {}",
+        key,
+        value
+    );
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    client_manager.verify_read(key, value, ITERATIONS).await;
+    Ok(())
+}
+
+/// Helper function to create bootstrap URLs
+pub fn create_bootstrap_urls(ports: &[u16]) -> Vec<String> {
+    ports.iter().map(|port| format!("http://127.0.0.1:{port}")).collect()
 }
 
 pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {

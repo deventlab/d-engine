@@ -461,6 +461,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             )
             .await?;
 
+        debug!("Install snapshot and handle ACK feedback");
         // Install snapshot and handle ACK feedback
         ctx.handlers
             .state_machine_handler

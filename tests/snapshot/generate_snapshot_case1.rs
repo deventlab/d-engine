@@ -17,6 +17,7 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,73 +29,111 @@ use tokio::time::sleep;
 
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
+use crate::common::create_node_config;
 use crate::common::init_state_storage;
 use crate::common::manipulate_log;
 use crate::common::manipulate_state_machine;
+use crate::common::node_config;
 use crate::common::prepare_raft_log;
 use crate::common::prepare_state_machine;
 use crate::common::prepare_state_storage;
 use crate::common::reset;
 use crate::common::start_node;
+use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::SNAPSHOT_PORT_BASE;
+
+// Constants for test configuration
+const SNAPSHOT_DIR: &str = "./snapshots/snapshot/case1";
+const SNAPSHOT_CASE1_DIR: &str = "snapshot/case1";
+const SNAPSHOT_CASE1_DB_ROOT_DIR: &str = "./db/snapshot/case1";
+const SNAPSHOT_CASE1_LOG_DIR: &str = "./logs/snapshot/case1";
 
 /// The current test relies on the following snapshot configuration:
 /// When the number of log entries exceeds 1, a snapshot will be triggered.
 /// [raft.snapshot]
 /// max_log_entries_before_snapshot = 1
-#[tracing::instrument]
 #[tokio::test]
 async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     crate::enable_logger();
-    reset("snapshot/case1").await?;
+    reset(SNAPSHOT_CASE1_DIR).await?;
 
-    let port1 = SNAPSHOT_PORT_BASE + 1;
-    let port2 = SNAPSHOT_PORT_BASE + 2;
-    let port3 = SNAPSHOT_PORT_BASE + 3;
+    let ports = [
+        SNAPSHOT_PORT_BASE + 1,
+        SNAPSHOT_PORT_BASE + 2,
+        SNAPSHOT_PORT_BASE + 3,
+    ];
 
-    // 1. Prepare state machine for node 1 so that we could read out the last applied id in this test
-    println!("1. Prepare state_machine & raft_log");
-    let sm1 = Arc::new(prepare_state_machine(1, "./db/snapshot/case1/cs/1"));
-    let sm2 = Arc::new(prepare_state_machine(2, "./db/snapshot/case1/cs/2"));
-    let sm3 = Arc::new(prepare_state_machine(3, "./db/snapshot/case1/cs/3"));
-    let r1 = Arc::new(prepare_raft_log("./db/snapshot/case1/cs/1", 0));
+    // Prepare state machines
+    let sm1 = Arc::new(prepare_state_machine(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+    let sm2 = Arc::new(prepare_state_machine(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+    let sm3 = Arc::new(prepare_state_machine(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+
+    // Prepare raft logs
+    let r1 = Arc::new(prepare_raft_log(&format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+    let r2 = Arc::new(prepare_raft_log(&format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+    let r3 = Arc::new(prepare_raft_log(&format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+
     manipulate_log(&r1, vec![1, 2, 3], 1);
-    manipulate_state_machine(&r1, &sm1, 1..=3);
-
-    let r2 = Arc::new(prepare_raft_log("./db/snapshot/case1/cs/2", 0));
     manipulate_log(&r2, vec![1, 2, 3, 4], 1);
-    manipulate_state_machine(&r2, &sm2, 1..=3);
-
-    let r3 = Arc::new(prepare_raft_log("./db/snapshot/case1/cs/3", 0));
     manipulate_log(&r3, (1..=10).collect(), 2);
+
+    manipulate_state_machine(&r1, &sm1, 1..=3);
+    manipulate_state_machine(&r2, &sm2, 1..=3);
     manipulate_state_machine(&r3, &sm3, 1..=3);
 
-    let ss1 = Arc::new(prepare_state_storage("./db/snapshot/case1/cs/1"));
+    // Prepare state storage
+    let ss1 = Arc::new(prepare_state_storage(&format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+    let ss2 = Arc::new(prepare_state_storage(&format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+    let ss3 = Arc::new(prepare_state_storage(&format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+
     init_state_storage(&ss1, 1, None);
-    let ss2 = Arc::new(prepare_state_storage("./db/snapshot/case1/cs/2"));
     init_state_storage(&ss2, 1, None);
-    let ss3 = Arc::new(prepare_state_storage("./db/snapshot/case1/cs/3"));
     init_state_storage(&ss3, 2, None);
 
-    // 2. Start a 3-node cluster
-    println!("2. Start a 3-node cluster and artificially create inconsistent states");
-    let (graceful_tx1, node_n1) =
-        start_node("./tests/snapshot/case1/n1", Some(sm1.clone()), Some(r1), Some(ss1)).await?;
-    let (graceful_tx2, node_n2) =
-        start_node("./tests/snapshot/case1/n2", Some(sm2.clone()), Some(r2), Some(ss2)).await?;
-    let (graceful_tx3, node_n3) = start_node(
-        "./tests/snapshot/case1/n3",
-        Some(sm3.clone()),
-        Some(r3.clone()),
-        Some(ss3),
-    )
-    .await?;
+    // Start cluster nodes
+    let mut ctx = TestContext {
+        graceful_txs: Vec::new(),
+        node_handles: Vec::new(),
+    };
 
-    // Combine all log layers
+    for (i, port) in ports.iter().enumerate() {
+        let node_id = ( i + 1 ) as u64;
+        let config = create_node_config(
+            node_id,
+            *port,
+            &ports,
+            &format!("{}/cs/{}", SNAPSHOT_CASE1_DB_ROOT_DIR, i + 1),
+            SNAPSHOT_CASE1_LOG_DIR,
+        ).await;
+
+        let (state_machine, raft_log, state_storage) = match i {
+            0 => (Some(sm1.clone()), Some(r1.clone()), Some(ss1.clone())),
+            1 => (Some(sm2.clone()), Some(r2.clone()), Some(ss2.clone())),
+            2 => (Some(sm3.clone()), Some(r3.clone()), Some(ss3.clone())),
+            _ => (None, None, None),
+        };
+
+        let mut node_config = node_config(&config);
+
+        node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}",SNAPSHOT_DIR, node_id));
+
+
+        let (graceful_tx, node_handle) = start_node(
+            node_config,
+            state_machine,
+            raft_log,
+            state_storage,
+        ).await?;
+
+        ctx.graceful_txs.push(graceful_tx);
+        ctx.node_handles.push(node_handle);
+    }
+
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
-    for port in [port1, port2, port3] {
+    // Verify cluster is ready
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
@@ -109,10 +148,9 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     // Verify snapshot metadata
     assert_eq!(leader_snapshot_metadata.last_included.unwrap().index, 13);
-    // Last log index
-    assert!(!leader_snapshot_metadata.checksum.is_empty()); // Checksum is valid
+    assert!(!leader_snapshot_metadata.checksum.is_empty());
 
-    // Verify state machine status is preserved
+    // Verify state machine status
     let value = sm3.get(&safe_kv(3)).unwrap();
     assert_eq!(value, Some(safe_kv(3).to_vec()));
 
@@ -121,19 +159,6 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         assert!(r3.get_entry_by_index(i).is_none());
     }
 
-    // Wait nodes shutdown
-    graceful_tx3
-        .send(())
-        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
-    graceful_tx2
-        .send(())
-        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
-    graceful_tx1
-        .send(())
-        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
-    node_n3.await??;
-    node_n2.await??;
-    node_n1.await??;
-
-    Ok(()) // Return Result type
+    // Clean up
+    ctx.shutdown().await
 }

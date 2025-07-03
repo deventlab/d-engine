@@ -171,7 +171,7 @@ where
         debug!("Starting pull snapshot transfer");
 
         // Create processing pipeline
-        let transfer_fut = Self::process_transfer(ack_stream, data_stream, chunk_tx.clone(), config.clone());
+        let transfer_fut = Self::process_transfer(ack_stream, data_stream, chunk_tx, config.clone());
 
         // Run with timeout
         tokio::select! {
@@ -280,6 +280,7 @@ where
 
             if let Some(total) = total_chunks {
                 if next_seq >= total && pending_acks.is_empty() {
+                    debug!("All chunks transferred and acknowledged");
                     break;
                 }
             }
@@ -297,6 +298,11 @@ where
         config: &SnapshotConfig,
     ) -> Result<()> {
         let seq = ack.seq;
+
+        if seq == u32::MAX {
+            debug!("Received final ACK, marking transfer complete");
+            return Ok(());
+        }
 
         // Skip if this ACK is for a chunk that's already been processed
         if !pending_acks.contains(&seq) {

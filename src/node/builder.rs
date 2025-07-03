@@ -68,6 +68,7 @@ use crate::LogSizePolicy;
 use crate::NewCommitData;
 use crate::Node;
 use crate::Raft;
+use crate::RaftConfig;
 use crate::RaftCoreHandlers;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
@@ -140,9 +141,9 @@ impl NodeBuilder {
     ///
     /// # Usage
     /// ```ignore
-    /// let builder = NodeBuilder::from_config(my_config, shutdown_rx);
+    /// let builder = NodeBuilder::from_cluster_config(my_config, shutdown_rx);
     /// ```
-    pub fn from_config(
+    pub fn from_cluster_config(
         cluster_config: ClusterConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
@@ -233,6 +234,15 @@ impl NodeBuilder {
         node_config: RaftNodeConfig,
     ) -> Self {
         self.node_config = node_config;
+        self
+    }
+
+    /// Replaces the raft  configuration
+    pub fn raft_config(
+        mut self,
+        config: RaftConfig,
+    ) -> Self {
+        self.node_config.raft = config;
         self
     }
 

@@ -22,69 +22,93 @@ use d_engine::ClientApiError;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
+use crate::common::create_bootstrap_urls;
+use crate::common::create_node_config;
 use crate::common::init_state_storage;
 use crate::common::manipulate_log;
+use crate::common::node_config;
 use crate::common::prepare_raft_log;
 use crate::common::prepare_state_storage;
 use crate::common::reset;
 use crate::common::start_node;
+use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
 
+// Constants for test configuration
+const ELECTION_CASE1_DIR: &str = "election/case1";
+const ELECTION_CASE1_DB_ROOT_DIR: &str = "./db/election/case1";
+const ELECTION_CASE1_LOG_DIR: &str = "./logs/election/case1";
+
 #[tokio::test]
-async fn test_leader_election_based_on_log_term_and_index() -> std::result::Result<(), ClientApiError> {
+async fn test_leader_election_based_on_log_term_and_index() -> Result<(), ClientApiError> {
     crate::enable_logger();
-    reset("election/case1").await?;
+    reset(ELECTION_CASE1_DIR).await?;
 
-    let port1 = ELECTION_PORT_BASE + 1;
-    let port2 = ELECTION_PORT_BASE + 2;
-    let port3 = ELECTION_PORT_BASE + 3;
+    let ports = [
+        ELECTION_PORT_BASE + 1,
+        ELECTION_PORT_BASE + 2,
+        ELECTION_PORT_BASE + 3,
+    ];
 
-    // 1. Start a 3-node cluster and artificially create inconsistent states
-    println!("1. Start a 3-node cluster and artificially create inconsistent states");
-
-    let r1 = Arc::new(prepare_raft_log("./db/election/case1/cs/1", 0));
-    manipulate_log(&r1, (1..=10).collect(), 2);
-    let r2 = Arc::new(prepare_raft_log("./db/election/case1/cs/2", 0));
-    manipulate_log(&r2, (1..=8).collect(), 3);
-    let ss1 = Arc::new(prepare_state_storage("./db/election/case1/cs/1"));
+    // Prepare state storage
+    let ss1 = Arc::new(prepare_state_storage(&format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR)));
     init_state_storage(&ss1, 2, None);
-    let ss2 = Arc::new(prepare_state_storage("./db/election/case1/cs/2"));
+    let ss2 = Arc::new(prepare_state_storage(&format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR)));
     init_state_storage(&ss2, 3, None);
 
-    let (graceful_tx1, node_n1) = start_node("./tests/election/case1/n1", None, Some(r1), Some(ss1)).await?;
-    let (graceful_tx2, node_n2) = start_node("./tests/election/case1/n2", None, Some(r2), Some(ss2)).await?;
-    let (graceful_tx3, node_n3) = start_node("./tests/election/case1/n3", None, None, None).await?;
+    // Prepare raft logs
+    let r1 = Arc::new(prepare_raft_log(&format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR), 0));
+    manipulate_log(&r1, (1..=10).collect(), 2);
+    let r2 = Arc::new(prepare_raft_log(&format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR), 0));
+    manipulate_log(&r2, (1..=8).collect(), 3);
+
+    // Start cluster nodes
+    let mut ctx = TestContext {
+        graceful_txs: Vec::new(),
+        node_handles: Vec::new(),
+    };
+
+    for (i, port) in ports.iter().enumerate() {
+        let config = create_node_config(
+            (i + 1) as u64,
+            *port,
+            &ports,
+            &format!("{}/cs/{}", ELECTION_CASE1_DB_ROOT_DIR, i + 1),
+            ELECTION_CASE1_LOG_DIR,
+        ).await;
+
+        let (raft_log, state_storage) = match i {
+            0 => (Some(r1.clone()), Some(ss1.clone())),
+            1 => (Some(r2.clone()), Some(ss2.clone())),
+            _ => (None, None),
+        };
+
+        let (graceful_tx, node_handle) = start_node(
+            node_config(&config),
+            None,
+            raft_log,
+            state_storage,
+        ).await?;
+
+        ctx.graceful_txs.push(graceful_tx);
+        ctx.node_handles.push(node_handle);
+    }
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
-    for port in [port1, port2, port3] {
-        check_cluster_is_ready(&format!("127.0.0.1:{port}",), 10).await?;
+    // Verify cluster is ready
+    for port in ports {
+        check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     println!("[test_leader_election_based_on_log_term_and_index] Cluster started. Running tests...");
 
-    // 2. Verify Leader is Node 2
-    let bootstrap_urls: Vec<String> = vec![
-        format!("http://127.0.0.1:{port1}",),
-        format!("http://127.0.0.1:{port2}",),
-        format!("http://127.0.0.1:{port3}",),
-    ];
-
+    // Verify Leader is Node 2
+    let bootstrap_urls = create_bootstrap_urls(&ports);
     let client_manager = ClientManager::new(&bootstrap_urls).await?;
     assert_eq!(client_manager.list_leader_id().await.unwrap(), 2);
 
-    graceful_tx3
-        .send(())
-        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
-    graceful_tx2
-        .send(())
-        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
-    graceful_tx1
-        .send(())
-        .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
-    node_n3.await??;
-    node_n2.await??;
-    node_n1.await??;
-    Ok(())
+    // Clean up
+    ctx.shutdown().await
 }

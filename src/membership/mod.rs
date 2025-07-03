@@ -52,6 +52,11 @@ where
         status: NodeStatus,
     ) -> Vec<crate::proto::cluster::NodeMeta>;
 
+    fn get_node_status(
+        &self,
+        node_id: u32,
+    ) -> Option<NodeStatus>;
+
     async fn check_cluster_is_ready(&self) -> Result<()>;
 
     fn get_peers_id_with_condition<F>(
