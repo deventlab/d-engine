@@ -49,7 +49,6 @@ use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
-use crate::NetworkError;
 use crate::NewCommitData;
 use crate::RaftLog;
 use crate::Result;

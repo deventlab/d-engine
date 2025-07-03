@@ -5,8 +5,11 @@ use d_engine::alias::SMOF;
 use d_engine::alias::SSOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
+use d_engine::config::CommitHandlerConfig;
 use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
+use d_engine::config::ReplicationConfig;
+use d_engine::config::SnapshotConfig;
 use d_engine::convert::safe_kv;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
@@ -118,26 +121,37 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
 
     println!("Parsed cluster: {:#?}", cluster);
 
-    let mut raft = RaftConfig::default();
-    raft.general_raft_timeout_duration_in_ms = 10000;
-    raft.snapshot_rpc_timeout_ms = 300_000;
+    let raft = RaftConfig {
+        general_raft_timeout_duration_in_ms: 10000,
+        snapshot_rpc_timeout_ms: 300_000,
+        replication: ReplicationConfig {
+            rpc_append_entries_in_batch_threshold: 1,
+            ..Default::default()
+        },
+        commit_handler: CommitHandlerConfig {
+            batch_size: 1,
+            process_interval_ms: 100,
+            ..Default::default()
+        },
+        snapshot: SnapshotConfig {
+            max_log_entries_before_snapshot: 1,
+            cleanup_retain_count: 2,
+            retained_log_entries: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
-    raft.replication.rpc_append_entries_in_batch_threshold = 1;
-
-    raft.commit_handler.batch_size = 1;
-    raft.commit_handler.process_interval_ms = 100;
-
-    raft.snapshot.max_log_entries_before_snapshot = 1;
-    raft.snapshot.cleanup_retain_count = 2;
-    raft.snapshot.retained_log_entries = 1;
-
-    let mut append_policy = BackoffPolicy::default();
-    append_policy.max_retries = 2;
-    append_policy.timeout_ms = 200;
+    let append_policy = BackoffPolicy {
+        max_retries: 2,
+        timeout_ms: 200,
+        ..Default::default()
+    };
 
     config.cluster = cluster;
     config.raft = raft;
     config.retry.append_entries = append_policy;
+
     config
 }
 
