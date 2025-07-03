@@ -1135,6 +1135,8 @@ impl<T: TypeConfig> LeaderState<T> {
             }
         }
     }
+
+    #[instrument(skip(self))]
     async fn check_learner_progress(
         &mut self,
         learner_progress: &HashMap<u32, u64>,
@@ -1145,9 +1147,18 @@ impl<T: TypeConfig> LeaderState<T> {
 
         let config = &ctx.node_config.raft;
         for (node_id, match_index) in learner_progress {
-            // Check if the catch-up threshold is reached
-            if leader_commit_index - match_index <= config.learner_catchup_threshold {
-                // Trigger state transition: Joining → PendingActive
+            if ctx.membership().get_node_status(*node_id) != Some(NodeStatus::Joining) {
+                continue;
+            }
+
+            debug!(?leader_commit_index, %match_index, config.learner_catchup_threshold, "check_learner_progress");
+
+            let caught_up = leader_commit_index
+                .checked_sub(*match_index)
+                .map(|diff| diff <= config.learner_catchup_threshold)
+                .unwrap_or(true);
+
+            if caught_up {
                 self.promote_learner(*node_id, NodeStatus::PendingActive, ctx, role_tx)
                     .await?;
             }
