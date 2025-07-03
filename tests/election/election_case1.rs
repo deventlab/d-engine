@@ -45,11 +45,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     crate::enable_logger();
     reset(ELECTION_CASE1_DIR).await?;
 
-    let ports = [
-        ELECTION_PORT_BASE + 1,
-        ELECTION_PORT_BASE + 2,
-        ELECTION_PORT_BASE + 3,
-    ];
+    let ports = [ELECTION_PORT_BASE + 1, ELECTION_PORT_BASE + 2, ELECTION_PORT_BASE + 3];
 
     // Prepare state storage
     let ss1 = Arc::new(prepare_state_storage(&format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR)));
@@ -76,7 +72,8 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
             &ports,
             &format!("{}/cs/{}", ELECTION_CASE1_DB_ROOT_DIR, i + 1),
             ELECTION_CASE1_LOG_DIR,
-        ).await;
+        )
+        .await;
 
         let (raft_log, state_storage) = match i {
             0 => (Some(r1.clone()), Some(ss1.clone())),
@@ -84,12 +81,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
             _ => (None, None),
         };
 
-        let (graceful_tx, node_handle) = start_node(
-            node_config(&config),
-            None,
-            raft_log,
-            state_storage,
-        ).await?;
+        let (graceful_tx, node_handle) = start_node(node_config(&config), None, raft_log, state_storage).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);

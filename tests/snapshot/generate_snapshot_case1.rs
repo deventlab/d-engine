@@ -58,16 +58,21 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     crate::enable_logger();
     reset(SNAPSHOT_CASE1_DIR).await?;
 
-    let ports = [
-        SNAPSHOT_PORT_BASE + 1,
-        SNAPSHOT_PORT_BASE + 2,
-        SNAPSHOT_PORT_BASE + 3,
-    ];
+    let ports = [SNAPSHOT_PORT_BASE + 1, SNAPSHOT_PORT_BASE + 2, SNAPSHOT_PORT_BASE + 3];
 
     // Prepare state machines
-    let sm1 = Arc::new(prepare_state_machine(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)));
-    let sm2 = Arc::new(prepare_state_machine(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR)));
-    let sm3 = Arc::new(prepare_state_machine(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR)));
+    let sm1 = Arc::new(prepare_state_machine(
+        1,
+        &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR),
+    ));
+    let sm2 = Arc::new(prepare_state_machine(
+        2,
+        &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR),
+    ));
+    let sm3 = Arc::new(prepare_state_machine(
+        3,
+        &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR),
+    ));
 
     // Prepare raft logs
     let r1 = Arc::new(prepare_raft_log(&format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
@@ -98,14 +103,15 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     };
 
     for (i, port) in ports.iter().enumerate() {
-        let node_id = ( i + 1 ) as u64;
+        let node_id = (i + 1) as u64;
         let config = create_node_config(
             node_id,
             *port,
             &ports,
             &format!("{}/cs/{}", SNAPSHOT_CASE1_DB_ROOT_DIR, i + 1),
             SNAPSHOT_CASE1_LOG_DIR,
-        ).await;
+        )
+        .await;
 
         let (state_machine, raft_log, state_storage) = match i {
             0 => (Some(sm1.clone()), Some(r1.clone()), Some(ss1.clone())),
@@ -116,15 +122,9 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
         let mut node_config = node_config(&config);
 
-        node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}",SNAPSHOT_DIR, node_id));
+        node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
 
-
-        let (graceful_tx, node_handle) = start_node(
-            node_config,
-            state_machine,
-            raft_log,
-            state_storage,
-        ).await?;
+        let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log, state_storage).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
