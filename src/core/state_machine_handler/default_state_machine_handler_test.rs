@@ -434,11 +434,6 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     let ack = ack_rx.recv().await.unwrap();
     assert_eq!(ack.status, ChunkStatus::Accepted as i32);
 
-    // Verify final response
-    let final_ack = ack_rx.recv().await.unwrap();
-    assert_eq!(final_ack.status, ChunkStatus::Accepted as i32);
-    assert_eq!(final_ack.seq, u32::MAX);
-
     // Ensure handler completes successfully
     assert!(handler_task.await.unwrap().is_ok());
 }
@@ -658,12 +653,6 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         assert_eq!(ack.status, ChunkStatus::Accepted as i32);
         assert_eq!(ack.next_requested, seq + 1);
     }
-
-    // Verify final ACK
-    let final_ack = ack_rx.recv().await.unwrap();
-    assert_eq!(final_ack.seq, u32::MAX);
-    assert_eq!(final_ack.status, ChunkStatus::Accepted as i32);
-    assert_eq!(final_ack.next_requested, 0);
 
     // Ensure handler completes successfully
     assert!(handler_task.await.unwrap().is_ok());

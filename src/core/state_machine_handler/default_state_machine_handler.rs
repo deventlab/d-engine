@@ -199,20 +199,6 @@ where
             .apply_snapshot_from_file(&final_metadata, snapshot_path)
             .await?;
 
-        // Send final ACK
-        let final_ack = SnapshotAck {
-            seq: u32::MAX, // Special value for completion
-            status: ChunkStatus::Accepted.into(),
-            next_requested: 0,
-        };
-        debug!(?final_ack, "going to send final ack");
-
-        ack_tx.send(final_ack).await.map_err(|e| {
-            let error_str = format!("{e:?}");
-            error!("Failed to send final ACK: {}", error_str);
-            NetworkError::SingalSendFailed(error_str)
-        })?;
-
         info!("Snapshot stream successfully received and applied");
         Ok(())
     }
