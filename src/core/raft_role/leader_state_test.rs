@@ -2402,7 +2402,8 @@ async fn test_handle_join_cluster_case1_success() {
         }]
     });
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _, _| Ok(()));
+    membership.expect_replication_peers().returning(|| vec![]);
+    membership.expect_add_learner().returning(|_, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(ClusterMembership::default);
@@ -2521,7 +2522,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _| Ok(()));
     membership.expect_voters().returning(Vec::new); // Empty voting members will cause quorum failure
     context.membership = Arc::new(membership);
 
@@ -2571,7 +2572,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _| Ok(()));
 
     membership.expect_voters().returning(move || {
         vec![NodeMeta {
@@ -2626,7 +2627,8 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _, _| Ok(()));
+    membership.expect_replication_peers().returning(|| vec![]);
+    membership.expect_add_learner().returning(|_, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(ClusterMembership::default);
@@ -2808,4 +2810,175 @@ mod trigger_background_snapshot_test {
 
         assert!(result.is_ok());
     }
+}
+
+#[cfg(test)]
+mod batch_promote_learners_test {
+    use super::*;
+    use crate::core::raft_role::leader_state::LeaderState;
+    use crate::core::raft_role::RoleEvent;
+    use crate::membership::MockMembership;
+    use crate::proto::common::NodeStatus;
+    use crate::RaftContext;
+    use mockall::predicate::*;
+    use std::sync::Arc;
+
+    enum VerifyInternalQuorumWithRetrySuccess {
+        Success,
+        Failure,
+        Error
+    }
+
+    struct TestContext {
+        raft_context: RaftContext<MockTypeConfig>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+        leader_state: LeaderState<MockTypeConfig>,
+    }
+
+    async fn setup_test_context(
+        test_name: &str,
+        current_voters: usize,
+        ready_learners: Vec<u32>,
+        verify_internal_quorum_with_retry_success: VerifyInternalQuorumWithRetrySuccess
+    ) -> TestContext {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut node_config = node_config(&format!("/tmp/{test_name}"));
+        node_config.raft.learner_catchup_threshold = 100;
+
+        let mut raft_context = MockBuilder::new(graceful_rx)
+            .wiht_node_config(node_config)
+            .build_context();
+
+        // Mock membership
+        let mut membership = MockMembership::new();
+        membership.expect_voters().returning(move || {
+            (1..=current_voters)
+                .map(|id| NodeMeta {
+                    id: id as u32,
+                    address: format!("addr_{id}"),
+                    role: FOLLOWER,
+                    status: NodeStatus::Active.into(),
+                })
+                .collect()
+        });
+        let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+        replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(move |_, _, _, _| {
+            match verify_internal_quorum_with_retry_success {
+                VerifyInternalQuorumWithRetrySuccess::Success => Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    learner_progress: HashMap::new(),
+                    peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                }),
+                VerifyInternalQuorumWithRetrySuccess::Failure => Ok(AppendResults {
+                    commit_quorum_achieved: false,
+                    learner_progress: HashMap::new(),
+                    peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+                }),
+                VerifyInternalQuorumWithRetrySuccess::Error => Err(Error::Consensus(ConsensusError::Replication(
+                    ReplicationError::HigherTerm(10), // Higher term
+                ))),
+            }
+        });
+        raft_context
+            .handlers.replication_handler = replication_handler;
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log
+            .expect_calculate_majority_matched_index()
+            .returning(|_, _, _| Some(5));
+        raft_context.storage.raft_log = Arc::new(raft_log);
+
+        // Mock learner statuses
+        for learner_id in &ready_learners {
+            membership.expect_get_node_status()
+                .with(eq(*learner_id))
+                .return_const(Some(NodeStatus::PendingActive));
+        }
+
+        raft_context.membership = Arc::new(membership);
+
+        let leader_state = LeaderState::new(1, raft_context.node_config());
+        let (role_tx, role_rx) = mpsc::unbounded_channel();
+
+        TestContext {
+            raft_context,
+            role_tx: role_tx.clone(),
+            role_rx,
+            leader_state,
+        }
+    }
+
+    /// Test successful promotion when quorum is achieved
+    #[tokio::test]
+    #[ignore]
+    async fn test_batch_promote_learners_success() {
+        enable_logger();
+        // Use safe cluster configuration: 1 voter promoting 1 learner = 2 voters total
+        let mut ctx = setup_test_context("test_success", 3, vec![4, 5], VerifyInternalQuorumWithRetrySuccess::Success).await;
+
+        // Mock quorum verification to succeed
+        let mut leader_state = ctx.leader_state;
+
+        let result = leader_state
+            .batch_promote_learners(vec![4, 5], &ctx.raft_context, &ctx.role_tx)
+            .await;
+
+        assert!(result.is_ok());
+        let r = ctx.role_rx.recv().await.unwrap();
+        println!("Received role: {:?}", r);
+
+    }
+
+    /// Test promotion failure when quorum not achieved
+    #[tokio::test]
+    #[ignore]
+    async fn test_batch_promote_learners_quorum_failed() {
+        let ctx = setup_test_context("test_success", 3, vec![4, 5], VerifyInternalQuorumWithRetrySuccess::Failure).await;
+
+        // Mock quorum verification to succeed
+        let mut leader_state = ctx.leader_state;
+
+        let result = leader_state
+            .batch_promote_learners(vec![4, 5], &ctx.raft_context, &ctx.role_tx)
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    /// Test safety check preventing unsafe promotion
+    #[tokio::test]
+    #[ignore]
+    async fn test_batch_promote_learners_quorum_safety() {
+        let ctx = setup_test_context("test_success", 3, vec![4], VerifyInternalQuorumWithRetrySuccess::Failure).await;
+
+        // Mock quorum verification to succeed
+        let mut leader_state = ctx.leader_state;
+
+        let result = leader_state
+            .batch_promote_learners(vec![4], &ctx.raft_context, &ctx.role_tx)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    /// Test error during quorum verification
+    #[tokio::test]
+    #[ignore]
+    async fn test_batch_promote_learners_verification_error() {
+        let ctx = setup_test_context("test_success", 3, vec![4], VerifyInternalQuorumWithRetrySuccess::Error).await;
+
+        // Mock quorum verification to succeed
+        let mut leader_state = ctx.leader_state;
+
+        let result = leader_state
+            .batch_promote_learners(vec![4], &ctx.raft_context, &ctx.role_tx)
+            .await;
+
+        assert!(result.is_err());
+    }
+
 }

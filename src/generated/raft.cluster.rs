@@ -14,21 +14,8 @@ pub struct ClusterConfChangeRequest {
     /// value is timestamp by default.
     #[prost(uint64, tag = "3")]
     pub version: u64,
-    #[prost(oneof = "cluster_conf_change_request::Change", tags = "4, 5, 6")]
-    pub change: ::core::option::Option<cluster_conf_change_request::Change>,
-}
-/// Nested message and enum types in `ClusterConfChangeRequest`.
-pub mod cluster_conf_change_request {
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Change {
-        #[prost(message, tag = "4")]
-        AddNode(super::super::common::AddNode),
-        #[prost(message, tag = "5")]
-        RemoveNode(super::super::common::RemoveNode),
-        #[prost(message, tag = "6")]
-        PromoteLearner(super::super::common::PromoteLearner),
-    }
+    #[prost(message, optional, tag = "4")]
+    pub change: ::core::option::Option<super::common::MembershipChange>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]

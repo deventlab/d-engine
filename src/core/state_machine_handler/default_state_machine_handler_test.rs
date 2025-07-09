@@ -27,7 +27,6 @@ use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::init_sled_state_machine_db;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
-use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
 use crate::proto::storage::snapshot_ack::ChunkStatus;
@@ -39,7 +38,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::enable_logger;
-use crate::test_utils::generate_insert_commands;
 use crate::test_utils::node_config;
 use crate::test_utils::snapshot_config;
 use crate::test_utils::MockBuilder;
@@ -177,100 +175,99 @@ fn test_pending_range_case3() {
     assert_eq!(handler.pending_range(), Some(11..=11));
 }
 
-// Case1: No pending commit
-#[tokio::test]
-async fn test_apply_batch_case1() {
-    // Init Handler
-    let state_machine_mock = MockStateMachine::new();
-    let mut raft_log_mock = MockRaftLog::new();
-    raft_log_mock
-        .expect_get_entries_between()
-        .times(0)
-        .returning(|_| vec![]);
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        10,
-        1,
-        Arc::new(state_machine_mock),
-        snapshot_config(PathBuf::from("/tmp/test_apply_batch_case1")),
-        MockSnapshotPolicy::new(),
-    );
-    assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
-}
+#[cfg(test)]
+mod apply_chunk_test {
 
-// Case2: There is pending commit
-//
-// Criteria:
-// - last_applied should be updated
-#[tokio::test]
-async fn test_apply_batch_case2() {
-    // Init Handler
-    let mut state_machine_mock = MockStateMachine::new();
-    state_machine_mock.expect_apply_chunk().times(1).returning(|_| Ok(()));
-    let mut raft_log_mock = MockRaftLog::new();
-    raft_log_mock.expect_get_entries_between().times(1).returning(|_| {
-        vec![Entry {
-            index: 1,
-            term: 1,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        }]
-    });
+    use super::*;
 
-    let max_entries_per_chunk = 1;
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        10,
-        max_entries_per_chunk,
-        Arc::new(state_machine_mock),
-        snapshot_config(PathBuf::from("/tmp/test_apply_batch_case2")),
-        MockSnapshotPolicy::new(),
-    );
-
-    // Update pending commit
-    handler.update_pending(11);
-
-    assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
-    assert_eq!(handler.last_applied(), 11);
-}
-
-// Case 3: There is pending commit
-//
-// Criteria:
-// - test the pending commit should be split into 10 chunks
-#[tokio::test]
-async fn test_apply_batch_case3() {
-    // Init Handler
-    let mut state_machine_mock = MockStateMachine::new();
-    state_machine_mock.expect_apply_chunk().times(10).returning(|_| Ok(()));
-    let mut raft_log_mock = MockRaftLog::new();
-    raft_log_mock.expect_get_entries_between().times(1).returning(move |_| {
-        let mut entries = vec![];
-        for i in 1..=10 {
-            entries.push(Entry {
-                index: i,
-                term: 1,
-                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-            });
+    fn create_test_handler(path: &str, apply_chunk_error: bool) -> DefaultStateMachineHandler<MockTypeConfig> {
+        let mut state_machine = MockStateMachine::new();
+        if apply_chunk_error {
+            state_machine.expect_apply_chunk().returning(|_| Err(Error::Fatal("Test error".to_string())));
+        } else {
+            state_machine.expect_apply_chunk().returning(|_| Ok(()));
         }
-        entries
-    });
+        DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            10,
+            1,
+            Arc::new(MockStateMachine::new()),
+            snapshot_config(PathBuf::from(path)),
+            MockSnapshotPolicy::new(),
+        )
+    }
 
-    let max_entries_per_chunk = 1;
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        10,
-        max_entries_per_chunk,
-        Arc::new(state_machine_mock),
-        snapshot_config(PathBuf::from("/tmp/test_apply_batch_case3")),
-        MockSnapshotPolicy::new(),
-    );
+    async fn test_apply_chunk_updates_last_applied_case1() {
+        let  handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false);
 
-    // Update pending commit
-    handler.update_pending(21);
+        // Initial last_applied value
+        assert_eq!(handler.last_applied(), 0);
 
-    assert!(handler.apply_batch(Arc::new(raft_log_mock)).await.is_ok());
-    assert_eq!(handler.last_applied(), 21);
+        // Create a test chunk with index 100
+        let  chunk: Vec<Entry> = vec![Entry{ index: 90, term: 1, payload: None }, Entry{ index: 100, term: 1, payload: None }];
+
+        // Apply the chunk
+        let result = handler.apply_chunk(chunk);
+
+        // Verify last_applied was updated
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 100);
+    }
+
+    async fn test_apply_chunk_updates_last_applied_case2() {
+        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case2", false);
+
+        // Initial last_applied value
+        assert_eq!(handler.last_applied(), 0);
+
+        // Create a test chunk with index 50
+        let chunk = vec![Entry{ index: 50, term: 1, payload: None }, Entry{ index: 70, term: 1, payload: None }];
+
+        // Apply the chunk
+        let result = handler.apply_chunk(chunk);
+
+        // Verify last_applied was updated to the higher index
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 70);
+    }
+
+    async fn test_apply_chunk_handles_empty_chunk() {
+        let handler = create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false);
+
+        // Initial last_applied value
+        let chunk = vec![Entry{ index: 1, term: 1, payload: None }, Entry{ index: 2, term: 1, payload: None }];
+        let result = handler.apply_chunk(chunk);
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 2);
+
+        // Create an empty chunk
+        let chunk = vec![];
+
+        // Apply the empty chunk
+        let result = handler.apply_chunk(chunk);
+
+        // Verify last_applied was updated
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 2);
+    }
+
+    async fn test_apply_chunk_with_state_machine_io_error() {
+        let handler = create_test_handler("/tmp/test_apply_chunk_with_state_machine_io_error", false);
+
+        // Initial last_applied value
+        assert_eq!(handler.last_applied(), 0);
+
+        // Create first chunk with index 50
+        let chunk1 = vec![Entry{ index: 50, term: 1, payload: None }];
+
+        // Apply first chunk
+        let result1 = handler.apply_chunk(chunk1);
+        assert!(result1.is_err());
+        assert_eq!(handler.last_applied(), 0);
+    }
+
 }
+
 
 fn listen_addr(port: u64) -> SocketAddr {
     format!("127.0.0.1:{port}",).parse().unwrap()

@@ -1,11 +1,15 @@
 mod health_checker;
+mod membership_guard;
 mod raft_membership;
 pub use raft_membership::*;
+pub(crate) use membership_guard::*;
 
 #[cfg(test)]
 mod health_checker_test;
 #[cfg(test)]
 mod raft_membership_test;
+#[cfg(test)]
+mod membership_guard_test;
 
 #[cfg(test)]
 use mockall::automock;
@@ -98,19 +102,16 @@ where
 
     fn get_cluster_conf_version(&self) -> u64;
 
-    fn update_cluster_conf_from_leader_version(
-        &self,
-        new_version: u64,
-    );
+    fn update_conf_version(&self, version: u64);
 
-    fn auto_incr_cluster_conf_version(&self);
+    #[allow(unused)]
+    fn incr_conf_version(&self);
 
     /// Add a new node as a learner
-    async fn add_learner(
+    fn add_learner(
         &self,
         node_id: u32,
-        address: String,
-        status: NodeStatus,
+        address: String
     ) -> Result<()>;
 
     /// Activate node
@@ -165,6 +166,11 @@ where
         &self,
         node_id: u32,
     ) -> Option<String>;
+
+    /// Apply committed configuration change
+    async fn apply_config_change(&self, change: crate::proto::common::MembershipChange) -> Result<()>;
+
+    async fn notify_config_applied(&self, index: u64);
 }
 
 impl ClusterConfUpdateResponse {
@@ -262,5 +268,19 @@ impl ClusterConfUpdateResponse {
     #[allow(unused)]
     pub(crate) fn is_higher_term(&self) -> bool {
         self.error_code == <ErrorCode as Into<i32>>::into(ErrorCode::TermOutdated)
+    }
+
+}
+
+impl NodeStatus {
+    pub fn is_promotable(&self) -> bool {
+        matches!(self, NodeStatus::Joining | NodeStatus::PendingActive)
+    }
+
+    pub fn is_i32_promotable(value: i32) -> bool {
+        match value {
+            v if v == (NodeStatus::Joining as i32 ) || v == (NodeStatus::PendingActive as i32)=> true,
+            _ => false,
+        }
     }
 }

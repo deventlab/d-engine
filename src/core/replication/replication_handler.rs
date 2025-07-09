@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
-
 use autometrics::autometrics;
 use dashmap::DashMap;
 use prost::Message;
@@ -12,7 +11,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::trace;
 use tracing::warn;
-
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::ROF;
@@ -79,6 +77,10 @@ where
         let (voters, learners): (Vec<_>, Vec<_>) = replication_targets
             .iter()
             .partition(|node| node.status == NodeStatus::Active as i32);
+
+        if !learners.is_empty() {
+            trace!("handle_raft_request_in_batch - voters: {:?}, learners: {:?}", voters, learners);
+        }
 
         // ----------------------
         // Phase 2: Process Client Commands

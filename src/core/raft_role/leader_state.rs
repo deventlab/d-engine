@@ -46,7 +46,6 @@ use crate::proto::common::BatchPromote;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::common::NodeStatus;
-use crate::proto::common::PromoteLearner;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
@@ -89,7 +88,6 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
-use crate::FOLLOWER;
 
 /// Leader node's state in Raft consensus algorithm.
 ///
@@ -145,7 +143,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// === Volatile State ===
     /// Peer purge progress tracking for flow control
     ///
-    /// Key: Peer node ID  
+    /// Key: Peer node ID
     /// Value: Last confirmed purge index from peer
     pub(super) peer_purge_progress: HashMap<u32, u64>,
 
@@ -174,6 +172,9 @@ pub struct LeaderState<T: TypeConfig> {
     /// - Timeout parameters
     /// - Performance tuning knobs
     pub(super) node_config: Arc<RaftNodeConfig>,
+
+    /// Last time we checked for learners
+    pub(super) last_learner_check: Instant,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -1017,7 +1018,9 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         // 1. Prepare batch data
         let entry_payloads: Vec<EntryPayload> = batch.iter().flat_map(|req| &req.payloads).cloned().collect();
-        trace!(?entry_payloads, "process_batch..",);
+        if !entry_payloads.is_empty() {
+            trace!(?entry_payloads, "[Node-{} process_batch..", ctx.node_id);
+        }
 
         // 2. Execute the copy
         let membership = ctx.membership();
@@ -1143,11 +1146,35 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let leader_commit_index = self.commit_index();
 
+        debug!(?learner_progress, "check_learner_progress");
+        // Throttle checks to once per second
+        if self.last_learner_check.elapsed() < Duration::from_secs(1) {
+            return Ok(());
+        }
+        self.last_learner_check = Instant::now();
+
+        if learner_progress.is_empty() {
+            return Ok(())
+        }
+
+        let leader_commit_index = self.commit_index();
         let config = &ctx.node_config.raft;
+        let mut ready_learners = Vec::new();
+
         for (node_id, match_index) in learner_progress {
-            if ctx.membership().get_node_status(*node_id) != Some(NodeStatus::Joining) {
+            let node_status = match ctx.membership().get_node_status(*node_id) {
+                Some(status) => status,
+                None => {
+                    warn!("Node {} not in membership", node_id);
+                    continue;
+                }
+            };
+            debug!("Learner: {} in status: {:?} ", node_id, &node_status);
+
+            // Skip non-promotable nodes early
+            if !node_status.is_promotable() {
+                debug!("Node {} is not promotable", node_id);
                 continue;
             }
 
@@ -1158,19 +1185,27 @@ impl<T: TypeConfig> LeaderState<T> {
                 .map(|diff| diff <= config.learner_catchup_threshold)
                 .unwrap_or(true);
 
+            debug!("Caught up: {}", caught_up);
             if caught_up {
-                self.promote_learner(*node_id, NodeStatus::PendingActive, ctx, role_tx)
-                    .await?;
+                if ctx.membership().contains_node(*node_id) {
+                    ready_learners.push(*node_id);
+                } else {
+                    warn!("Node {} is already removed from cluster", node_id);
+                }
             }
+        }
+
+        if !ready_learners.is_empty() {
+            debug!("Ready learners: {:?}", ready_learners);
+            self.batch_promote_learners(ready_learners, ctx, role_tx).await?;
         }
 
         Ok(())
     }
 
-    async fn promote_learner(
+    pub(super) async fn batch_promote_learners(
         &mut self,
-        node_id: u32,
-        _new_status: NodeStatus,
+        ready_learners_ids: Vec<u32>,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -1178,58 +1213,47 @@ impl<T: TypeConfig> LeaderState<T> {
         debug!("1. Determine optimal promotion status based on quorum safety");
         let membership = ctx.membership();
         let current_voters = membership.voters().len();
-        let pending_active_nodes = membership.nodes_with_status(NodeStatus::PendingActive);
+        // let pending_active = membership.nodes_with_status(NodeStatus::PendingActive).len();
+        let new_active_count = current_voters  + ready_learners_ids.len();
 
-        // Calculate new cluster size if we promote this node
-        let new_active_count = current_voters + pending_active_nodes.len();
-        let _new_size = new_active_count + 1; // +1 for the new node
-
-        // Check if we can promote directly to Active
-        let new_status = if ensure_safe_join(new_active_count).is_ok() {
+        // Determine target status based on quorum safety
+        trace!(?current_voters, ?ready_learners_ids, "[Node-{}] new_active_count: {}", self.node_id(), new_active_count);
+        let target_status = if ensure_safe_join(self.node_id(), new_active_count).is_ok() {
+            trace!("Going to update nodes-{:?} status to Active",ready_learners_ids);
             NodeStatus::Active
         } else {
-            NodeStatus::PendingActive
+            trace!("Not enough quorum to promote learners: {:?}", ready_learners_ids);
+            return Ok(())
         };
-
-        info!("Promoting node {} directly to {:?}", node_id, new_status);
 
         // 2. Create configuration change payload
         debug!("2. Create configuration change payload");
-        let config_change = Change::Promote(PromoteLearner {
-            node_id,
-            status: new_status.into(),
+        let config_change = Change::BatchPromote(BatchPromote {
+            node_ids: ready_learners_ids.clone(),
+            new_status: target_status as i32,
         });
 
-        // 3. Submit config change, and wait for quorum confirmation
-        debug!("3. Submit config change, and wait for quorum confirmation");
+        info!(?config_change, "Replicating cluster config" );
+
+        // 3. Submit single config change for all ready learners
+        debug!("3. Submit single config change for all ready learners");
         match self
-            .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            .verify_internal_quorum_with_retry(
+                vec![EntryPayload::config(config_change)],
+                false,
+                ctx,
+                role_tx,
+            )
             .await
         {
             Ok(true) => {
-                // 4. Check if we should activate pending nodes
-                if new_status == NodeStatus::Active {
-                    self.try_activate_pending_nodes(ctx, role_tx).await?;
-                } else {
-                    // 4. Update learner status from Joing to $new_status
-                    debug!("4. Update learner status from Joing to $new_status");
-                    ctx.membership().update_node_status(node_id, new_status)?;
-                    // 5: Update the new leader's role
-                    ctx.membership().update_node_role(node_id, FOLLOWER)?;
-                }
-
-                // 4. check if legal quorum reached by considering all pending active and active
-                //    nodes
+                info!("Batch promotion committed for nodes: {:?}", ready_learners_ids);
             }
             Ok(false) => {
-                warn!("Failed to commit config change for node {}", node_id);
-                return Err(MembershipError::ConfigChangeUpdateFailed(format!(
-                    "Failed to commit config change for node {node_id}"
-                ))
-                .into());
+                warn!("Failed to commit batch promotion");
             }
             Err(e) => {
-                warn!("FaiError led to commit config change for node {}", node_id);
+                error!("Batch promotion error: {:?}", e);
                 return Err(e);
             }
         }
@@ -1237,6 +1261,8 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+
+    /// TODO: to be cleaned up
     /// Attempt to activate all pending nodes if quorum safety allows
     async fn try_activate_pending_nodes(
         &mut self,
@@ -1252,7 +1278,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         // Check if activating all pending nodes is safe
-        if ensure_safe_join(current_voters + pending_nodes.len()).is_ok() {
+        if ensure_safe_join(self.node_id(), current_voters + pending_nodes.len()).is_ok() {
             debug!("Activating {} pending nodes", pending_nodes.len());
 
             // Create batch activation config change
@@ -1463,11 +1489,11 @@ impl<T: TypeConfig> LeaderState<T> {
                 .await;
         }
 
-        // 2. Add the node as Learner with Joining status
-        debug!("2. Add the node as Learner with Joining status");
-        membership
-            .add_learner(node_id, address.clone(), NodeStatus::Joining)
-            .await?;
+        // // 2. Add the node as Learner with Joining status
+        // debug!("2. Add the node as Learner with Joining status");
+        // membership
+        //     .(node_id, address.clone())
+        //     ?;
 
         // 3. Create configuration change payload
         debug!("3. Create configuration change payload");
@@ -1483,10 +1509,13 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
         {
             Ok(true) => {
-                // 5. Update node status to Active
-                debug!("5. Update node status to Active");
-                ctx.membership()
-                    .update_node_status(node_id, NodeStatus::PendingActive)?;
+                // 5. Update node status to PendingActive
+                debug!("5. Update node status to PendingActive");
+                // 5.1. Add the node as Learner with PendingActive status
+                debug!("2. Add the node as Learner with PendingActive status");
+                // ctx.membership().add_learner(node_id, address.clone())?;
+
+                debug!("5.1 After updating, the replications peers: {:?}", ctx.membership().replication_peers());
 
                 // 6. Send successful response
                 debug!("6. Send successful response");
@@ -1609,6 +1638,7 @@ impl<T: TypeConfig> LeaderState<T> {
             _marker: PhantomData,
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
+            last_learner_check: Instant::now(),
             peer_purge_progress: HashMap::new(),
         }
     }
@@ -1682,6 +1712,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
+            last_learner_check: Instant::now(),
             peer_purge_progress: HashMap::new(),
         }
     }

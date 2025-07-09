@@ -1,7 +1,7 @@
 syntax = "proto3";
 package raft.cluster;
 
-import "proto/common.proto"; 
+import "proto/common.proto";
 import "proto/storage.proto";
 
 
@@ -17,14 +17,10 @@ message ClusterConfChangeRequest {
     // when receiver receives the configure, they need compare the version
     // value is timestamp by default.
     uint64 version = 3;
-  
-    oneof change {
-      raft.common.AddNode add_node = 4;
-      raft.common.RemoveNode remove_node = 5;
-      raft.common.PromoteLearner promote_learner = 6;
-    }
+
+    raft.common.MembershipChange change = 4;
   }
-  
+
   message ClusterConfUpdateResponse {
     enum ErrorCode {
       NONE = 0;
@@ -69,7 +65,7 @@ message JoinRequest {
 
 enum ConfigState {
   // Stable state - cluster uses a single configuration
-  STABLE = 0; 
+  STABLE = 0;
 
   // Configuration Transition State - The cluster is applying configuration changes
   CONFIG_TRANSITION = 1;
@@ -124,7 +120,7 @@ service ClusterManagementService {
 
   // Request to join the cluster as a new learner node
   rpc JoinCluster(JoinRequest) returns (JoinResponse);
-  
+
   // New RPC for leader discovery
   rpc DiscoverLeader(LeaderDiscoveryRequest) returns (LeaderDiscoveryResponse);
 }

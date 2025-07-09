@@ -4,8 +4,10 @@ mod common;
 mod integration;
 mod mock;
 pub mod mock_type_config;
+mod entry_builder;
 
 pub use common::*;
 pub use integration::*;
 pub use mock::*;
 pub use mock_type_config::*;
+pub use entry_builder::*;

@@ -49,7 +49,7 @@ fn test_set_raft_log_replaces_default() {
     let state_machine_db = Arc::new(state_machine_db);
     let state_storage_db = Arc::new(state_storage_db);
 
-    let sled_raft_log = Arc::new(SledRaftLog::new(raft_log_db, 0));
+    let sled_raft_log = Arc::new(SledRaftLog::new(id, raft_log_db, 0));
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];
     insert_raft_log(&sled_raft_log, expected_raft_log_ids.clone(), 1);
@@ -171,11 +171,11 @@ fn test_config_override_invalid_path() {
 #[test]
 fn test_config_override_invalid_format() {
     let (_dir, config_path) = create_temp_config(
-        r#" 
-    invalid_toml_format 
-    cluster: { 
-    db_root_dir: "./custom_db" 
-    } 
+        r#"
+    invalid_toml_format
+    cluster: {
+    db_root_dir: "./custom_db"
+    }
     "#,
     );
 
@@ -191,9 +191,9 @@ fn test_config_override_invalid_format() {
 #[test]
 fn test_config_override_priority() {
     let (_dir, config_path) = create_temp_config(
-        r#" 
-    [cluster] 
-    db_root_dir = "./file_db" 
+        r#"
+    [cluster]
+    db_root_dir = "./file_db"
     "#,
     );
 
@@ -219,9 +219,9 @@ fn test_config_override_priority() {
 #[test]
 fn test_partial_override() {
     let (_dir, config_path) = create_temp_config(
-        r#" 
-    [raft.election] 
-    election_timeout_min = 500 
+        r#"
+    [raft.election]
+    election_timeout_min = 500
     "#,
     );
 

@@ -37,7 +37,7 @@ fn setup(path: &str) -> TestContext {
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs(path);
     let arc_raft_log_db = Arc::new(raft_log_db);
 
-    let sled_raft_log = Arc::new(SledRaftLog::new(arc_raft_log_db, 0));
+    let sled_raft_log = Arc::new(SledRaftLog::new(1, arc_raft_log_db, 0));
 
     TestContext {
         raft_log: sled_raft_log,
@@ -50,7 +50,7 @@ fn init(
 ) -> Arc<ROF<RaftTypeConfig>> {
     let (raft_log_db, _state_machine_db, _state_storage_db, _snapshot_storage_db) =
         init_sled_storages(path.to_string()).unwrap();
-    Arc::new(SledRaftLog::new(Arc::new(raft_log_db), commit_index))
+    Arc::new(SledRaftLog::new(1, Arc::new(raft_log_db), commit_index))
 }
 
 #[test]
@@ -715,10 +715,10 @@ async fn test_insert_batch_logs_case1() {
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
-    let old_leader = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), 0));
+    let old_leader = Arc::new(SledRaftLog::new(1, Arc::new(raft_log_db), 0));
 
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
-    let new_leader = Arc::new(SledRaftLog::new(Arc::new(raft_log_db), 0));
+    let new_leader = Arc::new(SledRaftLog::new(1, Arc::new(raft_log_db), 0));
 
     let mut entries: Vec<Entry> = Vec::new();
     for i in 1..=7 {
@@ -1162,7 +1162,7 @@ async fn test_raft_log_drop() {
     {
         let db = Arc::new(sled::open(case_path.clone()).unwrap());
         // Create real instance instead of mock
-        let raft_log = Arc::new(SledRaftLog::new(db.clone(), 0));
+        let raft_log = Arc::new(SledRaftLog::new(1, db.clone(), 0));
 
         // Insert test data
         test_utils::simulate_insert_command(&raft_log, vec![1], 1);

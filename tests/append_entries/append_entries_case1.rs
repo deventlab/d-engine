@@ -61,9 +61,9 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     let sm1 = Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1")));
     let raft_logs = [
-        Arc::new(prepare_raft_log(&format!("{DB_ROOT_DIR}/cs/1"), 0)),
-        Arc::new(prepare_raft_log(&format!("{DB_ROOT_DIR}/cs/2"), 0)),
-        Arc::new(prepare_raft_log(&format!("{DB_ROOT_DIR}/cs/3"), 0)),
+        Arc::new(prepare_raft_log(1, &format!("{DB_ROOT_DIR}/cs/1"), 0)),
+        Arc::new(prepare_raft_log(2, &format!("{DB_ROOT_DIR}/cs/2"), 0)),
+        Arc::new(prepare_raft_log(3, &format!("{DB_ROOT_DIR}/cs/3"), 0)),
     ];
 
     manipulate_log(&raft_logs[0], vec![1, 2, 3], 1);

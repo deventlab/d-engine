@@ -9,6 +9,7 @@ use tracing::error;
 use tracing::trace;
 
 use super::MockTypeConfig;
+use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::common::LogId;
@@ -29,12 +30,16 @@ use crate::RaftContext;
 use crate::RaftCoreHandlers;
 use crate::RaftEvent;
 use crate::RaftNodeConfig;
+use crate::RaftRole;
 use crate::RaftStorageHandles;
 use crate::RoleEvent;
 use crate::SignalParams;
+use crate::StateMachine;
+use crate::StateStorage;
 
 pub struct MockBuilder {
     pub id: Option<u32>,
+    pub role: Option<RaftRole<MockTypeConfig>>,
     pub raft_log: Option<MockRaftLog>,
     pub state_machine: Option<Arc<MockStateMachine>>,
     pub state_storage: Option<MockStateStorage>,
@@ -59,6 +64,7 @@ impl MockBuilder {
     pub fn new(shutdown_signal: watch::Receiver<()>) -> Self {
         Self {
             id: None,
+            role: None,
             raft_log: None,
             state_machine: None,
             state_storage: None,
@@ -158,7 +164,6 @@ impl MockBuilder {
             self.event_tx.unwrap_or(event_tx),
             self.event_rx.unwrap_or(event_rx),
         );
-
         trace!(node_config.raft.election.election_timeout_min, "build_raft");
 
         let election_config = {
@@ -172,8 +177,26 @@ impl MockBuilder {
                 node_config.raft.election
             }
         };
+        let arc_node_config = Arc::new(RaftNodeConfig {
+            raft: RaftConfig {
+                election: election_config,
+                ..node_config.raft
+            },
+            ..node_config
+        });
+
+
+        let role =
+            self.role.unwrap_or(RaftRole::Follower(Box::new(FollowerState::new(
+                id,
+                arc_node_config.clone(),
+                state_storage.load_hard_state(),
+                Some(state_machine.last_applied().index),
+            ))));
+
         Raft::new(
             id,
+            role,
             RaftStorageHandles::<MockTypeConfig> {
                 raft_log: Arc::new(raft_log),
                 state_machine,
@@ -194,13 +217,7 @@ impl MockBuilder {
                 event_rx,
                 shutdown_signal: self.shutdown_signal,
             },
-            Arc::new(RaftNodeConfig {
-                raft: RaftConfig {
-                    election: election_config,
-                    ..node_config.raft
-                },
-                ..node_config
-            }),
+            arc_node_config.clone(),
         )
     }
 
@@ -251,6 +268,13 @@ impl MockBuilder {
         });
 
         node
+    }
+    pub fn with_role(
+        mut self,
+        role: RaftRole<MockTypeConfig>,
+    ) -> Self {
+        self.role = Some(role);
+        self
     }
     pub fn with_raft_log(
         mut self,

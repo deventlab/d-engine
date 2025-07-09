@@ -23,6 +23,7 @@ use crate::Result;
 
 // ports for unit tests
 pub(crate) const MOCK_HEALTHCHECK_PORT_BASE: u64 = 60100;
+pub(crate) const MOCK_MEMBERSHIP_PORT_BASE: u32 = 60200;
 pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u64 = 60400;
 pub(crate) const MOCK_CLIENT_PORT_BASE: u64 = 60600;
 pub(crate) const MOCK_RPC_CLIENT_PORT_BASE: u64 = 60700;

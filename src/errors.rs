@@ -92,8 +92,8 @@ pub enum NetworkError {
     },
 
     /// Persistent connection failures
-    #[error("Socket connect failed error")]
-    ConnectError,
+    #[error("Socket connect failed error: {0}")]
+    ConnectError(String),
 
     /// Retry policy exhaustion
     #[error("Retry timeout after {0:?}")]

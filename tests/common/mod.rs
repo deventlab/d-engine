@@ -27,6 +27,7 @@ use d_engine::storage::StateStorage;
 use d_engine::ClientApiError;
 use d_engine::HardState;
 use prost::Message;
+use tracing::trace;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
@@ -248,6 +249,7 @@ pub fn get_root_path() -> PathBuf {
 }
 
 pub fn prepare_raft_log(
+    node_id: u32,
     db_path: &str,
     last_applied_index: u64,
 ) -> SledRaftLog {
@@ -258,7 +260,7 @@ pub fn prepare_raft_log(
         .compression_factor(1)
         .open()
         .unwrap();
-    SledRaftLog::new(Arc::new(raft_log_db), last_applied_index)
+    SledRaftLog::new(node_id, Arc::new(raft_log_db), last_applied_index)
 }
 pub fn prepare_state_machine(
     node_id: u32,
@@ -291,8 +293,12 @@ pub fn manipulate_log(
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
+        let index = raft_log.pre_allocate_raft_logs_next_index();
+
+        trace!("pre_allocate_raft_logs_next_index: {}", index);
+
         let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index,
             term,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };

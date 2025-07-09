@@ -204,7 +204,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             error!("Follower::update_commit_index: {:?}", e);
             return Err(e);
         }
-        debug!("send(RoleEvent::NotifyNewCommitIndex");
+        debug!("[Node-{}] update_commit_index_with_signal, new_commit_index: {:?}", self.node_id(), new_commit_index);
+
         role_tx
             .send(RoleEvent::NotifyNewCommitIndex(NewCommitData {
                 new_commit_index,

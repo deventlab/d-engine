@@ -23,6 +23,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
+use tracing::trace;
 use tracing::warn;
 
 use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
@@ -196,12 +197,12 @@ impl StateMachine for RaftStateMachine {
         &self,
         chunk: Vec<Entry>,
     ) -> Result<()> {
+        trace!("Applying chunk: {:?}.", chunk);
+
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch = Batch::default();
         for entry in chunk {
-            if entry.payload.is_none() {
-                panic!("Entry payload should not be None!");
-            }
+            assert!(!entry.payload.is_none(), "Entry payload should not be None!");
 
             if let Some(log_id) = highest_index_entry {
                 if entry.index > log_id.index {
@@ -210,7 +211,11 @@ impl StateMachine for RaftStateMachine {
                         term: entry.term,
                     });
                 } else {
-                    panic!("apply_chunk: receive entry not in order, TBF")
+                    assert!(
+                        entry.index > log_id.index,
+                        "apply_chunk: received unordered entry at index {}",
+                        entry.index
+                    );
                 }
             } else {
                 highest_index_entry = Some(LogId {
@@ -262,6 +267,7 @@ impl StateMachine for RaftStateMachine {
         // Apply batch and update last applied index
         self.apply_batch(batch)?;
         if let Some(log_id) = highest_index_entry {
+            debug!("[Node-{}] State machine - updated last_applied: {:?}",self.node_id, log_id);
             self.update_last_applied(log_id);
         }
 

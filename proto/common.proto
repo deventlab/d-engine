@@ -11,7 +11,7 @@ message LogId {
 message Entry {
   uint64 index = 1;
   uint64 term = 2;
-  EntryPayload payload = 3; 
+  EntryPayload payload = 3;
 }
 
 // Log entry payload
@@ -28,29 +28,30 @@ message Noop {} // Empty structure
 
 // Cluster configuration change
 message MembershipChange {
-  oneof change { 
-    AddNode add_node = 1; 
-    RemoveNode remove_node = 2; 
-    PromoteLearner promote = 3; 
+  oneof change {
+    AddNode add_node = 1;
+    RemoveNode remove_node = 2;
+    PromoteLearner promote = 3;
     BatchPromote batch_promote = 4;
   }
 }
 
-message AddNode { 
-  uint32 node_id = 1; 
-  string address = 2; 
+message AddNode {
+  uint32 node_id = 1;
+  string address = 2;
 }
 
-message RemoveNode { 
+
+message RemoveNode {
   uint32 node_id = 1;
 }
 
-message PromoteLearner { 
+message PromoteLearner {
   uint32 node_id = 1;
   NodeStatus status = 2;
 }
 
-message BatchPromote{ 
+message BatchPromote{
   repeated uint32 node_ids = 1;
   NodeStatus new_status = 2;
 }
@@ -66,7 +67,7 @@ message SnapshotEntry {
     bytes key = 1;
     bytes value = 2;
 }
-  
+
 message SnapshotMeta {
     uint64 versionHigh = 1;
     uint64 versionLow = 2;
@@ -78,6 +79,5 @@ message SnapshotMeta {
 
 message Snapshot {
     SnapshotMeta meta = 1;
-    repeated SnapshotEntry data = 2;  
+    repeated SnapshotEntry data = 2;
 }
-  

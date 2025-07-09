@@ -36,6 +36,7 @@ use crate::API_SLO;
 use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
 
 pub struct SledRaftLog {
+    node_id: u32,
     db: Arc<sled::Db>,
     tree: Arc<sled::Tree>,
     cache: RaftLogMemCache,
@@ -87,6 +88,7 @@ impl RaftLogMemCache {
             }
         }
         self.length.store(disk_len, Ordering::Release);
+        debug!("RaftLog init next id: {}", disk_len + 1);
         self.next_id.store(disk_len + 1, Ordering::Release);
     }
 }
@@ -158,7 +160,13 @@ impl RaftLog for SledRaftLog {
     #[autometrics(objective = API_SLO)]
     fn pre_allocate_raft_logs_next_index(&self) -> u64 {
         // self.get_raft_logs_length() + 1
-        self.cache.next_id.fetch_add(1, Ordering::SeqCst)
+        let next_id = self.cache.next_id.fetch_add(1, Ordering::SeqCst);
+        trace!(
+            "[Node-{}] RaftLog pre_allocate_raft_logs_next_index: {}",
+            self.node_id,
+            next_id
+        );
+        next_id
     }
 
     /// Deprecated: Use `last_log_id()` instead.
@@ -651,6 +659,7 @@ impl SledRaftLog {
     }
     #[autometrics(objective = API_SLO)]
     pub fn new(
+        node_id: u32,
         raft_log_db: Arc<sled::Db>,
         commit_index: u64,
     ) -> Self {
@@ -661,6 +670,7 @@ impl SledRaftLog {
                 println!("RaftLog disk length: {disk_len}");
 
                 let l = SledRaftLog {
+                    node_id,
                     db: raft_log_db,
                     tree: Arc::new(raft_log_tree),
                     cache: RaftLogMemCache {

@@ -70,6 +70,8 @@ pub trait StateMachineHandler<T>: Send + Sync + 'static
 where
     T: TypeConfig,
 {
+    fn last_applied(&self) -> u64;
+
     /// Updates the highest known committed log index that hasn't been applied yet
     fn update_pending(
         &self,
@@ -77,9 +79,9 @@ where
     );
 
     /// Applies a batch of committed log entries to the state machine
-    async fn apply_batch(
+    fn apply_chunk(
         &self,
-        raft_log: Arc<ROF<T>>,
+        chunk: Vec<crate::proto::common::Entry>,
     ) -> Result<()>;
 
     /// Reads values from the state machine for given keys
@@ -160,4 +162,6 @@ where
         metadata: &SnapshotMetadata,
         seq: u32,
     ) -> Result<SnapshotChunk>;
+
+    fn pending_range(&self) -> Option<std::ops::RangeInclusive<u64>>;
 }

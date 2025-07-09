@@ -12,38 +12,17 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-
-use autometrics::autometrics;
-use dashmap::DashMap;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use tokio::task;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
-
+use super::MembershipGuard;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::net::address_str;
-use crate::proto::cluster::cluster_conf_change_request::Change;
-use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::common::MembershipChange;
 use crate::proto::common::NodeStatus;
+use crate::proto::{cluster::ClusterConfChangeRequest, common::membership_change::Change};
 use crate::ConnectionParams;
 use crate::ConnectionType;
 use crate::Membership;
@@ -52,18 +31,32 @@ use crate::NetworkError;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
-use crate::API_SLO;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use tracing::instrument;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::time::Duration;
+use tokio::task;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 pub struct RaftMembership<T>
 where
     T: TypeConfig,
 {
     node_id: u32,
-    membership: DashMap<u32, NodeMeta>, //stores all members meta
-    cluster_conf_version: AtomicU64,
+    membership: MembershipGuard,
     config: RaftNodeConfig,
     _phantom: PhantomData<T>,
 }
@@ -85,77 +78,88 @@ where
     T: TypeConfig,
 {
     fn members(&self) -> Vec<NodeMeta> {
-        self.membership.iter().map(|entry| entry.value().clone()).collect()
+        self.membership
+            .blocking_read(|guard| guard.nodes.values().cloned().collect())
     }
 
     fn replication_peers(&self) -> Vec<NodeMeta> {
-        let active_status = NodeStatus::Active as i32;
-        let pending_active_status = NodeStatus::PendingActive as i32;
-        self.membership
-            .iter()
-            .filter(|node_meta| {
-                node_meta.id != self.node_id
-                    && (node_meta.status == active_status || node_meta.status == pending_active_status)
-            })
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| {
+                    node.id != self.node_id
+                        && (node.status == NodeStatus::Active as i32 || node.status == NodeStatus::PendingActive as i32)
+                })
+                .cloned()
+                .collect()
+        })
     }
 
     fn voters(&self) -> Vec<NodeMeta> {
-        let active_status = NodeStatus::Active as i32;
-        self.membership
-            .iter()
-            .filter(|node_meta| node_meta.id != self.node_id && node_meta.status == active_status)
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| node.id != self.node_id && node.status == NodeStatus::Active as i32)
+                .cloned()
+                .collect()
+        })
     }
 
     fn nodes_with_status(
         &self,
         status: NodeStatus,
     ) -> Vec<NodeMeta> {
-        self.membership
-            .iter()
-            .filter(|node_meta| node_meta.id != self.node_id && node_meta.status == (status as i32))
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| node.id != self.node_id && node.status == status as i32)
+                .cloned()
+                .collect()
+        })
     }
 
     fn get_node_status(
         &self,
         node_id: u32,
     ) -> Option<NodeStatus> {
-        self.membership
-            .get(&node_id)
-            .and_then(|node_meta| NodeStatus::try_from(node_meta.status).ok())
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .get(&node_id)
+                .and_then(|node| NodeStatus::try_from(node.status).ok())
+        })
     }
 
     fn activate_node(
         &mut self,
         new_node_id: u32,
     ) -> Result<()> {
-        // 1. Get current ACTIVE voters count (including self)
-        let current_voters = self
-            .membership
-            .iter()
-            .filter(|n| n.status == NodeStatus::Active as i32)
-            .count();
+        let current_voters = self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| node.status == NodeStatus::Active as i32)
+                .count()
+        });
 
-        // 2. Verify safety BEFORE allowing activation
-        ensure_safe_join(current_voters)?;
+        ensure_safe_join(self.node_id, current_voters)?;
 
-        // 3. Only update status if safe
-        if let Some(mut node) = self.membership.get_mut(&new_node_id) {
-            node.status = NodeStatus::Active as i32;
-        }
-        Ok(())
+        self.membership.blocking_write(|guard| {
+            if let Some(node) = guard.nodes.get_mut(&new_node_id) {
+                node.status = NodeStatus::Active as i32;
+            }
+            Ok(())
+        })
     }
 
     async fn check_cluster_is_ready(&self) -> Result<()> {
         info!("check_cluster_is_ready...");
         let mut tasks = FuturesUnordered::new();
 
-        let node_config = self.config.network.clone();
+        let settings = self.config.network.clone();
         let raft = self.config.raft.clone();
         let retry = self.config.retry.clone();
 
@@ -166,7 +170,7 @@ where
             peer_ids.push(peer_id);
             let addr: String = peer.address.clone();
 
-            let node_config = node_config.clone();
+            let settings = settings.clone();
             let cluster_healthcheck_probe_service_name = raft.membership.cluster_healthcheck_probe_service_name.clone();
 
             let task_handle = task::spawn(async move {
@@ -174,7 +178,7 @@ where
                     move || {
                         HealthChecker::check_peer_is_ready(
                             addr.clone(),
-                            node_config.clone(),
+                            settings.clone(),
                             cluster_healthcheck_probe_service_name.clone(),
                         )
                     },
@@ -242,122 +246,96 @@ where
     where
         F: Fn(i32) -> bool + 'static,
     {
-        self.membership
-            .iter()
-            .filter(|node_meta| condition(node_meta.role))
-            .map(|node_meta| node_meta.id)
-            .collect()
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| condition(node.role))
+                .map(|node| node.id)
+                .collect()
+        })
     }
 
-    #[autometrics(objective = API_SLO)]
+    #[autometrics]
     fn mark_leader_id(
         &self,
         leader_id: u32,
     ) -> Result<()> {
-        trace!("mark {} as Leader", leader_id);
-
-        // Step 1: Reset the role of any old leader (if any)
-        if let Err(e) = self.reset_leader() {
-            error!("reset_leader failed: {:?}", e);
-            return Err(e);
-        }
-
-        // Step 2: Update the new leader's role
-        if let Err(e) = self.update_node_role(leader_id, LEADER) {
-            error!(
-                "cluster_membership_controller.update_node_role({}, Leader) failed: {:?}",
-                leader_id, e
-            );
-            return Err(e);
-        }
-
-        Ok(())
+        self.reset_leader()?;
+        self.update_node_role(leader_id, LEADER)
     }
-    // Reset old leader to follower
-    #[autometrics(objective = API_SLO)]
+
+    #[autometrics]
     fn reset_leader(&self) -> Result<()> {
-        // self.leader_id.store(0, Ordering::SeqCst);
-
-        for mut node_meta in self.membership.iter_mut() {
-            if node_meta.role == LEADER {
-                node_meta.role = FOLLOWER;
+        self.membership.blocking_write(|guard| {
+            for node in guard.nodes.values_mut() {
+                if node.role == LEADER {
+                    node.role = FOLLOWER;
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
-    /// If node role not found return Error
-    #[autometrics(objective = API_SLO)]
+    #[autometrics]
     fn update_node_role(
         &self,
         node_id: u32,
         new_role: i32,
     ) -> Result<()> {
-        if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
-            trace!(
-                "update_node_role(in cluster membership meta={:?}): id({})'s role been changed to: {}",
-                &node_meta,
-                node_id,
-                new_role
-            );
-            node_meta.role = new_role;
-            Ok(())
-        } else {
-            error!(
-                "update_node_role(in cluster membership meta): id({}) not found. update to role({}) failed.",
-                node_id, new_role
-            );
-            Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
-        }
+        self.membership.blocking_write(|guard| {
+            guard
+                .nodes
+                .get_mut(&node_id)
+                .map(|node| {
+                    node.role = new_role;
+                    Ok(())
+                })
+                .unwrap_or_else(|| Err(MembershipError::NoMetadataFoundForNode { node_id }.into()))
+        })
     }
 
     fn current_leader_id(&self) -> Option<u32> {
-        for node_meta in self.membership.iter_mut() {
-            if node_meta.role == LEADER {
-                return Some(node_meta.id);
-            }
-        }
-        None
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .find(|node| node.role == LEADER)
+                .map(|node| node.id)
+        })
     }
 
-    #[instrument(skip(self))]
+    #[autometrics]
     fn retrieve_cluster_membership_config(&self) -> ClusterMembership {
-        let nodes: Vec<NodeMeta> = self.membership.iter().map(|entry| entry.clone()).collect();
-        let version = self.cluster_conf_version.load(Ordering::Acquire);
-        ClusterMembership { version, nodes }
+        self.membership.blocking_read(|guard| ClusterMembership {
+            version: guard.cluster_conf_version,
+            nodes: guard.nodes.values().cloned().collect(),
+        })
     }
 
-    #[autometrics(objective = API_SLO)]
+    #[autometrics]
     async fn update_cluster_conf_from_leader(
         &self,
         my_id: u32,
         my_current_term: u64,
         current_conf_version: u64,
         current_leader_id: Option<u32>,
-        cluster_conf_change_req: &ClusterConfChangeRequest,
+        req: &ClusterConfChangeRequest,
     ) -> Result<ClusterConfUpdateResponse> {
-        let leader_id = cluster_conf_change_req.id;
-        debug!(
-            "[update_cluster_conf_from_leader] receive cluster_conf_change_req({:?}) from leader_id({})",
-            cluster_conf_change_req, leader_id,
-        );
+        debug!("[{}] update_cluster_conf_from_leader: {:?}", my_id, &req);
 
-        // Step 1: validate leader ID matches current known leader
-        if current_leader_id.is_some() && current_leader_id.unwrap() != cluster_conf_change_req.id {
-            warn!("Rejecting config change from non-leader");
-            return Ok(ClusterConfUpdateResponse::not_leader(
-                my_id,
-                my_current_term,
-                current_conf_version,
-            ));
+        // Validation logic
+        if let Some(leader_id) = current_leader_id {
+            if leader_id != req.id {
+                return Ok(ClusterConfUpdateResponse::not_leader(
+                    my_id,
+                    my_current_term,
+                    current_conf_version,
+                ));
+            }
         }
 
-        // Step 2: compare term
-        if my_current_term > cluster_conf_change_req.term {
-            warn!(
-                "[update_cluster_conf_from_leader] my_current_term({}) bigger than cluster request one:{:?}",
-                my_current_term, cluster_conf_change_req.term
-            );
+        if my_current_term > req.term {
             return Ok(ClusterConfUpdateResponse::higher_term(
                 my_id,
                 my_current_term,
@@ -365,14 +343,7 @@ where
             ));
         }
 
-        // Step 2: compare configure version
-        if self.get_cluster_conf_version() > cluster_conf_change_req.version {
-            warn!(
-                "[update_cluster_conf_from_leader] current conf version ({}) is higher than cluster request one:{}",
-                self.get_cluster_conf_version(),
-                cluster_conf_change_req.version
-            );
-
+        if self.get_cluster_conf_version() > req.version {
             return Ok(ClusterConfUpdateResponse::version_conflict(
                 my_id,
                 my_current_term,
@@ -380,175 +351,156 @@ where
             ));
         }
 
-        // Step 3: Handle specific change type
-        match &cluster_conf_change_req.change {
-            Some(Change::AddNode(add_node)) => {
-                self.add_learner(add_node.node_id, add_node.address.clone(), NodeStatus::Joining)
-                    .await?;
-            }
-            Some(Change::RemoveNode(remove_node)) => {
-                self.remove_node(remove_node.node_id).await?;
-            }
-            Some(Change::PromoteLearner(promote_learner)) => {
-                let node_id = promote_learner.node_id;
-                if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
-                    if node_meta.role == LEARNER {
-                        node_meta.role = FOLLOWER;
-                    } else {
-                        warn!(
-                            "Cannot promote node {}: current role is {} (expected LEARNER)",
-                            node_id, node_meta.role
-                        );
-                        return Err(MembershipError::InvalidPromotion {
-                            node_id,
-                            role: node_meta.role,
-                        }
-                        .into());
-                    }
-                } else {
-                    warn!("No metadata found for node({node_id})");
-                    return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
+        // Handle configuration changes
+        if let Some(membership_change) = &req.change {
+            match &membership_change.change {
+                Some(Change::AddNode(add)) => {
+                    self.add_learner(add.node_id, add.address.clone())
+                        ?;
                 }
+                Some(Change::RemoveNode(remove)) => {
+                    self.remove_node(remove.node_id).await?;
+                }
+                Some(Change::Promote(promote)) => {
+                    self.update_single_node(promote.node_id, |node| {
+                        if node.role == LEARNER {
+                            node.role = FOLLOWER;
+                            Ok(())
+                        } else {
+                            Err(MembershipError::InvalidPromotion {
+                                node_id: promote.node_id,
+                                role: node.role,
+                            }
+                            .into())
+                        }
+                    })?;
+                }
+                Some(Change::BatchPromote(bp)) => {
+                    self.update_multiple_nodes(&bp.node_ids, |node| {
+                        if NodeStatus::is_i32_promotable(node.status) {
+                            node.status = bp.new_status;
+                            node.role = FOLLOWER;
+                        }
+                        Ok(())
+                    })?;
+                    self.update_conf_version(req.version);
+                    return Ok(ClusterConfUpdateResponse::success(my_id, my_current_term, req.version));
+                }
+                None => return Err(MembershipError::InvalidChangeRequest.into()),
             }
-            None => {
-                warn!("No change specified in ClusterConfChangeRequest");
-                return Err(MembershipError::InvalidChangeRequest.into());
-            }
+        } else {
+            return Err(MembershipError::InvalidChangeRequest.into());
         }
 
-        // Step 4: Update cluster configuration version
-        self.update_cluster_conf_from_leader_version(cluster_conf_change_req.version);
-
-        return Ok(ClusterConfUpdateResponse::success(
+        self.update_conf_version(req.version);
+        Ok(ClusterConfUpdateResponse::success(
             my_id,
             my_current_term,
-            current_conf_version,
-        ));
+            self.get_cluster_conf_version(),
+        ))
     }
 
-    #[autometrics(objective = API_SLO)]
+    #[autometrics]
     fn get_cluster_conf_version(&self) -> u64 {
-        self.cluster_conf_version.load(Ordering::Acquire)
+        self.membership.blocking_read(|guard| guard.cluster_conf_version)
     }
 
-    #[autometrics(objective = API_SLO)]
-    fn update_cluster_conf_from_leader_version(
+    fn update_conf_version(
         &self,
-        new_version: u64,
+        version: u64,
     ) {
-        self.cluster_conf_version.store(new_version, Ordering::Release);
+        self.membership
+            .blocking_write(|guard| guard.cluster_conf_version = version);
     }
 
-    fn auto_incr_cluster_conf_version(&self) {
-        self.cluster_conf_version.fetch_add(1, Ordering::AcqRel);
+    fn incr_conf_version(&self) {
+        self.membership.blocking_write(|guard| guard.cluster_conf_version += 1);
     }
 
-    /// Add a new learner node
-    #[autometrics(objective = API_SLO)]
-    async fn add_learner(
+    /// Node can only be added as a learner.
+    /// If the node already exists, update should fail
+    fn add_learner(
         &self,
         node_id: u32,
         address: String,
-        status: NodeStatus,
     ) -> Result<()> {
-        if self.contains_node(node_id) {
-            return Err(MembershipError::NodeAlreadyExists(node_id).into());
-        }
+        info!("Adding learner node: {}", node_id);
+        self.membership.blocking_write(|guard| {
+            if guard.nodes.contains_key(&node_id) {
+                error!("[node-{}] Adding a learner node failed: node already exists. {}", self.node_id, node_id);
+                return Err(MembershipError::NodeAlreadyExists(node_id).into());
+                // return  Ok(());
+            }
+            guard.nodes.insert(node_id, NodeMeta {
+                id: node_id,
+                address,
+                role: LEARNER,
+                status: NodeStatus::PendingActive as i32,
+            });
+            info!("[node-{}] Adding a learner node successed: {}",self.node_id, node_id);
 
-        let new_node = NodeMeta {
-            id: node_id,
-            address,
-            role: LEARNER, // Defined as a learner
-            status: status.into(),
-        };
-
-        self.membership.insert(node_id, new_node);
-        self.auto_incr_cluster_conf_version();
-
-        Ok(())
+            Ok(())
+        })
     }
 
-    /// Update node status
-    #[autometrics(objective = API_SLO)]
-    #[instrument(skip(self))]
+    #[autometrics]
     fn update_node_status(
         &self,
         node_id: u32,
         status: NodeStatus,
     ) -> Result<()> {
-        // Validate node exists
-        if !self.contains_node(node_id) {
-            return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
-        }
-
-        // Update status in membership metadata
-        if let Some(mut node_meta) = self.membership.get_mut(&node_id) {
-            trace!(
-                "Updating node {} status from {:?} to {:?}",
-                node_id,
-                node_meta.status,
-                status
-            );
-
-            node_meta.status = status as i32;
+        self.update_single_node(node_id, |node| {
+            node.status = status as i32;
             Ok(())
-        } else {
-            // This should never happen due to the contains_node check, but handle it anyway
-            Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
-        }
+        })
     }
 
-    /// Remove node
-    #[autometrics(objective = API_SLO)]
+    #[autometrics]
     async fn remove_node(
         &self,
         node_id: u32,
     ) -> Result<()> {
-        if !self.contains_node(node_id) {
-            return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
-        }
-
-        // If it is the leader, you need to transfer leadership first
         if self.current_leader_id() == Some(node_id) {
             return Err(MembershipError::RemoveNodeIsLeader(node_id).into());
         }
 
-        self.membership.remove(&node_id);
-        self.auto_incr_cluster_conf_version();
-
-        Ok(())
+        self.membership.blocking_write(|guard| {
+            guard.nodes.remove(&node_id);
+            guard.cluster_conf_version += 1;
+            Ok(())
+        })
     }
 
     async fn force_remove_node(
         &self,
         node_id: u32,
     ) -> Result<()> {
-        if !self.contains_node(node_id) {
-            return Err(MembershipError::NoMetadataFoundForNode { node_id }.into());
-        }
-
-        self.membership.remove(&node_id);
-        self.auto_incr_cluster_conf_version();
-
-        Ok(())
+        self.membership.blocking_write(|guard| {
+            guard.nodes.remove(&node_id);
+            guard.cluster_conf_version += 1;
+            Ok(())
+        })
     }
 
     fn contains_node(
         &self,
         node_id: u32,
     ) -> bool {
-        self.membership.contains_key(&node_id)
+        self.membership
+            .blocking_read(|guard| guard.nodes.contains_key(&node_id))
     }
 
     fn retrieve_node_meta(
         &self,
         node_id: u32,
     ) -> Option<NodeMeta> {
-        self.membership.get(&node_id).map(|v| v.clone())
+        self.membership
+            .blocking_read(|guard| guard.nodes.get(&node_id).cloned())
     }
 
     fn get_all_nodes(&self) -> Vec<NodeMeta> {
-        self.membership.iter().map(|entry| entry.value().clone()).collect()
+        self.membership
+            .blocking_read(|guard| guard.nodes.values().cloned().collect())
     }
 
     async fn get_peer_channel(
@@ -556,26 +508,65 @@ where
         node_id: u32,
         conn_type: ConnectionType,
     ) -> Option<Channel> {
-        let address = address_str(&self.get_address(node_id)?);
+        let addr = self.get_address(node_id)?;
+        let params = match conn_type {
+            ConnectionType::Control => self.config.network.control.clone(),
+            ConnectionType::Data => self.config.network.data.clone(),
+            ConnectionType::Bulk => self.config.network.bulk.clone(),
+        };
 
-        let channel = match conn_type {
-            ConnectionType::Control => {
-                Self::connect_with_params(address.clone(), self.config.network.control.clone()).await
-            }
-            ConnectionType::Data => Self::connect_with_params(address.clone(), self.config.network.data.clone()).await,
-            ConnectionType::Bulk => Self::connect_with_params(address.clone(), self.config.network.bulk.clone()).await,
-        }
-        .ok()?;
-
-        debug!("Successfully connected with ({})", &address);
-        Some(channel)
+        Self::connect_with_params(addr, params).await.ok()
     }
 
     fn get_address(
         &self,
         node_id: u32,
     ) -> Option<String> {
-        self.membership.get(&node_id).map(|entry| entry.value().address.clone())
+        self.membership
+            .blocking_read(|guard| guard.nodes.get(&node_id).map(|n| address_str(&n.address)))
+    }
+
+    async fn apply_config_change(
+        &self,
+        membership_change: MembershipChange,
+    ) -> Result<()> {
+        info!("Applying membership change: {:?}", membership_change);
+        match membership_change.change {
+            Some(Change::AddNode(add)) => self.add_learner(add.node_id, add.address),
+            Some(Change::RemoveNode(remove)) => self.remove_node(remove.node_id).await,
+            Some(Change::Promote(promote)) => {
+                self.update_node_role(promote.node_id, FOLLOWER)?;
+                self.update_node_status(promote.node_id, NodeStatus::Active)
+            }
+            Some(Change::BatchPromote(bp)) => {
+                for node_id in bp.node_ids {
+                    self.update_node_role(node_id, FOLLOWER)?;
+                    self.update_node_status(
+                        node_id,
+                        NodeStatus::try_from(bp.new_status).unwrap_or(NodeStatus::Active),
+                    )?;
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    async fn notify_config_applied(
+        &self,
+        index: u64,
+    ) {
+        // TODO:
+        // // Update replication layer
+        // self.config.replication_layer.update_peers(
+        //     self.replication_peers()
+        // ).await;
+
+        // // Update leader routing
+        // if let Some(leader) = self.current_leader_id() {
+        //     self.config.router.update_leader(leader);
+        // }
+        info!("Config change applied at index {}", index);
     }
 }
 
@@ -583,26 +574,55 @@ impl<T> RaftMembership<T>
 where
     T: TypeConfig,
 {
-    /// Creates a new `RaftMembership` instance.
     pub fn new(
         node_id: u32,
-        initial_cluster: Vec<NodeMeta>,
+        initial_nodes: Vec<NodeMeta>,
         config: RaftNodeConfig,
     ) -> Self {
         Self {
             node_id,
-            membership: into_map(initial_cluster),
-            cluster_conf_version: AtomicU64::new(0),
+            membership: MembershipGuard::new(initial_nodes, 0),
             config,
             _phantom: PhantomData,
         }
     }
 
-    pub(super) async fn connect_with_params(
-        address: String,
+    /// Updates a single node atomically
+    pub(super) fn update_single_node(
+        &self,
+        node_id: u32,
+        f: impl FnOnce(&mut NodeMeta) -> Result<()>,
+    ) -> Result<()> {
+        self.membership.blocking_write(|guard| {
+            guard
+                .nodes
+                .get_mut(&node_id)
+                .map(|node| f(node))
+                .unwrap_or_else(|| Err(MembershipError::NoMetadataFoundForNode { node_id }.into()))
+        })
+    }
+
+    /// Updates multiple nodes in a batch
+    pub(super) fn update_multiple_nodes(
+        &self,
+        node_ids: &[u32],
+        f: impl Fn(&mut NodeMeta) -> Result<()>,
+    ) -> Result<()> {
+        self.membership.blocking_write(|guard| {
+            for node_id in node_ids {
+                if let Some(node) = guard.nodes.get_mut(node_id) {
+                    f(node)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    async fn connect_with_params(
+        addr: String,
         params: ConnectionParams,
     ) -> Result<Channel> {
-        Endpoint::try_from(address.clone())?
+        Endpoint::try_from(addr.clone())?
             .connect_timeout(Duration::from_millis(params.connect_timeout_in_ms))
             .timeout(Duration::from_millis(params.request_timeout_in_ms))
             .tcp_keepalive(Some(Duration::from_secs(params.tcp_keepalive_in_secs)))
@@ -612,11 +632,7 @@ where
             .initial_stream_window_size(params.stream_window_size)
             .connect()
             .await
-            .map_err(|err| {
-                error!("connect to {} failed: {}", &address, err);
-                eprintln!("{err:?}");
-                NetworkError::ConnectError.into()
-            })
+            .map_err(|e| NetworkError::ConnectError(e.to_string()).into())
     }
 
     #[cfg(test)]
@@ -624,25 +640,36 @@ where
         &self,
         node_id: u32,
     ) -> Option<i32> {
-        Some(self.membership.get(&node_id)?.role)
+        self.membership
+            .blocking_read(|guard| guard.nodes.get(&node_id).map(|n| n.role))
     }
 }
 
-fn into_map(initial_cluster: Vec<NodeMeta>) -> DashMap<u32, NodeMeta> {
-    let dash_map = DashMap::new();
-    for node in initial_cluster {
-        dash_map.insert(node.id, node.clone());
-    }
-    dash_map
-}
 
-pub fn ensure_safe_join(current_voters: usize) -> Result<()> {
-    let new_size = current_voters + 1;
-    let new_quorum = new_size / 2 + 1;
-    let current_quorum = current_voters / 2 + 1;
+#[instrument]
+pub fn ensure_safe_join(node_id:u32, current_voters: usize) -> Result<()> {
+    // Total voters including leader = current_voters + 1
+    let total_voters = current_voters + 1;
 
-    if new_quorum > current_quorum {
-        return Err(MembershipError::JoinClusterError("Join operation would break quorum safety".to_string()).into());
+    // Always allow if cluster will have even number of voters
+    if (total_voters + 1) % 2 == 0 {
+        Ok(())
+    } else {
+        // metrics::counter!("cluster.unsafe_join_attempts", 1);
+        metrics::counter!(
+            "cluster.unsafe_join_attempts",
+            &[
+                ("node_id", node_id.to_string())
+            ]
+        )
+        .increment(1);
+
+        warn!(
+            "Unsafe join attempt: current_voters={} (total_voters={})",
+            current_voters, total_voters
+        );
+        Err(MembershipError::JoinClusterError(
+            "Cluster must maintain odd number of voters".into(),
+        ).into())
     }
-    Ok(())
 }

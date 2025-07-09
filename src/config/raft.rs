@@ -107,7 +107,7 @@ impl RaftConfig {
 }
 
 fn default_learner_catchup_threshold() -> u64 {
-    10
+    1
 }
 // in ms
 fn default_general_timeout() -> u64 {

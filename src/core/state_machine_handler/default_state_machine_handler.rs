@@ -1,3 +1,37 @@
+use super::SnapshotAssembler;
+use super::SnapshotContext;
+use super::SnapshotPolicy;
+use super::StateMachineHandler;
+use crate::alias::ROF;
+use crate::alias::SMOF;
+use crate::alias::SNP;
+use crate::constants::SNAPSHOT_DIR_PREFIX;
+use crate::file_io::validate_checksum;
+use crate::proto::client::ClientResult;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::proto::storage::snapshot_ack::ChunkStatus;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
+use crate::scoped_timer::ScopedTimer;
+use crate::NewCommitData;
+use crate::RaftLog;
+use crate::Result;
+use crate::SnapshotConfig;
+use crate::SnapshotError;
+use crate::SnapshotGuard;
+use crate::SnapshotPathManager;
+use crate::StateMachine;
+use crate::StorageError;
+use crate::TypeConfig;
+use crate::API_SLO;
+use async_compression::tokio::write::GzipEncoder;
+use async_stream::try_stream;
+use autometrics::autometrics;
+use futures::stream::BoxStream;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
@@ -6,11 +40,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-
-use async_compression::tokio::write::GzipEncoder;
-use async_stream::try_stream;
-use autometrics::autometrics;
-use futures::stream::BoxStream;
 use tokio::fs;
 use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
@@ -29,37 +58,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
-
-use super::SnapshotAssembler;
-use super::SnapshotContext;
-use super::SnapshotPolicy;
-use super::StateMachineHandler;
-use crate::alias::ROF;
-use crate::alias::SMOF;
-use crate::alias::SNP;
-use crate::constants::SNAPSHOT_DIR_PREFIX;
-use crate::file_io::validate_checksum;
-use crate::proto::client::ClientResult;
-use crate::proto::common::LogId;
-use crate::proto::storage::snapshot_ack::ChunkStatus;
-use crate::proto::storage::PurgeLogRequest;
-use crate::proto::storage::PurgeLogResponse;
-use crate::proto::storage::SnapshotAck;
-use crate::proto::storage::SnapshotChunk;
-use crate::proto::storage::SnapshotMetadata;
-use crate::scoped_timer::ScopedTimer;
-use crate::utils::cluster::error;
-use crate::NewCommitData;
-use crate::RaftLog;
-use crate::Result;
-use crate::SnapshotConfig;
-use crate::SnapshotError;
-use crate::SnapshotGuard;
-use crate::SnapshotPathManager;
-use crate::StateMachine;
-use crate::StorageError;
-use crate::TypeConfig;
-use crate::API_SLO;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -108,6 +106,22 @@ impl<T> StateMachineHandler<T> for DefaultStateMachineHandler<T>
 where
     T: TypeConfig,
 {
+    fn last_applied(&self) -> u64 {
+        self.last_applied.load(Ordering::Acquire)
+    }
+
+    /// Get the interval to be processed
+    fn pending_range(&self) -> Option<RangeInclusive<u64>> {
+        let last_applied = self.last_applied.load(Ordering::Acquire);
+        let pending_commit = self.pending_commit.load(Ordering::Acquire);
+
+        if pending_commit > last_applied {
+            Some((last_applied + 1)..=pending_commit)
+        } else {
+            None
+        }
+    }
+
     /// Update pending commit index
     fn update_pending(
         &self,
@@ -125,37 +139,24 @@ where
         }
     }
 
-    /// Batch application log
-    async fn apply_batch(
+    fn apply_chunk(
         &self,
-        raft_log: Arc<ROF<T>>,
+        chunk: Vec<Entry>,
     ) -> Result<()> {
-        if let Some(range) = self.pending_range() {
-            // Read logs in batches
-            let range_end = *range.end();
-            let entries = raft_log.get_entries_between(range);
+        let last_index = chunk.last().map(|entry| entry.index);
+        debug!(
+            "[node-{}] apply_chunk::entry={:?} last_index: {:?}",
+            self.node_id, &chunk, last_index
+        );
 
-            // Apply in parallel
-            let chunks = entries.into_iter().collect::<Vec<_>>();
-            let handles: Vec<_> = chunks
-                .chunks(self.max_entries_per_chunk)
-                .map(|chunk| {
-                    let sm = self.state_machine.clone();
-                    let chunk = chunk.to_vec(); // Transfer ownership of chunk to the closure
-                    tokio::spawn(async move { sm.apply_chunk(chunk) })
-                })
-                .collect();
+        let sm = self.state_machine.clone();
+        sm.apply_chunk(chunk)?;
 
-            // Wait for all batches to complete
-            for h in handles {
-                if let Err(e) = h.await {
-                    error("apply_batch", &e);
-                }
-            }
-
-            // Atomic update last_applied
-            self.last_applied.store(range_end, Ordering::Release);
+        // Efficiently obtain the maximum index: directly get the index of the last entry
+        if let Some(idx) = last_index {
+            self.last_applied.store(idx, Ordering::Release);
         }
+        // If chunk is empty, no need to update last_applied
         Ok(())
     }
 
@@ -256,7 +257,11 @@ where
         let temp_path = self.path_mgr.temp_work_path(&last_included);
 
         // 3: Create snapshot based on the temp path
-        debug!(?temp_path, "create_snapshot 3: Create snapshot based on the temp path");
+        debug!(
+            ?temp_path,
+            ?last_included,
+            "create_snapshot 3: Create snapshot based on the temp path"
+        );
         let checksum = self
             .state_machine
             .generate_snapshot_data(temp_path.clone(), last_included)
@@ -634,18 +639,6 @@ where
         }
     }
 
-    /// Get the interval to be processed
-    pub fn pending_range(&self) -> Option<RangeInclusive<u64>> {
-        let last_applied = self.last_applied.load(Ordering::Acquire);
-        let pending_commit = self.pending_commit.load(Ordering::Acquire);
-
-        if pending_commit > last_applied {
-            Some((last_applied + 1)..=pending_commit)
-        } else {
-            None
-        }
-    }
-
     #[instrument(skip(self))]
     async fn create_snapshot_chunk_stream(
         &self,
@@ -903,10 +896,6 @@ where
     #[cfg(test)]
     pub fn pending_commit(&self) -> u64 {
         self.pending_commit.load(Ordering::Acquire)
-    }
-    #[cfg(test)]
-    pub fn last_applied(&self) -> u64 {
-        self.last_applied.load(Ordering::Acquire)
     }
 }
 

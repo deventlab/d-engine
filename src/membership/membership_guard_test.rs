@@ -1,0 +1,129 @@
+use super::*;
+use crate::proto::cluster::NodeMeta;
+use crate::{ConsensusError, Error, MembershipError};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+fn create_test_node(id: u32) -> NodeMeta {
+    NodeMeta {
+        id,
+        address: format!("node-{}.test:8080", id),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn initial_state_correctly_set() {
+    let nodes = vec![create_test_node(1), create_test_node(2)];
+    let guard = MembershipGuard::new(nodes.clone(), 100);
+
+    guard.blocking_read(|state| {
+        assert_eq!(state.nodes.len(), 2);
+        assert_eq!(state.nodes.get(&1).unwrap().address, "node-1.test:8080");
+        assert_eq!(state.nodes.get(&2).unwrap().address, "node-2.test:8080");
+        assert_eq!(state.cluster_conf_version, 100);
+    });
+}
+
+#[test]
+fn blocking_read_access() {
+    let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
+
+    let result = guard.blocking_read(|state| {
+        state.nodes.get(&1).map(|n| n.address.clone())
+    });
+
+    assert_eq!(result, Some("node-1.test:8080".to_string()));
+}
+
+#[test]
+fn blocking_write_updates_state() {
+    let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
+
+    guard.blocking_write(|state| {
+        state.cluster_conf_version = 200;
+        state.nodes.insert(2, create_test_node(2));
+    });
+
+    guard.blocking_read(|state| {
+        assert_eq!(state.cluster_conf_version, 200);
+        assert_eq!(state.nodes.len(), 2);
+    });
+}
+
+#[test]
+fn update_node_success() {
+    let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
+
+    let result = guard.update_node(1, |node| {
+        node.address = "updated.test:9090".to_string();
+    });
+
+    assert!(result.is_ok());
+    guard.blocking_read(|state| {
+        assert_eq!(state.nodes.get(&1).unwrap().address, "updated.test:9090");
+    });
+}
+
+#[test]
+fn update_node_not_found() {
+    let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
+
+    let result = guard.update_node(99, |_| {});
+
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Membership(MembershipError::NoMetadataFoundForNode { node_id: 99 })))
+    );
+}
+
+#[test]
+fn contains_node_checks_existence() {
+    let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
+
+    assert!(guard.contains_node(1));
+    assert!(!guard.contains_node(2));
+}
+
+#[test]
+fn concurrent_read_access() {
+    let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
+    let mut handles = vec![];
+
+    for _ in 0..10 {
+        let guard_clone = Arc::clone(&guard);
+        handles.push(thread::spawn(move || {
+            guard_clone.contains_node(1)
+        }));
+    }
+
+    for handle in handles {
+        assert!(handle.join().unwrap());
+    }
+}
+
+#[test]
+fn write_lock_blocks_other_access() {
+    let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
+    let guard_clone = Arc::clone(&guard);
+
+    let write_handle = thread::spawn(move || {
+        guard_clone.blocking_write(|state| {
+            thread::sleep(Duration::from_millis(100));
+            state.cluster_conf_version = 2;
+        });
+    });
+
+    // Give write thread time to acquire lock
+    thread::sleep(Duration::from_millis(10));
+
+    let start = std::time::Instant::now();
+    guard.blocking_read(|_| {});
+    let elapsed = start.elapsed();
+
+    write_handle.join().unwrap();
+
+    // Should have waited at least 90ms for write to complete
+    assert!(elapsed >= Duration::from_millis(90));
+}

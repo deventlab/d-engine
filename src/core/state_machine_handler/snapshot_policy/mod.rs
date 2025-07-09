@@ -35,7 +35,7 @@ pub trait SnapshotPolicy: Send + Sync {
     fn mark_snapshot_created(&mut self);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SnapshotContext {
     pub role: i32,
     pub last_included: LogId,

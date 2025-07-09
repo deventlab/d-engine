@@ -52,11 +52,13 @@ use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::alias::SSOF;
 use crate::alias::TROF;
+use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_raft_log_db;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_state_storage_db;
+use crate::learner_state::LearnerState;
 use crate::metrics;
 use crate::ClusterConfig;
 use crate::CommitHandler;
@@ -72,6 +74,7 @@ use crate::RaftConfig;
 use crate::RaftCoreHandlers;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
+use crate::RaftRole;
 use crate::RaftStateMachine;
 use crate::RaftStorageHandles;
 use crate::ReplicationHandler;
@@ -80,6 +83,7 @@ use crate::SignalParams;
 use crate::SledRaftLog;
 use crate::SledStateStorage;
 use crate::StateMachine;
+use crate::StateStorage;
 use crate::SystemError;
 
 pub enum NodeMode {
@@ -278,7 +282,7 @@ impl NodeBuilder {
 
         let raft_log = self.raft_log.take().unwrap_or_else(|| {
             let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
-            Arc::new(SledRaftLog::new(Arc::new(raft_log_db), last_applied_index))
+            Arc::new(SledRaftLog::new(node_id, Arc::new(raft_log_db), last_applied_index))
         });
 
         let state_storage = self.state_storage.take().unwrap_or_else(|| {
@@ -323,8 +327,32 @@ impl NodeBuilder {
 
         let shutdown_signal = self.shutdown_signal.clone();
         let node_config_arc = Arc::new(node_config);
+
+        // Construct my role
+        // Role initialization flow:
+        // 1. Check joining status from node config
+        // 2. Load persisted hard state from storage
+        // 3. Determine initial role based on cluster state
+        // 4. Inject dependencies to role state
+        let last_applied_index = Some(state_machine.last_applied().index);
+        let my_role = if node_config_arc.is_joining() {
+            RaftRole::Learner(Box::new(LearnerState::new(node_id, node_config_arc.clone())))
+        } else {
+            RaftRole::Follower(Box::new(FollowerState::new(
+                node_id,
+                node_config_arc.clone(),
+                state_storage.load_hard_state(),
+                last_applied_index,
+            )))
+        };
+        let my_role_i32 = my_role.as_i32();
+        let my_current_term = my_role.current_term();
+        info!("Start node with role: {} and term: {}", my_role_i32, my_current_term);
+
+        // Construct raft core
         let mut raft_core = Raft::<RaftTypeConfig>::new(
             node_id,
+            my_role,
             RaftStorageHandles::<RaftTypeConfig> {
                 raft_log,
                 state_machine: state_machine.clone(),
@@ -353,8 +381,12 @@ impl NodeBuilder {
 
         // Start CommitHandler in a single thread
         let commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
+            node_id,
+            my_role_i32,
+            my_current_term,
             state_machine_handler,
             raft_core.ctx.storage.raft_log.clone(),
+            membership.clone(),
             new_commit_event_rx,
             event_tx_clone,
             node_config_arc.raft.commit_handler.batch_size,

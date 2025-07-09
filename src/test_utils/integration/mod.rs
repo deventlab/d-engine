@@ -122,7 +122,7 @@ pub fn setup_raft_components(
     let state_machine_db = Arc::new(state_machine_db);
     let state_storage_db = Arc::new(state_storage_db);
 
-    let sled_raft_log = SledRaftLog::new(raft_log_db, 0);
+    let sled_raft_log = SledRaftLog::new(id, raft_log_db, 0);
     let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone()).expect("success");
     let last_applied_pair = sled_state_machine.last_applied();
     let sled_state_storage = SledStateStorage::new(state_storage_db);

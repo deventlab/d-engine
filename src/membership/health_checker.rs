@@ -31,6 +31,7 @@ pub(crate) struct HealthChecker {
 }
 
 impl HealthChecker {
+    #[allow(dead_code)]
     async fn connect(
         addr: &str,
         settings: NetworkConfig,
@@ -48,7 +49,7 @@ impl HealthChecker {
             .map_err(|err| {
                 error!("connect to {} failed: {}", address, err);
                 eprintln!("{err:?}");
-                NetworkError::ConnectError
+                NetworkError::ConnectError(err.to_string())
             })?;
 
         let client = HealthClient::new(channel)
@@ -76,7 +77,7 @@ impl HealthCheckerApis for HealthChecker {
             .await
             .map_err(|err| {
                 error!("client.check to {} failed: {}", peer_addr, err);
-                NetworkError::ConnectError
+                NetworkError::ConnectError(err.to_string())
             })?
             .into_inner();
 

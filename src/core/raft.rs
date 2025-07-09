@@ -1,15 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep_until;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
-use super::follower_state::FollowerState;
 #[cfg(test)]
 use super::raft_event_to_test_event;
 use super::NewCommitData;
@@ -21,16 +9,23 @@ use super::RaftStorageHandles;
 use super::RoleEvent;
 use crate::alias::MOF;
 use crate::alias::TROF;
-use crate::learner_state::LearnerState;
 use crate::proto::common::EntryPayload;
 use crate::Membership;
 use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 pub struct Raft<T>
 where
@@ -76,6 +71,7 @@ where
 {
     pub(crate) fn new(
         node_id: u32,
+        role: RaftRole<T>,
         storage: RaftStorageHandles<T>,
         transport: TROF<T>,
         handlers: RaftCoreHandlers<T>,
@@ -83,21 +79,7 @@ where
         signal_params: SignalParams,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
-        // Load last applied index from state machine
-        let last_applied_index = Some(storage.state_machine.last_applied().index);
-
         let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
-
-        let role = if node_config.is_joining() {
-            RaftRole::Learner(Box::new(LearnerState::new(node_id, node_config.clone())))
-        } else {
-            RaftRole::Follower(Box::new(FollowerState::new(
-                node_id,
-                node_config.clone(),
-                ctx.storage.state_storage.load_hard_state(),
-                last_applied_index,
-            )))
-        };
 
         Raft {
             node_id,

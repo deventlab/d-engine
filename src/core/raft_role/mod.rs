@@ -238,8 +238,6 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().is_learner()
     }
 
-    #[allow(dead_code)]
-    #[cfg(test)]
     pub(crate) fn current_term(&self) -> u64 {
         self.state().current_term()
     }

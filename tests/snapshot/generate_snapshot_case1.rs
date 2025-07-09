@@ -75,13 +75,14 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     ));
 
     // Prepare raft logs
-    let r1 = Arc::new(prepare_raft_log(&format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
-    let r2 = Arc::new(prepare_raft_log(&format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
-    let r3 = Arc::new(prepare_raft_log(&format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+    let r1 = Arc::new(prepare_raft_log(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+    let r2 = Arc::new(prepare_raft_log(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+    let r3 = Arc::new(prepare_raft_log(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
 
+    let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1);
     manipulate_log(&r2, vec![1, 2, 3, 4], 1);
-    manipulate_log(&r3, (1..=10).collect(), 2);
+    manipulate_log(&r3, (1..=last_log_id).collect(), 2);
 
     manipulate_state_machine(&r1, &sm1, 1..=3);
     manipulate_state_machine(&r2, &sm2, 1..=3);
@@ -102,6 +103,8 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         node_handles: Vec::new(),
     };
 
+    // To maintain the last included index of the snapshot, because of the configure: retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 , then the last included index of the snapshot should be 9.
+    let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
         let config = create_node_config(
@@ -123,12 +126,15 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         let mut node_config = node_config(&config);
 
         node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
+        //Dirty code: could leave it like this for now.
+        snapshot_last_included_id = Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
         let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log, state_storage).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
+    let last_included = snapshot_last_included_id.unwrap();
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
