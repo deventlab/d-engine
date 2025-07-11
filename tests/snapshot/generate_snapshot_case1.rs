@@ -103,7 +103,9 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         node_handles: Vec::new(),
     };
 
-    // To maintain the last included index of the snapshot, because of the configure: retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 , then the last included index of the snapshot should be 9.
+    // To maintain the last included index of the snapshot, because of the configure:
+    // retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 ,
+    // then the last included index of the snapshot should be 9.
     let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;

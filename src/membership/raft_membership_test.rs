@@ -21,7 +21,6 @@ use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
 
-
 // Helper function to create a test instance
 pub fn create_test_membership() -> RaftMembership<RaftTypeConfig> {
     // Prepare cluster membership
@@ -62,7 +61,7 @@ pub fn create_test_membership() -> RaftMembership<RaftTypeConfig> {
 
 #[test]
 fn test_update_single_node_case1() {
-    let  membership = create_test_membership();
+    let membership = create_test_membership();
 
     // Test updating an existing node
     let node_id = 4; //Learner 4
@@ -81,7 +80,7 @@ fn test_update_single_node_case1() {
 
 #[test]
 fn test_update_single_node_case2() {
-    let  membership = create_test_membership();
+    let membership = create_test_membership();
 
     // Test updating a non-existing node
     let node_id = 10; //none existent node
@@ -98,12 +97,9 @@ fn test_update_single_node_case2() {
 }
 
 #[test]
- fn test_update_multiple_nodes_case1() {
-     let  membership = create_test_membership();
-    let nodes = vec![
-        4,
-        5
-    ];
+fn test_update_multiple_nodes_case1() {
+    let membership = create_test_membership();
+    let nodes = vec![4, 5];
 
     let new_status = NodeStatus::PendingActive;
     let result = membership.update_multiple_nodes(&nodes, |node| {
@@ -115,16 +111,18 @@ fn test_update_single_node_case2() {
     // Verify all nodes were updated
     for node_id in nodes {
         let node_status = membership.get_node_status(node_id).unwrap();
-        assert_eq!(node_status, NodeStatus::PendingActive, "All nodes should be PendingActive");
+        assert_eq!(
+            node_status,
+            NodeStatus::PendingActive,
+            "All nodes should be PendingActive"
+        );
     }
 }
 
 #[test]
- fn test_update_multiple_nodes_case2() {
-    let  membership = create_test_membership();
-    let nodes = vec![
-        4, 13
-    ];
+fn test_update_multiple_nodes_case2() {
+    let membership = create_test_membership();
+    let nodes = vec![4, 13];
 
     let new_status = NodeStatus::PendingActive;
     let result = membership.update_multiple_nodes(&nodes, |node| {
@@ -135,7 +133,11 @@ fn test_update_single_node_case2() {
 
     // Verify existing node was updated
     let node4_status = membership.get_node_status(4).unwrap();
-    assert_eq!(node4_status, NodeStatus::PendingActive, "Existing node should be updated");
+    assert_eq!(
+        node4_status,
+        NodeStatus::PendingActive,
+        "Existing node should be updated"
+    );
 
     // Verify new nodes were created
     assert!(!membership.contains_node(13), "New node should exist");
@@ -179,7 +181,6 @@ fn test_replication_peers_case1() {
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
     assert_eq!(membership.replication_peers().len(), 3);
 }
-
 
 /// # Case 1: Test old leader id been cleaned up
 ///
@@ -334,10 +335,12 @@ async fn test_update_cluster_conf_from_leader_case1() {
         id: 2,
         term: 1,
         version: 0,
-        change: Some(MembershipChange{change: Some(Change::AddNode(AddNode {
-            node_id: 3,
-            address: "127.0.0.1:8080".to_string(),
-        }))}),
+        change: Some(MembershipChange {
+            change: Some(Change::AddNode(AddNode {
+                node_id: 3,
+                address: "127.0.0.1:8080".to_string(),
+            })),
+        }),
     };
 
     assert!(membership
@@ -371,7 +374,9 @@ async fn test_update_cluster_conf_from_leader_case2() {
         id: 2,
         term: 1,
         version: 1,
-        change: Some(MembershipChange{change: Some(Change::RemoveNode(RemoveNode { node_id: 3 }))}),
+        change: Some(MembershipChange {
+            change: Some(Change::RemoveNode(RemoveNode { node_id: 3 })),
+        }),
     };
 
     assert!(membership
@@ -405,10 +410,12 @@ async fn test_update_cluster_conf_from_leader_case3() {
         id: 2,
         term: 1,
         version: 1,
-        change: Some(MembershipChange{change: Some(Change::Promote(PromoteLearner {
-            node_id: 3,
-            status: NodeStatus::PendingActive.into(),
-        }))}),
+        change: Some(MembershipChange {
+            change: Some(Change::Promote(PromoteLearner {
+                node_id: 3,
+                status: NodeStatus::PendingActive.into(),
+            })),
+        }),
     };
 
     let response = membership
@@ -444,10 +451,12 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
         id: 2,
         term: 1,
         version: 1,
-        change: Some(MembershipChange{change: Some(Change::Promote(PromoteLearner {
-            node_id: 3,
-            status: NodeStatus::PendingActive.into(),
-        }))}),
+        change: Some(MembershipChange {
+            change: Some(Change::Promote(PromoteLearner {
+                node_id: 3,
+                status: NodeStatus::PendingActive.into(),
+            })),
+        }),
     };
 
     let result = membership
@@ -506,10 +515,12 @@ async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
         id: 2,
         term: 1,
         version: 4, // Older version
-        change: Some(MembershipChange{change: Some(Change::AddNode(AddNode {
-            node_id: 3,
-            address: "127.0.0.1:8080".to_string(),
-        }))}),
+        change: Some(MembershipChange {
+            change: Some(Change::AddNode(AddNode {
+                node_id: 3,
+                address: "127.0.0.1:8080".to_string(),
+            })),
+        }),
     };
 
     let response = membership
@@ -593,12 +604,15 @@ fn test_get_peers_id_with_condition() {
     assert_eq!(result, expect, "Should return all IDs when condition is always true");
 }
 
-
 #[cfg(test)]
 mod check_cluster_is_ready_test {
     use tokio::sync::oneshot;
-    use crate::test_utils::{enable_logger,  MockNode, MockRpcService, MOCK_MEMBERSHIP_PORT_BASE};
+
     use super::*;
+    use crate::test_utils::enable_logger;
+    use crate::test_utils::MockNode;
+    use crate::test_utils::MockRpcService;
+    use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;
 
     /// Case 1: Test all peers are healthy
     #[tokio::test]
@@ -614,7 +628,7 @@ mod check_cluster_is_ready_test {
                 .iter()
                 .map(|id| NodeMeta {
                     id: *id,
-                    address: format!("127.0.0.1:{}", MOCK_MEMBERSHIP_PORT_BASE+ *id),
+                    address: format!("127.0.0.1:{}", MOCK_MEMBERSHIP_PORT_BASE + *id),
                     role: FOLLOWER,
                     status: NodeStatus::Active.into(),
                 })
@@ -627,9 +641,7 @@ mod check_cluster_is_ready_test {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
             let port = MOCK_MEMBERSHIP_PORT_BASE + id;
-            let addr = MockNode::mock_listener(service, port as u64, rx, true)
-                .await
-                .unwrap();
+            let addr = MockNode::mock_listener(service, port as u64, rx, true).await.unwrap();
             mock_services.push((tx, addr));
         }
 
@@ -660,14 +672,11 @@ mod check_cluster_is_ready_test {
                 role: FOLLOWER,
                 status: NodeStatus::Active.into(),
             }],
-            config
+            config,
         );
 
         let result = membership.check_cluster_is_ready().await;
-        assert!(
-            result.is_err(),
-            "Should return error for unreachable peer"
-        );
+        assert!(result.is_err(), "Should return error for unreachable peer");
     }
 
     /// Case 3: Test peer returns unhealthy status
@@ -677,9 +686,7 @@ mod check_cluster_is_ready_test {
         let (tx, rx) = oneshot::channel::<()>();
         let service = MockRpcService::default();
         let port = MOCK_MEMBERSHIP_PORT_BASE + 4;
-        let _addr = MockNode::mock_listener(service, port as u64, rx, false)
-            .await
-            .unwrap();
+        let _addr = MockNode::mock_listener(service, port as u64, rx, false).await.unwrap();
 
         let mut config = RaftNodeConfig::default();
         config.retry.membership.max_retries = 1;
@@ -696,10 +703,7 @@ mod check_cluster_is_ready_test {
 
         let result = membership.check_cluster_is_ready().await;
         println!("Result: {:?}", &result);
-        assert!(
-            result.is_err(),
-            "Should return error for unhealthy peer"
-        );
+        assert!(result.is_err(), "Should return error for unhealthy peer");
 
         let _ = tx.send(());
     }
@@ -733,17 +737,12 @@ mod check_cluster_is_ready_test {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
             let port = MOCK_MEMBERSHIP_PORT_BASE + id;
-            let addr = MockNode::mock_listener(service, port as u64, rx, false)
-                .await
-                .unwrap();
+            let addr = MockNode::mock_listener(service, port as u64, rx, false).await.unwrap();
             mock_services.push((tx, addr));
         }
 
         let result = membership.check_cluster_is_ready().await;
-        assert!(
-            result.is_err(),
-            "Should return error for unhealthy peer"
-        );
+        assert!(result.is_err(), "Should return error for unhealthy peer");
 
         // Cleanup
         for (tx, _) in mock_services {
@@ -752,18 +751,13 @@ mod check_cluster_is_ready_test {
     }
 }
 
-
 #[cfg(test)]
 mod add_learner_test {
     use super::*;
 
     #[tokio::test]
     async fn test_add_learner_case1() {
-        let membership = RaftMembership::<RaftTypeConfig>::new(
-            1,
-            vec![],
-            RaftNodeConfig::default(),
-        );
+        let membership = RaftMembership::<RaftTypeConfig>::new(1, vec![], RaftNodeConfig::default());
 
         let result = membership.add_learner(2, "127.0.0.1:1234".to_string());
         assert!(result.is_ok(), "Should add learner successfully");
@@ -774,7 +768,6 @@ mod add_learner_test {
         assert_eq!(replication_members[0].address, "127.0.0.1:1234");
         assert_eq!(replication_members[0].role, LEARNER);
         assert_eq!(replication_members[0].status, NodeStatus::PendingActive as i32);
-
     }
 
     #[tokio::test]
@@ -799,11 +792,8 @@ mod add_learner_test {
         assert_eq!(replication_members[0].address, "127.0.0.1:0");
         assert_eq!(replication_members[0].role, FOLLOWER);
         assert_eq!(replication_members[0].status, NodeStatus::Active as i32);
-
     }
-
 }
-
 
 #[test]
 fn test_ensure_safe_join() {
@@ -813,5 +803,4 @@ fn test_ensure_safe_join() {
     assert!(ensure_safe_join(1, 3).is_err());
     assert!(ensure_safe_join(1, 4).is_ok());
     assert!(ensure_safe_join(1, 5).is_err());
-
 }

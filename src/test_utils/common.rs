@@ -2,7 +2,9 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
 use prost::Message;
+
 use crate::alias::ROF;
 use crate::convert::safe_kv;
 use crate::proto::client::WriteCommand;
@@ -14,11 +16,11 @@ use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SnapshotConfig;
 
-pub fn create_mixed_entries() -> Vec<Entry>{
+pub fn create_mixed_entries() -> Vec<Entry> {
     let config_entry = Entry {
         index: 1,
         term: 1,
-        payload: Some(EntryPayload::config(Change::AddNode(AddNode{
+        payload: Some(EntryPayload::config(Change::AddNode(AddNode {
             node_id: 7,
             address: "127.0.0.1:8080".into(),
         }))),
@@ -33,18 +35,17 @@ pub fn create_mixed_entries() -> Vec<Entry>{
     vec![config_entry, app_entry]
 }
 
-pub fn create_config_entries() ->  Vec<Entry> {
+pub fn create_config_entries() -> Vec<Entry> {
     let entry = Entry {
         index: 1,
         term: 1,
-        payload: Some(EntryPayload::config(Change::AddNode(AddNode{
+        payload: Some(EntryPayload::config(Change::AddNode(AddNode {
             node_id: 8,
             address: "127.0.0.1:8080".into(),
         }))),
     };
     vec![entry]
 }
-
 
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
     let mut buffer = Vec::new();

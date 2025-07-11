@@ -52,8 +52,7 @@ use crate::API_SLO;
 
 #[derive(Debug)]
 pub struct GrpcTransport<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) my_id: u32,
 
@@ -64,8 +63,7 @@ where
 
 #[async_trait]
 impl<T> Transport<T> for GrpcTransport<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn send_cluster_update(
@@ -498,8 +496,7 @@ where
 }
 
 impl<T> GrpcTransport<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(node_id: u32) -> Self {
         Self {

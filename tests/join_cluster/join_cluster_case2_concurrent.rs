@@ -71,12 +71,31 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     ));
 
     // Prepare raft logs
-    let r1 = Arc::new(prepare_raft_log(1, &format!("{}/cs/1", JOIN_CLUSTER_CASE2_DB_ROOT_DIR), 0));
-    let r2 = Arc::new(prepare_raft_log(2, &format!("{}/cs/2", JOIN_CLUSTER_CASE2_DB_ROOT_DIR), 0));
-    let r3 = Arc::new(prepare_raft_log(3, &format!("{}/cs/3", JOIN_CLUSTER_CASE2_DB_ROOT_DIR), 0));
-    let r4 = Arc::new(prepare_raft_log(4, &format!("{}/cs/4", JOIN_CLUSTER_CASE2_DB_ROOT_DIR), 0));
-    let r5 = Arc::new(prepare_raft_log(5, &format!("{}/cs/5", JOIN_CLUSTER_CASE2_DB_ROOT_DIR), 0));
-
+    let r1 = Arc::new(prepare_raft_log(
+        1,
+        &format!("{}/cs/1", JOIN_CLUSTER_CASE2_DB_ROOT_DIR),
+        0,
+    ));
+    let r2 = Arc::new(prepare_raft_log(
+        2,
+        &format!("{}/cs/2", JOIN_CLUSTER_CASE2_DB_ROOT_DIR),
+        0,
+    ));
+    let r3 = Arc::new(prepare_raft_log(
+        3,
+        &format!("{}/cs/3", JOIN_CLUSTER_CASE2_DB_ROOT_DIR),
+        0,
+    ));
+    let r4 = Arc::new(prepare_raft_log(
+        4,
+        &format!("{}/cs/4", JOIN_CLUSTER_CASE2_DB_ROOT_DIR),
+        0,
+    ));
+    let r5 = Arc::new(prepare_raft_log(
+        5,
+        &format!("{}/cs/5", JOIN_CLUSTER_CASE2_DB_ROOT_DIR),
+        0,
+    ));
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1);
@@ -117,7 +136,9 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
         (JOIN_CLUSTER_PORT_BASE + 13, 1, 2),
     ];
 
-    // To maintain the last included index of the snapshot, because of the configure: retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 , then the last included index of the snapshot should be 9.
+    // To maintain the last included index of the snapshot, because of the configure:
+    // retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 ,
+    // then the last included index of the snapshot should be 9.
     let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
@@ -201,7 +222,6 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
 
     sleep(Duration::from_secs(3)).await;
 
-
     // Start new node 5 and join cluster
     println!("Starting new node 5 and joining cluster...");
     let cluster_nodes = &[
@@ -232,7 +252,6 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     ctx.node_handles.push(node_n5);
 
     sleep(Duration::from_secs(3)).await;
-
 
     // Validate node 4
     let snapshot_path = format!("{}/4", SNAPSHOT_DIR);

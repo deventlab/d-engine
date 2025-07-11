@@ -12,17 +12,36 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::time::Duration;
+
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use tokio::task;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
+
 use super::MembershipGuard;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
 use crate::membership::health_checker::HealthCheckerApis;
 use crate::net::address_str;
+use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::common::membership_change::Change;
 use crate::proto::common::MembershipChange;
 use crate::proto::common::NodeStatus;
-use crate::proto::{cluster::ClusterConfChangeRequest, common::membership_change::Change};
 use crate::ConnectionParams;
 use crate::ConnectionType;
 use crate::Membership;
@@ -34,26 +53,9 @@ use crate::TypeConfig;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
-use autometrics::autometrics;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use tracing::instrument;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::time::Duration;
-use tokio::task;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
 
 pub struct RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     membership: MembershipGuard,
@@ -74,8 +76,7 @@ impl<T: TypeConfig> Debug for RaftMembership<T> {
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn members(&self) -> Vec<NodeMeta> {
         self.membership
@@ -355,8 +356,7 @@ where
         if let Some(membership_change) = &req.change {
             match &membership_change.change {
                 Some(Change::AddNode(add)) => {
-                    self.add_learner(add.node_id, add.address.clone())
-                        ?;
+                    self.add_learner(add.node_id, add.address.clone())?;
                 }
                 Some(Change::RemoveNode(remove)) => {
                     self.remove_node(remove.node_id).await?;
@@ -427,7 +427,10 @@ where
         info!("Adding learner node: {}", node_id);
         self.membership.blocking_write(|guard| {
             if guard.nodes.contains_key(&node_id) {
-                error!("[node-{}] Adding a learner node failed: node already exists. {}", self.node_id, node_id);
+                error!(
+                    "[node-{}] Adding a learner node failed: node already exists. {}",
+                    self.node_id, node_id
+                );
                 return Err(MembershipError::NodeAlreadyExists(node_id).into());
                 // return  Ok(());
             }
@@ -437,7 +440,7 @@ where
                 role: LEARNER,
                 status: NodeStatus::PendingActive as i32,
             });
-            info!("[node-{}] Adding a learner node successed: {}",self.node_id, node_id);
+            info!("[node-{}] Adding a learner node successed: {}", self.node_id, node_id);
 
             Ok(())
         })
@@ -571,8 +574,7 @@ where
 }
 
 impl<T> RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,
@@ -645,9 +647,11 @@ where
     }
 }
 
-
 #[instrument]
-pub fn ensure_safe_join(node_id:u32, current_voters: usize) -> Result<()> {
+pub fn ensure_safe_join(
+    node_id: u32,
+    current_voters: usize,
+) -> Result<()> {
     // Total voters including leader = current_voters + 1
     let total_voters = current_voters + 1;
 
@@ -656,20 +660,12 @@ pub fn ensure_safe_join(node_id:u32, current_voters: usize) -> Result<()> {
         Ok(())
     } else {
         // metrics::counter!("cluster.unsafe_join_attempts", 1);
-        metrics::counter!(
-            "cluster.unsafe_join_attempts",
-            &[
-                ("node_id", node_id.to_string())
-            ]
-        )
-        .increment(1);
+        metrics::counter!("cluster.unsafe_join_attempts", &[("node_id", node_id.to_string())]).increment(1);
 
         warn!(
             "Unsafe join attempt: current_voters={} (total_voters={})",
             current_voters, total_voters
         );
-        Err(MembershipError::JoinClusterError(
-            "Cluster must maintain odd number of voters".into(),
-        ).into())
+        Err(MembershipError::JoinClusterError("Cluster must maintain odd number of voters".into()).into())
     }
 }

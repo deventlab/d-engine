@@ -185,14 +185,12 @@ impl MockBuilder {
             ..node_config
         });
 
-
-        let role =
-            self.role.unwrap_or(RaftRole::Follower(Box::new(FollowerState::new(
-                id,
-                arc_node_config.clone(),
-                state_storage.load_hard_state(),
-                Some(state_machine.last_applied().index),
-            ))));
+        let role = self.role.unwrap_or(RaftRole::Follower(Box::new(FollowerState::new(
+            id,
+            arc_node_config.clone(),
+            state_storage.load_hard_state(),
+            Some(state_machine.last_applied().index),
+        ))));
 
         Raft::new(
             id,

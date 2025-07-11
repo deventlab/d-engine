@@ -35,8 +35,7 @@ pub struct ElectionHandler<T: TypeConfig> {
 
 #[async_trait]
 impl<T> ElectionCore<T> for ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
@@ -212,8 +211,7 @@ where
     }
 }
 impl<T> ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(my_id: u32) -> Self {
         Self {

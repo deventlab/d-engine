@@ -1,9 +1,12 @@
-use super::*;
-use crate::proto::cluster::NodeMeta;
-use crate::{ConsensusError, Error, MembershipError};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+use super::*;
+use crate::proto::cluster::NodeMeta;
+use crate::ConsensusError;
+use crate::Error;
+use crate::MembershipError;
 
 fn create_test_node(id: u32) -> NodeMeta {
     NodeMeta {
@@ -30,9 +33,7 @@ fn initial_state_correctly_set() {
 fn blocking_read_access() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
-    let result = guard.blocking_read(|state| {
-        state.nodes.get(&1).map(|n| n.address.clone())
-    });
+    let result = guard.blocking_read(|state| state.nodes.get(&1).map(|n| n.address.clone()));
 
     assert_eq!(result, Some("node-1.test:8080".to_string()));
 }
@@ -74,8 +75,10 @@ fn update_node_not_found() {
 
     assert!(matches!(
         result.unwrap_err(),
-        Error::Consensus(ConsensusError::Membership(MembershipError::NoMetadataFoundForNode { node_id: 99 })))
-    );
+        Error::Consensus(ConsensusError::Membership(MembershipError::NoMetadataFoundForNode {
+            node_id: 99
+        }))
+    ));
 }
 
 #[test]
@@ -93,9 +96,7 @@ fn concurrent_read_access() {
 
     for _ in 0..10 {
         let guard_clone = Arc::clone(&guard);
-        handles.push(thread::spawn(move || {
-            guard_clone.contains_node(1)
-        }));
+        handles.push(thread::spawn(move || guard_clone.contains_node(1)));
     }
 
     for handle in handles {

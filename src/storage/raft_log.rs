@@ -176,7 +176,6 @@ pub trait RaftLog: Send + Sync + 'static {
     fn cached_next_id(&self) -> u64;
 }
 
-
 impl EntryPayload {
     #[inline]
     pub fn is_config(&self) -> bool {

@@ -180,10 +180,15 @@ mod apply_chunk_test {
 
     use super::*;
 
-    fn create_test_handler(path: &str, apply_chunk_error: bool) -> DefaultStateMachineHandler<MockTypeConfig> {
+    fn create_test_handler(
+        path: &str,
+        apply_chunk_error: bool,
+    ) -> DefaultStateMachineHandler<MockTypeConfig> {
         let mut state_machine = MockStateMachine::new();
         if apply_chunk_error {
-            state_machine.expect_apply_chunk().returning(|_| Err(Error::Fatal("Test error".to_string())));
+            state_machine
+                .expect_apply_chunk()
+                .returning(|_| Err(Error::Fatal("Test error".to_string())));
         } else {
             state_machine.expect_apply_chunk().returning(|_| Ok(()));
         }
@@ -198,13 +203,24 @@ mod apply_chunk_test {
     }
 
     async fn test_apply_chunk_updates_last_applied_case1() {
-        let  handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false);
+        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false);
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
 
         // Create a test chunk with index 100
-        let  chunk: Vec<Entry> = vec![Entry{ index: 90, term: 1, payload: None }, Entry{ index: 100, term: 1, payload: None }];
+        let chunk: Vec<Entry> = vec![
+            Entry {
+                index: 90,
+                term: 1,
+                payload: None,
+            },
+            Entry {
+                index: 100,
+                term: 1,
+                payload: None,
+            },
+        ];
 
         // Apply the chunk
         let result = handler.apply_chunk(chunk);
@@ -221,7 +237,18 @@ mod apply_chunk_test {
         assert_eq!(handler.last_applied(), 0);
 
         // Create a test chunk with index 50
-        let chunk = vec![Entry{ index: 50, term: 1, payload: None }, Entry{ index: 70, term: 1, payload: None }];
+        let chunk = vec![
+            Entry {
+                index: 50,
+                term: 1,
+                payload: None,
+            },
+            Entry {
+                index: 70,
+                term: 1,
+                payload: None,
+            },
+        ];
 
         // Apply the chunk
         let result = handler.apply_chunk(chunk);
@@ -235,7 +262,18 @@ mod apply_chunk_test {
         let handler = create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false);
 
         // Initial last_applied value
-        let chunk = vec![Entry{ index: 1, term: 1, payload: None }, Entry{ index: 2, term: 1, payload: None }];
+        let chunk = vec![
+            Entry {
+                index: 1,
+                term: 1,
+                payload: None,
+            },
+            Entry {
+                index: 2,
+                term: 1,
+                payload: None,
+            },
+        ];
         let result = handler.apply_chunk(chunk);
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
@@ -258,16 +296,18 @@ mod apply_chunk_test {
         assert_eq!(handler.last_applied(), 0);
 
         // Create first chunk with index 50
-        let chunk1 = vec![Entry{ index: 50, term: 1, payload: None }];
+        let chunk1 = vec![Entry {
+            index: 50,
+            term: 1,
+            payload: None,
+        }];
 
         // Apply first chunk
         let result1 = handler.apply_chunk(chunk1);
         assert!(result1.is_err());
         assert_eq!(handler.last_applied(), 0);
     }
-
 }
-
 
 fn listen_addr(port: u64) -> SocketAddr {
     format!("127.0.0.1:{port}",).parse().unwrap()

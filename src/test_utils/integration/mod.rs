@@ -78,8 +78,7 @@ use crate::TypeConfig;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub id: u32,
 

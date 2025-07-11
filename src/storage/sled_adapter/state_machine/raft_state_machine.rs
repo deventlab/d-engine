@@ -267,7 +267,10 @@ impl StateMachine for RaftStateMachine {
         // Apply batch and update last applied index
         self.apply_batch(batch)?;
         if let Some(log_id) = highest_index_entry {
-            debug!("[Node-{}] State machine - updated last_applied: {:?}",self.node_id, log_id);
+            debug!(
+                "[Node-{}] State machine - updated last_applied: {:?}",
+                self.node_id, log_id
+            );
             self.update_last_applied(log_id);
         }
 
@@ -452,13 +455,10 @@ impl StateMachine for RaftStateMachine {
                     computed_checksum, metadata.checksum
                 );
 
-                metrics::counter!(
-                    "snapshot.checksum_failures",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("snapshot_index", new_last_included.index.to_string()),
-                    ]
-                )
+                metrics::counter!("snapshot.checksum_failures", &[
+                    ("node_id", self.node_id.to_string()),
+                    ("snapshot_index", new_last_included.index.to_string()),
+                ])
                 .increment(1);
 
                 return Err(SnapshotError::ChecksumMismatch.into());

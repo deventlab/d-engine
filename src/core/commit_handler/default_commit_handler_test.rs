@@ -1,56 +1,63 @@
-use crate::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
 use tokio::sync::mpsc::{self};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio::time::{self, Instant};
-use super::{CommitHandler, DefaultCommitHandler};
+use tokio::time::Instant;
+use tokio::time::{self};
+
+use super::CommitHandler;
+use super::DefaultCommitHandler;
 use crate::proto::common::membership_change::Change;
-use crate::proto::common::{Entry, EntryPayload, LogId};
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-use crate::test_utils::{enable_logger, generate_insert_commands, MockTypeConfig};
-use crate::{Error, MockMembership, RaftEvent, LEADER};
+use crate::test_utils::enable_logger;
+use crate::test_utils::generate_insert_commands;
+use crate::test_utils::MockTypeConfig;
+use crate::Error;
+use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
 use crate::NewCommitData;
-
+use crate::RaftEvent;
+use crate::Result;
+use crate::LEADER;
 
 const TEST_TERM: u64 = 1;
 
 pub enum CommandType {
     Command(Vec<u8>),
     Configuration(Change),
-    Noop
+    Noop,
 }
 
-pub fn build_entries(commands: Vec<CommandType>, term: u64) -> Vec<Entry> {
+pub fn build_entries(
+    commands: Vec<CommandType>,
+    term: u64,
+) -> Vec<Entry> {
     let mut r = vec![];
     let mut index = 1;
     for c in commands {
         let entry = match c {
-            CommandType::Command(data) => {
-                 Entry {
-                    index,
-                    term,
-                    payload: Some(EntryPayload::command(data.to_vec())),
-                }
-            }
-            CommandType::Configuration(change) => {
-                Entry {
-                    index,
-                    term,
-                    payload: Some(EntryPayload::config(change))
-                }
-            }
-            CommandType::Noop => {
-                Entry {
-                    index,
-                    term,
-                    payload: Some(EntryPayload::noop()),
-                }
-            }
+            CommandType::Command(data) => Entry {
+                index,
+                term,
+                payload: Some(EntryPayload::command(data.to_vec())),
+            },
+            CommandType::Configuration(change) => Entry {
+                index,
+                term,
+                payload: Some(EntryPayload::config(change)),
+            },
+            CommandType::Noop => Entry {
+                index,
+                term,
+                payload: Some(EntryPayload::noop()),
+            },
         };
         r.push(entry);
         index += 1;
@@ -79,16 +86,16 @@ fn setup_harness<F, G>(
     role: i32,
     term: u64,
     entries: Vec<Entry>,
-    last_applied:u64,
+    last_applied: u64,
     config_hook: F,
     command_hook: G,
     snapshot_condition: Option<u64>,
     batch_size_threshold: u64,
-    process_interval_ms: u64
+    process_interval_ms: u64,
 ) -> TestHarness
 where
     F: Fn() -> bool + 'static + Send + Sync,
-    G: Fn() -> bool + 'static + Send + Sync
+    G: Fn() -> bool + 'static + Send + Sync,
 {
     let (commit_tx, commit_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -97,37 +104,38 @@ where
     // Mock state machine
     let mut mock_smh = MockStateMachineHandler::new();
     let cloned_entries = entries.clone();
-    mock_smh.expect_pending_range()
+    mock_smh
+        .expect_pending_range()
         .returning(move || Some(1..=cloned_entries.last().map(|e| e.index).unwrap_or(1)));
-    mock_smh.expect_apply_chunk()
-        .returning(move |_| {
-            if command_hook() {
-                Err(Error::Fatal("Command execution failed".to_string()))
-            } else {
-                Ok(())
-            }
-        });
-    mock_smh.expect_update_pending()
-        .returning( |_| {});
-    mock_smh.expect_last_applied().returning(move ||last_applied);
-    mock_smh.expect_should_snapshot()
+    mock_smh.expect_apply_chunk().returning(move |_| {
+        if command_hook() {
+            Err(Error::Fatal("Command execution failed".to_string()))
+        } else {
+            Ok(())
+        }
+    });
+    mock_smh.expect_update_pending().returning(|_| {});
+    mock_smh.expect_last_applied().returning(move || last_applied);
+    mock_smh
+        .expect_should_snapshot()
         .returning(move |data| snapshot_condition.map_or(false, |idx| data.new_commit_index >= idx));
 
     // Mock raft log
     let mut mock_log = MockRaftLog::new();
-    mock_log.expect_get_entries_between()
+    mock_log
+        .expect_get_entries_between()
         .returning(move |_| entries.clone());
 
     // Mock membership
     let mut mock_membership = MockMembership::new();
-    mock_membership.expect_notify_config_applied()
-        .returning(|_| {});
-    mock_membership.expect_apply_config_change()
-        .returning(move |_| if config_hook() {
+    mock_membership.expect_notify_config_applied().returning(|_| {});
+    mock_membership.expect_apply_config_change().returning(move |_| {
+        if config_hook() {
             Err(Error::Fatal("Command execution failed".to_string()))
         } else {
             Ok(())
-        });
+        }
+    });
 
     TestHarness {
         role,
@@ -143,7 +151,7 @@ where
         shutdown_rx: Some(shutdown_rx),
         batch_size_threshold,
         process_interval_ms,
-        handle: None
+        handle: None,
     }
 }
 
@@ -159,7 +167,7 @@ impl TestHarness {
             self.commit_rx.take().unwrap(),
             self.event_tx.clone(),
             self.batch_size_threshold, // batch_threshold
-            self.process_interval_ms, // process_interval
+            self.process_interval_ms,  // process_interval
             self.shutdown_rx.take().unwrap(),
         );
         self.handle = Some(tokio::spawn(async move {
@@ -167,7 +175,7 @@ impl TestHarness {
         }));
     }
 
-    async fn process_batch_handler(&mut self) -> Result<()>{
+    async fn process_batch_handler(&mut self) -> Result<()> {
         let handler = DefaultCommitHandler::<MockTypeConfig>::new(
             1,
             self.role,
@@ -178,26 +186,31 @@ impl TestHarness {
             self.commit_rx.take().unwrap(),
             self.event_tx.clone(),
             self.batch_size_threshold, // batch_threshold
-            self.process_interval_ms, // process_interval
+            self.process_interval_ms,  // process_interval
             self.shutdown_rx.take().unwrap(),
         );
         handler.process_batch().await
     }
 
-    async fn send_commit(&self, index: u64, role: i32) {
-        self.commit_tx.send(NewCommitData {
-            new_commit_index: index,
-            role,
-            current_term: TEST_TERM,
-        }).unwrap();
+    async fn send_commit(
+        &self,
+        index: u64,
+        role: i32,
+    ) {
+        self.commit_tx
+            .send(NewCommitData {
+                new_commit_index: index,
+                role,
+                current_term: TEST_TERM,
+            })
+            .unwrap();
     }
 
     async fn expect_snapshot_trigger(&mut self) -> bool {
-        match time::timeout(Duration::from_millis(50), self.event_rx.recv())
-            .await {
+        match time::timeout(Duration::from_millis(50), self.event_rx.recv()).await {
             Ok(Some(_)) => true, // Event received normally
-            Ok(None) => false, // Channel closed
-            Err(_) => false, // Timeout
+            Ok(None) => false,   // Channel closed
+            Err(_) => false,     // Timeout
         }
     }
 }
@@ -213,8 +226,10 @@ fn setup(
 
     // Mock Applier
     let mut mock_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    mock_handler.expect_apply_chunk()
-        .times(apply_batch_expected_execution_times).returning(|_| Ok(()));
+    mock_handler
+        .expect_apply_chunk()
+        .times(apply_batch_expected_execution_times)
+        .returning(|_| Ok(()));
     mock_handler.expect_update_pending().returning(|_| {});
     mock_handler.expect_create_snapshot().returning(|| {
         Ok((
@@ -225,22 +240,20 @@ fn setup(
             PathBuf::from("/tmp/value"),
         ))
     });
-    mock_handler.expect_pending_range().returning(||Some(1..=2));
+    mock_handler.expect_pending_range().returning(|| Some(1..=2));
     mock_handler.expect_should_snapshot().returning(|_| true);
 
     // Mock Raft Log
     let mut mock_raft_log = MockRaftLog::new();
     mock_raft_log.expect_purge_logs_up_to().returning(|_| Ok(()));
-    mock_raft_log.expect_get_entries_between().returning(|_|
-        vec![
-            Entry{
-                index: 1,
-                term: 1,
-                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-            }
-        ]
-    );
-    let  mock_membership = MockMembership::new();
+    mock_raft_log.expect_get_entries_between().returning(|_| {
+        vec![Entry {
+            index: 1,
+            term: 1,
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
+        }]
+    });
+    let mock_membership = MockMembership::new();
 
     // Init handler
     let (event_tx, _event_rx) = mpsc::channel(1);
@@ -345,8 +358,14 @@ async fn test_dynamic_interval_case2() {
 mod run_test {
     use prost::Message;
     use tokio::time;
-    use crate::{proto::common::{membership_change::Change, AddNode, RemoveNode}, test_utils, FOLLOWER, LEADER};
+
     use super::*;
+    use crate::proto::common::membership_change::Change;
+    use crate::proto::common::AddNode;
+    use crate::proto::common::RemoveNode;
+    use crate::test_utils;
+    use crate::FOLLOWER;
+    use crate::LEADER;
 
     /// 1. Test happy path with all entry types
     #[tokio::test]
@@ -354,7 +373,10 @@ mod run_test {
         let entries = build_entries(
             vec![
                 CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Configuration(Change::AddNode(AddNode { node_id: 1, address: "addr".into() })),
+                CommandType::Configuration(Change::AddNode(AddNode {
+                    node_id: 1,
+                    address: "addr".into(),
+                })),
                 CommandType::Noop,
                 CommandType::Command(b"cmd2".to_vec()),
             ],
@@ -367,8 +389,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             Some(4),
             3,
             1,
@@ -404,8 +426,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             3,
             1,
@@ -424,9 +446,12 @@ mod run_test {
     /// 3. Test config change with node removal
     #[tokio::test]
     async fn test_config_remove_node() {
-        let entries =  build_entries(vec![
-            CommandType::Configuration(Change::RemoveNode(RemoveNode { node_id: 1 })),
-        ],1);
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::RemoveNode(RemoveNode {
+                node_id: 1,
+            }))],
+            1,
+        );
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
@@ -434,8 +459,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             Some(4),
             3,
             1,
@@ -454,9 +479,7 @@ mod run_test {
         enable_logger();
         let mut entries = Vec::new();
         for i in 1..=1000 {
-            entries.push(
-                CommandType::Command(format!("cmd{}", i).encode_to_vec())
-            );
+            entries.push(CommandType::Command(format!("cmd{}", i).encode_to_vec()));
         }
         let entries = build_entries(entries, 1);
 
@@ -466,8 +489,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             3,
             1,
@@ -517,14 +540,13 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             Some(4),
             3,
             1,
         );
         harness.run_handler().await;
-
 
         // Send commits to trigger processing
         for i in 1..=2 {
@@ -571,8 +593,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             batch_thresold,
             1000,
@@ -624,8 +646,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             batch_thresold,
             1000,
@@ -677,8 +699,8 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             batch_thresold,
             2,
@@ -699,12 +721,13 @@ mod run_test {
 
 #[cfg(test)]
 mod process_batch_test {
+    use parking_lot::Mutex;
+
     use super::*;
     use crate::proto::common::membership_change::Change;
     use crate::proto::common::AddNode;
     use crate::proto::common::RemoveNode;
     use crate::test_utils::*;
-    use parking_lot::Mutex;
 
     // Test helper setup with configurable mocks
     // fn setup_test_handler<F, G>(
@@ -740,7 +763,8 @@ mod process_batch_test {
     //             }
     //         });
     //     mock_smh.expect_should_snapshot()
-    //         .returning(move |data| snapshot_condition.map_or(false, |idx| data.new_commit_index >= idx));
+    //         .returning(move |data| snapshot_condition.map_or(false, |idx| data.new_commit_index >=
+    // idx));
 
     //     // Mock raft log
     //     let mut mock_log = MockRaftLog::new();
@@ -781,8 +805,8 @@ mod process_batch_test {
             1,
             vec![],
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             100,
             100,
@@ -808,13 +832,12 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             100,
             100,
         );
-
 
         // Expect single apply_chunk call with all 3 commands
         let result = harness.process_batch_handler().await;
@@ -826,7 +849,10 @@ mod process_batch_test {
         let entries = build_entries(
             vec![
                 CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Configuration(Change::AddNode(AddNode { node_id: 1, address: "addr".into() })),
+                CommandType::Configuration(Change::AddNode(AddNode {
+                    node_id: 1,
+                    address: "addr".into(),
+                })),
                 CommandType::Command(b"cmd2".to_vec()),
             ],
             1,
@@ -838,13 +864,12 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             100,
             100,
         );
-
 
         // Expect single apply_chunk call with all 3 commands
         let result = harness.process_batch_handler().await;
@@ -854,7 +879,6 @@ mod process_batch_test {
         // - apply_chunk called twice: [cmd1] and [cmd2]
         // - apply_config_change called once for entry 2
     }
-
 
     pub fn build_entries_with_noop(term: u64) -> Vec<Entry> {
         let (builder, cmd1) = EntryBuilder::new(1, term).command(b"cmd1");
@@ -879,13 +903,12 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             100,
             100,
         );
-
 
         // Expect single apply_chunk call with all 3 commands
         let result = harness.process_batch_handler().await;
@@ -896,7 +919,10 @@ mod process_batch_test {
     async fn handles_config_failure_properly() {
         let entries = build_entries(
             vec![
-                CommandType::Configuration(Change::AddNode(AddNode { node_id: 1, address: "addr".into() })),
+                CommandType::Configuration(Change::AddNode(AddNode {
+                    node_id: 1,
+                    address: "addr".into(),
+                })),
                 CommandType::Command(b"cmd1".to_vec()),
             ],
             1,
@@ -908,8 +934,8 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {true}, // Config will fail
-            move || {false},
+            move || true, // Config will fail
+            move || false,
             None,
             100,
             100,
@@ -936,8 +962,8 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {true},
+            move || false,
+            move || true,
             None,
             100,
             100,
@@ -962,8 +988,8 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             Some(2), // Snapshot condition: last index >= 2
             100,
             100,
@@ -976,12 +1002,7 @@ mod process_batch_test {
 
     #[tokio::test]
     async fn does_not_trigger_snapshot_when_condition_not_met() {
-        let entries = build_entries(
-            vec![
-                CommandType::Command(b"cmd1".to_vec()),
-            ],
-            1,
-        );
+        let entries = build_entries(vec![CommandType::Command(b"cmd1".to_vec())], 1);
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
@@ -989,8 +1010,8 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             Some(2), // Requires index >=2
             100,
             100,
@@ -1002,13 +1023,15 @@ mod process_batch_test {
         assert!(!harness.expect_snapshot_trigger().await);
     }
 
-
     #[tokio::test]
     async fn processes_mixed_entries_correctly() {
         let entries = build_entries(
             vec![
                 CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Configuration(Change::AddNode(AddNode { node_id: 1, address: "addr".into() })),
+                CommandType::Configuration(Change::AddNode(AddNode {
+                    node_id: 1,
+                    address: "addr".into(),
+                })),
                 CommandType::Noop,
                 CommandType::Command(b"cmd2".to_vec()),
                 CommandType::Command(b"cmd3".to_vec()),
@@ -1022,8 +1045,8 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             100,
             100,
@@ -1038,18 +1061,18 @@ mod process_batch_test {
     #[tokio::test]
     async fn handles_large_command_batches() {
         let mut r = vec![];
-        for _i in 1..=1000{
-            r.push(CommandType::Command(b"cmd".to_vec()),)
+        for _i in 1..=1000 {
+            r.push(CommandType::Command(b"cmd".to_vec()))
         }
-        let entries = build_entries(r,1);
+        let entries = build_entries(r, 1);
         let last_applied = entries.len();
         let mut harness = setup_harness(
             LEADER,
             1,
             entries,
             last_applied as u64,
-            move || {false},
-            move || {false},
+            move || false,
+            move || false,
             None,
             100,
             100,
@@ -1065,7 +1088,10 @@ mod process_batch_test {
         let entries = build_entries(
             vec![
                 CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Configuration(Change::AddNode(AddNode { node_id: 1, address: "addr".into() })),
+                CommandType::Configuration(Change::AddNode(AddNode {
+                    node_id: 1,
+                    address: "addr".into(),
+                })),
                 CommandType::Command(b"cmd2".to_vec()),
             ],
             1,
@@ -1102,10 +1128,7 @@ mod process_batch_test {
 
         // Verify processing order: cmd1 (command), then config, then cmd2 (command)
         let order = process_order.lock();
-        assert_eq!(
-            *order,
-            vec!["command", "config", "command"]
-        );
+        assert_eq!(*order, vec!["command", "config", "command"]);
     }
 
     #[tokio::test]
@@ -1114,9 +1137,12 @@ mod process_batch_test {
 
         let entries = build_entries(
             vec![
-                CommandType::Configuration(Change::AddNode(AddNode { node_id: 1, address: "addr".into() })),
+                CommandType::Configuration(Change::AddNode(AddNode {
+                    node_id: 1,
+                    address: "addr".into(),
+                })),
                 CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Configuration(Change::RemoveNode(RemoveNode { node_id: 1})),
+                CommandType::Configuration(Change::RemoveNode(RemoveNode { node_id: 1 })),
             ],
             1,
         );

@@ -1,15 +1,15 @@
 mod health_checker;
 mod membership_guard;
 mod raft_membership;
-pub use raft_membership::*;
 pub(crate) use membership_guard::*;
+pub use raft_membership::*;
 
 #[cfg(test)]
 mod health_checker_test;
 #[cfg(test)]
-mod raft_membership_test;
-#[cfg(test)]
 mod membership_guard_test;
+#[cfg(test)]
+mod raft_membership_test;
 
 #[cfg(test)]
 use mockall::automock;
@@ -35,8 +35,7 @@ pub(crate) enum ConnectionType {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// All nodes (including itself)
     #[allow(unused)]
@@ -102,7 +101,10 @@ where
 
     fn get_cluster_conf_version(&self) -> u64;
 
-    fn update_conf_version(&self, version: u64);
+    fn update_conf_version(
+        &self,
+        version: u64,
+    );
 
     #[allow(unused)]
     fn incr_conf_version(&self);
@@ -111,7 +113,7 @@ where
     fn add_learner(
         &self,
         node_id: u32,
-        address: String
+        address: String,
     ) -> Result<()>;
 
     /// Activate node
@@ -168,9 +170,15 @@ where
     ) -> Option<String>;
 
     /// Apply committed configuration change
-    async fn apply_config_change(&self, change: crate::proto::common::MembershipChange) -> Result<()>;
+    async fn apply_config_change(
+        &self,
+        change: crate::proto::common::MembershipChange,
+    ) -> Result<()>;
 
-    async fn notify_config_applied(&self, index: u64);
+    async fn notify_config_applied(
+        &self,
+        index: u64,
+    );
 }
 
 impl ClusterConfUpdateResponse {
@@ -269,7 +277,6 @@ impl ClusterConfUpdateResponse {
     pub(crate) fn is_higher_term(&self) -> bool {
         self.error_code == <ErrorCode as Into<i32>>::into(ErrorCode::TermOutdated)
     }
-
 }
 
 impl NodeStatus {
@@ -279,7 +286,7 @@ impl NodeStatus {
 
     pub fn is_i32_promotable(value: i32) -> bool {
         match value {
-            v if v == (NodeStatus::Joining as i32 ) || v == (NodeStatus::PendingActive as i32)=> true,
+            v if v == (NodeStatus::Joining as i32) || v == (NodeStatus::PendingActive as i32) => true,
             _ => false,
         }
     }

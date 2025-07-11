@@ -26,8 +26,7 @@ use crate::TypeConfig;
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     my_id: u32,
     my_role: i32,
@@ -47,8 +46,7 @@ where
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn run(&mut self) -> Result<()> {
         let mut batch_counter = 0;
@@ -101,8 +99,7 @@ where
 }
 
 impl<T> DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         my_id: u32,
@@ -140,8 +137,7 @@ where
     ///
     /// # Note:Sequential Integrity
     /// Consider this sequence in a single batch: [ConfigRemove(A), ConfigAdd(B), EntryNormal(X)]
-    ///
-    pub(crate) async fn process_batch(&self) -> Result<()>{
+    pub(crate) async fn process_batch(&self) -> Result<()> {
         let pending_range = self.state_machine_handler.pending_range();
         debug!("[Node-{}] Pending range: {:?}", self.my_id, pending_range);
 
@@ -166,7 +162,8 @@ where
         };
 
         let mut last_error = None;
-        for entry in entries { // In exact log order
+        for entry in entries {
+            // In exact log order
             if let Some(ref entry_payload) = entry.payload {
                 match entry_payload.payload {
                     Some(Payload::Command(_)) => command_batch.push(entry),
@@ -202,12 +199,15 @@ where
         debug!("After processing all entries: validate if generate snapshot");
         // After processing all entries:
         let last_applied = self.state_machine_handler.last_applied();
-        debug!("[Node-{}] Commit handler process batch - updated last_applied: {}",self.my_id,  last_applied);
-        if self.state_machine_handler.should_snapshot(
-            NewCommitData{
-                new_commit_index: last_applied,
-                role: self.my_role,
-                current_term: self.my_current_term }) {
+        debug!(
+            "[Node-{}] Commit handler process batch - updated last_applied: {}",
+            self.my_id, last_applied
+        );
+        if self.state_machine_handler.should_snapshot(NewCommitData {
+            new_commit_index: last_applied,
+            role: self.my_role,
+            current_term: self.my_current_term,
+        }) {
             info!("Listened a new commit and should generate snapshot now");
 
             if let Err(e) = self.event_tx.send(RaftEvent::CreateSnapshotEvent).await {
@@ -218,16 +218,22 @@ where
         Ok(())
     }
 
-    /// If the first configure been applied failed, then all the following commands will be rejected.
-    /// (Consistency)
-    async fn apply_config_change(&self, entry: Entry,) -> Result<()> {
+    /// If the first configure been applied failed, then all the following commands will be
+    /// rejected. (Consistency)
+    async fn apply_config_change(
+        &self,
+        entry: Entry,
+    ) -> Result<()> {
         debug!("Received config change:{:?}", &entry);
 
         if let Some(payload) = entry.payload {
             if let Some(Payload::Config(change)) = payload.payload {
                 // 1. Apply to membership state
                 if let Err(e) = self.membership.apply_config_change(change).await {
-                    error!("[{}] Failed to apply config change at index {}: {:?}", self.my_id, entry.index, e);
+                    error!(
+                        "[{}] Failed to apply config change at index {}: {:?}",
+                        self.my_id, entry.index, e
+                    );
                     // Critical error - should panic or handle carefully
                     return Err(e);
                 }

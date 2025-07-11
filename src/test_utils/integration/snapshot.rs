@@ -48,9 +48,7 @@ pub(crate) fn create_snapshot_stream(
 }
 
 pub(crate) fn crate_test_snapshot_stream<T>(chunks: Vec<T>) -> tonic::Streaming<T>
-where
-    T: prost::Message + Default + 'static,
-{
+where T: prost::Message + Default + 'static {
     // Convert chunks to encoded byte streams
     let byte_stream = stream::iter(chunks.into_iter().map(|chunk| {
         let mut buf = Vec::new();
@@ -85,9 +83,7 @@ where
 
 #[allow(unused)]
 pub(crate) fn crate_test_snapshot_stream_from_receiver<T>(receiver: mpsc::Receiver<T>) -> tonic::Streaming<T>
-where
-    T: prost::Message + Default + 'static,
-{
+where T: prost::Message + Default + 'static {
     let byte_stream = ReceiverStream::new(receiver).map(|item| {
         let mut buf = Vec::new();
         item.encode(&mut buf)

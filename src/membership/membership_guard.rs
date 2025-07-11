@@ -1,9 +1,12 @@
-use crate::proto::cluster::NodeMeta;
-use crate::{MembershipError, Result};
-use parking_lot::RwLock;
-use tracing::info;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use parking_lot::RwLock;
+use tracing::info;
+
+use crate::proto::cluster::NodeMeta;
+use crate::MembershipError;
+use crate::Result;
 
 pub struct MembershipGuard {
     inner: Arc<RwLock<InnerState>>,
@@ -19,7 +22,10 @@ impl MembershipGuard {
         initial_nodes: Vec<NodeMeta>,
         initial_version: u64,
     ) -> Self {
-        info!("Initializing membership: {:?}, version: {}", initial_nodes, initial_version);
+        info!(
+            "Initializing membership: {:?}, version: {}",
+            initial_nodes, initial_version
+        );
         let inner = Arc::new(RwLock::new(InnerState {
             nodes: initial_nodes.into_iter().map(|node| (node.id, node)).collect(),
             cluster_conf_version: initial_version,
