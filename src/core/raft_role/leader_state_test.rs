@@ -2826,7 +2826,7 @@ mod batch_promote_learners_test {
     enum VerifyInternalQuorumWithRetrySuccess {
         Success,
         Failure,
-        Error
+        Error,
     }
 
     struct TestContext {
@@ -2840,7 +2840,7 @@ mod batch_promote_learners_test {
         test_name: &str,
         current_voters: usize,
         ready_learners: Vec<u32>,
-        verify_internal_quorum_with_retry_success: VerifyInternalQuorumWithRetrySuccess
+        verify_internal_quorum_with_retry_success: VerifyInternalQuorumWithRetrySuccess,
     ) -> TestContext {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut node_config = node_config(&format!("/tmp/{test_name}"));
@@ -2864,27 +2864,26 @@ mod batch_promote_learners_test {
         });
         let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
         replication_handler
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(move |_, _, _, _| {
-            match verify_internal_quorum_with_retry_success {
-                VerifyInternalQuorumWithRetrySuccess::Success => Ok(AppendResults {
-                    commit_quorum_achieved: true,
-                    learner_progress: HashMap::new(),
-                    peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
-                }),
-                VerifyInternalQuorumWithRetrySuccess::Failure => Ok(AppendResults {
-                    commit_quorum_achieved: false,
-                    learner_progress: HashMap::new(),
-                    peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
-                }),
-                VerifyInternalQuorumWithRetrySuccess::Error => Err(Error::Consensus(ConsensusError::Replication(
-                    ReplicationError::HigherTerm(10), // Higher term
-                ))),
-            }
-        });
-        raft_context
-            .handlers.replication_handler = replication_handler;
+            .expect_handle_raft_request_in_batch()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                match verify_internal_quorum_with_retry_success {
+                    VerifyInternalQuorumWithRetrySuccess::Success => Ok(AppendResults {
+                        commit_quorum_achieved: true,
+                        learner_progress: HashMap::new(),
+                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                    }),
+                    VerifyInternalQuorumWithRetrySuccess::Failure => Ok(AppendResults {
+                        commit_quorum_achieved: false,
+                        learner_progress: HashMap::new(),
+                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+                    }),
+                    VerifyInternalQuorumWithRetrySuccess::Error => Err(Error::Consensus(ConsensusError::Replication(
+                        ReplicationError::HigherTerm(10), // Higher term
+                    ))),
+                }
+            });
+        raft_context.handlers.replication_handler = replication_handler;
 
         let mut raft_log = MockRaftLog::new();
         raft_log
@@ -2894,7 +2893,8 @@ mod batch_promote_learners_test {
 
         // Mock learner statuses
         for learner_id in &ready_learners {
-            membership.expect_get_node_status()
+            membership
+                .expect_get_node_status()
                 .with(eq(*learner_id))
                 .return_const(Some(NodeStatus::PendingActive));
         }
@@ -2918,7 +2918,13 @@ mod batch_promote_learners_test {
     async fn test_batch_promote_learners_success() {
         enable_logger();
         // Use safe cluster configuration: 1 voter promoting 1 learner = 2 voters total
-        let mut ctx = setup_test_context("test_success", 3, vec![4, 5], VerifyInternalQuorumWithRetrySuccess::Success).await;
+        let mut ctx = setup_test_context(
+            "test_success",
+            3,
+            vec![4, 5],
+            VerifyInternalQuorumWithRetrySuccess::Success,
+        )
+        .await;
 
         // Mock quorum verification to succeed
         let mut leader_state = ctx.leader_state;
@@ -2930,14 +2936,19 @@ mod batch_promote_learners_test {
         assert!(result.is_ok());
         let r = ctx.role_rx.recv().await.unwrap();
         println!("Received role: {:?}", r);
-
     }
 
     /// Test promotion failure when quorum not achieved
     #[tokio::test]
     #[ignore]
     async fn test_batch_promote_learners_quorum_failed() {
-        let ctx = setup_test_context("test_success", 3, vec![4, 5], VerifyInternalQuorumWithRetrySuccess::Failure).await;
+        let ctx = setup_test_context(
+            "test_success",
+            3,
+            vec![4, 5],
+            VerifyInternalQuorumWithRetrySuccess::Failure,
+        )
+        .await;
 
         // Mock quorum verification to succeed
         let mut leader_state = ctx.leader_state;
@@ -2953,7 +2964,13 @@ mod batch_promote_learners_test {
     #[tokio::test]
     #[ignore]
     async fn test_batch_promote_learners_quorum_safety() {
-        let ctx = setup_test_context("test_success", 3, vec![4], VerifyInternalQuorumWithRetrySuccess::Failure).await;
+        let ctx = setup_test_context(
+            "test_success",
+            3,
+            vec![4],
+            VerifyInternalQuorumWithRetrySuccess::Failure,
+        )
+        .await;
 
         // Mock quorum verification to succeed
         let mut leader_state = ctx.leader_state;
@@ -2980,5 +2997,4 @@ mod batch_promote_learners_test {
 
         assert!(result.is_err());
     }
-
 }

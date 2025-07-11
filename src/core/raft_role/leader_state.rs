@@ -1146,7 +1146,6 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-
         debug!(?learner_progress, "check_learner_progress");
         // Throttle checks to once per second
         if self.last_learner_check.elapsed() < Duration::from_secs(1) {
@@ -1155,7 +1154,7 @@ impl<T: TypeConfig> LeaderState<T> {
         self.last_learner_check = Instant::now();
 
         if learner_progress.is_empty() {
-            return Ok(())
+            return Ok(());
         }
 
         let leader_commit_index = self.commit_index();
@@ -1214,16 +1213,22 @@ impl<T: TypeConfig> LeaderState<T> {
         let membership = ctx.membership();
         let current_voters = membership.voters().len();
         // let pending_active = membership.nodes_with_status(NodeStatus::PendingActive).len();
-        let new_active_count = current_voters  + ready_learners_ids.len();
+        let new_active_count = current_voters + ready_learners_ids.len();
 
         // Determine target status based on quorum safety
-        trace!(?current_voters, ?ready_learners_ids, "[Node-{}] new_active_count: {}", self.node_id(), new_active_count);
+        trace!(
+            ?current_voters,
+            ?ready_learners_ids,
+            "[Node-{}] new_active_count: {}",
+            self.node_id(),
+            new_active_count
+        );
         let target_status = if ensure_safe_join(self.node_id(), new_active_count).is_ok() {
-            trace!("Going to update nodes-{:?} status to Active",ready_learners_ids);
+            trace!("Going to update nodes-{:?} status to Active", ready_learners_ids);
             NodeStatus::Active
         } else {
             trace!("Not enough quorum to promote learners: {:?}", ready_learners_ids);
-            return Ok(())
+            return Ok(());
         };
 
         // 2. Create configuration change payload
@@ -1233,17 +1238,12 @@ impl<T: TypeConfig> LeaderState<T> {
             new_status: target_status as i32,
         });
 
-        info!(?config_change, "Replicating cluster config" );
+        info!(?config_change, "Replicating cluster config");
 
         // 3. Submit single config change for all ready learners
         debug!("3. Submit single config change for all ready learners");
         match self
-            .verify_internal_quorum_with_retry(
-                vec![EntryPayload::config(config_change)],
-                false,
-                ctx,
-                role_tx,
-            )
+            .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -1260,7 +1260,6 @@ impl<T: TypeConfig> LeaderState<T> {
 
         Ok(())
     }
-
 
     /// TODO: to be cleaned up
     /// Attempt to activate all pending nodes if quorum safety allows
@@ -1515,7 +1514,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 debug!("2. Add the node as Learner with PendingActive status");
                 // ctx.membership().add_learner(node_id, address.clone())?;
 
-                debug!("5.1 After updating, the replications peers: {:?}", ctx.membership().replication_peers());
+                debug!(
+                    "5.1 After updating, the replications peers: {:?}",
+                    ctx.membership().replication_peers()
+                );
 
                 // 6. Send successful response
                 debug!("6. Send successful response");
