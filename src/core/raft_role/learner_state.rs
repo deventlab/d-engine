@@ -394,6 +394,15 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
                 .into());
             }
+
+            RaftEvent::PromoteReadyLearners => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!("Learner node {} receives RaftEvent::PromoteReadyLearners", ctx.node_id),
+                }
+                .into());
+            }
         }
         return Ok(());
     }

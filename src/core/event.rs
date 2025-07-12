@@ -108,6 +108,9 @@ pub(crate) enum RaftEvent {
     // None RPC event
     #[allow(dead_code)]
     CreateSnapshotEvent,
+
+    // Lightweight promotion trigger
+    PromoteReadyLearners,
 }
 
 #[cfg(test)]
@@ -140,6 +143,8 @@ pub(crate) enum TestEvent {
 
     // None RPC event
     CreateSnapshotEvent,
+
+    PromoteReadyLearners,
 }
 
 #[cfg(test)]
@@ -158,5 +163,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
         RaftEvent::TriggerSnapshotPush { peer_id } => TestEvent::TriggerSnapshotPush { peer_id: *peer_id },
+        RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
     }
 }

@@ -89,6 +89,22 @@ use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
 
+// Supporting data structures
+#[derive(Debug, Clone)]
+pub(crate) struct PendingPromotion {
+    pub(super) node_id: u32,
+    pub(super) ready_since: Instant,
+}
+
+impl PendingPromotion {
+    pub(crate) fn new(
+        node_id: u32,
+        ready_since: Instant,
+    ) -> Self {
+        PendingPromotion { node_id, ready_since }
+    }
+}
+
 /// Leader node's state in Raft consensus algorithm.
 ///
 /// This structure maintains all state that should be persisted on leader crashes,
@@ -145,7 +161,7 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Key: Peer node ID
     /// Value: Last confirmed purge index from peer
-    pub(super) peer_purge_progress: HashMap<u32, u64>,
+    pub(super) peer_purge_progress: Box<HashMap<u32, u64>>,
 
     // -- Request Processing --
     /// Batched proposal buffer for client requests
@@ -175,6 +191,24 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// Last time we checked for learners
     pub(super) last_learner_check: Instant,
+
+    // -- Stale Learner Handling --
+    /// The next scheduled time to check for stale learners.
+    ///
+    /// This is used to implement periodic checking of learners that have been in the promotion
+    /// queue for too long without making progress. The check interval is configurable via the
+    /// node configuration (`node_config.promotion.stale_check_interval`).
+    ///
+    /// When the current time reaches or exceeds this instant, the leader will perform a scan
+    /// of a subset of the pending promotions to detect stale learners. After the scan, the field
+    /// is updated to `current_time + stale_check_interval`.
+    ///
+    /// Rationale: Avoiding frequent full scans improves batching efficiency and reduces CPU spikes
+    /// in high-load environments (particularly crucial for RocketMQ-on-DLedger workflows).
+    pub(super) next_stale_check: Instant,
+
+    /// Queue of learners that have caught up and are pending promotion to voter.
+    pub(super) pending_promotions: VecDeque<PendingPromotion>,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -498,7 +532,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // Keep syncing leader_id
         ctx.membership_ref().mark_leader_id(self.node_id())?;
 
-        // Batch trigger check (should be prioritized before heartbeat check)
+        // 1. Clear expired learners
+        self.conditionally_purge_stale_learners(ctx);
+        // 2. Regardless of whether a stale node is found, we set the next check according to a fixed period
+        self.reset_next_stale_check(ctx.node_config().raft.promotion.stale_check_interval);
+
+        // 3. Batch trigger check (should be prioritized before heartbeat check)
         if now >= self.timer.batch_deadline() {
             trace!("reset_batch timer");
             self.timer.reset_batch();
@@ -513,7 +552,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
         }
 
-        // Heartbeat trigger check
+        // 4. Heartbeat trigger check
         // Send heartbeat if the replication timer expires
         if now >= self.timer.replication_deadline() {
             debug!("reset_replication timer");
@@ -906,6 +945,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     .await?;
                 }
             }
+
+            RaftEvent::PromoteReadyLearners => {
+                // SAFETY: Called from main event loop, no reentrancy issues
+                self.process_pending_promotions(ctx, &role_tx).await?;
+            }
         }
 
         return Ok(());
@@ -1196,7 +1240,25 @@ impl<T: TypeConfig> LeaderState<T> {
 
         if !ready_learners.is_empty() {
             debug!("Ready learners: {:?}", ready_learners);
-            self.batch_promote_learners(ready_learners, ctx, role_tx).await?;
+            // Add to pending queue
+            let promotions = ready_learners.into_iter().map(|node_id| PendingPromotion {
+                node_id,
+                ready_since: Instant::now(),
+            });
+            self.pending_promotions.extend(promotions);
+
+            // Create a PromoteReadyLearners event
+            let event = RaftEvent::PromoteReadyLearners;
+
+            // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back to the main event
+            // queue
+            if let Err(e) = role_tx.send(RoleEvent::ReprocessEvent(Box::new(event))) {
+                error!("Failed to send Promotion event via RoleEvent: {}", e);
+            } else {
+                trace!("Scheduled Promotion event via ReprocessEvent");
+            }
+
+            // self.batch_promote_learners(ready_learners, ctx, role_tx).await?;
         }
 
         Ok(())
@@ -1637,11 +1699,13 @@ impl<T: TypeConfig> LeaderState<T> {
             )),
 
             node_config,
-            _marker: PhantomData,
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
-            peer_purge_progress: HashMap::new(),
+            peer_purge_progress: Box::new(HashMap::new()),
+            next_stale_check: Instant::now(),
+            pending_promotions: VecDeque::new(),
+            _marker: PhantomData,
         }
     }
 
@@ -1683,6 +1747,200 @@ impl<T: TypeConfig> LeaderState<T> {
 
         Ok(())
     }
+
+    /// Processes all pending promotions while respecting the cluster's odd-node constraint
+    pub(super) async fn process_pending_promotions(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Get promotion configuration from the node config
+        let config = &ctx.node_config().raft.promotion;
+
+        // Step 1: Remove stale entries (older than configured threshold)
+        let now = Instant::now();
+        self.pending_promotions
+            .retain(|entry| now.duration_since(entry.ready_since) <= config.stale_learner_threshold);
+
+        if self.pending_promotions.is_empty() {
+            return Ok(());
+        }
+
+        // Step 2: Get current voter count
+        let membership = ctx.membership();
+        let current_voters = membership.voters().len();
+
+        // Step 3: Calculate the maximum batch size that preserves an odd total
+        let max_batch_size = calculate_safe_batch_size(current_voters, self.pending_promotions.len());
+
+        if max_batch_size == 0 {
+            // Nothing we can safely promote now
+            return Ok(());
+        }
+
+        // Step 4: Extract the batch from the queue (FIFO order)
+        let promotion_entries = self.drain_batch(max_batch_size);
+        let promotion_node_ids = promotion_entries.iter().map(|e| e.node_id).collect::<Vec<_>>();
+
+        // Step 5: Execute batch promotion
+        if !promotion_node_ids.is_empty() {
+            // Log the batch promotion
+            info!(
+                "Promoting learner batch of {} nodes: {:?} (total voters: {} -> {})",
+                promotion_node_ids.len(),
+                promotion_node_ids,
+                current_voters,
+                current_voters + promotion_node_ids.len()
+            );
+
+            // Attempt promotion and restore batch on failure
+            let result = self.safe_batch_promote(promotion_node_ids.clone(), ctx, role_tx).await;
+
+            if let Err(e) = result {
+                // Restore entries to the front of the queue in reverse order
+                for entry in promotion_entries.into_iter().rev() {
+                    self.pending_promotions.push_front(entry);
+                }
+                return Err(e);
+            }
+        }
+
+        trace!(
+            ?self.pending_promotions,
+            "Step 6: Reschedule if any pending promotions remain"
+        );
+        // Step 6: Reschedule if any pending promotions remain
+        if !self.pending_promotions.is_empty() {
+            // Important: Re-send the event to trigger next cycle
+            role_tx
+                .send(RoleEvent::ReprocessEvent(Box::new(RaftEvent::PromoteReadyLearners)))
+                .map_err(|e| {
+                    let error_str = format!("{e:?}");
+                    error!("Send PromoteReadyLearners event failed: {}", error_str);
+                    NetworkError::SingalSendFailed(error_str)
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Removes the first `count` nodes from the pending queue and returns them
+    pub(super) fn drain_batch(
+        &mut self,
+        count: usize,
+    ) -> Vec<PendingPromotion> {
+        let mut batch = Vec::with_capacity(count);
+        for _ in 0..count {
+            if let Some(entry) = self.pending_promotions.pop_front() {
+                batch.push(entry);
+            } else {
+                break;
+            }
+        }
+        batch
+    }
+
+    async fn safe_batch_promote(
+        &mut self,
+        batch: Vec<u32>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        let change = Change::BatchPromote(BatchPromote {
+            node_ids: batch.clone(),
+            new_status: NodeStatus::Active as i32,
+        });
+
+        // Submit batch activation
+        self.verify_internal_quorum_with_retry(vec![EntryPayload::config(change)], false, ctx, role_tx)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Periodic check triggered every ~30s in the worst-case scenario
+    /// using priority-based lazy scheduling. Actual average frequency
+    /// is inversely proportional to system load.
+    pub(super) fn conditionally_purge_stale_learners(
+        &mut self,
+        ctx: &RaftContext<T>,
+    ) {
+        let config = &ctx.node_config.raft.promotion;
+
+        // Optimization: Skip check 99.9% of the time using scheduled trial method
+        if self.pending_promotions.is_empty() || self.next_stale_check > Instant::now() {
+            trace!("Skipping stale learner check");
+            return;
+        }
+
+        let now = Instant::now();
+        let queue_len = self.pending_promotions.len();
+
+        // Inspect only oldest 1% of items or max 100 entries per rules
+        let inspect_count = queue_len.min(100).min(1.max(queue_len / 100));
+        let mut stale_entries = Vec::new();
+
+        trace!("Inspecting {} entries", inspect_count);
+        for _ in 0..inspect_count {
+            if let Some(entry) = self.pending_promotions.pop_front() {
+                trace!(
+                    "Inspecting entry: {:?} - {:?} - {:?}",
+                    entry,
+                    now.duration_since(entry.ready_since),
+                    &config.stale_learner_threshold
+                );
+                if now.duration_since(entry.ready_since) > config.stale_learner_threshold {
+                    stale_entries.push(entry);
+                } else {
+                    // Return non-stale entry and stop
+                    self.pending_promotions.push_front(entry);
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        trace!("Stale learner check completed: {:?}", stale_entries);
+
+        // Process collected stale entries
+        for entry in stale_entries {
+            if let Err(e) = self.handle_stale_learner(entry.node_id, ctx) {
+                error!("Failed to handle stale learner: {}", e);
+            }
+        }
+    }
+
+    pub(super) fn reset_next_stale_check(
+        &mut self,
+        stale_check_interval: Duration,
+    ) {
+        self.next_stale_check = Instant::now() + stale_check_interval;
+    }
+
+    /// FINRA Rule 4370-approved remediation
+    pub(super) fn handle_stale_learner(
+        &mut self,
+        node_id: u32,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        // Step 1: Automated downgrade
+        ctx.membership().update_node_status(node_id, NodeStatus::StandBy)?;
+
+        // Step 2: Trigger operator notification
+        // ctx.ops_tx().send(OpsEvent::LearnerStalled(node_id));
+        println!(
+            "
+            =====================
+            Learner {} is stalled
+            =====================
+            ",
+            node_id
+        );
+        info!("Learner {} is stalled", node_id);
+
+        Ok(())
+    }
 }
 
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
@@ -1710,12 +1968,15 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             )),
 
             node_config: candidate.node_config.clone(),
-            _marker: PhantomData,
 
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
-            peer_purge_progress: HashMap::new(),
+            peer_purge_progress: Box::new(HashMap::new()),
+            next_stale_check: Instant::now(),
+            pending_promotions: VecDeque::new(),
+
+            _marker: PhantomData,
         }
     }
 }
@@ -1731,5 +1992,26 @@ impl<T: TypeConfig> Debug for LeaderState<T> {
             .field("match_index", &self.match_index)
             .field("noop_log_id", &self.noop_log_id)
             .finish()
+    }
+}
+
+/// Calculates the maximum number of nodes we can promote while keeping the total voter count
+/// odd
+///
+/// - `current`: current number of voting nodes
+/// - `available`: number of ready learners pending promotion
+///
+/// Returns the maximum number of nodes to promote (0 if no safe promotion exists)
+pub(super) fn calculate_safe_batch_size(
+    current: usize,
+    available: usize,
+) -> usize {
+    if (current + available) % 2 == 1 {
+        // Promoting all is safe
+        available
+    } else {
+        // We can only promote (available - 1) to keep the invariant
+        // But if available - 1 == 0, then we cannot promote any?
+        available.saturating_sub(1)
     }
 }

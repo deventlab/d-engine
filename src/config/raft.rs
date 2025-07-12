@@ -56,6 +56,10 @@ pub struct RaftConfig {
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
+
+    /// Configuration settings for ready learners promotion
+    #[serde(default)]
+    pub promotion: PromotionConfig,
 }
 
 impl Debug for RaftConfig {
@@ -78,6 +82,7 @@ impl Default for RaftConfig {
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
+            promotion: PromotionConfig::default(),
         }
     }
 }
@@ -556,4 +561,30 @@ fn default_snapshot_push_max_retry() -> u32 {
 }
 fn default_push_timeout_in_ms() -> u64 {
     300_000
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PromotionConfig {
+    #[serde(default = "default_stale_learner_threshold")]
+    pub stale_learner_threshold: Duration,
+    #[serde(default = "default_stale_check_interval")]
+    pub stale_check_interval: Duration,
+}
+
+impl Default for PromotionConfig {
+    fn default() -> Self {
+        Self {
+            stale_learner_threshold: default_stale_learner_threshold(),
+            stale_check_interval: default_stale_check_interval(),
+        }
+    }
+}
+
+// 5 minutes
+fn default_stale_learner_threshold() -> Duration {
+    Duration::from_secs(300)
+}
+// 30 seconds
+fn default_stale_check_interval() -> Duration {
+    Duration::from_secs(30)
 }

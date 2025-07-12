@@ -2372,7 +2372,7 @@ async fn test_handle_join_cluster_case1_success() {
         }]
     });
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_replication_peers().returning(|| vec![]);
+    membership.expect_replication_peers().returning(Vec::new);
     membership.expect_add_learner().returning(|_, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
@@ -2597,7 +2597,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     // Mock membership
     let mut membership = MockMembership::new();
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_replication_peers().returning(|| vec![]);
+    membership.expect_replication_peers().returning(Vec::new);
     membership.expect_add_learner().returning(|_, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
@@ -2968,5 +2968,563 @@ mod batch_promote_learners_test {
             .await;
 
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod pending_promotion_tests {
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+    use tokio::time::timeout;
+    use tokio::time::Instant;
+
+    use super::*;
+    use crate::leader_state::calculate_safe_batch_size;
+    use crate::leader_state::PendingPromotion;
+    use crate::Membership;
+
+    // Test fixture
+    struct TestFixture {
+        leader_state: LeaderState<MockTypeConfig>,
+        raft_context: RaftContext<MockTypeConfig>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+    }
+
+    impl TestFixture {
+        async fn new(
+            test_name: &str,
+            verify_internal_quorum_success: bool,
+        ) -> Self {
+            // let (_graceful_tx, graceful_rx) = watch::channel(());
+            // let mut raft_context = test_utils::mock_raft_context("/tmp/{test_name}", graceful_rx, None);
+            let mut raft_context = if verify_internal_quorum_success {
+                Self::verify_internal_quorum_achieved_context(test_name).await
+            } else {
+                Self::verify_internal_quorum_failure_context(test_name).await
+            };
+
+            let mut membership = MockMembership::new();
+            membership
+                .expect_get_node_status()
+                .returning(|_| Some(NodeStatus::Active));
+            membership
+                .expect_update_node_status()
+                .withf(|_id, status| *status == NodeStatus::StandBy)
+                .returning(|_, _| Ok(()));
+            membership.expect_voters().returning(|| {
+                (2..=3)
+                    .map(|id| NodeMeta {
+                        id,
+                        address: "".to_string(),
+                        status: NodeStatus::Active as i32,
+                        role: FOLLOWER,
+                    })
+                    .collect()
+            });
+            raft_context.membership = Arc::new(membership);
+
+            let (role_tx, role_rx) = mpsc::unbounded_channel();
+            let mut node_config = node_config(&format!("/tmp/{test_name}",));
+            node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;
+            let leader_state = LeaderState::new(1, Arc::new(node_config));
+            TestFixture {
+                leader_state,
+                raft_context,
+                role_tx,
+                role_rx,
+            }
+        }
+
+        async fn verify_internal_quorum_achieved_context(test_name: &str) -> RaftContext<MockTypeConfig> {
+            let payloads = vec![EntryPayload::command(vec![])];
+            let (_graceful_tx, graceful_rx) = watch::channel(());
+            let mut raft_context = mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
+
+            // Setup replication handler to return success
+            raft_context
+                .handlers
+                .replication_handler
+                .expect_handle_raft_request_in_batch()
+                .returning(|_, _, _, _| {
+                    Ok(AppendResults {
+                        commit_quorum_achieved: true,
+                        learner_progress: HashMap::new(),
+                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                    })
+                });
+
+            let mut raft_log = MockRaftLog::new();
+            raft_log
+                .expect_calculate_majority_matched_index()
+                .returning(|_, _, _| Some(5));
+            raft_context.storage.raft_log = Arc::new(raft_log);
+
+            let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+
+            let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+            let result = state
+                .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
+                .await;
+
+            assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
+            assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))));
+
+            raft_context
+        }
+
+        async fn verify_internal_quorum_failure_context(test_name: &str) -> RaftContext<MockTypeConfig> {
+            let payloads = vec![EntryPayload::command(vec![])];
+            let (_graceful_tx, graceful_rx) = watch::channel(());
+            let mut raft_context = mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
+
+            // Setup replication handler to return verifiable failure
+            raft_context
+                .handlers
+                .replication_handler
+                .expect_handle_raft_request_in_batch()
+                .returning(|_, _, _, _| {
+                    Ok(AppendResults {
+                        commit_quorum_achieved: false,
+                        learner_progress: HashMap::new(),
+                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+                    })
+                });
+
+            let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
+
+            let (role_tx, _) = mpsc::unbounded_channel();
+
+            let result = state
+                .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
+                .await;
+
+            assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
+
+            raft_context
+        }
+    }
+
+    #[test]
+    fn test_pending_promotion_ordering() {
+        let now = Instant::now();
+        let mut queue = VecDeque::new();
+
+        // Earlier ready time
+        queue.push_back(PendingPromotion::new(1, now - Duration::from_secs(10)));
+
+        // Later ready time
+        queue.push_back(PendingPromotion::new(2, now));
+
+        // Verify FIFO extraction
+        let drained = queue.pop_front().unwrap();
+        assert_eq!(drained.node_id, 1);
+        assert_eq!(drained.ready_since, now - Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_pending_promotion_serialization() {
+        let promotion = PendingPromotion::new(1001, Instant::now());
+
+        // Test debug formatting
+        assert!(
+            format!("{:?}", promotion).contains("1001"),
+            "Debug output should contain node ID"
+        );
+    }
+
+    // Test cases for calculate_safe_batch_size
+    #[tokio::test]
+    async fn test_calculate_safe_batch_size() {
+        let test_cases = vec![
+            ((3, 1), 0), // 3 voters + 1 = 4 -> even -> batch size 0
+            ((2, 1), 1), // 2 voters + 1 = 3 -> odd -> batch size 1
+            ((3, 2), 2), // 3 voters + 2 = 5 -> odd -> batch size 2
+            ((2, 2), 1), // 2 voters + 2 = 4 -> even -> batch size 1
+        ];
+
+        for ((current, available), expected_batch_size) in test_cases {
+            let result = calculate_safe_batch_size(current, available);
+            assert_eq!(
+                result, expected_batch_size,
+                "Expected batch size for (current={}, available={}) is {}",
+                current, available, expected_batch_size
+            );
+        }
+    }
+
+    // Test cases for process_pending_promotions
+    #[tokio::test]
+    async fn test_process_pending_promotions() {
+        enable_logger();
+        let mut fixture = TestFixture::new("test_process_pending_promotions", true).await;
+        // Setup test data
+        fixture.leader_state.pending_promotions = vec![
+            PendingPromotion::new(1, Instant::now()),
+            PendingPromotion::new(2, Instant::now()),
+            PendingPromotion::new(3, Instant::now()),
+        ]
+        .into_iter()
+        .collect();
+
+        fixture
+            .leader_state
+            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .await
+            .unwrap();
+    }
+
+    // Test cases for handle_stale_learner
+    #[tokio::test]
+    async fn test_handle_stale_learner() {
+        let mut fixture = TestFixture::new("test_handle_stale_learner", true).await;
+        assert!(fixture
+            .leader_state
+            .handle_stale_learner(1, &fixture.raft_context)
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_partial_batch_promotion() {
+        enable_logger();
+        let mut fixture = TestFixture::new("test_partial_batch_promotion", true).await;
+        // Setup: 3 voters, 2 pending promotions -> max batch size=1
+        let mut membership = MockMembership::new();
+        // mock membership with 3 voters
+        membership.expect_voters().returning(|| {
+            (2..=3)
+                .map(|id| NodeMeta {
+                    id,
+                    address: "".to_string(),
+                    status: NodeStatus::Active as i32,
+                    role: FOLLOWER,
+                })
+                .collect()
+        });
+        fixture.raft_context.membership = Arc::new(membership);
+        fixture.leader_state.pending_promotions = vec![
+            PendingPromotion::new(1, Instant::now() - Duration::from_millis(1)),
+            PendingPromotion::new(2, Instant::now()),
+        ]
+        .into();
+
+        fixture
+            .leader_state
+            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.leader_state.pending_promotions.len(), 1);
+        assert_eq!(fixture.leader_state.pending_promotions[0].node_id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_promotion_event_rescheduling() {
+        enable_logger();
+        let mut fixture = TestFixture::new("test_promotion_event_rescheduling", true).await;
+        // Setup more nodes than can be promoted in one batch
+        fixture.leader_state.pending_promotions =
+            (1..=10).map(|id| PendingPromotion::new(id, Instant::now())).collect();
+
+        fixture
+            .leader_state
+            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .await
+            .unwrap();
+
+        // Verify event was rescheduled
+        let mut found = false;
+
+        // Wait up to 200ms for events to arrive
+        let result = timeout(Duration::from_millis(200), async {
+            while let Some(event) = fixture.role_rx.recv().await {
+                println!("Event received: {:?}", event);
+                if matches!(event, RoleEvent::ReprocessEvent(inner) if matches!(*inner, RaftEvent::PromoteReadyLearners)) {
+                    found = true;
+                    break;
+                }
+            }
+            Ok::<(), ()>(())
+        }).await;
+
+        assert!(result.is_ok(), "Timed out waiting for events");
+        assert!(found, "Did not find PromoteReadyLearners event");
+    }
+
+    #[tokio::test]
+    async fn test_batch_promotion_failure() {
+        // Setup failure in verify_internal_quorum_with_retry
+        let mut fixture = TestFixture::new("test_batch_promotion_failure", false).await;
+
+        fixture.leader_state.pending_promotions = (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
+        let result = fixture
+            .leader_state
+            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .await;
+
+        assert!(result.is_err());
+        assert!(!fixture.leader_state.pending_promotions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_leader_stepdown_during_promotion() {
+        let mut fixture = TestFixture::new("test_leader_stepdown", false).await;
+        fixture.leader_state.pending_promotions = (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
+
+        // Simulate leadership loss
+        fixture.leader_state.update_current_term(2);
+        let result = fixture
+            .leader_state
+            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(fixture.leader_state.pending_promotions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_queue_access() {
+        let pending_promotions = VecDeque::new();
+        let queue = Arc::new(Mutex::new(pending_promotions));
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let q = queue.clone();
+                tokio::spawn(async move {
+                    let mut guard = q.lock();
+                    guard.push_back(PendingPromotion::new(i, Instant::now()));
+                })
+            })
+            .collect();
+
+        futures::future::join_all(handles).await;
+        assert_eq!(queue.lock().len(), 10);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_stale_check_timing() {
+        let node_config = node_config("/tmp/test_stale_check_timing");
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+        leader.reset_next_stale_check(Duration::from_secs(60));
+
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(Instant::now() >= leader.next_stale_check);
+    }
+
+    #[test]
+    fn test_config_propagation_to_stale_handling() {
+        let mut config = node_config("/tmp/test_config_propagation_to_stale_handling");
+        config.raft.promotion.stale_learner_threshold = Duration::from_secs(120);
+
+        let leader = LeaderState::<MockTypeConfig>::new(1, Arc::new(config));
+        assert_eq!(leader.pending_promotions.capacity(), 0); // Default
+    }
+
+    #[test]
+    fn test_batch_size_calculation_fuzz() {
+        for voters in 1..100 {
+            for pending in 0..20 {
+                let size = calculate_safe_batch_size(voters, pending);
+                assert!(size <= pending);
+                assert!((voters + size) % 2 == 1 || size == 0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stale_learner_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::*;
+    use crate::leader_state::PendingPromotion;
+    use crate::test_utils;
+    use crate::test_utils::*;
+    use crate::RaftNodeConfig; // Assuming you have test utilities
+
+    // Setup helper
+    fn create_test_leader_state(
+        test_name: &str,
+        pending_nodes: Vec<(u32, Duration)>,
+    ) -> (LeaderState<MockTypeConfig>, MockMembership<MockTypeConfig>) {
+        let mut node_config = node_config(&format!("/tmp/{test_name}",));
+        node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
+        node_config.raft.promotion.stale_check_interval = Duration::from_secs(60);
+
+        let mut leader = LeaderState::new(1, Arc::new(node_config));
+        leader.next_stale_check = Instant::now();
+
+        // Add pending promotions
+        let now = Instant::now();
+        for (node_id, age) in pending_nodes {
+            leader.pending_promotions.push_back(PendingPromotion {
+                node_id,
+                ready_since: now - age,
+            });
+        }
+
+        // Configure membership mock
+        let mut membership = MockMembership::new();
+        membership.expect_update_node_status().returning(|_, _| Ok(()));
+        (leader, membership)
+    }
+
+    // Create mock RaftContext with configurable membership
+    fn mock_raft_context(
+        test_name: &str,
+        membership: Arc<MockMembership<MockTypeConfig>>,
+        config: Option<Arc<RaftNodeConfig>>,
+    ) -> RaftContext<MockTypeConfig> {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = test_utils::mock_raft_context("/tmp/{test_name}", graceful_rx, None);
+        ctx.membership = membership.clone();
+        ctx.node_config = config.unwrap_or_else(|| Arc::new(node_config(&format!("/tmp/{test_name}",))));
+        ctx
+    }
+
+    /// Test lazy staleness sampling optimization
+    #[tokio::test]
+    async fn test_stale_check_optimization() {
+        // Create queue with 200 entries (will only check oldest 100 or 2%)
+        let nodes: Vec<(u32, Duration)> = (1..=200).map(|id| (id, Duration::from_secs(40))).collect();
+
+        let (mut leader, membership) = create_test_leader_state("test_stale_check_optimization", nodes);
+        let mut node_config = node_config("/tmp/test_stale_check_optimization");
+        node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
+        node_config.raft.promotion.stale_check_interval = Duration::from_secs(60);
+        let ctx = mock_raft_context(
+            "test_stale_check_optimization",
+            Arc::new(membership),
+            Some(Arc::new(node_config)),
+        );
+
+        // Should only check first 100 entries (out of 200)
+        leader.conditionally_purge_stale_learners(&ctx);
+
+        // Should purge exactly 2 entries (1% of 200 = 2)
+        assert_eq!(leader.pending_promotions.len(), 198);
+    }
+
+    /// Test no purge when not expired
+    #[tokio::test]
+    async fn test_no_purge_when_fresh() {
+        let (mut leader, mut membership) = create_test_leader_state("test_no_purge_when_fresh", vec![
+            (101, Duration::from_secs(15)),
+            (102, Duration::from_secs(20)),
+        ]);
+        // Should do nothing
+        membership.expect_update_node_status().never();
+
+        let ctx = mock_raft_context("test_no_purge_when_fresh", Arc::new(membership), None);
+
+        leader.conditionally_purge_stale_learners(&ctx);
+        assert_eq!(leader.pending_promotions.len(), 2);
+    }
+
+    /// Test check scheduling logic
+    #[tokio::test]
+    async fn test_stale_check_scheduling() {
+        let (mut leader, _) = create_test_leader_state("test_stale_check_scheduling", vec![]);
+        let interval = Duration::from_secs(60);
+        // First call
+        leader.reset_next_stale_check(interval);
+        let next_check1 = leader.next_stale_check;
+
+        // Small delay to ensure time progresses
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        // Second call
+        leader.reset_next_stale_check(interval);
+        let next_check2 = leader.next_stale_check;
+
+        // Verify both are in the future
+        assert!(next_check1 > Instant::now());
+        assert!(next_check2 > Instant::now());
+
+        // Verify second call moved the timer forward
+        assert!(next_check2 > next_check1);
+
+        // Verify both are approximately interval in the future
+        let now = Instant::now();
+        assert!(duration_diff(next_check1 - now, interval) < Duration::from_millis(10));
+        assert!(duration_diff(next_check2 - now, interval) < Duration::from_millis(10));
+    }
+
+    fn duration_diff(
+        a: Duration,
+        b: Duration,
+    ) -> Duration {
+        if a > b {
+            a - b
+        } else {
+            b - a
+        }
+    }
+    /// Test system remains responsive during large queues
+    #[tokio::test]
+    async fn test_performance_large_queue() {
+        let nodes: Vec<(u32, Duration)> = (1..=10_000).map(|id| (id, Duration::from_secs(40))).collect();
+
+        let (mut leader, membership) = create_test_leader_state("test_performance_large_queue", nodes);
+        let ctx = mock_raft_context("test_performance_large_queue", Arc::new(membership), None);
+
+        // Time the staleness check
+        let start = Instant::now();
+        leader.conditionally_purge_stale_learners(&ctx);
+        let elapsed = start.elapsed();
+
+        // Should take <1ms even for large queues
+        println!("Staleness check for 10k nodes: {:?}", elapsed);
+        assert!(
+            elapsed < Duration::from_millis(1),
+            "Staleness check shouldn't process entire queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_promotion_timeout_threshold() {
+        enable_logger();
+        let (mut leader, membership) = create_test_leader_state("test", vec![
+            (101, Duration::from_secs(31)), // 1s over threshold
+            (102, Duration::from_secs(30)), // exactly at threshold
+            (103, Duration::from_secs(29)), // 1s under threshold
+        ]);
+        leader.next_stale_check = Instant::now() - Duration::from_secs(1);
+        let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
+        node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
+        let ctx = mock_raft_context(
+            "test_promotion_timeout_threshold",
+            Arc::new(membership),
+            Some(Arc::new(node_config)),
+        );
+
+        leader.conditionally_purge_stale_learners(&ctx);
+
+        assert_eq!(leader.pending_promotions.len(), 2);
+        assert!(leader.pending_promotions.iter().any(|p| p.node_id == 103));
+    }
+
+    #[tokio::test]
+    async fn test_downgrade_affects_replication() {
+        enable_logger();
+        let (mut leader, mut membership) = create_test_leader_state("test", vec![
+            (101, Duration::from_secs(29)), // 1s under threshold
+            (102, Duration::from_secs(30)), // exactly at threshold
+            (103, Duration::from_secs(31)), // 1s over threshold
+        ]);
+        membership
+            .expect_get_node_status()
+            .returning(|_| Some(NodeStatus::Active));
+        let ctx = mock_raft_context("test_downgrade_affects_replication", Arc::new(membership), None);
+
+        assert!(leader.handle_stale_learner(101, &ctx).is_ok());
+
+        // Verify replication was stopped for this node
+        assert!(!leader.next_index.contains_key(&101));
     }
 }

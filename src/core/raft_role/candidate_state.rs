@@ -503,6 +503,18 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
                 .into());
             }
+
+            RaftEvent::PromoteReadyLearners => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!(
+                        "Candidate node {} receives RaftEvent::PromoteReadyLearners",
+                        ctx.node_id
+                    ),
+                }
+                .into());
+            }
         }
         return Ok(());
     }

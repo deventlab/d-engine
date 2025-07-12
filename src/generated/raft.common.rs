@@ -134,14 +134,24 @@ pub struct Snapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum NodeStatus {
+    /// Initial joining process
+    ///
     /// New node, catching up with logs
     Joining = 0,
     /// Logs have been caught up, waiting for quorum confirmation
     PendingActive = 1,
+    /// Running status
+    ///
     /// Formal voting member
     Active = 2,
-    /// Prepare to go offline (not accepting new requests)
-    Draining = 3,
+    /// Disaster recovery ready node (data has been synchronized)
+    StandBy = 3,
+    /// Offline process
+    ///
+    /// Prepare to go offline (not accepting new requests, transfer data)
+    Draining = 4,
+    /// Retiring (data migration completed)
+    Retiring = 5,
 }
 impl NodeStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -153,7 +163,9 @@ impl NodeStatus {
             Self::Joining => "JOINING",
             Self::PendingActive => "PENDING_ACTIVE",
             Self::Active => "ACTIVE",
+            Self::StandBy => "STAND_BY",
             Self::Draining => "DRAINING",
+            Self::Retiring => "RETIRING",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -162,7 +174,9 @@ impl NodeStatus {
             "JOINING" => Some(Self::Joining),
             "PENDING_ACTIVE" => Some(Self::PendingActive),
             "ACTIVE" => Some(Self::Active),
+            "STAND_BY" => Some(Self::StandBy),
             "DRAINING" => Some(Self::Draining),
+            "RETIRING" => Some(Self::Retiring),
             _ => None,
         }
     }
