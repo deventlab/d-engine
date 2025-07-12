@@ -17,7 +17,7 @@
 //!
 //! ## Example
 //! ```ignore
-//! 
+//!
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override

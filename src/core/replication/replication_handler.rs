@@ -43,7 +43,8 @@ use crate::API_SLO;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub my_id: u32,
     _phantom: PhantomData<T>,
@@ -51,7 +52,8 @@ where T: TypeConfig
 
 #[async_trait]
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     async fn handle_raft_request_in_batch(
         &self,
@@ -468,7 +470,8 @@ pub(super) struct ReplicationData {
 }
 
 impl<T> ReplicationHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn new(my_id: u32) -> Self {
         Self {
@@ -547,19 +550,23 @@ where T: TypeConfig
             entries.len()
         );
 
-        (peer_id, AppendEntriesRequest {
-            term: data.current_term,
-            leader_id: self.my_id,
-            prev_log_index,
-            prev_log_term,
-            entries,
-            leader_commit_index: data.commit_index,
-        })
+        (
+            peer_id,
+            AppendEntriesRequest {
+                term: data.current_term,
+                leader_id: self.my_id,
+                prev_log_index,
+                prev_log_term,
+                entries,
+                leader_commit_index: data.commit_index,
+            },
+        )
     }
 }
 
 impl<T> Debug for ReplicationHandler<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn fmt(
         &self,

@@ -104,16 +104,22 @@ async fn setup_process_raft_request_test_context(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -789,16 +795,22 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 3,
-                        next_index: 4,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 4,
-                        next_index: 5,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 3,
+                            next_index: 4,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 4,
+                            next_index: 5,
+                            success: true,
+                        },
+                    ),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -1689,16 +1701,22 @@ async fn test_process_batch_case1_quorum_achieved() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 6,
-                        next_index: 7,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 6,
-                        next_index: 7,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 6,
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 6,
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });
@@ -1751,16 +1769,22 @@ async fn test_process_batch_case2_quorum_failed() {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: 5,
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: 0,
-                        next_index: 1,
-                        success: false,
-                    }), // Failed
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: 5,
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: 0,
+                            next_index: 1,
+                            success: false,
+                        },
+                    ), // Failed
                 ]),
             })
         });
@@ -1804,11 +1828,14 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(peer2_id, PeerUpdate {
-                    match_index: 5,
-                    next_index: 6,
-                    success: true,
-                })]),
+                peer_updates: HashMap::from([(
+                    peer2_id,
+                    PeerUpdate {
+                        match_index: 5,
+                        next_index: 6,
+                        success: true,
+                    },
+                )]),
                 learner_progress: HashMap::new(),
             })
         });
@@ -1906,11 +1933,14 @@ async fn test_process_batch_case4_partial_timeouts() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate {
-                    match_index: 6,
-                    next_index: 7,
-                    success: true,
-                })]),
+                peer_updates: HashMap::from([(
+                    2,
+                    PeerUpdate {
+                        match_index: 6,
+                        next_index: 7,
+                        success: true,
+                    },
+                )]),
             })
         });
 
@@ -3412,10 +3442,10 @@ mod stale_learner_tests {
     /// Test no purge when not expired
     #[tokio::test]
     async fn test_no_purge_when_fresh() {
-        let (mut leader, mut membership) = create_test_leader_state("test_no_purge_when_fresh", vec![
-            (101, Duration::from_secs(15)),
-            (102, Duration::from_secs(20)),
-        ]);
+        let (mut leader, mut membership) = create_test_leader_state(
+            "test_no_purge_when_fresh",
+            vec![(101, Duration::from_secs(15)), (102, Duration::from_secs(20))],
+        );
         // Should do nothing
         membership.expect_update_node_status().never();
 
@@ -3488,11 +3518,14 @@ mod stale_learner_tests {
     #[tokio::test]
     async fn test_promotion_timeout_threshold() {
         enable_logger();
-        let (mut leader, membership) = create_test_leader_state("test", vec![
-            (101, Duration::from_secs(31)), // 1s over threshold
-            (102, Duration::from_secs(30)), // exactly at threshold
-            (103, Duration::from_secs(29)), // 1s under threshold
-        ]);
+        let (mut leader, membership) = create_test_leader_state(
+            "test",
+            vec![
+                (101, Duration::from_secs(31)), // 1s over threshold
+                (102, Duration::from_secs(30)), // exactly at threshold
+                (103, Duration::from_secs(29)), // 1s under threshold
+            ],
+        );
         leader.next_stale_check = Instant::now() - Duration::from_secs(1);
         let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
         node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
@@ -3511,11 +3544,14 @@ mod stale_learner_tests {
     #[tokio::test]
     async fn test_downgrade_affects_replication() {
         enable_logger();
-        let (mut leader, mut membership) = create_test_leader_state("test", vec![
-            (101, Duration::from_secs(29)), // 1s under threshold
-            (102, Duration::from_secs(30)), // exactly at threshold
-            (103, Duration::from_secs(31)), // 1s over threshold
-        ]);
+        let (mut leader, mut membership) = create_test_leader_state(
+            "test",
+            vec![
+                (101, Duration::from_secs(29)), // 1s under threshold
+                (102, Duration::from_secs(30)), // exactly at threshold
+                (103, Duration::from_secs(31)), // 1s over threshold
+            ],
+        );
         membership
             .expect_get_node_status()
             .returning(|_| Some(NodeStatus::Active));

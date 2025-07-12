@@ -53,7 +53,8 @@ impl<T> GrpcStreamDecoder<T> {
 }
 
 impl<T> tonic::codec::Decoder for GrpcStreamDecoder<T>
-where T: prost::Message + Default + 'static
+where
+    T: prost::Message + Default + 'static,
 {
     type Item = T;
     type Error = Status;
