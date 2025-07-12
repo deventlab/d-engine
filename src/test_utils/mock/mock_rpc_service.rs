@@ -72,6 +72,10 @@ impl MockNode {
             info!("set service is not serving");
         }
 
+        println!(
+            "starting mock rpc service: mock_service={:?}, port={}",
+            &mock_service, port
+        );
         let listener = TcpListener::bind(&format!("127.0.0.1:{port}")).await.unwrap();
         let addr = listener.local_addr();
         let mock_service = Arc::new(mock_service);
