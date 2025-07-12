@@ -183,6 +183,7 @@ mod apply_chunk_test {
     fn create_test_handler(
         path: &str,
         apply_chunk_error: bool,
+        last_applied_index: Option<u64>,
     ) -> DefaultStateMachineHandler<MockTypeConfig> {
         let mut state_machine = MockStateMachine::new();
         if apply_chunk_error {
@@ -194,16 +195,17 @@ mod apply_chunk_test {
         }
         DefaultStateMachineHandler::<MockTypeConfig>::new(
             1,
-            10,
+            last_applied_index.unwrap_or(0),
             1,
-            Arc::new(MockStateMachine::new()),
+            Arc::new(state_machine),
             snapshot_config(PathBuf::from(path)),
             MockSnapshotPolicy::new(),
         )
     }
 
+    #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case1() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false);
+        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false, None);
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -230,8 +232,9 @@ mod apply_chunk_test {
         assert_eq!(handler.last_applied(), 100);
     }
 
+    #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case2() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case2", false);
+        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case2", false, None);
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -257,9 +260,9 @@ mod apply_chunk_test {
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 70);
     }
-
+    #[tokio::test]
     async fn test_apply_chunk_handles_empty_chunk() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false);
+        let handler = create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
 
         // Initial last_applied value
         let chunk = vec![
@@ -288,9 +291,9 @@ mod apply_chunk_test {
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
     }
-
+    #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_with_state_machine_io_error", false);
+        let handler = create_test_handler("/tmp/test_apply_chunk_with_state_machine_io_error", true, None);
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);

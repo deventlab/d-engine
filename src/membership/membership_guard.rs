@@ -51,6 +51,7 @@ impl MembershipGuard {
         f(&mut guard)
     }
 
+    #[allow(unused)]
     pub fn update_node(
         &self,
         node_id: u32,
@@ -66,6 +67,7 @@ impl MembershipGuard {
         })
     }
 
+    #[allow(unused)]
     pub fn contains_node(
         &self,
         node_id: u32,

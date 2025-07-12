@@ -50,6 +50,7 @@ where T: TypeConfig
     fn voters(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     /// All pending active nodes in Active state
+    #[allow(unused)]
     fn nodes_with_status(
         &self,
         status: NodeStatus,
@@ -285,9 +286,6 @@ impl NodeStatus {
     }
 
     pub fn is_i32_promotable(value: i32) -> bool {
-        match value {
-            v if v == (NodeStatus::Joining as i32) || v == (NodeStatus::PendingActive as i32) => true,
-            _ => false,
-        }
+        matches!(value, v if v == (NodeStatus::Joining as i32) || v == (NodeStatus::PendingActive as i32))
     }
 }

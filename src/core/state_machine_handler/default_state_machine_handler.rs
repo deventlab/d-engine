@@ -81,6 +81,7 @@ where T: TypeConfig
     // Handler, as it manages the application process.
     last_applied: AtomicU64,   // The last applied log index
     pending_commit: AtomicU64, // The highest pending commit index
+    #[allow(unused)]
     max_entries_per_chunk: usize,
     state_machine: Arc<SMOF<T>>,
 

@@ -52,6 +52,7 @@ use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::alias::SSOF;
 use crate::alias::TROF;
+use crate::config::CommitHandlerConfig;
 use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
@@ -62,6 +63,7 @@ use crate::learner_state::LearnerState;
 use crate::metrics;
 use crate::ClusterConfig;
 use crate::CommitHandler;
+use crate::CommitHandlerDependencies;
 use crate::DefaultCommitHandler;
 use crate::DefaultPurgeExecutor;
 use crate::DefaultStateMachineHandler;
@@ -380,18 +382,26 @@ impl NodeBuilder {
         raft_core.register_new_commit_listener(new_commit_event_tx);
 
         // Start CommitHandler in a single thread
+        let deps = CommitHandlerDependencies {
+            state_machine_handler,
+            raft_log: raft_core.ctx.storage.raft_log.clone(),
+            membership: membership.clone(),
+            event_tx: event_tx_clone,
+            shutdown_signal,
+        };
+
+        let config = CommitHandlerConfig {
+            batch_size: node_config_arc.raft.commit_handler.batch_size,
+            process_interval_ms: node_config_arc.raft.commit_handler.process_interval_ms,
+            max_entries_per_chunk: 1,
+        };
         let commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
             node_id,
             my_role_i32,
             my_current_term,
-            state_machine_handler,
-            raft_core.ctx.storage.raft_log.clone(),
-            membership.clone(),
+            deps,
+            config,
             new_commit_event_rx,
-            event_tx_clone,
-            node_config_arc.raft.commit_handler.batch_size,
-            node_config_arc.raft.commit_handler.process_interval_ms,
-            shutdown_signal,
         );
         self.enable_state_machine_commit_listener(commit_handler);
 

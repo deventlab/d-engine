@@ -93,7 +93,7 @@ fn test_update_single_node_case2() {
     assert!(result.is_err(), "Should return error");
 
     // Verify node was created
-    assert_eq!(membership.get_node_status(node_id).is_none(), true);
+    assert!(membership.get_node_status(node_id).is_none());
 }
 
 #[test]
@@ -713,7 +713,7 @@ mod check_cluster_is_ready_test {
     async fn test_check_cluster_is_ready_case4() {
         enable_logger();
         let mut mock_services = Vec::new();
-        let peer_ids = vec![5, 6];
+        let peer_ids = [5, 6];
 
         // Create membership with 2 peers
         let mut config = RaftNodeConfig::default();
@@ -733,7 +733,7 @@ mod check_cluster_is_ready_test {
         );
 
         // Create mock services with different responses
-        for (i, &id) in peer_ids.iter().enumerate() {
+        for &id in peer_ids.iter() {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
             let port = MOCK_MEMBERSHIP_PORT_BASE + id;
@@ -776,7 +776,7 @@ mod add_learner_test {
             1,
             vec![NodeMeta {
                 id: 1,
-                address: format!("127.0.0.1:0"),
+                address: "127.0.0.1:0".to_string(),
                 role: FOLLOWER,
                 status: NodeStatus::Active.into(),
             }],

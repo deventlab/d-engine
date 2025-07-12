@@ -16,6 +16,7 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
+use crate::CommitHandlerConfig;
 use crate::Membership;
 use crate::NewCommitData;
 use crate::RaftEvent;
@@ -23,6 +24,15 @@ use crate::RaftLog;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
+
+// Dependencies container
+pub struct CommitHandlerDependencies<T: TypeConfig> {
+    pub state_machine_handler: Arc<SMHOF<T>>,
+    pub raft_log: Arc<ROF<T>>,
+    pub membership: Arc<MOF<T>>,
+    pub event_tx: mpsc::Sender<RaftEvent>,
+    pub shutdown_signal: watch::Receiver<()>,
+}
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
@@ -105,27 +115,22 @@ where T: TypeConfig
         my_id: u32,
         my_role: i32,
         my_current_term: u64,
-        state_machine_handler: Arc<SMHOF<T>>,
-        raft_log: Arc<ROF<T>>,
-        membership: Arc<MOF<T>>,
+        deps: CommitHandlerDependencies<T>,
+        config: CommitHandlerConfig,
         new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
-        event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
-        batch_size_threshold: u64,
-        process_interval_ms: u64,
-        shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
             my_id,
             my_role,
             my_current_term,
-            state_machine_handler,
-            raft_log,
-            membership,
+            state_machine_handler: deps.state_machine_handler,
+            raft_log: deps.raft_log,
+            membership: deps.membership,
             new_commit_rx: Some(new_commit_rx),
-            batch_size_threshold,
-            process_interval_ms,
-            event_tx,
-            shutdown_signal,
+            batch_size_threshold: config.batch_size,
+            process_interval_ms: config.process_interval_ms,
+            event_tx: deps.event_tx,
+            shutdown_signal: deps.shutdown_signal,
         }
     }
 
@@ -190,10 +195,10 @@ where T: TypeConfig
 
         debug!(?last_error, "flush complete");
         // Finally force the remaining commands to be refreshed
-        if last_error.is_none() {
-            flush(&mut command_batch)?;
+        if let Some(e) = last_error {
+            return Err(e);
         } else {
-            return Err(last_error.unwrap());
+            flush(&mut command_batch)?;
         }
 
         debug!("After processing all entries: validate if generate snapshot");

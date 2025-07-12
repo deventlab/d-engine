@@ -161,7 +161,7 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Key: Peer node ID
     /// Value: Last confirmed purge index from peer
-    pub(super) peer_purge_progress: Box<HashMap<u32, u64>>,
+    pub(super) peer_purge_progress: HashMap<u32, u64>,
 
     // -- Request Processing --
     /// Batched proposal buffer for client requests
@@ -1241,10 +1241,9 @@ impl<T: TypeConfig> LeaderState<T> {
         if !ready_learners.is_empty() {
             debug!("Ready learners: {:?}", ready_learners);
             // Add to pending queue
-            let promotions = ready_learners.into_iter().map(|node_id| PendingPromotion {
-                node_id,
-                ready_since: Instant::now(),
-            });
+            let promotions = ready_learners
+                .into_iter()
+                .map(|node_id| PendingPromotion::new(node_id, Instant::now()));
             self.pending_promotions.extend(promotions);
 
             // Create a PromoteReadyLearners event
@@ -1702,7 +1701,7 @@ impl<T: TypeConfig> LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
-            peer_purge_progress: Box::new(HashMap::new()),
+            peer_purge_progress: HashMap::new(),
             next_stale_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             _marker: PhantomData,
@@ -1972,7 +1971,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
-            peer_purge_progress: Box::new(HashMap::new()),
+            peer_purge_progress: HashMap::new(),
             next_stale_check: Instant::now(),
             pending_promotions: VecDeque::new(),
 

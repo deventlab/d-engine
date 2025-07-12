@@ -378,15 +378,3 @@ pub(crate) enum QuorumVerificationResult {
     LeadershipLost, // Confirmation of leadership loss (need to abdicate)
     RetryRequired,  // Retry required (leadership still exists)
 }
-
-#[derive(Debug, PartialEq)]
-pub(crate) enum PromotionAction {
-    /// Promote specified nodes immediately (with node IDs vector)
-    ImmediatePromote(Vec<u32>),
-    /// Promote a pair of nodes together (tuple of two node IDs)
-    PairPromote((u32, u32)),
-    /// Delay promotion decision temporarily
-    Defer,
-    /// Demote a node to standby learner status (single node ID)
-    Downgrade(u32),
-}

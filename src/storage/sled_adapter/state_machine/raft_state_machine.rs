@@ -202,7 +202,7 @@ impl StateMachine for RaftStateMachine {
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch = Batch::default();
         for entry in chunk {
-            assert!(!entry.payload.is_none(), "Entry payload should not be None!");
+            assert!(entry.payload.is_some(), "Entry payload should not be None!");
 
             if let Some(log_id) = highest_index_entry {
                 if entry.index > log_id.index {

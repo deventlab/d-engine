@@ -599,7 +599,7 @@ where T: TypeConfig
             guard
                 .nodes
                 .get_mut(&node_id)
-                .map(|node| f(node))
+                .map(f)
                 .unwrap_or_else(|| Err(MembershipError::NoMetadataFoundForNode { node_id }.into()))
         })
     }

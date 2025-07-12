@@ -125,7 +125,6 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     // To maintain the last included index of the snapshot, because of the configure:
     // retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 ,
     // then the last included index of the snapshot should be 9.
-    let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
         let config = create_node_config(
@@ -150,14 +149,12 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
         node_config.raft.snapshot.chunk_size = 100;
         //Dirty code: could leave it like this for now.
-        snapshot_last_included_id = Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
         let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log, state_storage).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
-    let last_included = snapshot_last_included_id.unwrap();
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 

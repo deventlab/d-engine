@@ -9,6 +9,7 @@ use tokio::time::Instant;
 use tokio::time::{self};
 
 use super::CommitHandler;
+use super::CommitHandlerDependencies;
 use super::DefaultCommitHandler;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::Entry;
@@ -18,6 +19,7 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
+use crate::CommitHandlerConfig;
 use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
@@ -81,7 +83,7 @@ pub struct TestHarness {
     process_interval_ms: u64,
     handle: Option<JoinHandle<()>>,
 }
-
+#[allow(clippy::too_many_arguments)]
 fn setup_harness<F, G>(
     role: i32,
     term: u64,
@@ -118,7 +120,7 @@ where
     mock_smh.expect_last_applied().returning(move || last_applied);
     mock_smh
         .expect_should_snapshot()
-        .returning(move |data| snapshot_condition.map_or(false, |idx| data.new_commit_index >= idx));
+        .returning(move |data| snapshot_condition.is_some_and(|idx| data.new_commit_index >= idx));
 
     // Mock raft log
     let mut mock_log = MockRaftLog::new();
@@ -157,18 +159,27 @@ where
 
 impl TestHarness {
     async fn run_handler(&mut self) {
+        let deps = CommitHandlerDependencies {
+            state_machine_handler: self.mock_smh.clone(),
+            raft_log: self.mock_log.clone(),
+            membership: self.mock_membership.clone(),
+            event_tx: self.event_tx.clone(),
+            shutdown_signal: self.shutdown_rx.take().unwrap(),
+        };
+
+        let config = CommitHandlerConfig {
+            batch_size: self.batch_size_threshold,         // batch_threshold
+            process_interval_ms: self.process_interval_ms, // process_interval
+            max_entries_per_chunk: 1,
+        };
+
         let mut handler = DefaultCommitHandler::<MockTypeConfig>::new(
             1,
             self.role,
             self.term,
-            self.mock_smh.clone(),
-            self.mock_log.clone(),
-            self.mock_membership.clone(),
+            deps,
+            config,
             self.commit_rx.take().unwrap(),
-            self.event_tx.clone(),
-            self.batch_size_threshold, // batch_threshold
-            self.process_interval_ms,  // process_interval
-            self.shutdown_rx.take().unwrap(),
         );
         self.handle = Some(tokio::spawn(async move {
             let _ = handler.run().await;
@@ -176,18 +187,27 @@ impl TestHarness {
     }
 
     async fn process_batch_handler(&mut self) -> Result<()> {
+        let deps = CommitHandlerDependencies {
+            state_machine_handler: self.mock_smh.clone(),
+            raft_log: self.mock_log.clone(),
+            membership: self.mock_membership.clone(),
+            event_tx: self.event_tx.clone(),
+            shutdown_signal: self.shutdown_rx.take().unwrap(),
+        };
+
+        let config = CommitHandlerConfig {
+            batch_size: self.batch_size_threshold,         // batch_threshold
+            process_interval_ms: self.process_interval_ms, // process_interval
+            max_entries_per_chunk: 1,
+        };
+
         let handler = DefaultCommitHandler::<MockTypeConfig>::new(
             1,
             self.role,
             self.term,
-            self.mock_smh.clone(),
-            self.mock_log.clone(),
-            self.mock_membership.clone(),
+            deps,
+            config,
             self.commit_rx.take().unwrap(),
-            self.event_tx.clone(),
-            self.batch_size_threshold, // batch_threshold
-            self.process_interval_ms,  // process_interval
-            self.shutdown_rx.take().unwrap(),
         );
         handler.process_batch().await
     }
@@ -257,19 +277,20 @@ fn setup(
 
     // Init handler
     let (event_tx, _event_rx) = mpsc::channel(1);
-    DefaultCommitHandler::<MockTypeConfig>::new(
-        1,
-        LEADER,
-        1,
-        Arc::new(mock_handler),
-        Arc::new(mock_raft_log),
-        Arc::new(mock_membership),
-        new_commit_rx,
+    let deps = CommitHandlerDependencies {
+        state_machine_handler: Arc::new(mock_handler),
+        raft_log: Arc::new(mock_raft_log),
+        membership: Arc::new(mock_membership),
         event_tx,
-        batch_size_threshold,
-        process_interval_ms,
         shutdown_signal,
-    )
+    };
+
+    let config = CommitHandlerConfig {
+        batch_size: batch_size_threshold,
+        process_interval_ms,
+        max_entries_per_chunk: 1,
+    };
+    DefaultCommitHandler::<MockTypeConfig>::new(1, LEADER, 1, deps, config, new_commit_rx)
 }
 
 /// # Case 1: interval_uses_correct_duration
@@ -880,6 +901,7 @@ mod process_batch_test {
         // - apply_config_change called once for entry 2
     }
 
+    #[allow(dead_code)]
     pub fn build_entries_with_noop(term: u64) -> Vec<Entry> {
         let (builder, cmd1) = EntryBuilder::new(1, term).command(b"cmd1");
         let (builder, noop) = builder.noop();

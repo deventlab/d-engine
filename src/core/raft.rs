@@ -69,6 +69,7 @@ pub(crate) struct SignalParams {
 impl<T> Raft<T>
 where T: TypeConfig
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         node_id: u32,
         role: RaftRole<T>,

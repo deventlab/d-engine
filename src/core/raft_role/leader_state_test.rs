@@ -1564,7 +1564,7 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
 
 #[test]
 fn test_state_size() {
-    assert!(size_of::<LeaderState<RaftTypeConfig>>() < 312);
+    assert!(size_of::<LeaderState<RaftTypeConfig>>() < 350);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus
@@ -2982,7 +2982,6 @@ mod pending_promotion_tests {
     use super::*;
     use crate::leader_state::calculate_safe_batch_size;
     use crate::leader_state::PendingPromotion;
-    use crate::Membership;
 
     // Test fixture
     struct TestFixture {
