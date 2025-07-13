@@ -35,8 +35,8 @@ impl KvClient {
     // Stores a value with strong consistency
     ///
     /// # Errors
-    /// - [`Error::FailedToSendWriteRequestError`] on network failures
-    /// - [`Error::InvalidResponse`] for malformed server responses
+    /// - [`crate::ClientApiError::Network`] on network failures
+    /// - [`crate::ClientApiError::InvalidResponse`] for malformed server responses
     pub async fn put(
         &self,
         key: impl AsRef<[u8]>,

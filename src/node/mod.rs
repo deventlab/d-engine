@@ -1,12 +1,11 @@
 //! Raft node container and lifecycle management.
 //!
 //! The [`Node`] struct acts as a host for a Raft consensus participant,
-//! coordinating between the core protocol implementation ([`crate::core::raft::Raft`])
+//! coordinating between the core protocol implementation ([`crate::raft::Raft`])
 //! and external subsystems:
 //!
 //! ## Key Responsibilities
 //! - Manages the Raft finite state machine lifecycle
-//! - Coordinates peer networking through [`PeerChannels`]
 //! - Maintains node readiness state for cluster coordination
 //! - Executes the main event processing loop inside Raft
 //!
