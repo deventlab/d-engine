@@ -31,7 +31,7 @@ use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::crate_test_snapshot_stream;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MockRpcService {
     pub server_port: Option<u16>,
     // Expected responses for each method
@@ -40,30 +40,15 @@ pub struct MockRpcService {
     pub expected_update_cluster_conf_response: Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
     pub expected_client_propose_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
+
+    #[allow(clippy::type_complexity)]
     pub expected_metadata_response: Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
     pub expected_stream_snapshot_response: Option<Result<SnapshotChunk, tonic::Status>>,
     pub expected_purge_log_response: Option<Result<PurgeLogResponse, tonic::Status>>,
     pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
-}
-impl Default for MockRpcService {
-    fn default() -> Self {
-        Self {
-            server_port: None,
-            expected_metadata_response: None,
-            expected_snapshot_response: None,
-            expected_stream_snapshot_response: None,
-            expected_purge_log_response: None,
-            expected_join_cluster_response: None,
-            expected_discover_leader_response: None,
-            expected_vote_response: None,
-            expected_append_entries_response: None,
-            expected_update_cluster_conf_response: None,
-            expected_client_propose_response: None,
-            expected_client_read_response: None,
-        }
-    }
 }
 impl MockRpcService {
     pub fn with_metadata_response(

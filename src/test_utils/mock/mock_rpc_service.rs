@@ -72,7 +72,7 @@ impl MockNode {
             info!("set service is not serving");
         }
 
-        let listener = TcpListener::bind(&format!("127.0.0.1:0")).await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().map_err(StorageError::IoError)?;
         let port = addr.port();
         debug!("starting mock rpc service:port={port}",);
@@ -195,6 +195,7 @@ impl MockNode {
         Ok((channel, port))
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) async fn simulate_mock_service_with_cluster_conf_reps(
         rx: oneshot::Receiver<()>,
         response_builder: Option<
