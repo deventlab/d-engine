@@ -107,17 +107,19 @@ fn concurrent_read_access() {
 #[test]
 fn write_lock_blocks_other_access() {
     let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
+    let (tx, rx) = std::sync::mpsc::channel();
     let guard_clone = Arc::clone(&guard);
 
     let write_handle = thread::spawn(move || {
         guard_clone.blocking_write(|state| {
+            tx.send(()).unwrap();
             thread::sleep(Duration::from_millis(100));
             state.cluster_conf_version = 2;
         });
     });
 
     // Give write thread time to acquire lock
-    thread::sleep(Duration::from_millis(10));
+    rx.recv().unwrap();
 
     let start = std::time::Instant::now();
     guard.blocking_read(|_| {});
@@ -125,6 +127,7 @@ fn write_lock_blocks_other_access() {
 
     write_handle.join().unwrap();
 
+    println!("Write completed: {}", elapsed.as_millis());
     // Should have waited at least 90ms for write to complete
     assert!(elapsed >= Duration::from_millis(90));
 }

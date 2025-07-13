@@ -24,8 +24,8 @@ use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
 use d_engine::storage::RaftLog;
-use d_engine::storage::RaftStateMachine;
 use d_engine::storage::SledRaftLog;
+use d_engine::storage::SledStateMachine;
 use d_engine::storage::SledStateStorage;
 use d_engine::storage::StateMachine;
 use d_engine::storage::StateStorage;
@@ -267,7 +267,7 @@ pub fn prepare_raft_log(
 pub fn prepare_state_machine(
     node_id: u32,
     db_path: &str,
-) -> RaftStateMachine {
+) -> SledStateMachine {
     let state_machine_db_path = format!("{db_path}/state_machine",);
     let state_machine_db = sled::Config::default()
         .path(state_machine_db_path)
@@ -275,7 +275,7 @@ pub fn prepare_state_machine(
         .compression_factor(1)
         .open()
         .unwrap();
-    RaftStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
+    SledStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
 }
 pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
     let state_storage_db_path = format!("{db_path}/state_storage",);

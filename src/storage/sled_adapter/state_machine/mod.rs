@@ -1,7 +1,7 @@
-mod raft_state_machine;
+mod sled_state_machine;
 // mod snapshot_assembler;
 
-pub use raft_state_machine::*;
+pub use sled_state_machine::*;
 
 #[cfg(test)]
-mod raft_state_machine_test;
+mod sled_state_machine_test;

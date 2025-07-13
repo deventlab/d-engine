@@ -53,7 +53,7 @@ use crate::StorageError;
 use crate::API_SLO;
 use crate::COMMITTED_LOG_METRIC;
 
-pub struct RaftStateMachine {
+pub struct SledStateMachine {
     node_id: u32,
 
     db: ArcSwap<sled::Db>,
@@ -76,18 +76,18 @@ pub struct RaftStateMachine {
     snapshot_lock: RwLock<()>,
 }
 
-impl std::fmt::Debug for RaftStateMachine {
+impl std::fmt::Debug for SledStateMachine {
     fn fmt(
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("RaftStateMachine")
+        f.debug_struct("SledStateMachine")
             .field("tree_len", &self.current_tree().len())
             .finish()
     }
 }
 
-impl Drop for RaftStateMachine {
+impl Drop for SledStateMachine {
     fn drop(&mut self) {
         let timer = Instant::now();
 
@@ -100,7 +100,7 @@ impl Drop for RaftStateMachine {
 }
 
 #[async_trait]
-impl StateMachine for RaftStateMachine {
+impl StateMachine for SledStateMachine {
     fn start(&self) -> Result<()> {
         debug!("start state machine");
         self.is_serving.store(true, Ordering::Release);
@@ -502,7 +502,7 @@ impl StateMachine for RaftStateMachine {
     }
 }
 
-impl RaftStateMachine {
+impl SledStateMachine {
     pub fn new(
         node_id: u32,
         db: Arc<sled::Db>,
@@ -512,7 +512,7 @@ impl RaftStateMachine {
 
         let snapshot_meta_tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
 
-        let sm = RaftStateMachine {
+        let sm = SledStateMachine {
             db: ArcSwap::from(db),
             is_serving: Arc::new(AtomicBool::new(true)),
             node_id,

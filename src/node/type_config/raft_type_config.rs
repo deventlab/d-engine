@@ -5,9 +5,9 @@ use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
 use crate::LogSizePolicy;
 use crate::RaftMembership;
-use crate::RaftStateMachine;
 use crate::ReplicationHandler;
 use crate::SledRaftLog;
+use crate::SledStateMachine;
 use crate::SledStateStorage;
 use crate::TypeConfig;
 
@@ -19,7 +19,7 @@ impl TypeConfig for RaftTypeConfig {
 
     type TR = GrpcTransport<Self>;
 
-    type SM = RaftStateMachine;
+    type SM = SledStateMachine;
 
     type SS = SledStateStorage;
 

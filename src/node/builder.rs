@@ -77,12 +77,12 @@ use crate::RaftCoreHandlers;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
-use crate::RaftStateMachine;
 use crate::RaftStorageHandles;
 use crate::ReplicationHandler;
 use crate::Result;
 use crate::SignalParams;
 use crate::SledRaftLog;
+use crate::SledStateMachine;
 use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
@@ -274,7 +274,7 @@ impl NodeBuilder {
             let state_machine_db =
                 init_sled_state_machine_db(&db_root_dir).expect("init_sled_state_machine_db successfully.");
             Arc::new(
-                RaftStateMachine::new(node_id, Arc::new(state_machine_db))
+                SledStateMachine::new(node_id, Arc::new(state_machine_db))
                     .expect("Init raft state machine successfully."),
             )
         });

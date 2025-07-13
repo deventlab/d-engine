@@ -80,7 +80,7 @@ fn test_state_machine_flush() {
         let _ = std::fs::remove_dir_all(p);
         println!("Test setup ...");
         let state_machine_db = init(p);
-        let state_machine = Arc::new(RaftStateMachine::new(1, state_machine_db).expect("success"));
+        let state_machine = Arc::new(SledStateMachine::new(1, state_machine_db).expect("success"));
         let mut batch = Batch::default();
         batch.insert(&safe_kv(1), &safe_kv(1));
         batch.insert(&safe_kv(2), &safe_kv(2));
@@ -91,7 +91,7 @@ fn test_state_machine_flush() {
 
     {
         let state_machine_db = init(p);
-        let state_machine = RaftStateMachine::new(1, state_machine_db).expect("success");
+        let state_machine = SledStateMachine::new(1, state_machine_db).expect("success");
         assert_eq!(state_machine.len(), 2);
         assert_eq!(state_machine.get(&safe_kv(2)).unwrap(), Some(safe_kv(2).to_vec()));
     }
@@ -257,7 +257,7 @@ async fn test_generate_snapshot_data_case1() {
         }))
     );
 
-    let last_included = RaftStateMachine::load_snapshot_metadata(&metadata_tree)
+    let last_included = SledStateMachine::load_snapshot_metadata(&metadata_tree)
         .unwrap()
         .unwrap()
         .last_included
@@ -319,7 +319,7 @@ async fn test_generate_snapshot_data_case3() {
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
     let metadata_tree = snapshot_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
 
-    let last_included = RaftStateMachine::load_snapshot_metadata(&metadata_tree)
+    let last_included = SledStateMachine::load_snapshot_metadata(&metadata_tree)
         .unwrap()
         .unwrap()
         .last_included
@@ -646,7 +646,7 @@ async fn test_state_machine_drop() {
     {
         let db = Arc::new(sled::open(case_path.clone()).unwrap());
         // Create real instance instead of mock
-        let state_machine = Arc::new(RaftStateMachine::new(1, db.clone()).expect("success"));
+        let state_machine = Arc::new(SledStateMachine::new(1, db.clone()).expect("success"));
 
         // Insert test data
         let mut batch = Batch::default();

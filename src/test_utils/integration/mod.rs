@@ -67,10 +67,10 @@ use crate::RaftLog;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
-use crate::RaftStateMachine;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
 use crate::SledRaftLog;
+use crate::SledStateMachine;
 use crate::SledStateStorage;
 use crate::StateMachine;
 use crate::StateStorage;
@@ -123,7 +123,7 @@ pub fn setup_raft_components(
     let state_storage_db = Arc::new(state_storage_db);
 
     let sled_raft_log = SledRaftLog::new(id, raft_log_db, 0);
-    let sled_state_machine = RaftStateMachine::new(id, state_machine_db.clone()).expect("success");
+    let sled_state_machine = SledStateMachine::new(id, state_machine_db.clone()).expect("success");
     let last_applied_pair = sled_state_machine.last_applied();
     let sled_state_storage = SledStateStorage::new(state_storage_db);
 
