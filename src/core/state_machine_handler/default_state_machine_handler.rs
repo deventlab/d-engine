@@ -74,8 +74,7 @@ pub struct SnapshotTransferMeta {
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     // last_applied, as an application progress indicator, may fall under the responsibility of the
@@ -106,8 +105,7 @@ pub(crate) struct CleanupSnapshotMeta {
 
 #[async_trait]
 impl<T> StateMachineHandler<T> for DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn last_applied(&self) -> u64 {
         self.last_applied.load(Ordering::Acquire)
@@ -613,8 +611,7 @@ where
 }
 
 impl<T> DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,

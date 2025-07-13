@@ -36,8 +36,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     my_id: u32,
     my_role: i32,
@@ -57,8 +56,7 @@ where
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn run(&mut self) -> Result<()> {
         let mut batch_counter = 0;
@@ -111,8 +109,7 @@ where
 }
 
 impl<T> DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         my_id: u32,

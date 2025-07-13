@@ -35,8 +35,7 @@ pub(crate) enum ConnectionType {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// All nodes (including itself)
     #[allow(unused)]
