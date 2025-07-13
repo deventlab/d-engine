@@ -500,7 +500,7 @@ mod run_test {
         enable_logger();
         let mut entries = Vec::new();
         for i in 1..=1000 {
-            entries.push(CommandType::Command(format!("cmd{}", i).encode_to_vec()));
+            entries.push(CommandType::Command(format!("cmd{i}").encode_to_vec()));
         }
         let entries = build_entries(entries, 1);
 

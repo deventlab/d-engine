@@ -1931,10 +1931,9 @@ impl<T: TypeConfig> LeaderState<T> {
         println!(
             "
             =====================
-            Learner {} is stalled
+            Learner {node_id} is stalled
             =====================
             ",
-            node_id
         );
         info!("Learner {} is stalled", node_id);
 

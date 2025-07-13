@@ -336,7 +336,7 @@ pub async fn test_put_get(
     key: u64,
     value: u64,
 ) -> Result<(), ClientApiError> {
-    println!("put {} {}", key, value);
+    println!("put {key} {value}");
     assert!(
         client_manager
             .execute_command(ClientCommands::Put, key, Some(value))

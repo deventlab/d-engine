@@ -312,7 +312,7 @@ mod apply_chunk_test {
     }
 }
 
-fn listen_addr(port: u64) -> SocketAddr {
+fn listen_addr(port: u32) -> SocketAddr {
     format!("127.0.0.1:{port}",).parse().unwrap()
 }
 

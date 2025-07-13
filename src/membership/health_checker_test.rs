@@ -12,11 +12,10 @@ use crate::NetworkConfig;
 /// Case 1: server is not ready
 #[tokio::test]
 async fn test_check_peer_is_ready_case1() {
-    let port = crate::test_utils::MOCK_HEALTHCHECK_PORT_BASE + 1;
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = false;
     let mock_service = MockRpcService::default();
-    let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, is_ready).await {
+    let (_port, addr) = match test_utils::MockNode::mock_listener(mock_service, rx, is_ready).await {
         Ok(a) => a,
         Err(e) => {
             panic!("error: {e:?}");
@@ -63,11 +62,10 @@ async fn test_check_peer_is_ready_case1() {
 /// Case 2: server is ready
 #[tokio::test]
 async fn test_check_peer_is_ready_case2() {
-    let port = crate::test_utils::MOCK_HEALTHCHECK_PORT_BASE + 2;
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = true;
     let mock_service = MockRpcService::default();
-    let addr = match test_utils::MockNode::mock_listener(mock_service, port, rx, is_ready).await {
+    let (_port, addr) = match test_utils::MockNode::mock_listener(mock_service, rx, is_ready).await {
         Ok(a) => a,
         Err(e) => {
             panic!("error: {e:?}");

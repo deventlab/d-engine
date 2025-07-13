@@ -35,9 +35,9 @@ _Example: Node 4 joins via seed node 192.168.1.1_
 
 ### 1. Node4 Startup
 
-→ Contacts seed node (`192.168.1.1`) to get Leader address
+-> Contacts seed node (`192.168.1.1`) to get Leader address
 
-→ Sends `JoinRequest(role=learner, purpose=general)` to Leader
+-> Sends `JoinRequest(role=learner, purpose=general)` to Leader
 
 ### 2. Leader Processing
 
@@ -65,25 +65,25 @@ _Example: Node 4 joins via seed node 192.168.1.1_
 
 **a. Node4 State Transition**
 
-→ Status: `Syncing Learner`
+-> Status: `Syncing Learner`
 
 **b. Leader Action**
 
 ```yaml
-→ Proactively pushes `InstallSnapshot`
+-> Proactively pushes `InstallSnapshot`
 ```
 
 **c. Synchronization**
 
 ```yaml
-→ Node4 begins incremental log sync
+-> Node4 begins incremental log sync
 ```
 
 ### 4. Node4 Sync Completion
 
-→ Sends `ReadyNotification(match_index=X)`
+-> Sends `ReadyNotification(match_index=X)`
 
-→ Status: `Ready Learner`
+-> Status: `Ready Learner`
 
 ### 5. Leader Decision Workflow
 
@@ -94,17 +94,17 @@ case KeepAsLearner:  // Analytical node
     Mark as ActiveLearner
 case PromotePair:    // Pairing required
     Find another Ready Learner
-    → If Node5 found → Initiate dual-node promotion
-    → If none found → Start pairing timer (5min)
+    -> If Node5 found -> Initiate dual-node promotion
+    -> If none found -> Start pairing timer (5min)
 
 ```
 
 **b. Timer Expiry Handling:**
 
 ```yaml
-→ Demote to `StandbyLearner`
+-> Demote to `StandbyLearner`
 
-→ Trigger manual OPS intervention
+-> Trigger manual OPS intervention
 ```
 
 ### **6. Successful Promotion**
@@ -112,17 +112,17 @@ case PromotePair:    // Pairing required
 **a. Cluster Update**
 
 ```yaml
-→ `ConfChange` commits
+-> `ConfChange` commits
 ```
 
 **b. Role Transition**
 
 ```yaml
-→ Node4 becomes `ActiveFollower`
+-> Node4 becomes `ActiveFollower`
 ```
 
 **c. Operational Integration**
 
 ```yaml
-→ Joins read load balancing pool
+-> Joins read load balancing pool
 ```

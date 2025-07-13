@@ -612,7 +612,6 @@ mod check_cluster_is_ready_test {
     use crate::test_utils::enable_logger;
     use crate::test_utils::MockNode;
     use crate::test_utils::MockRpcService;
-    use crate::test_utils::MOCK_MEMBERSHIP_PORT_BASE;
 
     /// Case 1: Test all peers are healthy
     #[tokio::test]
@@ -628,7 +627,7 @@ mod check_cluster_is_ready_test {
                 .iter()
                 .map(|id| NodeMeta {
                     id: *id,
-                    address: format!("127.0.0.1:{}", MOCK_MEMBERSHIP_PORT_BASE + *id),
+                    address: "127.0.0.1:0".to_string(),
                     role: FOLLOWER,
                     status: NodeStatus::Active.into(),
                 })
@@ -640,8 +639,8 @@ mod check_cluster_is_ready_test {
         for &id in &peer_ids {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
-            let port = MOCK_MEMBERSHIP_PORT_BASE + id;
-            let addr = MockNode::mock_listener(service, port as u64, rx, true).await.unwrap();
+            let (port, addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
+            membership.update_node_address(id, format!("127.0.0.1:{port}")).unwrap();
             mock_services.push((tx, addr));
         }
 
@@ -685,8 +684,7 @@ mod check_cluster_is_ready_test {
         enable_logger();
         let (tx, rx) = oneshot::channel::<()>();
         let service = MockRpcService::default();
-        let port = MOCK_MEMBERSHIP_PORT_BASE + 4;
-        let _addr = MockNode::mock_listener(service, port as u64, rx, false).await.unwrap();
+        let (port, _addr) = MockNode::mock_listener(service, rx, false).await.unwrap();
 
         let mut config = RaftNodeConfig::default();
         config.retry.membership.max_retries = 1;
@@ -694,7 +692,7 @@ mod check_cluster_is_ready_test {
             1,
             vec![NodeMeta {
                 id: 4,
-                address: format!("127.0.0.1:{}", port),
+                address: format!("127.0.0.1:{port}",),
                 role: FOLLOWER,
                 status: NodeStatus::Active.into(),
             }],
@@ -724,7 +722,7 @@ mod check_cluster_is_ready_test {
                 .iter()
                 .map(|id| NodeMeta {
                     id: *id,
-                    address: format!("127.0.0.1:{}", MOCK_MEMBERSHIP_PORT_BASE + *id),
+                    address: "127.0.0.1:0".to_string(),
                     role: FOLLOWER,
                     status: NodeStatus::Active.into(),
                 })
@@ -733,11 +731,13 @@ mod check_cluster_is_ready_test {
         );
 
         // Create mock services with different responses
-        for &id in peer_ids.iter() {
+        for id in peer_ids.iter() {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
-            let port = MOCK_MEMBERSHIP_PORT_BASE + id;
-            let addr = MockNode::mock_listener(service, port as u64, rx, false).await.unwrap();
+            let (port, addr) = MockNode::mock_listener(service, rx, false).await.unwrap();
+            membership
+                .update_node_address(*id, format!("127.0.0.1:{}", port))
+                .unwrap();
             mock_services.push((tx, addr));
         }
 
