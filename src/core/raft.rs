@@ -30,7 +30,8 @@ use crate::StateStorage;
 use crate::TypeConfig;
 
 pub struct Raft<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub(crate) node_id: u32,
     pub(crate) role: RaftRole<T>,
@@ -67,7 +68,8 @@ pub(crate) struct SignalParams {
 }
 
 impl<T> Raft<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -339,7 +341,8 @@ where T: TypeConfig
 }
 
 impl<T> Drop for Raft<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn drop(&mut self) {
         info!("Raft been dropped.");

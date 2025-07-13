@@ -49,11 +49,11 @@ doc: ## Generate documentation
 
 # Format Verification
 fmt-check: ## Check formatting
-	@cargo +nightly fmt --all -- --check
+	@cargo fmt --all -- --check
 
 # Format Verification
 fmt-fix: ## Check formatting
-	@cargo +nightly fmt --all
+	@cargo fmt --all
 
 
 # Run Clippy

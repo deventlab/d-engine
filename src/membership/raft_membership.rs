@@ -55,7 +55,8 @@ use crate::LEADER;
 use crate::LEARNER;
 
 pub struct RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     node_id: u32,
     membership: MembershipGuard,
@@ -76,7 +77,8 @@ impl<T: TypeConfig> Debug for RaftMembership<T> {
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn members(&self) -> Vec<NodeMeta> {
         self.membership
@@ -434,12 +436,15 @@ where T: TypeConfig
                 return Err(MembershipError::NodeAlreadyExists(node_id).into());
                 // return  Ok(());
             }
-            guard.nodes.insert(node_id, NodeMeta {
-                id: node_id,
-                address,
-                role: LEARNER,
-                status: NodeStatus::PendingActive as i32,
-            });
+            guard.nodes.insert(
+                node_id,
+                NodeMeta {
+                    id: node_id,
+                    address,
+                    role: LEARNER,
+                    status: NodeStatus::PendingActive as i32,
+                },
+            );
             info!("[node-{}] Adding a learner node successed: {}", self.node_id, node_id);
 
             Ok(())
@@ -574,7 +579,8 @@ where T: TypeConfig
 }
 
 impl<T> RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn new(
         node_id: u32,
