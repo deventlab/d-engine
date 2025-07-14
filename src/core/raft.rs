@@ -235,11 +235,11 @@ where
                 //async action
                 if !self
                     .role
-                    .verify_internal_quorum_with_retry(vec![EntryPayload::noop()], true, &self.ctx, &self.role_tx)
+                    .verify_leadership_persistent(vec![EntryPayload::noop()], true, &self.ctx, &self.role_tx)
                     .await
                     .unwrap_or(false)
                 {
-                    info!("Verify leadership in new term failed. Now the node is going to step back to Follower...");
+                    warn!("Verify leadership in new term failed. Now the node is going to step back to Follower...");
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
                         let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);

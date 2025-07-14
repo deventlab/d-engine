@@ -2,12 +2,9 @@
 //!
 //! Scenario:
 //!
-//! 1. Create a cluster with 3 nodes (1, 2, 3).
-//! 2. Node 1 appends 3 log entries with Term=1.
-//! 3. Node 2 appends 4 log entries with Term=1.
-//! 4. Node 3 appends 10 log entries with Term=2.
-//! 5. Node 3 becomes Leader
-//! 6. Trigger a client write request
+//! Node 1: Locally has log-1(1), log-2(1), log-3(1)
+//! Node 2: Locally has log-1(1), log-2(1), log-3(1), log-4(1)
+//! Node 3: Locally has log-1(1), log-2(1), log-3(1), log-4(2), log-4(5), …, log-9(2), log-10(2)
 //!
 //! Expected Result:
 //!
@@ -70,7 +67,8 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     manipulate_log(&raft_logs[0], vec![1, 2, 3], 1);
     manipulate_log(&raft_logs[1], vec![1, 2, 3, 4], 1);
-    manipulate_log(&raft_logs[2], (1..=10).collect(), 2);
+    manipulate_log(&raft_logs[2], (1..=3).collect(), 1);
+    manipulate_log(&raft_logs[2], (4..=10).collect(), 2);
 
     // Prepare state storage
     let state_storages = (1..=3)

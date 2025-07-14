@@ -42,12 +42,12 @@ pub(crate) struct AppendResults {
     /// Updates to each peer's match_index and next_index
     pub peer_updates: HashMap<u32, PeerUpdate>,
     /// Learner log catch-up progress
-    pub learner_progress: HashMap<u32, u64>,
+    pub learner_progress: HashMap<u32, Option<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PeerUpdate {
-    pub match_index: u64,
+    pub match_index: Option<u64>,
     pub next_index: u64,
     /// if peer response success
     pub success: bool,
@@ -60,7 +60,7 @@ impl PeerUpdate {
         next_index: u64,
     ) -> Self {
         PeerUpdate {
-            match_index,
+            match_index: Some(match_index),
             next_index,
             success: true,
         }
@@ -69,7 +69,7 @@ impl PeerUpdate {
     #[allow(unused)]
     pub fn failed() -> Self {
         Self {
-            match_index: 0,
+            match_index: None,
             next_index: 1,
             success: false,
         }

@@ -107,7 +107,7 @@ async fn setup_process_raft_request_test_context(
                     (
                         2,
                         PeerUpdate {
-                            match_index: 5,
+                            match_index: Some(5),
                             next_index: 6,
                             success: true,
                         },
@@ -115,7 +115,7 @@ async fn setup_process_raft_request_test_context(
                     (
                         3,
                         PeerUpdate {
-                            match_index: 5,
+                            match_index: Some(5),
                             next_index: 6,
                             success: true,
                         },
@@ -798,7 +798,7 @@ async fn test_handle_raft_event_case6_2() {
                     (
                         2,
                         PeerUpdate {
-                            match_index: 3,
+                            match_index: Some(3),
                             next_index: 4,
                             success: true,
                         },
@@ -806,7 +806,7 @@ async fn test_handle_raft_event_case6_2() {
                     (
                         3,
                         PeerUpdate {
-                            match_index: 4,
+                            match_index: Some(4),
                             next_index: 5,
                             success: true,
                         },
@@ -1704,7 +1704,7 @@ async fn test_process_batch_case1_quorum_achieved() {
                     (
                         2,
                         PeerUpdate {
-                            match_index: 6,
+                            match_index: Some(6),
                             next_index: 7,
                             success: true,
                         },
@@ -1712,7 +1712,7 @@ async fn test_process_batch_case1_quorum_achieved() {
                     (
                         3,
                         PeerUpdate {
-                            match_index: 6,
+                            match_index: Some(6),
                             next_index: 7,
                             success: true,
                         },
@@ -1772,7 +1772,7 @@ async fn test_process_batch_case2_quorum_failed() {
                     (
                         2,
                         PeerUpdate {
-                            match_index: 5,
+                            match_index: Some(5),
                             next_index: 6,
                             success: true,
                         },
@@ -1780,7 +1780,7 @@ async fn test_process_batch_case2_quorum_failed() {
                     (
                         3,
                         PeerUpdate {
-                            match_index: 0,
+                            match_index: None,
                             next_index: 1,
                             success: false,
                         },
@@ -1831,7 +1831,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
                 peer_updates: HashMap::from([(
                     peer2_id,
                     PeerUpdate {
-                        match_index: 5,
+                        match_index: Some(5),
                         next_index: 6,
                         success: true,
                     },
@@ -1936,7 +1936,7 @@ async fn test_process_batch_case4_partial_timeouts() {
                 peer_updates: HashMap::from([(
                     2,
                     PeerUpdate {
-                        match_index: 6,
+                        match_index: Some(6),
                         next_index: 7,
                         success: true,
                     },
@@ -2842,7 +2842,7 @@ mod batch_promote_learners_test {
         test_name: &str,
         current_voters: usize,
         ready_learners: Vec<u32>,
-        verify_internal_quorum_with_retry_success: VerifyInternalQuorumWithRetrySuccess,
+        verify_leadership_limited_retry_success: VerifyInternalQuorumWithRetrySuccess,
     ) -> TestContext {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut node_config = node_config(&format!("/tmp/{test_name}"));
@@ -2869,7 +2869,7 @@ mod batch_promote_learners_test {
             .expect_handle_raft_request_in_batch()
             .times(1)
             .returning(move |_, _, _, _| {
-                match verify_internal_quorum_with_retry_success {
+                match verify_leadership_limited_retry_success {
                     VerifyInternalQuorumWithRetrySuccess::Success => Ok(AppendResults {
                         commit_quorum_achieved: true,
                         learner_progress: HashMap::new(),
@@ -3284,7 +3284,7 @@ mod pending_promotion_tests {
 
     #[tokio::test]
     async fn test_batch_promotion_failure() {
-        // Setup failure in verify_internal_quorum_with_retry
+        // Setup failure in verify_leadership_limited_retry
         let mut fixture = TestFixture::new("test_batch_promotion_failure", false).await;
 
         fixture.leader_state.pending_promotions = (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();

@@ -172,10 +172,17 @@ where
                                 }
 
                                 Some(append_entries_response::Result::Conflict(conflict_result)) => {
+                                    let current_next_index = replication_data
+                                        .peer_next_indices
+                                        .get(&append_response.node_id)
+                                        .copied()
+                                        .unwrap_or(1);
+
                                     let update = self.handle_conflict_response(
                                         append_response.node_id,
                                         conflict_result,
                                         raft_log,
+                                        current_next_index,
                                     )?;
 
                                     peer_updates.insert(append_response.node_id, update);
@@ -225,7 +232,7 @@ where
         success_result: SuccessResult,
         leader_term: u64,
     ) -> Result<PeerUpdate> {
-        debug!("Received success response from peer {}", peer_id);
+        debug!(?success_result, "Received success response from peer {}", peer_id);
 
         let match_log = success_result.last_match.unwrap_or(LogId { term: 0, index: 0 });
 
@@ -238,7 +245,7 @@ where
         let peer_next_index = peer_match_index + 1;
 
         Ok(PeerUpdate {
-            match_index: peer_match_index,
+            match_index: Some(peer_match_index),
             next_index: peer_next_index,
             success: true,
         })
@@ -248,30 +255,29 @@ where
         &self,
         peer_id: u32,
         conflict_result: ConflictResult,
-        _raft_log: &Arc<ROF<T>>,
+        raft_log: &Arc<ROF<T>>,
+        current_next_index: u64,
     ) -> Result<PeerUpdate> {
         debug!("Handling conflict from peer {}", peer_id);
 
         // Calculate next_index based on conflict information
         let next_index = match (conflict_result.conflict_term, conflict_result.conflict_index) {
-            (Some(_term), Some(index)) => {
-                // Find the last log that matches term
-                // TODO: feature in v0.2.0
-                // raft_log
-                //     .last_index_for_term(term)
-                //     .map(|last_index| last_index + 1)
-                //     .unwrap_or(index)
-                index.saturating_sub(1)
+            (Some(term), Some(index)) => {
+                if let Some(last_index_for_term) = raft_log.last_index_for_term(term) {
+                    last_index_for_term + 1
+                } else {
+                    // Term not found, fallback to conflict index
+                    index
+                }
             }
             (None, Some(index)) => index,
-            _ => 1, // Return to the initial position
+            _ => current_next_index.saturating_sub(1), // Return to the initial position
         };
 
         // Make sure next_index is not less than 1
         let next_index = next_index.max(1);
-        // Update peer status (at least go back 1 position)
         Ok(PeerUpdate {
-            match_index: next_index.saturating_sub(1),
+            match_index: None, // Unknown after conflict
             next_index,
             success: false,
         })

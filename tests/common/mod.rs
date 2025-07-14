@@ -309,6 +309,7 @@ pub fn manipulate_log(
     assert!(raft_log.insert_batch(entries).is_ok());
 }
 
+#[allow(dead_code)]
 pub fn manipulate_state_machine(
     raft_log: &Arc<impl RaftLog>,
     state_machine: &Arc<impl StateMachine>,

@@ -1175,3 +1175,245 @@ async fn test_raft_log_drop() {
     let reloaded_db = sled::open(case_path).unwrap();
     assert!(!reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().is_empty());
 }
+
+#[test]
+fn test_first_index_for_term() {
+    let context = setup("/tmp/test_first_index_for_term");
+    context.raft_log.reset().expect("reset successfully!");
+
+    // Insert test logs with various terms
+    let entries = vec![
+        Entry {
+            index: 1,
+            term: 1,
+            payload: None,
+        },
+        Entry {
+            index: 2,
+            term: 1,
+            payload: None,
+        },
+        Entry {
+            index: 3,
+            term: 2,
+            payload: None,
+        },
+        Entry {
+            index: 4,
+            term: 2,
+            payload: None,
+        },
+        Entry {
+            index: 5,
+            term: 3,
+            payload: None,
+        },
+        Entry {
+            index: 6,
+            term: 3,
+            payload: None,
+        },
+        Entry {
+            index: 7,
+            term: 3,
+            payload: None,
+        },
+    ];
+    context.raft_log.insert_batch(entries).expect("insert should succeed");
+
+    // Test various cases
+    assert_eq!(context.raft_log.first_index_for_term(1), Some(1));
+    assert_eq!(context.raft_log.first_index_for_term(2), Some(3));
+    assert_eq!(context.raft_log.first_index_for_term(3), Some(5));
+    assert_eq!(context.raft_log.first_index_for_term(4), None); // Term not found
+
+    // Test with partial data
+    let entries = vec![
+        Entry {
+            index: 8,
+            term: 4,
+            payload: None,
+        },
+        Entry {
+            index: 9,
+            term: 5,
+            payload: None,
+        },
+    ];
+    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    assert_eq!(context.raft_log.first_index_for_term(4), Some(8));
+    assert_eq!(context.raft_log.first_index_for_term(5), Some(9));
+
+    // Test with empty log
+    context.raft_log.reset().expect("reset should succeed");
+    assert_eq!(context.raft_log.first_index_for_term(1), None);
+}
+
+#[test]
+fn test_last_index_for_term() {
+    let context = setup("/tmp/test_last_index_for_term");
+    context.raft_log.reset().expect("reset successfully!");
+
+    // Insert test logs with various terms
+    let entries = vec![
+        Entry {
+            index: 1,
+            term: 1,
+            payload: None,
+        },
+        Entry {
+            index: 2,
+            term: 1,
+            payload: None,
+        },
+        Entry {
+            index: 3,
+            term: 2,
+            payload: None,
+        },
+        Entry {
+            index: 4,
+            term: 2,
+            payload: None,
+        },
+        Entry {
+            index: 5,
+            term: 3,
+            payload: None,
+        },
+        Entry {
+            index: 6,
+            term: 3,
+            payload: None,
+        },
+        Entry {
+            index: 7,
+            term: 3,
+            payload: None,
+        },
+    ];
+    context.raft_log.insert_batch(entries).expect("insert should succeed");
+
+    // Test various cases
+    assert_eq!(context.raft_log.last_index_for_term(1), Some(2));
+    assert_eq!(context.raft_log.last_index_for_term(2), Some(4));
+    assert_eq!(context.raft_log.last_index_for_term(3), Some(7));
+    assert_eq!(context.raft_log.last_index_for_term(4), None); // Term not found
+
+    // Test with gaps in terms
+    let entries = vec![
+        Entry {
+            index: 8,
+            term: 5,
+            payload: None,
+        },
+        Entry {
+            index: 9,
+            term: 5,
+            payload: None,
+        },
+    ];
+    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    assert_eq!(context.raft_log.last_index_for_term(5), Some(9));
+
+    // Test with empty log
+    context.raft_log.reset().expect("reset should succeed");
+    assert_eq!(context.raft_log.last_index_for_term(1), None);
+}
+
+#[test]
+fn test_term_index_functions_with_purged_logs() {
+    let context = setup("/tmp/test_term_index_with_purged");
+    context.raft_log.reset().expect("reset successfully!");
+
+    // Insert initial logs
+    let entries: Vec<_> = (1..=10)
+        .map(|i| Entry {
+            index: i,
+            term: if i <= 3 { 1 } else { 2 },
+            payload: None,
+        })
+        .collect();
+    context.raft_log.insert_batch(entries).expect("insert should succeed");
+
+    // Purge first 5 logs
+    context
+        .raft_log
+        .purge_logs_up_to(LogId { index: 5, term: 2 })
+        .expect("purge should succeed");
+
+    // Verify after purge
+    assert_eq!(context.raft_log.first_index_for_term(1), None); // Term 1 purged
+    assert_eq!(context.raft_log.last_index_for_term(1), None); // Term 1 purged
+    assert_eq!(context.raft_log.first_index_for_term(2), Some(6));
+    assert_eq!(context.raft_log.last_index_for_term(2), Some(10));
+}
+
+#[test]
+fn test_term_index_functions_with_concurrent_writes() {
+    let context = setup("/tmp/test_term_index_concurrent");
+    context.raft_log.reset().expect("reset successfully!");
+
+    let raft_log = context.raft_log.clone();
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let cloned_raft_log = raft_log.clone();
+            std::thread::spawn(move || {
+                let term = i + 1;
+                for j in 1..=100 {
+                    let index = (i * 100) + j;
+                    let entry = Entry {
+                        index,
+                        term,
+                        payload: None,
+                    };
+                    cloned_raft_log
+                        .insert_batch(vec![entry])
+                        .expect("insert should succeed");
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Verify term indices
+    for term in 1..=10 {
+        assert_eq!(context.raft_log.first_index_for_term(term), Some((term - 1) * 100 + 1));
+        assert_eq!(context.raft_log.last_index_for_term(term), Some(term * 100));
+    }
+}
+
+#[test]
+fn test_term_index_performance_large_dataset() {
+    let context = setup("/tmp/test_term_index_performance");
+    context.raft_log.reset().expect("reset successfully!");
+
+    // Insert 100,000 logs with terms cycling every 100 logs
+    let mut entries = Vec::new();
+    for i in 1..=100_000 {
+        let term = i / 100 + 1;
+        entries.push(Entry {
+            index: i,
+            term,
+            payload: None,
+        });
+    }
+    context.raft_log.insert_batch(entries).expect("insert should succeed");
+
+    // Measure performance for first_index_for_term
+    let start = std::time::Instant::now();
+    assert_eq!(context.raft_log.first_index_for_term(1), Some(1));
+    assert_eq!(context.raft_log.first_index_for_term(500), Some(49900));
+    assert_eq!(context.raft_log.first_index_for_term(1000), Some(99900));
+    println!("first_index_for_term took: {:?}", start.elapsed());
+
+    // Measure performance for last_index_for_term
+    let start = std::time::Instant::now();
+    assert_eq!(context.raft_log.last_index_for_term(1), Some(99));
+    assert_eq!(context.raft_log.last_index_for_term(500), Some(49999));
+    assert_eq!(context.raft_log.last_index_for_term(1000), Some(99999));
+    println!("last_index_for_term took: {:?}", start.elapsed());
+}

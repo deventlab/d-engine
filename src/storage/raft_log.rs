@@ -56,13 +56,11 @@ pub trait RaftLog: Send + Sync + 'static {
     /// Return tuple format: (last_log_index, last_log_term)
     fn get_last_entry_metadata(&self) -> (u64, u64);
 
-    /// Upcomging feature in v0.2.0
     fn last_index_for_term(
         &self,
         term: u64,
     ) -> Option<u64>;
 
-    /// Upcomging feature in v0.2.0
     fn first_index_for_term(
         &self,
         term: u64,

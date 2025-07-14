@@ -249,16 +249,30 @@ fn default_client_request_id() -> u32 {
 pub struct MembershipConfig {
     #[serde(default = "default_probe_service")]
     pub cluster_healthcheck_probe_service_name: String,
+
+    #[serde(default = "default_verify_leadership_persistent_timeout")]
+    pub verify_leadership_persistent_timeout: Duration,
 }
 impl Default for MembershipConfig {
     fn default() -> Self {
         Self {
             cluster_healthcheck_probe_service_name: default_probe_service(),
+            verify_leadership_persistent_timeout: default_verify_leadership_persistent_timeout(),
         }
     }
 }
 fn default_probe_service() -> String {
     "raft.cluster.ClusterManagementService".to_string()
+}
+
+/// Default timeout for leader to keep verifying its leadership.
+///
+/// In Raft, the leader may retry sending no-op entries to confirm it still holds leadership.
+/// This timeout defines how long the leader will keep retrying before stepping down.
+///
+/// Default: 1 hour.
+fn default_verify_leadership_persistent_timeout() -> Duration {
+    Duration::from_secs(3600)
 }
 
 impl MembershipConfig {

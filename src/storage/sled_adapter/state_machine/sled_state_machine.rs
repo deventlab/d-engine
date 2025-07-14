@@ -352,7 +352,13 @@ impl StateMachine for SledStateMachine {
         for item in exist_db_tree.iter() {
             let (k, v) = item?;
 
-            let key_num = safe_vk(&k)?;
+            let key_num = match safe_vk(&k) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(?e, "generate_snapshot_data::safe_vk");
+                    return Err(e);
+                }
+            };
             if key_num > last_included.index {
                 break; // Stop applying further entries as they will all be greater
             }
@@ -535,6 +541,10 @@ impl SledStateMachine {
 
         // Update last snapshot metadata
         if let Some(last_snapshot_metadata) = Self::load_snapshot_metadata(&snapshot_meta_tree)? {
+            trace!(
+                ?last_snapshot_metadata,
+                "Updating last snapshot metadata from local database when node starts"
+            );
             sm.update_last_snapshot_metadata(&last_snapshot_metadata)?;
         } else {
             info!("No snapshot metadata found in DB");

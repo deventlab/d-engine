@@ -61,6 +61,8 @@ where
     T: TypeConfig,
 {
     async fn run(&mut self) -> Result<()> {
+        info!("[Node-{}] Commit handler started", self.my_id);
+
         let mut batch_counter = 0;
         // let mut interval = tokio::time::interval(Duration::from_millis(10));
         let mut interval = self.dynamic_interval();

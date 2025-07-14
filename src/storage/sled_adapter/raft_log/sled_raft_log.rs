@@ -88,7 +88,7 @@ impl RaftLogMemCache {
             }
         }
         self.length.store(disk_len, Ordering::Release);
-        debug!("RaftLog init next id: {}", disk_len + 1);
+        debug!("RaftLog::refresh local raft log next log index: {}", disk_len + 1);
         self.next_id.store(disk_len + 1, Ordering::Release);
     }
 }
@@ -134,6 +134,53 @@ impl RaftLog for SledRaftLog {
             Some(entry) => entry.term == term,
             None => false, // The log does not exist
         }
+    }
+
+    fn first_index_for_term(
+        &self,
+        term: u64,
+    ) -> Option<u64> {
+        for res in self.tree.iter() {
+            let (key, value) = match res {
+                Ok(pair) => pair,
+                Err(_) => continue,
+            };
+
+            // Convert IVec to bytes slice for decoding
+            let entry_bytes = value.as_ref();
+            match Entry::decode(entry_bytes) {
+                Ok(entry) if entry.term == term => {
+                    return Some(vki(&key));
+                }
+                Ok(entry) if entry.term > term => {
+                    // Terms are non-decreasing so we won't find it later
+                    break;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn last_index_for_term(
+        &self,
+        term: u64,
+    ) -> Option<u64> {
+        let mut iter = self.tree.iter().rev();
+        while let Some(Ok((key, value))) = iter.next() {
+            // Convert IVec to bytes slice for decoding
+            let entry_bytes = value.as_ref();
+            if let Ok(entry) = Entry::decode(entry_bytes) {
+                if entry.term == term {
+                    return Some(vki(&key));
+                }
+                if entry.term < term {
+                    // Terms are non-increasing backwards so we won't find it
+                    break;
+                }
+            }
+        }
+        None
     }
 
     fn entry_term(
@@ -196,20 +243,6 @@ impl RaftLog for SledRaftLog {
     /// Deprecated: Use `last_log_id()` instead.
     fn get_last_entry_metadata(&self) -> (u64, u64) {
         self.last().map(|entry| (entry.index, entry.term)).unwrap_or((0, 0))
-    }
-
-    fn first_index_for_term(
-        &self,
-        _term: u64,
-    ) -> Option<u64> {
-        None
-    }
-
-    fn last_index_for_term(
-        &self,
-        _term: u64,
-    ) -> Option<u64> {
-        None
     }
 
     #[autometrics(objective = API_SLO)]

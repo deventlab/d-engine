@@ -320,17 +320,85 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(self.noop_log_id)
     }
 
-    /// Check leadership quorum verification Immidiatelly
+    /// Verifies leadership status using persistent retry until timeout.
+    ///
+    /// This function is designed for critical operations like configuration changes
+    /// that must eventually succeed. It implements:
+    ///   - Infinite retries with exponential backoff
+    ///   - Jitter randomization to prevent synchronization
+    ///   - Termination only on success, leadership loss, or global timeout
+    ///
+    /// # Parameters
+    /// - `payloads`: Log entries to verify
+    /// - `bypass_queue`: Whether to skip request queues for direct transmission
+    /// - `ctx`: Raft execution context
+    /// - `role_tx`: Channel for role transition events
+    ///
+    /// # Returns
+    /// - `Ok(true)`: Quorum verification succeeded
+    /// - `Ok(false)`: Leadership definitively lost during verification
+    /// - `Err(_)`: Global timeout exceeded or critical failure occurred
+    async fn verify_leadership_persistent(
+        &mut self,
+        payloads: Vec<EntryPayload>,
+        bypass_queue: bool,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
+        let initial_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
+        let max_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.max_delay_ms);
+        let global_timeout = ctx.node_config.raft.membership.verify_leadership_persistent_timeout;
+
+        let mut current_delay = initial_delay;
+        let start_time = Instant::now();
+
+        loop {
+            match self
+                .verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx)
+                .await
+            {
+                Ok(QuorumVerificationResult::Success) => return Ok(true),
+                Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
+                Ok(QuorumVerificationResult::RetryRequired) => {
+                    // Check global timeout before retrying
+                    if start_time.elapsed() > global_timeout {
+                        return Err(
+                            NetworkError::GlobalTimeout("Leadership verification timed out".to_string()).into(),
+                        );
+                    }
+
+                    current_delay = current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
+                    let jitter = Duration::from_millis(rand::random::<u64>() % 500);
+                    sleep(current_delay + jitter).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Immidiatelly verifies leadership status using a limited retry strategy.
     ///
     /// - Bypasses all queues with direct RPC transmission
     /// - Enforces synchronous quorum validation
     /// - Guarantees real-time network visibility
     ///
+    /// This function is designed for latency-sensitive operations like linear reads,
+    /// where rapid failure is preferred over prolonged retries. It implements:
+    ///   - Exponential backoff with jitter
+    ///   - Fixed maximum retry attempts
+    ///   - Immediate failure on leadership loss
+    ///
+    /// # Parameters
+    /// - `payloads`: Log entries to verify (typically empty for leadership checks)
+    /// - `bypass_queue`: Whether to skip request queues for direct transmission
+    /// - `ctx`: Raft execution context
+    /// - `role_tx`: Channel for role transition events
+    ///
     /// # Returns
-    /// - `Ok(true)`: Real-time majority quorum confirmed
-    /// - `Ok(false)`: Failed to verify immediate quorum
-    /// - `Err(_)`: Network or processing failure during real-time verification
-    async fn verify_internal_quorum_with_retry(
+    /// - `Ok(true)`: Quorum verification succeeded within retry limits
+    /// - `Ok(false)`: Leadership definitively lost during verification
+    /// - `Err(_)`: Maximum retries exceeded or critical failure occurred
+    async fn verify_leadership_limited_retry(
         &mut self,
         payloads: Vec<EntryPayload>,
         bypass_queue: bool,
@@ -715,7 +783,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                     if client_read_request.linear {
                         if !self
-                            .verify_internal_quorum_with_retry(vec![], true, ctx, &role_tx)
+                            .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
                             .await
                             .unwrap_or(false)
                         {
@@ -1096,6 +1164,11 @@ impl<T: TypeConfig> LeaderState<T> {
 
                 // 3. Update commit index
                 if let Some(new_commit_index) = self.calculate_new_commit_index(ctx.raft_log(), &peer_updates) {
+                    debug!(
+                        "[Leader-{}] New commit been acknowledged: {}",
+                        self.node_id(),
+                        new_commit_index
+                    );
                     self.update_commit_index_with_signal(LEADER, self.current_term(), new_commit_index, role_tx)?;
                 }
 
@@ -1177,8 +1250,12 @@ impl<T: TypeConfig> LeaderState<T> {
             if let Err(e) = self.update_next_index(*peer_id, update.next_index) {
                 error!("Failed to update next index: {:?}", e);
             }
-            if let Err(e) = self.update_match_index(*peer_id, update.match_index) {
-                error!("Failed to update match index: {:?}", e);
+            trace!("Updated next index for peer {}-{}", peer_id, update.next_index);
+            if let Some(match_index) = update.match_index {
+                if let Err(e) = self.update_match_index(*peer_id, match_index) {
+                    error!("Failed to update match index: {:?}", e);
+                }
+                trace!("Updated match index for peer {}-{}", peer_id, match_index);
             }
         }
     }
@@ -1186,7 +1263,7 @@ impl<T: TypeConfig> LeaderState<T> {
     #[instrument(skip(self))]
     async fn check_learner_progress(
         &mut self,
-        learner_progress: &HashMap<u32, u64>,
+        learner_progress: &HashMap<u32, Option<u64>>,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -1221,10 +1298,16 @@ impl<T: TypeConfig> LeaderState<T> {
                 continue;
             }
 
-            debug!(?leader_commit_index, %match_index, config.learner_catchup_threshold, "check_learner_progress");
+            debug!(
+                ?leader_commit_index,
+                ?match_index,
+                config.learner_catchup_threshold,
+                "check_learner_progress"
+            );
 
+            let match_index = match_index.unwrap_or(0);
             let caught_up = leader_commit_index
-                .checked_sub(*match_index)
+                .checked_sub(match_index)
                 .map(|diff| diff <= config.learner_catchup_threshold)
                 .unwrap_or(true);
 
@@ -1304,7 +1387,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 3. Submit single config change for all ready learners
         debug!("3. Submit single config change for all ready learners");
         match self
-            .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -1348,7 +1431,7 @@ impl<T: TypeConfig> LeaderState<T> {
             });
 
             // Submit batch activation
-            self.verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            self.verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
                 .await?;
 
             // Update all pending active nodes to active
@@ -1565,7 +1648,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 4. Submit config change, and wait for quorum confirmation
         debug!("4. Wait for quorum confirmation");
         match self
-            .verify_internal_quorum_with_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -1851,7 +1934,7 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // Submit batch activation
-        self.verify_internal_quorum_with_retry(vec![EntryPayload::config(change)], false, ctx, role_tx)
+        self.verify_leadership_limited_retry(vec![EntryPayload::config(change)], false, ctx, role_tx)
             .await?;
 
         Ok(())

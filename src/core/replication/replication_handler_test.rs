@@ -597,13 +597,19 @@ fn test_handle_conflict_response_case1() {
         conflict_term: Some(3),
         conflict_index: Some(5),
     };
-    let raft_log = Arc::new(MockRaftLog::new());
+    let last_index_for_term = 2;
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_last_index_for_term()
+        .returning(move |_| Some(last_index_for_term));
 
-    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+    let update = handler
+        .handle_conflict_response(2, conflict_result, &Arc::new(raft_log), 5)
+        .unwrap();
 
     // Temporary logic: next_index = 5 - 1 = 4
-    assert_eq!(update.next_index, 4);
-    assert_eq!(update.match_index, 3);
+    assert_eq!(update.next_index, last_index_for_term + 1);
+    assert_eq!(update.match_index, None);
 }
 
 /// # Case 2: conflict_with_index_only
@@ -614,11 +620,14 @@ fn test_handle_conflict_response_case2() {
         conflict_term: None,
         conflict_index: Some(5),
     };
+    let current_next_index = 11;
     let raft_log = Arc::new(MockRaftLog::new());
 
-    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+    let update = handler
+        .handle_conflict_response(2, conflict_result, &raft_log, current_next_index)
+        .unwrap();
     assert_eq!(update.next_index, 5);
-    assert_eq!(update.match_index, 4);
+    assert_eq!(update.match_index, None);
 }
 
 /// # Case 3: conflict_with_no_info
@@ -630,10 +639,13 @@ fn test_handle_conflict_response_case3() {
         conflict_index: None,
     };
     let raft_log = Arc::new(MockRaftLog::new());
+    let current_next_index = 1;
 
-    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
-    assert_eq!(update.next_index, 1);
-    assert_eq!(update.match_index, 0);
+    let update = handler
+        .handle_conflict_response(2, conflict_result, &raft_log, current_next_index)
+        .unwrap();
+    assert_eq!(update.next_index, current_next_index.saturating_sub(1).max(1));
+    assert_eq!(update.match_index, None);
 }
 
 /// # Case 4: conflict_with_index_zero
@@ -646,11 +658,13 @@ fn test_handle_conflict_response_case4() {
     };
     let raft_log = Arc::new(MockRaftLog::new());
 
-    let update = handler.handle_conflict_response(2, conflict_result, &raft_log).unwrap();
+    let update = handler
+        .handle_conflict_response(2, conflict_result, &raft_log, 0)
+        .unwrap();
 
     // next_index is forced to be >= 1
     assert_eq!(update.next_index, 1);
-    assert_eq!(update.match_index, 0);
+    assert_eq!(update.match_index, None);
 }
 
 /// # Case 1: test_higher_responder_term_triggers_step_down
@@ -681,7 +695,7 @@ fn test_handle_success_response_case2() {
     let update = handler
         .handle_success_response(2, responder_term, success_result, 3)
         .unwrap();
-    assert_eq!(update.match_index, 10);
+    assert_eq!(update.match_index, Some(10));
     assert_eq!(update.next_index, 11);
 }
 
@@ -696,7 +710,7 @@ fn test_handle_success_response_case3() {
     let update = handler
         .handle_success_response(2, responder_term, success_result, 5)
         .unwrap();
-    assert_eq!(update.match_index, 10); // Update normally, do not trigger step down
+    assert_eq!(update.match_index, Some(10)); // Update normally, do not trigger step down
 }
 
 /// # Case 4: test_empty_follower_log_handling
@@ -708,7 +722,7 @@ fn test_handle_success_response_case4() {
     let update = handler
         .handle_success_response(2, responder_term, success_result, 3)
         .unwrap();
-    assert_eq!(update.match_index, 0); // Synchronize from index 0
+    assert_eq!(update.match_index, Some(0)); // Synchronize from index 0
     assert_eq!(update.next_index, 1);
 }
 
@@ -898,7 +912,7 @@ mod handle_raft_request_in_batch_test {
         assert_eq!(
             result.peer_updates.get(&peer2_id),
             Some(&PeerUpdate {
-                match_index: 3,
+                match_index: Some(3),
                 next_index: 4,
                 success: true
             })
@@ -1248,7 +1262,11 @@ mod handle_raft_request_in_batch_test {
         };
 
         // Configure mock Raft log - leader has logs 1-10
+        let last_index_for_term = 2;
         let mut raft_log = MockRaftLog::new();
+        raft_log
+            .expect_last_index_for_term()
+            .returning(move |_| Some(last_index_for_term));
         raft_log.expect_last_entry_id().return_const(10_u64);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 11);
         raft_log.expect_get_entries_between().returning(|range| {
@@ -1346,7 +1364,7 @@ mod handle_raft_request_in_batch_test {
                 assert_eq!(
                     updates[&2],
                     PeerUpdate {
-                        match_index: 10,
+                        match_index: Some(10),
                         next_index: 11,
                         success: true
                     }
@@ -1356,8 +1374,8 @@ mod handle_raft_request_in_batch_test {
                 assert_eq!(
                     updates[&3],
                     PeerUpdate {
-                        match_index: 4, // 5-1
-                        next_index: 5,
+                        match_index: None,
+                        next_index: last_index_for_term + 1,
                         success: false
                     }
                 );
@@ -1366,7 +1384,7 @@ mod handle_raft_request_in_batch_test {
                 assert_eq!(
                     updates[&4],
                     PeerUpdate {
-                        match_index: 10,
+                        match_index: Some(10),
                         next_index: 11,
                         success: true
                     }
@@ -1379,8 +1397,8 @@ mod handle_raft_request_in_batch_test {
                 assert_eq!(
                     updates[&6],
                     PeerUpdate {
-                        match_index: 5, // 6-1
-                        next_index: 6,
+                        match_index: None,
+                        next_index: last_index_for_term + 1,
                         success: false
                     }
                 );
@@ -1389,8 +1407,8 @@ mod handle_raft_request_in_batch_test {
                 assert_eq!(
                     updates[&7],
                     PeerUpdate {
-                        match_index: 3, // 4-1
-                        next_index: 4,
+                        match_index: None,
+                        next_index: last_index_for_term + 1,
                         success: false
                     }
                 );
@@ -1557,7 +1575,7 @@ mod handle_raft_request_in_batch_test {
         );
 
         let update = result.peer_updates.get(&peer2_id).unwrap();
-        assert_eq!(update.match_index, 6);
+        assert_eq!(update.match_index, Some(6));
         assert_eq!(update.next_index, 7);
         assert!(update.success);
     }
@@ -1703,7 +1721,11 @@ mod handle_raft_request_in_batch_test {
         // Initialization state
         // ----------------------
         //Leader's current term and initial log
+        let last_index_for_term = 2;
         let mut raft_log = MockRaftLog::new();
+        raft_log
+            .expect_last_index_for_term()
+            .returning(move |_| Some(last_index_for_term));
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
@@ -2196,7 +2218,7 @@ mod handle_raft_request_in_batch_test {
         // Learner is not in peer_updates, but in learner_progress
         debug!(?result, ?learner_id);
         assert!(result.peer_updates.contains_key(&learner_id));
-        assert_eq!(result.learner_progress.get(&learner_id), Some(&6));
+        assert_eq!(result.learner_progress.get(&learner_id), Some(&Some(6)));
     }
 
     /// # Case: PendingActive node receives replication but is not counted for quorum
@@ -2404,8 +2426,8 @@ mod handle_raft_request_in_batch_test {
         // No peer_updates for learners
         assert!(!result.peer_updates.is_empty());
         // Both learners in learner_progress
-        assert_eq!(result.learner_progress.get(&learner1), Some(&6));
-        assert_eq!(result.learner_progress.get(&learner2), Some(&6));
+        assert_eq!(result.learner_progress.get(&learner1), Some(&Some(6)));
+        assert_eq!(result.learner_progress.get(&learner2), Some(&Some(6)));
     }
 
     /// # Case: Single node cluster (leader only, no other peers)
@@ -2563,8 +2585,8 @@ mod handle_raft_request_in_batch_test {
         assert!(result.commit_quorum_achieved); // Voter success + leader = 2/2
         assert_eq!(result.peer_updates.len(), 3); // Only voter
         assert!(result.peer_updates.contains_key(&voter_id));
-        assert_eq!(result.learner_progress.get(&joining_id), Some(&10));
-        assert_eq!(result.learner_progress.get(&pending_id), Some(&10));
+        assert_eq!(result.learner_progress.get(&joining_id), Some(&Some(10)));
+        assert_eq!(result.learner_progress.get(&pending_id), Some(&Some(10)));
     }
 
     /// # Case: Quorum calculation with mixed node types
@@ -2751,7 +2773,10 @@ mod handle_raft_request_in_batch_test {
             .unwrap();
 
         // The learner's progress should be updated
-        assert_eq!(result.learner_progress.get(&learner_id), Some(&learner_match_index));
+        assert_eq!(
+            result.learner_progress.get(&learner_id),
+            Some(&Some(learner_match_index))
+        );
     }
 
     /// # Case: 0 voters with conflict response
@@ -2790,7 +2815,11 @@ mod handle_raft_request_in_batch_test {
         });
 
         // Mock raft log and transport
+        let last_index_for_term = 2;
         let mut raft_log = MockRaftLog::new();
+        raft_log
+            .expect_last_index_for_term()
+            .returning(move |_| Some(last_index_for_term));
         raft_log.expect_last_entry_id().return_const(1_u64);
         raft_log
             .expect_pre_allocate_raft_logs_next_index()
@@ -2833,8 +2862,8 @@ mod handle_raft_request_in_batch_test {
         assert_eq!(
             result.peer_updates.get(&learner_id).unwrap(),
             &PeerUpdate {
-                match_index: 3, // 5-1
-                next_index: 4,
+                match_index: None, // 5-1
+                next_index: last_index_for_term + 1,
                 success: false
             }
         );

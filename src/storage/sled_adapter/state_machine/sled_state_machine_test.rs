@@ -154,7 +154,7 @@ async fn test_batch_error_handling() {
 
     // Create invalid batch (simulate error)
     let mut batch = Batch::default();
-    batch.insert(b"bad-key".to_vec(), b"bad-value".to_vec());
+    batch.insert(&safe_kv(999), b"bad-value".to_vec());
 
     // This test might need mocking for specific error conditions
     // For demonstration purposes:
@@ -269,6 +269,7 @@ async fn test_generate_snapshot_data_case1() {
 /// # Case 2: Exclude upper entries
 #[tokio::test]
 async fn test_generate_snapshot_data_case2() {
+    enable_logger();
     let root = tempfile::tempdir().unwrap();
     let context = setup_raft_components("/tmp/test_generate_snapshot_data_case2", None, false);
     let sm = context.state_machine.clone();
@@ -380,7 +381,8 @@ mod apply_snapshot_from_file_tests {
         let temp_path = case_path.join("snapshot_basic.tar.gz");
         let checksum = create_valid_snapshot(&temp_path, |db| {
             let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-            tree.insert(b"test_key", b"test_value").unwrap();
+            tree.insert(safe_kv(456), b"test_value").unwrap();
+            db.flush().unwrap();
         })
         .await;
 
@@ -401,7 +403,7 @@ mod apply_snapshot_from_file_tests {
         sm.apply_snapshot_from_file(&metadata, temp_path.clone()).await.unwrap();
 
         // Verify data and metadata
-        assert_eq!(sm.get(b"test_key").unwrap(), Some(b"test_value".to_vec()));
+        assert_eq!(sm.get(&safe_kv(456)).unwrap(), Some(b"test_value".to_vec()));
         assert_eq!(sm.last_applied(), last_included);
         assert_eq!(sm.snapshot_metadata(), Some(metadata.clone()));
     }
@@ -416,7 +418,7 @@ mod apply_snapshot_from_file_tests {
 
         // Add initial data
         let mut batch = Batch::default();
-        batch.insert(b"existing_key", b"old_value");
+        batch.insert(&safe_kv(232), b"old_value");
         sm.apply_batch(batch).unwrap();
 
         // Create COMPRESSED snapshot with new data
@@ -425,7 +427,8 @@ mod apply_snapshot_from_file_tests {
 
         let checksum = create_valid_snapshot(&temp_path, |db| {
             let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-            tree.insert(b"new_key", b"new_value").unwrap();
+            tree.insert(safe_kv(5654), b"new_value").unwrap();
+            db.flush().unwrap();
         })
         .await;
 
@@ -438,8 +441,8 @@ mod apply_snapshot_from_file_tests {
         sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
 
         // Verify state overwrite
-        assert_eq!(sm.get(b"existing_key").unwrap(), None);
-        assert_eq!(sm.get(b"new_key").unwrap(), Some(b"new_value".to_vec()));
+        assert_eq!(sm.get(&safe_kv(232)).unwrap(), None);
+        assert_eq!(sm.get(&safe_kv(5654)).unwrap(), Some(b"new_value".to_vec()));
     }
 
     /// # Case 3: Metadata consistency check
@@ -462,6 +465,7 @@ mod apply_snapshot_from_file_tests {
             })
             .unwrap();
             metadata_tree.insert(LAST_SNAPSHOT_METADATA_KEY, value).unwrap();
+            db.flush().unwrap();
         })
         .await;
 
@@ -490,7 +494,8 @@ mod apply_snapshot_from_file_tests {
 
         let checksum = create_valid_snapshot(&temp_path, |db| {
             let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-            tree.insert(b"test_key", b"test_value").unwrap();
+            tree.insert(safe_kv(656), b"test_value").unwrap();
+            db.flush().unwrap();
         })
         .await;
 
@@ -609,7 +614,7 @@ mod apply_snapshot_from_file_tests {
         assert!(result.is_err());
 
         // Should reset to initial state
-        assert_eq!(sm.get(b"any_key").unwrap(), None);
+        assert_eq!(sm.get(&safe_kv(67)).unwrap(), None);
         assert_eq!(sm.last_applied(), last_included);
     }
 

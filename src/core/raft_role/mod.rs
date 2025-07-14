@@ -306,27 +306,7 @@ impl<T: TypeConfig> RaftRole<T> {
         0
     }
 
-    /// Internal Raft protocol function for quorum verification (not for client requests)
-    ///
-    /// This function is used exclusively for internal Raft consensus operations like:
-    /// - Configuration changes
-    /// - Leadership verification
-    /// - Membership management
-    ///
-    /// Client requests MUST use different payload types (Command) and go through separate channels.
-    ///
-    /// # Parameters
-    /// - `payloads`: Internal protocol payloads (Noop/Config only, NOT Command)
-    /// - `bypass_queue`: When true, forces immediate transmission bypassing queues
-    /// - `ctx`: Shared Raft context reference
-    /// - `peer_channels`: Cluster communication channels
-    /// - `role_tx`: Role change event transmitter
-    ///
-    /// # Returns
-    /// - `Ok(true)` if quorum confirmed
-    /// - `Ok(false)` if quorum lost or network error
-    /// - `Err(_)` for request processing failures
-    pub(crate) async fn verify_internal_quorum_with_retry(
+    pub(crate) async fn verify_leadership_persistent(
         &mut self,
         payloads: Vec<EntryPayload>,
         bypass_queue: bool,
@@ -334,7 +314,7 @@ impl<T: TypeConfig> RaftRole<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
         self.state_mut()
-            .verify_internal_quorum_with_retry(payloads, bypass_queue, ctx, role_tx)
+            .verify_leadership_persistent(payloads, bypass_queue, ctx, role_tx)
             .await
     }
 }

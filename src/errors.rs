@@ -168,6 +168,9 @@ pub enum NetworkError {
     // SnapshotTransferFailed,
     #[error("New node join cluster failed: {0}")]
     JoinFailed(String),
+
+    #[error("Network timeout: {0}")]
+    GlobalTimeout(String),
 }
 
 #[derive(Debug, thiserror::Error)]

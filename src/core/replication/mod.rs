@@ -135,6 +135,7 @@ where
         peer_id: u32,
         conflict_result: ConflictResult,
         raft_log: &Arc<ROF<T>>,
+        current_next_index: u64,
     ) -> Result<crate::PeerUpdate>;
 
     /// Determines follower commit index advancement

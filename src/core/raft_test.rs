@@ -829,7 +829,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
                     (
                         2,
                         PeerUpdate {
-                            match_index: 11,
+                            match_index: Some(11),
                             next_index: 12,
                             success: true,
                         },
@@ -837,7 +837,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
                     (
                         3,
                         PeerUpdate {
-                            match_index: 11,
+                            match_index: Some(11),
                             next_index: 12,
                             success: true,
                         },
@@ -916,7 +916,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                     (
                         2,
                         PeerUpdate {
-                            match_index: 5,
+                            match_index: Some(5),
                             next_index: 6,
                             success: true,
                         },
@@ -924,7 +924,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                     (
                         3,
                         PeerUpdate {
-                            match_index: 5,
+                            match_index: Some(5),
                             next_index: 6,
                             success: true,
                         },
