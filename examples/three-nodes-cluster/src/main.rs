@@ -75,7 +75,7 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {
         },
         _ = tokio::signal::ctrl_c() => {
             info!("Ctrl+C detected.");
-        },
+        }
     }
 
     graceful_tx.send(()).unwrap();
@@ -84,7 +84,7 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {
 }
 
 pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error + Send>> {
-    let log_file = open_file_for_append(Path::new(&log_dir).join(format!("d.log"))).unwrap();
+    let log_file = open_file_for_append(Path::new(&log_dir).join("d.log")).unwrap();
 
     let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
     let base_subscriber = tracing_subscriber::fmt::layer()
