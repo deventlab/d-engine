@@ -2221,12 +2221,12 @@ mod handle_raft_request_in_batch_test {
         assert_eq!(result.learner_progress.get(&learner_id), Some(&Some(6)));
     }
 
-    /// # Case: PendingActive node receives replication but is not counted for quorum
+    /// # Case: Syncing node receives replication but is not counted for quorum
     #[tokio::test]
-    async fn test_handle_raft_request_in_batch_case14_pending_active() {
+    async fn test_handle_raft_request_in_batch_case14_syncing() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut context = mock_raft_context(
-            "/tmp/test_handle_raft_request_in_batch_case14_pending_active",
+            "/tmp/test_handle_raft_request_in_batch_case14_syncing",
             graceful_rx,
             None,
         );
@@ -2249,7 +2249,7 @@ mod handle_raft_request_in_batch_test {
                     id: pending_id,
                     address: "http://127.0.0.1:55002".to_string(),
                     role: LEARNER,
-                    status: NodeStatus::PendingActive.into(),
+                    status: NodeStatus::Syncing.into(),
                 },
             ]
         });
@@ -2320,7 +2320,7 @@ mod handle_raft_request_in_batch_test {
         assert!(result.commit_quorum_achieved);
         // Voter is in peer_updates
         assert!(result.peer_updates.contains_key(&voter_id));
-        // PendingActive is not in peer_updates, nor in learner_progress
+        // Syncing is not in peer_updates, nor in learner_progress
         assert!(result.peer_updates.contains_key(&pending_id));
         assert!(result.learner_progress.contains_key(&pending_id));
     }
@@ -2489,7 +2489,7 @@ mod handle_raft_request_in_batch_test {
         let pending_id = 4;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
-        // Setup membership: 1 voter, 1 joining, 1 pending_active
+        // Setup membership: 1 voter, 1 joining, 1 syncing
         let mut membership = MockMembership::new();
         membership.expect_replication_peers().returning(move || {
             vec![
@@ -2509,7 +2509,7 @@ mod handle_raft_request_in_batch_test {
                     id: pending_id,
                     address: "http://127.0.0.1:55003".to_string(),
                     role: LEARNER,
-                    status: NodeStatus::PendingActive as i32,
+                    status: NodeStatus::Syncing as i32,
                 },
             ]
         });
@@ -2597,7 +2597,7 @@ mod handle_raft_request_in_batch_test {
         let my_id = 1;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
-        // Setup membership: 2 voters, 1 joining, 1 pending_active
+        // Setup membership: 2 voters, 1 joining, 1 syncing
         let pending_id = 2;
         let voter_id = 3;
         let mut membership = MockMembership::new();
@@ -2799,7 +2799,7 @@ mod handle_raft_request_in_batch_test {
                 id: learner_id,
                 address: "http://127.0.0.1:55001".to_string(),
                 role: LEARNER,
-                status: NodeStatus::PendingActive.into(),
+                status: NodeStatus::Syncing.into(),
             }]
         });
         membership.expect_voters().returning(Vec::new);

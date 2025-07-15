@@ -65,7 +65,7 @@ fn test_update_single_node_case1() {
 
     // Test updating an existing node
     let node_id = 4; //Learner 4
-    let new_status = NodeStatus::PendingActive;
+    let new_status = NodeStatus::Syncing;
     let result = membership.update_single_node(node_id, |node| {
         node.status = new_status as i32;
         Ok(())
@@ -75,7 +75,7 @@ fn test_update_single_node_case1() {
 
     // Verify node was updated
     let node_status = membership.get_node_status(node_id).unwrap();
-    assert_eq!(node_status, NodeStatus::PendingActive, "Node status should be updated");
+    assert_eq!(node_status, NodeStatus::Syncing, "Node status should be updated");
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn test_update_single_node_case2() {
 
     // Test updating a non-existing node
     let node_id = 10; //none existent node
-    let new_status = NodeStatus::PendingActive;
+    let new_status = NodeStatus::Syncing;
     let result = membership.update_single_node(node_id, |node| {
         node.status = new_status as i32;
         Ok(())
@@ -101,7 +101,7 @@ fn test_update_multiple_nodes_case1() {
     let membership = create_test_membership();
     let nodes = vec![4, 5];
 
-    let new_status = NodeStatus::PendingActive;
+    let new_status = NodeStatus::Syncing;
     let result = membership.update_multiple_nodes(&nodes, |node| {
         node.status = new_status as i32;
         Ok(())
@@ -111,11 +111,7 @@ fn test_update_multiple_nodes_case1() {
     // Verify all nodes were updated
     for node_id in nodes {
         let node_status = membership.get_node_status(node_id).unwrap();
-        assert_eq!(
-            node_status,
-            NodeStatus::PendingActive,
-            "All nodes should be PendingActive"
-        );
+        assert_eq!(node_status, NodeStatus::Syncing, "All nodes should be Syncing");
     }
 }
 
@@ -124,7 +120,7 @@ fn test_update_multiple_nodes_case2() {
     let membership = create_test_membership();
     let nodes = vec![4, 13];
 
-    let new_status = NodeStatus::PendingActive;
+    let new_status = NodeStatus::Syncing;
     let result = membership.update_multiple_nodes(&nodes, |node| {
         node.status = new_status as i32;
         Ok(())
@@ -133,11 +129,7 @@ fn test_update_multiple_nodes_case2() {
 
     // Verify existing node was updated
     let node4_status = membership.get_node_status(4).unwrap();
-    assert_eq!(
-        node4_status,
-        NodeStatus::PendingActive,
-        "Existing node should be updated"
-    );
+    assert_eq!(node4_status, NodeStatus::Syncing, "Existing node should be updated");
 
     // Verify new nodes were created
     assert!(!membership.contains_node(13), "New node should exist");
@@ -169,7 +161,7 @@ fn test_replication_peers_case1() {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
             role: LEARNER,
-            status: NodeStatus::PendingActive.into(),
+            status: NodeStatus::Syncing.into(),
         },
         NodeMeta {
             id: 5,
@@ -413,7 +405,7 @@ async fn test_update_cluster_conf_from_leader_case3() {
         change: Some(MembershipChange {
             change: Some(Change::Promote(PromoteLearner {
                 node_id: 3,
-                status: NodeStatus::PendingActive.into(),
+                status: NodeStatus::Syncing.into(),
             })),
         }),
     };
@@ -454,7 +446,7 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
         change: Some(MembershipChange {
             change: Some(Change::Promote(PromoteLearner {
                 node_id: 3,
-                status: NodeStatus::PendingActive.into(),
+                status: NodeStatus::Syncing.into(),
             })),
         }),
     };
@@ -767,7 +759,7 @@ mod add_learner_test {
         assert_eq!(replication_members[0].id, 2);
         assert_eq!(replication_members[0].address, "127.0.0.1:1234");
         assert_eq!(replication_members[0].role, LEARNER);
-        assert_eq!(replication_members[0].status, NodeStatus::PendingActive as i32);
+        assert_eq!(replication_members[0].status, NodeStatus::Syncing as i32);
     }
 
     #[tokio::test]

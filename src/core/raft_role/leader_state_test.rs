@@ -2898,7 +2898,7 @@ mod batch_promote_learners_test {
             membership
                 .expect_get_node_status()
                 .with(eq(*learner_id))
-                .return_const(Some(NodeStatus::PendingActive));
+                .return_const(Some(NodeStatus::Syncing));
         }
 
         raft_context.membership = Arc::new(membership);

@@ -138,8 +138,8 @@ pub enum NodeStatus {
     ///
     /// New node, catching up with logs
     Joining = 0,
-    /// Logs have been caught up, waiting for quorum confirmation
-    PendingActive = 1,
+    /// Start syncing with leader committed logs
+    Syncing = 1,
     /// Running status
     ///
     /// Formal voting member
@@ -161,7 +161,7 @@ impl NodeStatus {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Joining => "JOINING",
-            Self::PendingActive => "PENDING_ACTIVE",
+            Self::Syncing => "SYNCING",
             Self::Active => "ACTIVE",
             Self::StandBy => "STAND_BY",
             Self::Draining => "DRAINING",
@@ -172,7 +172,7 @@ impl NodeStatus {
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "JOINING" => Some(Self::Joining),
-            "PENDING_ACTIVE" => Some(Self::PendingActive),
+            "SYNCING" => Some(Self::Syncing),
             "ACTIVE" => Some(Self::Active),
             "STAND_BY" => Some(Self::StandBy),
             "DRAINING" => Some(Self::Draining),

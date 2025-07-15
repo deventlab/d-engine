@@ -92,7 +92,7 @@ where
                 .values()
                 .filter(|node| {
                     node.id != self.node_id
-                        && (node.status == NodeStatus::Active as i32 || node.status == NodeStatus::PendingActive as i32)
+                        && (node.status == NodeStatus::Active as i32 || node.status == NodeStatus::Syncing as i32)
                 })
                 .cloned()
                 .collect()
@@ -442,7 +442,7 @@ where
                     id: node_id,
                     address,
                     role: LEARNER,
-                    status: NodeStatus::PendingActive as i32,
+                    status: NodeStatus::Syncing as i32,
                 },
             );
             info!("[node-{}] Adding a learner node successed: {}", self.node_id, node_id);

@@ -135,8 +135,24 @@ where
         if self.ctx.node_config.is_joining() {
             info!("Node({}) is joining and needs to fetch initial snapshot.", self.node_id);
             if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {
-                error!("Initial snapshot failed: {:?}", e);
-                return Err(e);
+                warn!(
+                    "Initial snapshot failed: {:?}.
+            ================================================
+            Leader has not generate snapshot yet. New node
+            will sync with Leader via append entries requests.
+            ================================================
+            ",
+                    e
+                );
+                println!(
+                    "
+            ================================================
+            Leader has not generate snapshot yet. New node
+            will sync with Leader via append entries requests
+            ================================================
+                    "
+                );
+                // return Err(e);
             }
         }
 

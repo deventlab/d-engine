@@ -42,7 +42,7 @@ where
     #[allow(unused)]
     fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
-    /// All non-self nodes (including PendingActive and Active)
+    /// All non-self nodes (including Syncing and Active)
     /// Note:
     /// Joining node has not start its Raft event processing engine yet.
     fn replication_peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
@@ -283,10 +283,10 @@ impl ClusterConfUpdateResponse {
 
 impl NodeStatus {
     pub fn is_promotable(&self) -> bool {
-        matches!(self, NodeStatus::Joining | NodeStatus::PendingActive)
+        matches!(self, NodeStatus::Syncing)
     }
 
     pub fn is_i32_promotable(value: i32) -> bool {
-        matches!(value, v if v == (NodeStatus::Joining as i32) || v == (NodeStatus::PendingActive as i32))
+        matches!(value, v if v == (NodeStatus::Syncing as i32))
     }
 }

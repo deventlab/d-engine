@@ -1356,7 +1356,7 @@ impl<T: TypeConfig> LeaderState<T> {
         debug!("1. Determine optimal promotion status based on quorum safety");
         let membership = ctx.membership();
         let current_voters = membership.voters().len();
-        // let pending_active = membership.nodes_with_status(NodeStatus::PendingActive).len();
+        // let syncings = membership.nodes_with_status(NodeStatus::Syncing).len();
         let new_active_count = current_voters + ready_learners_ids.len();
 
         // Determine target status based on quorum safety
@@ -1387,7 +1387,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 3. Submit single config change for all ready learners
         debug!("3. Submit single config change for all ready learners");
         match self
-            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true, ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -1405,45 +1405,45 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    /// TODO: to be cleaned up
-    /// Attempt to activate all pending nodes if quorum safety allows
-    async fn try_activate_pending_nodes(
-        &mut self,
-        ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        let membership = ctx.membership();
-        let current_voters = membership.voters().len();
-        let pending_nodes = membership.nodes_with_status(NodeStatus::PendingActive);
+    // /// TODO: to be cleaned up
+    // /// Attempt to activate all pending nodes if quorum safety allows
+    // async fn try_activate_pending_nodes(
+    //     &mut self,
+    //     ctx: &RaftContext<T>,
+    //     role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    // ) -> Result<()> {
+    //     let membership = ctx.membership();
+    //     let current_voters = membership.voters().len();
+    //     let pending_nodes = membership.nodes_with_status(NodeStatus::Syncing);
 
-        if pending_nodes.is_empty() {
-            return Ok(());
-        }
+    //     if pending_nodes.is_empty() {
+    //         return Ok(());
+    //     }
 
-        // Check if activating all pending nodes is safe
-        if ensure_safe_join(self.node_id(), current_voters + pending_nodes.len()).is_ok() {
-            debug!("Activating {} pending nodes", pending_nodes.len());
+    //     // Check if activating all pending nodes is safe
+    //     if ensure_safe_join(self.node_id(), current_voters + pending_nodes.len()).is_ok() {
+    //         debug!("Activating {} pending nodes", pending_nodes.len());
 
-            // Create batch activation config change
-            let config_change = Change::BatchPromote(BatchPromote {
-                node_ids: pending_nodes.iter().map(|n| n.id).collect(),
-                new_status: NodeStatus::Active as i32,
-            });
+    //         // Create batch activation config change
+    //         let config_change = Change::BatchPromote(BatchPromote {
+    //             node_ids: pending_nodes.iter().map(|n| n.id).collect(),
+    //             new_status: NodeStatus::Active as i32,
+    //         });
 
-            // Submit batch activation
-            self.verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
-                .await?;
+    //         // Submit batch activation
+    //         self.verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true, ctx, role_tx)
+    //             .await?;
 
-            // Update all pending active nodes to active
-            for node in pending_nodes {
-                if let Err(e) = ctx.membership().update_node_status(node.id, NodeStatus::Active) {
-                    error!(?e, %node.id, "update_node_status(node_id, NodeStatus::Active) failed");
-                }
-            }
-        }
+    //         // Update all pending active nodes to active
+    //         for node in pending_nodes {
+    //             if let Err(e) = ctx.membership().update_node_status(node.id, NodeStatus::Active) {
+    //                 error!(?e, %node.id, "update_node_status(node_id, NodeStatus::Active) failed");
+    //             }
+    //         }
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// Calculate new submission index
     #[instrument(skip(self))]
@@ -1648,14 +1648,14 @@ impl<T: TypeConfig> LeaderState<T> {
         // 4. Submit config change, and wait for quorum confirmation
         debug!("4. Wait for quorum confirmation");
         match self
-            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], false, ctx, role_tx)
+            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true, ctx, role_tx)
             .await
         {
             Ok(true) => {
-                // 5. Update node status to PendingActive
-                debug!("5. Update node status to PendingActive");
-                // 5.1. Add the node as Learner with PendingActive status
-                debug!("2. Add the node as Learner with PendingActive status");
+                // 5. Update node status to Syncing
+                debug!("5. Update node status to Syncing");
+                // 5.1. Add the node as Learner with Syncing status
+                debug!("5.1. Add the node as Learner with Syncing status");
                 // ctx.membership().add_learner(node_id, address.clone())?;
 
                 debug!(
@@ -1934,7 +1934,7 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // Submit batch activation
-        self.verify_leadership_limited_retry(vec![EntryPayload::config(change)], false, ctx, role_tx)
+        self.verify_leadership_limited_retry(vec![EntryPayload::config(change)], true, ctx, role_tx)
             .await?;
 
         Ok(())
