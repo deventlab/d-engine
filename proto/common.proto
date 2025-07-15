@@ -59,7 +59,7 @@ message BatchPromote{
 enum NodeStatus {
     // Initial joining process
     JOINING = 0;        // New node, catching up with logs
-    PENDING_ACTIVE = 1; // Logs have been caught up, waiting for quorum confirmation
+    SYNCING = 1;        // Start syncing with leader committed logs
 
     // Running status
     ACTIVE = 2;         // Formal voting member
