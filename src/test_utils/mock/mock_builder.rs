@@ -419,6 +419,7 @@ pub fn mock_purge_exewcutor() -> MockPurgeExecutor {
 }
 pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     let mut membership = MockMembership::new();
+    membership.expect_can_rejoin().returning(|_| Ok(()));
     membership.expect_voters().returning(Vec::new);
     membership.expect_replication_peers().returning(Vec::new);
     membership.expect_members().returning(Vec::new);
