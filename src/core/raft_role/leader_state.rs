@@ -43,6 +43,7 @@ use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
 use crate::proto::common::BatchPromote;
+use crate::proto::common::BatchRemove;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::common::NodeStatus;
@@ -205,7 +206,7 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Rationale: Avoiding frequent full scans improves batching efficiency and reduces CPU spikes
     /// in high-load environments (particularly crucial for RocketMQ-on-DLedger workflows).
-    pub(super) next_stale_check: Instant,
+    pub(super) next_membership_maintenance_check: Instant,
 
     /// Queue of learners that have caught up and are pending promotion to voter.
     pub(super) pending_promotions: VecDeque<PendingPromotion>,
@@ -601,9 +602,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx.membership_ref().mark_leader_id(self.node_id())?;
 
         // 1. Clear expired learners
-        self.conditionally_purge_stale_learners(ctx);
-        // 2. Regardless of whether a stale node is found, we set the next check according to a fixed period
-        self.reset_next_stale_check(ctx.node_config().raft.promotion.stale_check_interval);
+        if let Err(e) = self.run_periodic_maintenance(role_tx, ctx).await {
+            error!("Failed to run periodic maintenance: {}", e);
+        }
 
         // 3. Batch trigger check (should be prioritized before heartbeat check)
         if now >= self.timer.batch_deadline() {
@@ -1640,6 +1641,11 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 3. Create configuration change payload
         debug!("3. Create configuration change payload");
+        if let Err(e) = membership.can_rejoin(node_id) {
+            error!("Node {node_id} cannot rejoin: {}", e);
+            return Err(e);
+        }
+
         let config_change = Change::AddNode(AddNode {
             node_id,
             address: address.clone(),
@@ -1785,7 +1791,7 @@ impl<T: TypeConfig> LeaderState<T> {
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
             peer_purge_progress: HashMap::new(),
-            next_stale_check: Instant::now(),
+            next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             _marker: PhantomData,
         }
@@ -1837,7 +1843,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         // Get promotion configuration from the node config
-        let config = &ctx.node_config().raft.promotion;
+        let config = &ctx.node_config().raft.membership.promotion;
 
         // Step 1: Remove stale entries (older than configured threshold)
         let now = Instant::now();
@@ -1940,19 +1946,37 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    async fn run_periodic_maintenance(
+        &mut self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        if let Err(e) = self.conditionally_purge_stale_learners(ctx) {
+            error!("Stale learner purge failed: {}", e);
+        }
+
+        if let Err(e) = self.conditionally_purge_zombie_nodes(role_tx, ctx).await {
+            error!("Zombie node purge failed: {}", e);
+        }
+
+        // Regardless of whether a stale node is found, we set the next check according to a fixed period
+        self.reset_next_membership_maintenance_check(ctx.node_config().raft.membership.membership_maintenance_interval);
+        Ok(())
+    }
+
     /// Periodic check triggered every ~30s in the worst-case scenario
     /// using priority-based lazy scheduling. Actual average frequency
     /// is inversely proportional to system load.
     pub(super) fn conditionally_purge_stale_learners(
         &mut self,
         ctx: &RaftContext<T>,
-    ) {
-        let config = &ctx.node_config.raft.promotion;
+    ) -> Result<()> {
+        let config = &ctx.node_config.raft.membership.promotion;
 
         // Optimization: Skip check 99.9% of the time using scheduled trial method
-        if self.pending_promotions.is_empty() || self.next_stale_check > Instant::now() {
+        if self.pending_promotions.is_empty() || self.next_membership_maintenance_check > Instant::now() {
             trace!("Skipping stale learner check");
-            return;
+            return Ok(());
         }
 
         let now = Instant::now();
@@ -1991,13 +2015,60 @@ impl<T: TypeConfig> LeaderState<T> {
                 error!("Failed to handle stale learner: {}", e);
             }
         }
+
+        Ok(())
     }
 
-    pub(super) fn reset_next_stale_check(
+    /// Remove non-Active zombie nodes that exceed failure threshold
+    async fn conditionally_purge_zombie_nodes(
         &mut self,
-        stale_check_interval: Duration,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        let zombie_candidates = ctx.membership().get_zombie_candidates().await;
+        let mut nodes_to_remove = Vec::new();
+
+        for node_id in zombie_candidates {
+            if let Some(status) = ctx.membership().get_node_status(node_id) {
+                if status != NodeStatus::Active {
+                    nodes_to_remove.push(node_id);
+                }
+            }
+        }
+        // Batch removal if we have candidates
+        if !nodes_to_remove.is_empty() {
+            let change = Change::BatchRemove(BatchRemove {
+                node_ids: nodes_to_remove.clone(),
+            });
+
+            info!("Proposing batch removal of zombie nodes: {:?}", nodes_to_remove);
+
+            // Submit single config change for all nodes
+            match self
+                .verify_leadership_limited_retry(vec![EntryPayload::config(change)], false, ctx, role_tx)
+                .await
+            {
+                Ok(true) => {
+                    info!("Batch removal committed for nodes: {:?}", nodes_to_remove);
+                }
+                Ok(false) => {
+                    warn!("Failed to commit batch removal");
+                }
+                Err(e) => {
+                    error!("Batch removal error: {:?}", e);
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn reset_next_membership_maintenance_check(
+        &mut self,
+        membership_maintenance_interval: Duration,
     ) {
-        self.next_stale_check = Instant::now() + stale_check_interval;
+        self.next_membership_maintenance_check = Instant::now() + membership_maintenance_interval;
     }
 
     /// FINRA Rule 4370-approved remediation
@@ -2054,7 +2125,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
             peer_purge_progress: HashMap::new(),
-            next_stale_check: Instant::now(),
+            next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
 
             _marker: PhantomData,

@@ -56,10 +56,6 @@ pub struct RaftConfig {
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
-
-    /// Configuration settings for ready learners promotion
-    #[serde(default)]
-    pub promotion: PromotionConfig,
 }
 
 impl Debug for RaftConfig {
@@ -82,7 +78,6 @@ impl Default for RaftConfig {
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
-            promotion: PromotionConfig::default(),
         }
     }
 }
@@ -252,17 +247,35 @@ pub struct MembershipConfig {
 
     #[serde(default = "default_verify_leadership_persistent_timeout")]
     pub verify_leadership_persistent_timeout: Duration,
+
+    #[serde(default = "default_membership_maintenance_interval")]
+    pub membership_maintenance_interval: Duration,
+
+    #[serde(default)]
+    pub zombie: ZombieConfig,
+
+    /// Configuration settings for ready learners promotion
+    #[serde(default)]
+    pub promotion: PromotionConfig,
 }
 impl Default for MembershipConfig {
     fn default() -> Self {
         Self {
             cluster_healthcheck_probe_service_name: default_probe_service(),
             verify_leadership_persistent_timeout: default_verify_leadership_persistent_timeout(),
+            membership_maintenance_interval: default_membership_maintenance_interval(),
+            zombie: ZombieConfig::default(),
+            promotion: PromotionConfig::default(),
         }
     }
 }
 fn default_probe_service() -> String {
     "raft.cluster.ClusterManagementService".to_string()
+}
+
+// 30 seconds
+fn default_membership_maintenance_interval() -> Duration {
+    Duration::from_secs(30)
 }
 
 /// Default timeout for leader to keep verifying its leadership.
@@ -575,6 +588,33 @@ fn default_snapshot_push_max_retry() -> u32 {
 }
 fn default_push_timeout_in_ms() -> u64 {
     300_000
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ZombieConfig {
+    /// zombie connection failed threshold
+    #[serde(default = "default_zombie_threshold")]
+    pub threshold: u32,
+
+    #[serde(default = "default_zombie_purge_interval")]
+    pub purge_interval: Duration,
+}
+
+impl Default for ZombieConfig {
+    fn default() -> Self {
+        Self {
+            threshold: default_zombie_threshold(),
+            purge_interval: default_zombie_purge_interval(),
+        }
+    }
+}
+
+fn default_zombie_threshold() -> u32 {
+    3
+}
+// 30 seconds
+fn default_zombie_purge_interval() -> Duration {
+    Duration::from_secs(30)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

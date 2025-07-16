@@ -33,6 +33,7 @@ message MembershipChange {
     RemoveNode remove_node = 2;
     PromoteLearner promote = 3;
     BatchPromote batch_promote = 4;
+    BatchRemove batch_remove = 5;
   }
 }
 
@@ -56,6 +57,10 @@ message BatchPromote{
   NodeStatus new_status = 2;
 }
 
+message BatchRemove {
+  repeated uint32 node_ids = 1;
+}
+
 enum NodeStatus {
     // Initial joining process
     JOINING = 0;        // New node, catching up with logs
@@ -68,6 +73,8 @@ enum NodeStatus {
     // Offline process
     DRAINING = 4;       // Prepare to go offline (not accepting new requests, transfer data)
     RETIRING = 5;       // Retiring (data migration completed)
+
+    ZOMBIE = 6;         // Zombie node (removed from cluster)
 }
 
 message SnapshotEntry {

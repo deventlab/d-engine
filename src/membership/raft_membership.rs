@@ -30,6 +30,8 @@ use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 
+use super::health_monitor::HealthMonitor;
+use super::health_monitor::RaftHealthMonitor;
 use super::MembershipGuard;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::membership::health_checker::HealthChecker;
@@ -61,6 +63,7 @@ where
     node_id: u32,
     membership: MembershipGuard,
     config: RaftNodeConfig,
+    pub(super) health_monitor: RaftHealthMonitor,
     _phantom: PhantomData<T>,
 }
 
@@ -328,14 +331,18 @@ where
         debug!("[{}] update_cluster_conf_from_leader: {:?}", my_id, &req);
 
         // Validation logic
-        if let Some(leader_id) = current_leader_id {
-            if leader_id != req.id {
-                return Ok(ClusterConfUpdateResponse::not_leader(
-                    my_id,
-                    my_current_term,
-                    current_conf_version,
-                ));
-            }
+        let leader_id = if let Some(leader_id) = current_leader_id {
+            leader_id
+        } else {
+            return Err(MembershipError::NoLeaderFound.into());
+        };
+
+        if leader_id != req.id {
+            return Ok(ClusterConfUpdateResponse::not_leader(
+                my_id,
+                my_current_term,
+                current_conf_version,
+            ));
         }
 
         if my_current_term > req.term {
@@ -388,6 +395,22 @@ where
                     self.update_conf_version(req.version);
                     return Ok(ClusterConfUpdateResponse::success(my_id, my_current_term, req.version));
                 }
+
+                Some(Change::BatchRemove(br)) => {
+                    if br.node_ids.contains(&leader_id) {
+                        return Err(MembershipError::RemoveNodeIsLeader(leader_id).into());
+                    }
+                    // Atomic batch removal
+                    self.membership.blocking_write(|guard| -> Result<()> {
+                        for node_id in &br.node_ids {
+                            guard.nodes.remove(node_id);
+                        }
+                        Ok(())
+                    })?;
+                    self.update_conf_version(req.version);
+                    return Ok(ClusterConfUpdateResponse::success(my_id, my_current_term, req.version));
+                }
+
                 None => return Err(MembershipError::InvalidChangeRequest.into()),
             }
         } else {
@@ -516,14 +539,34 @@ where
         node_id: u32,
         conn_type: ConnectionType,
     ) -> Option<Channel> {
-        let addr = self.get_address(node_id)?;
+        let addr = match self.get_address(node_id) {
+            Some(addr) => addr,
+            None => {
+                // Record failure if node address is missing
+                self.health_monitor.record_failure(node_id).await;
+                return None;
+            }
+        };
         let params = match conn_type {
             ConnectionType::Control => self.config.network.control.clone(),
             ConnectionType::Data => self.config.network.data.clone(),
             ConnectionType::Bulk => self.config.network.bulk.clone(),
         };
 
-        Self::connect_with_params(addr, params).await.ok()
+        debug!("Connecting to node {}::{}", node_id, addr);
+        match Self::connect_with_params(addr, params).await {
+            Ok(channel) => {
+                // Reset failure count on successful connection
+                self.health_monitor.record_success(node_id).await;
+                Some(channel)
+            }
+            Err(e) => {
+                // Record connection failure
+                self.health_monitor.record_failure(node_id).await;
+                warn!("Failed to connect to node {}: {}", node_id, e);
+                None
+            }
+        }
     }
 
     fn get_address(
@@ -556,6 +599,17 @@ where
                 }
                 Ok(())
             }
+
+            Some(Change::BatchRemove(br)) => {
+                // Atomic batch removal
+                self.membership.blocking_write(|guard| {
+                    for node_id in &br.node_ids {
+                        guard.nodes.remove(node_id);
+                    }
+                    guard.cluster_conf_version += 1;
+                    Ok(())
+                })
+            }
             None => Ok(()),
         }
     }
@@ -576,6 +630,24 @@ where
         // }
         info!("Config change applied at index {}", index);
     }
+
+    async fn get_zombie_candidates(&self) -> Vec<u32> {
+        self.health_monitor.get_zombie_candidates().await
+    }
+
+    fn can_rejoin(
+        &self,
+        node_id: u32,
+    ) -> Result<()> {
+        if !self.contains_node(node_id) {
+            return Ok(());
+        }
+
+        match self.get_node_status(node_id) {
+            Some(NodeStatus::Zombie) => Ok(()),
+            _ => Err(MembershipError::NodeAlreadyExists(node_id).into()),
+        }
+    }
 }
 
 impl<T> RaftMembership<T>
@@ -587,11 +659,13 @@ where
         initial_nodes: Vec<NodeMeta>,
         config: RaftNodeConfig,
     ) -> Self {
+        let zombie_threshold = config.raft.membership.zombie.threshold;
         Self {
             node_id,
             membership: MembershipGuard::new(initial_nodes, 0),
             config,
             _phantom: PhantomData,
+            health_monitor: RaftHealthMonitor::new(zombie_threshold),
         }
     }
 

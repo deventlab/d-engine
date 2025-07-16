@@ -3336,16 +3336,16 @@ mod pending_promotion_tests {
     async fn test_stale_check_timing() {
         let node_config = node_config("/tmp/test_stale_check_timing");
         let mut leader = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
-        leader.reset_next_stale_check(Duration::from_secs(60));
+        leader.reset_next_membership_maintenance_check(Duration::from_secs(60));
 
         tokio::time::advance(Duration::from_secs(61)).await;
-        assert!(Instant::now() >= leader.next_stale_check);
+        assert!(Instant::now() >= leader.next_membership_maintenance_check);
     }
 
     #[test]
     fn test_config_propagation_to_stale_handling() {
         let mut config = node_config("/tmp/test_config_propagation_to_stale_handling");
-        config.raft.promotion.stale_learner_threshold = Duration::from_secs(120);
+        config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(120);
 
         let leader = LeaderState::<MockTypeConfig>::new(1, Arc::new(config));
         assert_eq!(leader.pending_promotions.capacity(), 0); // Default
@@ -3382,11 +3382,11 @@ mod stale_learner_tests {
         pending_nodes: Vec<(u32, Duration)>,
     ) -> (LeaderState<MockTypeConfig>, MockMembership<MockTypeConfig>) {
         let mut node_config = node_config(&format!("/tmp/{test_name}",));
-        node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
-        node_config.raft.promotion.stale_check_interval = Duration::from_secs(60);
+        node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
+        node_config.raft.membership.promotion.stale_check_interval = Duration::from_secs(60);
 
         let mut leader = LeaderState::new(1, Arc::new(node_config));
-        leader.next_stale_check = Instant::now();
+        leader.next_membership_maintenance_check = Instant::now();
 
         // Add pending promotions
         let now = Instant::now();
@@ -3424,8 +3424,8 @@ mod stale_learner_tests {
 
         let (mut leader, membership) = create_test_leader_state("test_stale_check_optimization", nodes);
         let mut node_config = node_config("/tmp/test_stale_check_optimization");
-        node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
-        node_config.raft.promotion.stale_check_interval = Duration::from_secs(60);
+        node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
+        node_config.raft.membership.promotion.stale_check_interval = Duration::from_secs(60);
         let ctx = mock_raft_context(
             "test_stale_check_optimization",
             Arc::new(membership),
@@ -3433,7 +3433,7 @@ mod stale_learner_tests {
         );
 
         // Should only check first 100 entries (out of 200)
-        leader.conditionally_purge_stale_learners(&ctx);
+        leader.conditionally_purge_stale_learners(&ctx).unwrap();
 
         // Should purge exactly 2 entries (1% of 200 = 2)
         assert_eq!(leader.pending_promotions.len(), 198);
@@ -3451,25 +3451,25 @@ mod stale_learner_tests {
 
         let ctx = mock_raft_context("test_no_purge_when_fresh", Arc::new(membership), None);
 
-        leader.conditionally_purge_stale_learners(&ctx);
+        leader.conditionally_purge_stale_learners(&ctx).unwrap();
         assert_eq!(leader.pending_promotions.len(), 2);
     }
 
     /// Test check scheduling logic
     #[tokio::test]
-    async fn test_stale_check_scheduling() {
-        let (mut leader, _) = create_test_leader_state("test_stale_check_scheduling", vec![]);
+    async fn test_membership_maintenance_scheduling() {
+        let (mut leader, _) = create_test_leader_state("test_membership_maintenance_scheduling", vec![]);
         let interval = Duration::from_secs(60);
         // First call
-        leader.reset_next_stale_check(interval);
-        let next_check1 = leader.next_stale_check;
+        leader.reset_next_membership_maintenance_check(interval);
+        let next_check1 = leader.next_membership_maintenance_check;
 
         // Small delay to ensure time progresses
         tokio::time::sleep(Duration::from_millis(1)).await;
 
         // Second call
-        leader.reset_next_stale_check(interval);
-        let next_check2 = leader.next_stale_check;
+        leader.reset_next_membership_maintenance_check(interval);
+        let next_check2 = leader.next_membership_maintenance_check;
 
         // Verify both are in the future
         assert!(next_check1 > Instant::now());
@@ -3504,7 +3504,7 @@ mod stale_learner_tests {
 
         // Time the staleness check
         let start = Instant::now();
-        leader.conditionally_purge_stale_learners(&ctx);
+        leader.conditionally_purge_stale_learners(&ctx).unwrap();
         let elapsed = start.elapsed();
 
         // Should take <1ms even for large queues
@@ -3526,16 +3526,16 @@ mod stale_learner_tests {
                 (103, Duration::from_secs(29)), // 1s under threshold
             ],
         );
-        leader.next_stale_check = Instant::now() - Duration::from_secs(1);
+        leader.next_membership_maintenance_check = Instant::now() - Duration::from_secs(1);
         let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
-        node_config.raft.promotion.stale_learner_threshold = Duration::from_secs(30);
+        node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
         let ctx = mock_raft_context(
             "test_promotion_timeout_threshold",
             Arc::new(membership),
             Some(Arc::new(node_config)),
         );
 
-        leader.conditionally_purge_stale_learners(&ctx);
+        leader.conditionally_purge_stale_learners(&ctx).unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 2);
         assert!(leader.pending_promotions.iter().any(|p| p.node_id == 103));

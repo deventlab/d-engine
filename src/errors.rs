@@ -403,6 +403,10 @@ pub enum MembershipError {
     #[error("Membership changes require leader role")]
     NotLeader,
 
+    /// No leader information available
+    #[error("No leader information available")]
+    NoLeaderFound,
+
     /// Non-learner node attempted join cluster
     #[error("Only Learner can join cluster")]
     NotLearner,

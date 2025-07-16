@@ -50,7 +50,7 @@ pub struct Noop {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MembershipChange {
-    #[prost(oneof = "membership_change::Change", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "membership_change::Change", tags = "1, 2, 3, 4, 5")]
     pub change: ::core::option::Option<membership_change::Change>,
 }
 /// Nested message and enum types in `MembershipChange`.
@@ -66,6 +66,8 @@ pub mod membership_change {
         Promote(super::PromoteLearner),
         #[prost(message, tag = "4")]
         BatchPromote(super::BatchPromote),
+        #[prost(message, tag = "5")]
+        BatchRemove(super::BatchRemove),
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -97,6 +99,12 @@ pub struct BatchPromote {
     pub node_ids: ::prost::alloc::vec::Vec<u32>,
     #[prost(enumeration = "NodeStatus", tag = "2")]
     pub new_status: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchRemove {
+    #[prost(uint32, repeated, tag = "1")]
+    pub node_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -152,6 +160,8 @@ pub enum NodeStatus {
     Draining = 4,
     /// Retiring (data migration completed)
     Retiring = 5,
+    /// Zombie node (removed from cluster)
+    Zombie = 6,
 }
 impl NodeStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -166,6 +176,7 @@ impl NodeStatus {
             Self::StandBy => "STAND_BY",
             Self::Draining => "DRAINING",
             Self::Retiring => "RETIRING",
+            Self::Zombie => "ZOMBIE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -177,6 +188,7 @@ impl NodeStatus {
             "STAND_BY" => Some(Self::StandBy),
             "DRAINING" => Some(Self::Draining),
             "RETIRING" => Some(Self::Retiring),
+            "ZOMBIE" => Some(Self::Zombie),
             _ => None,
         }
     }

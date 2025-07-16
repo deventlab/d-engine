@@ -432,6 +432,7 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
             version: 1,
             nodes: vec![],
         });
+    membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
 }

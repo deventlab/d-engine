@@ -1,3 +1,5 @@
+use tokio::sync::oneshot;
+
 use super::RaftMembership;
 use crate::ensure_safe_join;
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
@@ -5,11 +7,16 @@ use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
+use crate::proto::common::BatchRemove;
 use crate::proto::common::MembershipChange;
 use crate::proto::common::NodeStatus;
 use crate::proto::common::PromoteLearner;
 use crate::proto::common::RemoveNode;
+use crate::test_utils::enable_logger;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
 use crate::test_utils::MockTypeConfig;
+use crate::ConnectionType;
 use crate::ConsensusError;
 use crate::Error;
 use crate::Membership;
@@ -530,6 +537,234 @@ async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
     assert_eq!(response.error_code, ErrorCode::VersionConflict as i32);
 }
 
+#[tokio::test]
+async fn test_batch_remove_nodes() {
+    // Setup cluster with multiple nodes
+    let initial_nodes = vec![
+        NodeMeta {
+            id: 2,
+            address: "127.0.0.1:10001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active as i32,
+        },
+        NodeMeta {
+            id: 3,
+            address: "127.0.0.1:10002".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active as i32,
+        },
+        NodeMeta {
+            id: 4,
+            address: "127.0.0.1:10003".to_string(),
+            role: LEARNER,
+            status: NodeStatus::Syncing as i32,
+        },
+        NodeMeta {
+            id: 5,
+            address: "127.0.0.1:10004".to_string(),
+            role: LEARNER,
+            status: NodeStatus::Joining as i32,
+        },
+    ];
+
+    let membership = RaftMembership::<MockTypeConfig>::new(1, initial_nodes, RaftNodeConfig::default());
+    membership.update_conf_version(1);
+
+    // Create batch removal request
+    let req = ClusterConfChangeRequest {
+        id: 1, // current leader
+        term: 1,
+        version: 1,
+        change: Some(MembershipChange {
+            change: Some(Change::BatchRemove(BatchRemove {
+                node_ids: vec![3, 4], // Remove follower and learner
+            })),
+        }),
+    };
+
+    // Execute batch removal
+    let response = membership
+        .update_cluster_conf_from_leader(
+            1,       // current node
+            1,       // current term
+            1,       // current conf version
+            Some(1), // current leader
+            &req,
+        )
+        .await
+        .expect("Batch removal should succeed");
+
+    // Verify results
+    assert!(response.success);
+    assert!(!membership.contains_node(3));
+    assert!(!membership.contains_node(4));
+    assert!(membership.contains_node(2));
+    assert!(membership.contains_node(5));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
+}
+
+#[tokio::test]
+async fn test_batch_remove_leader_protection() {
+    // Setup cluster with leader
+    let initial_nodes = vec![
+        NodeMeta {
+            id: 1,
+            address: "127.0.0.1:10000".to_string(),
+            role: LEADER,
+            status: NodeStatus::Active as i32,
+        },
+        NodeMeta {
+            id: 2,
+            address: "127.0.0.1:10001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active as i32,
+        },
+    ];
+
+    let membership = RaftMembership::<MockTypeConfig>::new(1, initial_nodes, RaftNodeConfig::default());
+
+    // Attempt to remove leader in batch
+    let req = ClusterConfChangeRequest {
+        id: 1,
+        term: 1,
+        version: 1,
+        change: Some(MembershipChange {
+            change: Some(Change::BatchRemove(BatchRemove {
+                node_ids: vec![1, 2], // Includes leader
+            })),
+        }),
+    };
+
+    let result = membership.update_cluster_conf_from_leader(1, 1, 0, Some(1), &req).await;
+
+    // Should fail with leader protection error
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::Consensus(ConsensusError::Membership(MembershipError::RemoveNodeIsLeader(1)))
+    ));
+}
+
+#[tokio::test]
+async fn test_apply_batch_remove_config_change() {
+    let membership = RaftMembership::<MockTypeConfig>::new(
+        1,
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "127.0.0.1:10001".to_string(),
+                role: FOLLOWER,
+                status: NodeStatus::Active as i32,
+            },
+            NodeMeta {
+                id: 3,
+                address: "127.0.0.1:10002".to_string(),
+                role: LEARNER,
+                status: NodeStatus::Syncing as i32,
+            },
+            NodeMeta {
+                id: 4,
+                address: "127.0.0.1:10003".to_string(),
+                role: FOLLOWER,
+                status: NodeStatus::Active as i32,
+            },
+        ],
+        RaftNodeConfig::default(),
+    );
+
+    let change = MembershipChange {
+        change: Some(Change::BatchRemove(BatchRemove { node_ids: vec![2, 3] })),
+    };
+
+    // Apply config change
+    membership
+        .apply_config_change(change)
+        .await
+        .expect("Batch remove should succeed");
+
+    // Verify nodes removed and version updated
+    assert!(!membership.contains_node(2));
+    assert!(!membership.contains_node(3));
+    assert!(membership.contains_node(4));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
+}
+
+// Add to existing test series
+#[tokio::test]
+async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
+    // Setup cluster
+    let initial_nodes = vec![
+        NodeMeta {
+            id: 2,
+            address: "127.0.0.1:10001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active as i32,
+        },
+        NodeMeta {
+            id: 3,
+            address: "127.0.0.1:10002".to_string(),
+            role: LEARNER,
+            status: NodeStatus::Syncing as i32,
+        },
+        NodeMeta {
+            id: 4,
+            address: "127.0.0.1:10003".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active as i32,
+        },
+    ];
+    let membership = RaftMembership::<MockTypeConfig>::new(1, initial_nodes, RaftNodeConfig::default());
+    membership.update_conf_version(1);
+
+    // Batch removal request
+    let req = ClusterConfChangeRequest {
+        id: 1,
+        term: 1,
+        version: 1,
+        change: Some(MembershipChange {
+            change: Some(Change::BatchRemove(BatchRemove {
+                node_ids: vec![3, 4], // Remove learner and follower
+            })),
+        }),
+    };
+
+    let response = membership
+        .update_cluster_conf_from_leader(1, 1, 1, Some(1), &req)
+        .await
+        .expect("Batch remove should succeed");
+
+    assert!(response.success);
+    assert!(!membership.contains_node(3));
+    assert!(!membership.contains_node(4));
+    assert!(membership.contains_node(2));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
+}
+
+#[tokio::test]
+async fn test_update_cluster_conf_from_leader_case8_batch_remove_nonexistent() {
+    // Tests graceful handling of non-existent nodes in batch
+    let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
+
+    let req = ClusterConfChangeRequest {
+        id: 1,
+        term: 1,
+        version: 0,
+        change: Some(MembershipChange {
+            change: Some(Change::BatchRemove(BatchRemove {
+                node_ids: vec![99, 100], // Non-existent nodes
+            })),
+        }),
+    };
+
+    let response = membership
+        .update_cluster_conf_from_leader(1, 1, 0, Some(1), &req)
+        .await
+        .expect("Should succeed with no-op");
+
+    assert!(response.success);
+    assert_eq!(membership.get_cluster_conf_version(), 0);
+}
+
 /// This test covers:
 /// Filtering for specific roles (Followers + Candidates)
 /// Filtering for a single role (Leaders)
@@ -795,4 +1030,37 @@ fn test_ensure_safe_join() {
     assert!(ensure_safe_join(1, 3).is_err());
     assert!(ensure_safe_join(1, 4).is_ok());
     assert!(ensure_safe_join(1, 5).is_err());
+}
+
+#[tokio::test]
+async fn test_health_monitoring_integration() {
+    enable_logger();
+    let mut config = RaftNodeConfig::default();
+    config.raft.membership.zombie.threshold = 2; // Set low threshold for testing
+
+    let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
+
+    // Add test node
+    membership.add_learner(100, "invalid.address".to_string()).unwrap();
+
+    // Test 1: Record connection failure
+    let channel = membership.get_peer_channel(100, ConnectionType::Control).await;
+    assert!(channel.is_none());
+    assert_eq!(membership.health_monitor.failure_counts.get(&100).map(|c| *c), Some(1));
+
+    // Test 2: Record second failure (should become zombie candidate)
+    membership.get_peer_channel(100, ConnectionType::Control).await;
+    let zombies = membership.get_zombie_candidates().await;
+    assert_eq!(zombies, vec![100]);
+
+    // Test 3: Record success resets failures
+    // Update to valid address (using mock would be better in real impl)
+    let (_tx, rx) = oneshot::channel::<()>();
+    let service = MockRpcService::default();
+    let (port, _addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
+    membership
+        .update_node_address(100, format!("127.0.0.1:{port}"))
+        .unwrap();
+    membership.get_peer_channel(100, ConnectionType::Control).await; // Should "succeed"
+    assert!(membership.health_monitor.failure_counts.get(&100).is_none());
 }

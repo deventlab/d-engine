@@ -1,4 +1,5 @@
 mod health_checker;
+mod health_monitor;
 mod membership_guard;
 mod raft_membership;
 pub(crate) use membership_guard::*;
@@ -6,6 +7,8 @@ pub use raft_membership::*;
 
 #[cfg(test)]
 mod health_checker_test;
+#[cfg(test)]
+mod health_monitor_test;
 #[cfg(test)]
 mod membership_guard_test;
 #[cfg(test)]
@@ -181,6 +184,14 @@ where
         &self,
         index: u64,
     );
+
+    async fn get_zombie_candidates(&self) -> Vec<u32>;
+
+    /// If new node could rejoin the cluster again
+    fn can_rejoin(
+        &self,
+        node_id: u32,
+    ) -> Result<()>;
 }
 
 impl ClusterConfUpdateResponse {

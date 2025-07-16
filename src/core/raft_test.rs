@@ -382,6 +382,7 @@ async fn test_election_timeout_case4() {
 
     // 4. Mock Raft Context
     let mut mock_membership = MockMembership::new();
+    mock_membership.expect_get_zombie_candidates().returning(Vec::new);
     mock_membership.expect_voters().returning(move || {
         vec![
             NodeMeta {
