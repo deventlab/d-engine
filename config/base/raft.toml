@@ -3,7 +3,7 @@
 # ///     if learner's next_id is far away from leader's commit_index
 # /// be careful on the value, if it is too smal it might create a ‘competition’
 # ///     situation is that leader will keep convert a node between learner and follower
-# /// 
+# ///
 learner_raft_log_gap = 10
 general_raft_timeout_duration_in_ms = 100
 # 1hour
@@ -36,6 +36,7 @@ process_interval_ms = 10
 max_entries_per_chunk = 100
 
 [raft.snapshot]
+enable = true
 max_log_entries_before_snapshot = 1000
 cleanup_retain_count = 2
 snapshots_dir = "./snapshots/"

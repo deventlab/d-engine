@@ -52,7 +52,6 @@ use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::alias::SSOF;
 use crate::alias::TROF;
-use crate::config::CommitHandlerConfig;
 use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
@@ -390,17 +389,17 @@ impl NodeBuilder {
             shutdown_signal,
         };
 
-        let config = CommitHandlerConfig {
-            batch_size: node_config_arc.raft.commit_handler.batch_size,
-            process_interval_ms: node_config_arc.raft.commit_handler.process_interval_ms,
-            max_entries_per_chunk: 1,
-        };
+        // let config = CommitHandlerConfig {
+        //     batch_size_threshold: node_config_arc.raft.commit_handler.batch_size_threshold,
+        //     process_interval_ms: node_config_arc.raft.commit_handler.process_interval_ms,
+        //     max_entries_per_chunk: 1,
+        // };
         let commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
             node_id,
             my_role_i32,
             my_current_term,
             deps,
-            config,
+            node_config_arc.clone(),
             new_commit_event_rx,
         );
         self.enable_state_machine_commit_listener(commit_handler);

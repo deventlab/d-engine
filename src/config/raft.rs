@@ -302,8 +302,8 @@ impl MembershipConfig {
 /// Submit processor-specific configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommitHandlerConfig {
-    #[serde(default = "default_batch_size")]
-    pub batch_size: u64,
+    #[serde(default = "default_batch_size_threshold")]
+    pub batch_size_threshold: u64,
 
     #[serde(default = "default_process_interval_ms")]
     pub process_interval_ms: u64,
@@ -314,7 +314,7 @@ pub struct CommitHandlerConfig {
 impl Default for CommitHandlerConfig {
     fn default() -> Self {
         Self {
-            batch_size: default_batch_size(),
+            batch_size_threshold: default_batch_size_threshold(),
             process_interval_ms: default_process_interval_ms(),
             max_entries_per_chunk: default_max_entries_per_chunk(),
         }
@@ -322,8 +322,10 @@ impl Default for CommitHandlerConfig {
 }
 impl CommitHandlerConfig {
     fn validate(&self) -> Result<()> {
-        if self.batch_size == 0 {
-            return Err(Error::Config(ConfigError::Message("batch_size must be > 0".into())));
+        if self.batch_size_threshold == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "batch_size_threshold must be > 0".into(),
+            )));
         }
 
         if self.process_interval_ms == 0 {
@@ -341,19 +343,23 @@ impl CommitHandlerConfig {
         Ok(())
     }
 }
-fn default_batch_size() -> u64 {
+fn default_batch_size_threshold() -> u64 {
     100
 }
 fn default_process_interval_ms() -> u64 {
     10
 }
 fn default_max_entries_per_chunk() -> usize {
-    100
+    10
 }
 
 /// Submit processor-specific configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SnapshotConfig {
+    /// If enable the snapshot or not
+    #[serde(default = "default_snapshot_enabled")]
+    pub enable: bool,
+
     /// Maximum number of log entries to accumulate before triggering snapshot creation
     /// This helps control memory usage by enforcing periodic state compaction
     #[serde(default = "default_max_log_entries_before_snapshot")]
@@ -440,6 +446,7 @@ impl Default for SnapshotConfig {
             snapshot_push_backoff_in_ms: default_snapshot_push_backoff_in_ms(),
             snapshot_push_max_retry: default_snapshot_push_max_retry(),
             push_timeout_in_ms: default_push_timeout_in_ms(),
+            enable: default_snapshot_enabled(),
         }
     }
 }
@@ -505,6 +512,11 @@ impl SnapshotConfig {
         Ok(())
     }
 }
+
+fn default_snapshot_enabled() -> bool {
+    true
+}
+
 /// Default threshold for triggering snapshot creation
 fn default_max_log_entries_before_snapshot() -> u64 {
     1000

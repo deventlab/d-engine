@@ -144,5 +144,6 @@ pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         snapshot_push_backoff_in_ms: 1,
         snapshot_push_max_retry: 1,
         push_timeout_in_ms: 100,
+        enable: true,
     }
 }

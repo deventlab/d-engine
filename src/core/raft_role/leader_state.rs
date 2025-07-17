@@ -1891,6 +1891,9 @@ impl<T: TypeConfig> LeaderState<T> {
                 }
                 return Err(e);
             }
+
+            println!("============== Promotion successful ================");
+            println!("Now cluster members: {:?}", membership.voters());
         }
 
         trace!(

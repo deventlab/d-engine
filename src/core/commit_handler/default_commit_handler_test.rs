@@ -19,8 +19,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
-use crate::CommitHandlerConfig;
-use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
@@ -28,6 +26,8 @@ use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::Result;
 use crate::LEADER;
+use crate::{CommitHandlerConfig, RaftNodeConfig};
+use crate::{Error, RaftConfig};
 
 const TEST_TERM: u64 = 1;
 
@@ -167,10 +167,18 @@ impl TestHarness {
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
-        let config = CommitHandlerConfig {
-            batch_size: self.batch_size_threshold,         // batch_threshold
-            process_interval_ms: self.process_interval_ms, // process_interval
+        let commit_handler_config = CommitHandlerConfig {
+            batch_size_threshold: self.batch_size_threshold, // batch_threshold
+            process_interval_ms: self.process_interval_ms,   // process_interval
             max_entries_per_chunk: 1,
+        };
+
+        let config = RaftNodeConfig {
+            raft: RaftConfig {
+                commit_handler: commit_handler_config,
+                ..Default::default()
+            },
+            ..Default::default()
         };
 
         let mut handler = DefaultCommitHandler::<MockTypeConfig>::new(
@@ -178,7 +186,7 @@ impl TestHarness {
             self.role,
             self.term,
             deps,
-            config,
+            Arc::new(config),
             self.commit_rx.take().unwrap(),
         );
         self.handle = Some(tokio::spawn(async move {
@@ -195,18 +203,25 @@ impl TestHarness {
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
-        let config = CommitHandlerConfig {
-            batch_size: self.batch_size_threshold,         // batch_threshold
-            process_interval_ms: self.process_interval_ms, // process_interval
+        let commit_handler_config = CommitHandlerConfig {
+            batch_size_threshold: self.batch_size_threshold, // batch_threshold
+            process_interval_ms: self.process_interval_ms,   // process_interval
             max_entries_per_chunk: 1,
         };
 
+        let config = RaftNodeConfig {
+            raft: RaftConfig {
+                commit_handler: commit_handler_config,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let handler = DefaultCommitHandler::<MockTypeConfig>::new(
             1,
             self.role,
             self.term,
             deps,
-            config,
+            Arc::new(config),
             self.commit_rx.take().unwrap(),
         );
         handler.process_batch().await
@@ -285,12 +300,20 @@ fn setup(
         shutdown_signal,
     };
 
-    let config = CommitHandlerConfig {
-        batch_size: batch_size_threshold,
+    let commit_handler_config = CommitHandlerConfig {
+        batch_size_threshold,
         process_interval_ms,
         max_entries_per_chunk: 1,
     };
-    DefaultCommitHandler::<MockTypeConfig>::new(1, LEADER, 1, deps, config, new_commit_rx)
+
+    let config = RaftNodeConfig {
+        raft: RaftConfig {
+            commit_handler: commit_handler_config,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    DefaultCommitHandler::<MockTypeConfig>::new(1, LEADER, 1, deps, Arc::new(config), new_commit_rx)
 }
 
 /// # Case 1: interval_uses_correct_duration

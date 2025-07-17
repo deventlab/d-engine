@@ -16,11 +16,11 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
-use crate::CommitHandlerConfig;
 use crate::Membership;
 use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::RaftLog;
+use crate::RaftNodeConfig;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
@@ -45,8 +45,9 @@ where
     state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
     new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
-    batch_size_threshold: u64,
-    process_interval_ms: u64,
+    // batch_size_threshold: u64,
+    // process_interval_ms: u64,
+    config: Arc<RaftNodeConfig>,
     membership: Arc<MOF<T>>,
 
     event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
@@ -99,7 +100,7 @@ where
 
                         batch_counter += 1;
 
-                        if batch_counter >= self.batch_size_threshold {
+                        if batch_counter >= self.config.raft.commit_handler.batch_size_threshold {
                             trace!("_ = self.check_batch_size");
                             if let Err(e) = self.process_batch().await {
                                 error!("Failed to process batch: {}", e);
@@ -121,7 +122,7 @@ where
         my_role: i32,
         my_current_term: u64,
         deps: CommitHandlerDependencies<T>,
-        config: CommitHandlerConfig,
+        config: Arc<RaftNodeConfig>,
         new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
     ) -> Self {
         Self {
@@ -132,8 +133,9 @@ where
             raft_log: deps.raft_log,
             membership: deps.membership,
             new_commit_rx: Some(new_commit_rx),
-            batch_size_threshold: config.batch_size,
-            process_interval_ms: config.process_interval_ms,
+            // batch_size_threshold: config.batch_size,
+            // process_interval_ms: config.process_interval_ms,
+            config,
             event_tx: deps.event_tx,
             shutdown_signal: deps.shutdown_signal,
         }
@@ -213,11 +215,15 @@ where
             "[Node-{}] Commit handler process batch - updated last_applied: {}",
             self.my_id, last_applied
         );
-        if self.state_machine_handler.should_snapshot(NewCommitData {
-            new_commit_index: last_applied,
-            role: self.my_role,
-            current_term: self.my_current_term,
-        }) {
+
+        // Generate snapshot if needed
+        if self.config.raft.snapshot.enable
+            && self.state_machine_handler.should_snapshot(NewCommitData {
+                new_commit_index: last_applied,
+                role: self.my_role,
+                current_term: self.my_current_term,
+            })
+        {
             info!("Listened a new commit and should generate snapshot now");
 
             if let Err(e) = self.event_tx.send(RaftEvent::CreateSnapshotEvent).await {
@@ -260,8 +266,13 @@ where
     /// Behavior: If multiple ticks are missed, the timer will wait for the next
     /// tick instead of firing immediately.
     pub(crate) fn dynamic_interval(&self) -> tokio::time::Interval {
-        let mut interval = tokio::time::interval(Duration::from_millis(self.process_interval_ms));
-        debug!("process_interval_ms: {}", self.process_interval_ms);
+        let mut interval = tokio::time::interval(Duration::from_millis(
+            self.config.raft.commit_handler.process_interval_ms,
+        ));
+        debug!(
+            "process_interval_ms: {}",
+            self.config.raft.commit_handler.process_interval_ms
+        );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval
     }

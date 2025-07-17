@@ -29,3 +29,13 @@ config/local.toml
 
 snapshots
 .cargo
+
+# Docker Related
+docker/.env
+docker/output/
+docker/jepsen/sshkeys/
+docker/jepsen/store/
+
+# Monitoring Data (Optional)
+docker/monitoring/grafana/data/
+docker/monitoring/prometheus/data/
