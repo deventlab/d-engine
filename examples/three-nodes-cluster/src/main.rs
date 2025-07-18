@@ -46,7 +46,7 @@ async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .build()
-        // .start_metrics_server(graceful_rx.clone()) //default: prometheus metrics server starts
+        .start_metrics_server(graceful_rx.clone()) //default: prometheus metrics server starts
         .start_rpc_server()
         .await
         .ready()

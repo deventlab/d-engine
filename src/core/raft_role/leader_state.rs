@@ -55,6 +55,7 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
+use crate::scoped_timer::ScopedTimer;
 use crate::stream::create_production_snapshot_stream;
 use crate::utils::cluster::error;
 use crate::AppendResults;
@@ -1062,6 +1063,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// # Params
     /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(crate) async fn process_raft_request(
         &mut self,
         raft_request_with_signal: RaftRequestWithSignal,
@@ -1123,12 +1125,15 @@ impl<T: TypeConfig> LeaderState<T> {
     ///    - Client response: `ProposeFailed`
     ///    - State update: none
     ///    - Return: original error
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn process_batch(
         &mut self,
         batch: VecDeque<RaftRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("Leader::process_batch");
+
         // 1. Prepare batch data
         let entry_payloads: Vec<EntryPayload> = batch.iter().flat_map(|req| &req.payloads).cloned().collect();
         if !entry_payloads.is_empty() {
@@ -1261,6 +1266,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     async fn check_learner_progress(
         &mut self,
@@ -1347,6 +1353,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn batch_promote_learners(
         &mut self,
         ready_learners_ids: Vec<u32>,
@@ -1447,6 +1454,7 @@ impl<T: TypeConfig> LeaderState<T> {
     // }
 
     /// Calculate new submission index
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     fn calculate_new_commit_index(
         &mut self,
@@ -1483,6 +1491,7 @@ impl<T: TypeConfig> LeaderState<T> {
         (false, current_commit_index)
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(crate) fn ensure_state_machine_upto_commit_index(
         &self,
         state_machine_handler: &Arc<SMHOF<T>>,
@@ -1502,6 +1511,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     fn scheduled_purge_upto(
         &mut self,
@@ -1591,6 +1601,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// - Actual log discard should be deferred until storage confirms snapshot persistence
     /// - Design differs from followers by requiring full cluster confirmation (Raft extension for
     ///   enhanced durability)
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     pub(super) fn can_purge_logs(
         &self,
@@ -1612,6 +1623,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 .all(|&v| v >= last_included_in_snapshot.index)
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn handle_join_cluster(
         &mut self,
         join_request: JoinRequest,
@@ -1714,6 +1726,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn send_join_success(
         &self,
         node_id: u32,
@@ -1743,6 +1756,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn send_join_error(
         &self,
         sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -1797,6 +1811,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn trigger_background_snapshot(
         node_id: u32,
         metadata: SnapshotMetadata,
@@ -1837,6 +1852,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Processes all pending promotions while respecting the cluster's odd-node constraint
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn process_pending_promotions(
         &mut self,
         ctx: &RaftContext<T>,
@@ -1916,6 +1932,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Removes the first `count` nodes from the pending queue and returns them
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) fn drain_batch(
         &mut self,
         count: usize,
@@ -1931,6 +1948,7 @@ impl<T: TypeConfig> LeaderState<T> {
         batch
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn safe_batch_promote(
         &mut self,
         batch: Vec<u32>,
@@ -1949,6 +1967,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn run_periodic_maintenance(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -1970,6 +1989,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Periodic check triggered every ~30s in the worst-case scenario
     /// using priority-based lazy scheduling. Actual average frequency
     /// is inversely proportional to system load.
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) fn conditionally_purge_stale_learners(
         &mut self,
         ctx: &RaftContext<T>,
@@ -2023,6 +2043,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Remove non-Active zombie nodes that exceed failure threshold
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn conditionally_purge_zombie_nodes(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -2067,6 +2088,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) fn reset_next_membership_maintenance_check(
         &mut self,
         membership_maintenance_interval: Duration,
@@ -2075,6 +2097,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// FINRA Rule 4370-approved remediation
+    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) fn handle_stale_learner(
         &mut self,
         node_id: u32,

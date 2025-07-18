@@ -132,7 +132,7 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         commit_handler: CommitHandlerConfig {
-            batch_size: 1,
+            batch_size_threshold: 1,
             process_interval_ms: 100,
             ..Default::default()
         },

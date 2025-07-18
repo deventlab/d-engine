@@ -197,7 +197,7 @@ where
 
                 // P3: Other events
                 Some(raft_event) = self.event_rx.recv() => {
-                    debug!(%self.node_id, ?raft_event, "receive raft event");
+                    trace!(%self.node_id, ?raft_event, "receive raft event");
 
                     #[cfg(test)]
                     let event = raft_event_to_test_event(&raft_event);

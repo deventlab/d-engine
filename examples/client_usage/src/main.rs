@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::client::ClientApiError;
+use d_engine::proto::cluster::NodeMeta;
+use d_engine::proto::common::NodeStatus;
 use d_engine::ClientBuilder;
 
 #[derive(Parser)]
@@ -126,7 +128,12 @@ async fn handle_cluster_command(
 ) -> crate::Result<()> {
     let response = client
         .cluster()
-        .join_cluster(node_id, address)
+        .join_cluster(NodeMeta {
+            id: node_id,
+            address,
+            role: 3,
+            status: NodeStatus::Joining as i32,
+        })
         .await
         .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {:?}", e))?;
 

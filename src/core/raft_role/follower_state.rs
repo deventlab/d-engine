@@ -184,7 +184,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         Ok(())
     }
 
-    #[tracing::instrument]
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,

@@ -1,9 +1,8 @@
-use std::sync::Arc;
-
 use arc_swap::ArcSwap;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
+use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
@@ -16,6 +15,7 @@ use crate::proto::client::ClientResult;
 use crate::proto::client::ClientWriteRequest;
 use crate::proto::client::WriteCommand;
 use crate::proto::error::ErrorCode;
+use crate::scoped_timer::ScopedTimer;
 use crate::ClientApiError;
 
 /// Key-value store client interface
@@ -32,7 +32,7 @@ impl KvClient {
         Self { client_inner }
     }
 
-    // Stores a value with strong consistency
+    /// Stores a value with strong consistency
     ///
     /// # Errors
     /// - [`crate::ClientApiError::Network`] on network failures
@@ -42,6 +42,8 @@ impl KvClient {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> std::result::Result<(), ClientApiError> {
+        let _timer = ScopedTimer::new("client::put");
+
         let client_inner = self.client_inner.load();
 
         // Build request

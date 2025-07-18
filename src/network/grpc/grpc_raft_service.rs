@@ -307,7 +307,7 @@ where
     /// - Validates requests before appending to leader's log
     /// - Ensures linearizable writes through log replication
     #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     async fn handle_client_write(
         &self,
         request: tonic::Request<ClientWriteRequest>,

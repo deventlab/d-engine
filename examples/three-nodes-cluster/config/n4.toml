@@ -10,6 +10,10 @@ initial_cluster = [
 db_root_dir = "./db"
 log_dir = "./logs"
 
+[monitoring]
+prometheus_enabled = true
+prometheus_port = 8084
+
 [raft]
 general_raft_timeout_duration_in_ms = 100
 
@@ -18,3 +22,6 @@ max_retries = 3      # Maximum number of retries (recommended: 3)
 timeout_ms = 500     # Single request timeout (recommended: 500-1000ms)
 base_delay_ms = 3000 # Initial backoff delay (recommended: 3000ms)
 max_delay_ms = 60000 # Maximum backoff delay (recommended: <=1m)
+
+[raft.snapshot]
+enable = false

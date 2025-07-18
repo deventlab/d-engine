@@ -27,6 +27,7 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::replication::ConflictResult;
 use crate::proto::replication::SuccessResult;
+use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::is_majority;
 use crate::AppendResults;
 use crate::LeaderStateSnapshot;
@@ -62,6 +63,8 @@ where
         leader_state_snapshot: LeaderStateSnapshot,
         ctx: &RaftContext<T>,
     ) -> Result<AppendResults> {
+        let _timer = ScopedTimer::new("handle_raft_request_in_batch");
+
         debug!("-------- handle_raft_request_in_batch --------");
         trace!("entry_payloads: {:?}", &entry_payloads);
 
@@ -232,6 +235,8 @@ where
         success_result: SuccessResult,
         leader_term: u64,
     ) -> Result<PeerUpdate> {
+        let _timer = ScopedTimer::new("handle_success_response");
+
         debug!(?success_result, "Received success response from peer {}", peer_id);
 
         let match_log = success_result.last_match.unwrap_or(LogId { term: 0, index: 0 });
@@ -258,6 +263,8 @@ where
         raft_log: &Arc<ROF<T>>,
         current_next_index: u64,
     ) -> Result<PeerUpdate> {
+        let _timer = ScopedTimer::new("handle_conflict_response");
+
         debug!("Handling conflict from peer {}", peer_id);
 
         // Calculate next_index based on conflict information
@@ -284,7 +291,6 @@ where
     }
 
     #[autometrics(objective = API_SLO)]
-    #[tracing::instrument]
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: Vec<Entry>,
@@ -293,8 +299,10 @@ where
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
     ) -> DashMap<u32, Vec<Entry>> {
+        let _timer = ScopedTimer::new("retrieve_to_be_synced_logs_for_peers");
+
         let peer_entries: DashMap<u32, Vec<Entry>> = DashMap::new();
-        debug!(
+        trace!(
             "retrieve_to_be_synced_logs_for_peers::leader_last_index: {}",
             leader_last_index_before_inserting_new_entries
         );
@@ -334,13 +342,14 @@ where
     }
 
     /// As Follower only
-    #[tracing::instrument]
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,
         state_snapshot: &StateSnapshot,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<AppendResponseWithUpdates> {
+        let _timer = ScopedTimer::new("handle_append_entries");
+
         debug!("[F-{:?}] >> receive leader append request {:?}", self.my_id, request);
         let current_term = state_snapshot.current_term;
         let mut last_log_id_option = raft_log.last_log_id();
@@ -422,6 +431,8 @@ where
         request: &AppendEntriesRequest,
         raft_log: &Arc<ROF<T>>,
     ) -> AppendEntriesResponse {
+        let _timer = ScopedTimer::new("check_append_entries_request_is_legal");
+
         // Rule 1: Term check
         if my_term > request.term {
             warn!(" my_term({}) >= req.term({}) ", my_term, request.term);

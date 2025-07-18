@@ -9,6 +9,10 @@ initial_cluster = [
 db_root_dir = "./db"
 log_dir = "./logs"
 
+[monitoring]
+prometheus_enabled = true
+prometheus_port = 8083
+
 [raft]
 general_raft_timeout_duration_in_ms = 100
 
@@ -18,3 +22,6 @@ batch_size = 5000
 
 [raft.replication]
 rpc_append_entries_in_batch_threshold = 5000
+
+[raft.snapshot]
+enable = false

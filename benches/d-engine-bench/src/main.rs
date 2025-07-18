@@ -1,7 +1,7 @@
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -9,9 +9,9 @@ use clap::Parser;
 use clap::Subcommand;
 use d_engine::ClientBuilder;
 use hdrhistogram::Histogram;
-use rand::distributions::Alphanumeric;
 use rand::Rng;
 use rand::SeedableRng;
+use rand::distributions::Alphanumeric;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug, Clone)]
@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
                         let value = generate_value(cli.value_size);
                         if let Err(e) = client.kv().put(&key, &value).await {
-                            eprintln!("Put error: {:?}", e);
+                            eprintln!("Put error: {e:?}");
                             continue;
                         }
                     }
@@ -238,10 +238,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
                         match client.kv().get(key, *consistency == "l").await {
                             Err(e) => {
-                                eprintln!("Get error: {:?}", e);
+                                eprintln!("Get error: {e:?}");
                                 continue;
                             }
-                            Ok(v) => {
+                            Ok(_v) => {
                                 // println!("Get: {:?}", v);
                             }
                         }

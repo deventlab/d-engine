@@ -198,7 +198,7 @@ impl RaftLog for SledRaftLog {
             error!("local log: last entry:{} < first entry:{}'s id", last, first);
             return 0;
         } else {
-            debug!("local log: last entry:{} >= first entry:{}'s id", last, first);
+            trace!("local log: last entry:{} >= first entry:{}'s id", last, first);
         }
 
         return last - first + 1;
@@ -728,7 +728,7 @@ impl SledRaftLog {
         if let Ok(Some((key, value))) = self.tree.last() {
             let key: u64 = vki(&key);
             let value = value.to_vec();
-            debug!("last entry, key: {:?}, value: {:?}", &key, &value);
+            trace!("last entry, key: {:?}, value: {:?}", &key, &value);
 
             Some((key, value))
         } else {
