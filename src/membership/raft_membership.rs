@@ -14,28 +14,9 @@
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::time::Duration;
 
-use autometrics::autometrics;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use tokio::task;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::warn;
-
-use super::health_monitor::HealthMonitor;
-use super::health_monitor::RaftHealthMonitor;
 use super::MembershipGuard;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
-use crate::membership::health_checker::HealthChecker;
-use crate::membership::health_checker::HealthCheckerApis;
 use crate::net::address_str;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
@@ -44,17 +25,32 @@ use crate::proto::cluster::NodeMeta;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::MembershipChange;
 use crate::proto::common::NodeStatus;
-use crate::ConnectionParams;
+use crate::ConnectionCache;
 use crate::ConnectionType;
+use crate::HealthChecker;
+use crate::HealthCheckerApis;
+use crate::HealthMonitor;
 use crate::Membership;
 use crate::MembershipError;
-use crate::NetworkError;
+use crate::RaftHealthMonitor;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::TypeConfig;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use tokio::task;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
 
 pub struct RaftMembership<T>
 where
@@ -64,6 +60,7 @@ where
     membership: MembershipGuard,
     config: RaftNodeConfig,
     pub(super) health_monitor: RaftHealthMonitor,
+    pub(super) connection_cache: ConnectionCache,
     _phantom: PhantomData<T>,
 }
 
@@ -495,6 +492,9 @@ where
             return Err(MembershipError::RemoveNodeIsLeader(node_id).into());
         }
 
+        // Purge cached connections
+        self.connection_cache.remove_node(node_id);
+
         self.membership.blocking_write(|guard| {
             guard.nodes.remove(&node_id);
             guard.cluster_conf_version += 1;
@@ -506,6 +506,9 @@ where
         &self,
         node_id: u32,
     ) -> Result<()> {
+        // Purge cached connections
+        self.connection_cache.remove_node(node_id);
+
         self.membership.blocking_write(|guard| {
             guard.nodes.remove(&node_id);
             guard.cluster_conf_version += 1;
@@ -547,23 +550,17 @@ where
                 return None;
             }
         };
-        let params = match conn_type {
-            ConnectionType::Control => self.config.network.control.clone(),
-            ConnectionType::Data => self.config.network.data.clone(),
-            ConnectionType::Bulk => self.config.network.bulk.clone(),
-        };
-
-        debug!("Connecting to node {}::{}", node_id, addr);
-        match Self::connect_with_params(addr, params).await {
+        // Use cached connection if available
+        match self.connection_cache.get_channel(node_id, conn_type, addr).await {
             Ok(channel) => {
-                // Reset failure count on successful connection
                 self.health_monitor.record_success(node_id).await;
                 Some(channel)
             }
             Err(e) => {
-                // Record connection failure
+                // Remove failed connection from cache
+                self.connection_cache.remove_node(node_id);
                 self.health_monitor.record_failure(node_id).await;
-                warn!("Failed to connect to node {}: {}", node_id, e);
+                warn!("Connection to node {} failed: {}", node_id, e);
                 None
             }
         }
@@ -660,12 +657,14 @@ where
         config: RaftNodeConfig,
     ) -> Self {
         let zombie_threshold = config.raft.membership.zombie.threshold;
+        let connection_cache = ConnectionCache::new(config.network.clone());
         Self {
             node_id,
             membership: MembershipGuard::new(initial_nodes, 0),
             config,
             _phantom: PhantomData,
             health_monitor: RaftHealthMonitor::new(zombie_threshold),
+            connection_cache,
         }
     }
 
@@ -698,23 +697,6 @@ where
             }
             Ok(())
         })
-    }
-
-    async fn connect_with_params(
-        addr: String,
-        params: ConnectionParams,
-    ) -> Result<Channel> {
-        Endpoint::try_from(addr.clone())?
-            .connect_timeout(Duration::from_millis(params.connect_timeout_in_ms))
-            .timeout(Duration::from_millis(params.request_timeout_in_ms))
-            .tcp_keepalive(Some(Duration::from_secs(params.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(params.http2_keep_alive_interval_in_secs))
-            .keep_alive_timeout(Duration::from_secs(params.http2_keep_alive_timeout_in_secs))
-            .initial_connection_window_size(params.connection_window_size)
-            .initial_stream_window_size(params.stream_window_size)
-            .connect()
-            .await
-            .map_err(|e| NetworkError::ConnectError(e.to_string()).into())
     }
 
     #[cfg(test)]

@@ -1,14 +1,8 @@
-mod health_checker;
-mod health_monitor;
 mod membership_guard;
 mod raft_membership;
 pub(crate) use membership_guard::*;
 pub use raft_membership::*;
 
-#[cfg(test)]
-mod health_checker_test;
-#[cfg(test)]
-mod health_monitor_test;
 #[cfg(test)]
 mod membership_guard_test;
 #[cfg(test)]
@@ -28,7 +22,7 @@ use crate::Result;
 use crate::TypeConfig;
 
 // Add connection type management in RpcPeerChannels
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ConnectionType {
     Control, // Used for key operations such as elections/heartbeats
     Data,    // Used for log replication

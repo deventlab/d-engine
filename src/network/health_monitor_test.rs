@@ -1,4 +1,4 @@
-use crate::membership::health_monitor::{HealthMonitor, RaftHealthMonitor};
+use super::*;
 
 #[tokio::test]
 async fn test_record_failure_increments_count() {
