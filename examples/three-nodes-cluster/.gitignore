@@ -30,6 +30,7 @@ snapshots/*
 .idea
 .idea/*
 
+docker/jepsen/sshkeys/
 docker/jepsen/store/
 docker/jepsen/store/*/*/*
 
