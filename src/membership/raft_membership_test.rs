@@ -1064,3 +1064,114 @@ async fn test_health_monitoring_integration() {
     membership.get_peer_channel(100, ConnectionType::Control).await; // Should "succeed"
     assert!(membership.health_monitor.failure_counts.get(&100).is_none());
 }
+
+#[cfg(test)]
+mod pre_warm_connections_tests {
+    use super::*;
+    use crate::net::address_str;
+    use crate::proto::cluster::NodeMeta;
+    use crate::proto::common::NodeStatus;
+    use crate::test_utils;
+    use tracing_test::traced_test;
+
+    #[derive(Clone, Copy)]
+    pub enum AddressType {
+        Success,
+        Failed,
+    }
+
+    pub async fn create_test_membership(
+        nodes: Vec<(u32, AddressType)>
+    ) -> (RaftMembership<RaftTypeConfig>, Vec<oneshot::Sender<()>>) {
+        let mut cluster = Vec::new();
+        let mut shutdown_channels = Vec::new();
+        for (id, addr_type) in nodes {
+            let (address, shutdown_opt) = match addr_type {
+                AddressType::Success => {
+                    let (addr, tx) = mock_address().await;
+                    (addr, Some(tx))
+                }
+                AddressType::Failed => {
+                    // Deliberately invalid or unreachable address
+                    ("127.0.0.1:9".to_string(), None)
+                }
+            };
+
+            cluster.push(NodeMeta {
+                id,
+                address,
+                role: FOLLOWER,
+                status: NodeStatus::Active.into(),
+            });
+
+            if let Some(tx) = shutdown_opt {
+                shutdown_channels.push(tx);
+            }
+        }
+
+        let membership = RaftMembership::<RaftTypeConfig>::new(1, cluster, RaftNodeConfig::default());
+        (membership, shutdown_channels)
+    }
+
+    async fn mock_address() -> (String, oneshot::Sender<()>) {
+        let (tx, rx) = oneshot::channel::<()>();
+        let is_ready = true;
+        let mock_service = MockRpcService::default();
+        let (_port, addr) = test_utils::MockNode::mock_listener(mock_service, rx, is_ready)
+            .await
+            .unwrap();
+
+        (address_str(&addr.to_string()), tx)
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn pre_warm_connections_successful() {
+        let (membership, _shutdown_tx) =
+            create_test_membership(vec![(2, AddressType::Success), (3, AddressType::Success)]).await;
+
+        // Execute pre-warm
+        membership.pre_warm_connections().await.expect("Should succeed");
+
+        // Verify logs
+        assert!(logs_contain("Pre-warmed Control connection to node 2"));
+        assert!(logs_contain("Pre-warmed Data connection to node 3"));
+        assert!(logs_contain("Pre-warmed Bulk connection to node 2"));
+        assert!(!logs_contain("Failed to pre-warm"));
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn pre_warm_connections_partial_failure() {
+        let (membership, _shutdown_tx) = create_test_membership(vec![
+            (2, AddressType::Success),
+            (3, AddressType::Failed),
+            (4, AddressType::Success),
+        ])
+        .await;
+
+        // Execute pre-warm
+        membership.pre_warm_connections().await.expect("Should succeed");
+
+        // Verify success logs
+        assert!(logs_contain("Pre-warmed Data connection to node 2"));
+        assert!(logs_contain("Pre-warmed Bulk connection to node 4"));
+
+        // Verify failure logs
+        assert!(logs_contain("Failed to pre-warm Control connection to node 3"));
+        assert!(logs_contain("Failed to pre-warm Data connection to node 3"));
+        assert!(logs_contain("Failed to pre-warm Bulk connection to node 3"));
+
+        // Verify warning summary
+        assert!(logs_contain("Connection pre-warming failed for one or more peers"));
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn pre_warm_connections_no_peers() {
+        let (membership, _shutdown_tx) = create_test_membership(vec![]).await;
+
+        membership.pre_warm_connections().await.expect("Should succeed");
+        assert!(logs_contain("No replication peers found"));
+    }
+}

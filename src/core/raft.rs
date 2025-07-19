@@ -152,9 +152,10 @@ where
             ================================================
                     "
                 );
-                // return Err(e);
             }
         }
+
+        info!("Node is running");
 
         if self.role.is_timer_expired() {
             self.role.reset_timer();

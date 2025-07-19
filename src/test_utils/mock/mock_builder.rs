@@ -267,6 +267,13 @@ impl MockBuilder {
 
         node
     }
+    pub fn id(
+        mut self,
+        id: u32,
+    ) -> Self {
+        self.id = Some(id);
+        self
+    }
     pub fn with_role(
         mut self,
         role: RaftRole<MockTypeConfig>,
@@ -420,6 +427,7 @@ pub fn mock_purge_exewcutor() -> MockPurgeExecutor {
 pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     let mut membership = MockMembership::new();
     membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_pre_warm_connections().returning(|| Ok(()));
     membership.expect_voters().returning(Vec::new);
     membership.expect_replication_peers().returning(Vec::new);
     membership.expect_members().returning(Vec::new);

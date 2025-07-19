@@ -28,6 +28,11 @@ pub(crate) enum ConnectionType {
     Data,    // Used for log replication
     Bulk,    // Used for high-traffic operations such as snapshot transmission
 }
+impl ConnectionType {
+    pub(crate) fn all() -> Vec<ConnectionType> {
+        vec![ConnectionType::Control, ConnectionType::Data, ConnectionType::Bulk]
+    }
+}
 
 #[cfg_attr(test, automock)]
 #[async_trait]
@@ -156,6 +161,9 @@ where
     /// Get all node status
     #[allow(unused)]
     fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    /// Pre-warms connection cache for all replication peers
+    async fn pre_warm_connections(&self) -> Result<()>;
 
     async fn get_peer_channel(
         &self,

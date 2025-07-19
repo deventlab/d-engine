@@ -22,6 +22,7 @@ pub use builder::*;
 
 #[doc(hidden)]
 mod type_config;
+use tracing::debug;
 use tracing::info;
 #[doc(hidden)]
 pub use type_config::*;
@@ -116,13 +117,12 @@ where
         // 3. Set node is ready to run Raft protocol
         self.set_ready(true);
 
+        // 4. Warm up connections with peers
+        self.membership.pre_warm_connections().await?;
+
         let mut raft = self.raft_core.lock().await;
-
-        // 4. Join the node with cluster
-        // let peer_channels = Arc::new(peer_channels);
-        // raft.init_peer_channels(peer_channels.clone())?;
-
         // 5. if join as a new node
+        debug!(%self.node_config.cluster.node_id);
         if self.node_config.is_joining() {
             info!(%self.node_config.cluster.node_id, "Node is joining...");
             raft.join_cluster().await?;
@@ -147,6 +147,7 @@ where
         &self,
         is_ready: bool,
     ) {
+        info!("Set node is ready to run Raft protocol");
         self.ready.store(is_ready, Ordering::SeqCst);
     }
 

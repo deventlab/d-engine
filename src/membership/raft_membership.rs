@@ -537,6 +537,48 @@ where
             .blocking_read(|guard| guard.nodes.values().cloned().collect())
     }
 
+    async fn pre_warm_connections(&self) -> Result<()> {
+        let peers = self.replication_peers();
+
+        if peers.is_empty() {
+            info!("No replication peers found");
+            return Ok(());
+        }
+
+        let conn_types = ConnectionType::all();
+        // Materialize task futures to a Vec
+        let mut tasks = Vec::new();
+        for peer in &peers {
+            for conn_type in &conn_types {
+                let peer_id = peer.id;
+                let conn_type = conn_type.clone();
+                let fut = async move {
+                    if let Some(channel) = self.get_peer_channel(peer_id, conn_type.clone()).await {
+                        info!("Pre-warmed {:?} connection to node {}", conn_type, peer_id);
+                        Ok::<_, ()>(channel)
+                    } else {
+                        warn!("Failed to pre-warm {:?} connection to node {}", conn_type, peer_id);
+                        Err(())
+                    }
+                };
+                tasks.push(fut);
+            }
+        }
+
+        // Rate-limit concurrent futures
+        futures::stream::iter(tasks)
+            .buffer_unordered(10)
+            .for_each(|result| async move {
+                if result.is_err() {
+                    warn!("Connection pre-warming failed for one or more peers");
+                }
+            })
+            .await;
+
+        info!("Connection pre-warming completed");
+        Ok(())
+    }
+
     async fn get_peer_channel(
         &self,
         node_id: u32,

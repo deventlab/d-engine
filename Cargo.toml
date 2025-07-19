@@ -96,6 +96,7 @@ serial_test = "3.2.0"
 hyper = "1.6.0"
 temp-env = "0.3.6"
 nix = { version = "0.30.1", features = ["fs"] }
+tracing-test = "0.2"
 
 [build-dependencies]
 tonic-build = "0.12"
