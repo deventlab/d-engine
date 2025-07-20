@@ -1,15 +1,20 @@
 use crate::proto::cluster::NodeMeta;
 use crate::MembershipError;
 use crate::Result;
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use tracing::info;
 
 pub struct MembershipGuard {
-    pub(crate) inner: Arc<RwLock<InnerState>>,
+    // Atomic state pointer for lock-free reads
+    state: ArcSwap<InnerState>,
+    // Mutex for write serialization
+    write_mutex: Mutex<()>,
 }
 
+#[derive(Clone)]
 pub struct InnerState {
     pub nodes: HashMap<u32, NodeMeta>,
     pub cluster_conf_version: u64,
@@ -24,11 +29,14 @@ impl MembershipGuard {
             "Initializing membership: {:?}, version: {}",
             initial_nodes, initial_version
         );
-        let inner = Arc::new(RwLock::new(InnerState {
+        let state = ArcSwap::new(Arc::new(InnerState {
             nodes: initial_nodes.into_iter().map(|node| (node.id, node)).collect(),
             cluster_conf_version: initial_version,
         }));
-        Self { inner }
+        Self {
+            state,
+            write_mutex: Mutex::new(()),
+        }
     }
 
     /// Provides read access to the state
@@ -36,8 +44,9 @@ impl MembershipGuard {
         &self,
         f: impl FnOnce(&InnerState) -> R,
     ) -> R {
-        let guard = self.inner.read().await;
-        f(&guard)
+        // Load current state atomically (no lock)
+        let state = self.state.load();
+        f(&state)
     }
 
     /// Provides write access to the state
@@ -45,8 +54,18 @@ impl MembershipGuard {
         &self,
         f: impl FnOnce(&mut InnerState) -> R,
     ) -> R {
-        let mut guard = self.inner.write().await;
-        f(&mut guard)
+        // Serialize writes with mutex
+        let _guard = self.write_mutex.lock().await;
+
+        // Clone current state
+        let mut new_state = (**self.state.load()).clone();
+
+        // Apply modifications
+        let result = f(&mut new_state);
+
+        // Atomically swap state pointer
+        self.state.store(Arc::new(new_state));
+        result
     }
 
     #[allow(unused)]

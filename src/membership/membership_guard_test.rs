@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::oneshot;
+
 use super::*;
 use crate::proto::cluster::NodeMeta;
 use crate::ConsensusError;
@@ -117,33 +119,114 @@ async fn concurrent_read_access() {
 }
 
 #[tokio::test]
-async fn write_lock_blocks_other_access() {
+async fn write_operations_are_serialized() {
     let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let (tx_started, rx_started) = oneshot::channel();
+
     let guard_clone = Arc::clone(&guard);
 
     let write_handle = tokio::spawn(async move {
-        // Acquire the write lock directly to hold it across async sleep
-        let mut inner = guard_clone.inner.write().await;
-        tx.send(()).await.unwrap(); // Signal that the lock is acquired
+        guard_clone
+            .blocking_write(|state| {
+                // Signal that we've entered the write operation
+                tx_started.send(()).unwrap();
 
-        // Use async sleep to yield control while holding the lock
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        inner.cluster_conf_version = 2;
-
-        // Lock is released when `inner` is dropped here
+                // Simulate long write operation
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(100) {
+                    std::hint::spin_loop();
+                }
+                // Update state
+                state.cluster_conf_version = 2;
+            })
+            .await;
     });
 
-    // Give write thread time to acquire lock
-    rx.recv().await.unwrap();
-
+    // Start measuring time BEFORE the second write
     let start = std::time::Instant::now();
-    guard.blocking_read(|_| {}).await;
+
+    // Wait for write operation to start
+    rx_started.await.unwrap();
+
+    // Start second write in a separate task
+    let second_write_handle = tokio::spawn({
+        let guard = Arc::clone(&guard);
+        async move {
+            guard
+                .blocking_write(|state| {
+                    state.cluster_conf_version = 3;
+                })
+                .await;
+        }
+    });
+
+    // Now wait for second write to complete
+    second_write_handle.await.unwrap();
+    let elapsed = start.elapsed();
+    write_handle.await.unwrap();
+
+    println!("Second write completed in: {}ms", elapsed.as_millis());
+
+    // Verify write serialization - second write should have waited
+    assert!(
+        elapsed >= Duration::from_millis(90),
+        "Expected min 90ms, got {}ms",
+        elapsed.as_millis()
+    );
+
+    // Verify final state
+    let version = guard.blocking_read(|state| state.cluster_conf_version).await;
+    assert_eq!(version, 3);
+}
+
+#[tokio::test]
+async fn reads_are_not_blocked_by_writes() {
+    let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
+    let (tx_started, rx_started) = oneshot::channel();
+    let write_handle = tokio::spawn({
+        let guard = Arc::clone(&guard);
+        async move {
+            guard
+                .blocking_write(|state| {
+                    // Signal that write has started
+                    tx_started.send(()).unwrap();
+
+                    // Long operation
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < Duration::from_millis(100) {
+                        std::hint::spin_loop();
+                    }
+                    state.cluster_conf_version = 2;
+                })
+                .await;
+        }
+    });
+
+    // Wait for write to start
+    rx_started.await.unwrap();
+
+    // Time 100 reads during the write
+    let start = std::time::Instant::now();
+    for _ in 0..100 {
+        guard
+            .blocking_read(|state| {
+                assert_eq!(state.cluster_conf_version, 2);
+            })
+            .await;
+    }
     let elapsed = start.elapsed();
 
     write_handle.await.unwrap();
 
-    println!("Write completed: {}", elapsed.as_millis());
-    // Should have waited at least 90ms for write to complete
-    assert!(elapsed >= Duration::from_millis(90));
+    let avg_read_time = elapsed.as_micros() as f64 / 100.0;
+    println!("Average read time: {:.2}μs", avg_read_time);
+    assert!(
+        avg_read_time < 50.0,
+        "Reads should be fast, average was {:.2}μs",
+        avg_read_time
+    );
+
+    // Verify write completed
+    let version = guard.blocking_read(|state| state.cluster_conf_version).await;
+    assert_eq!(version, 2);
 }
