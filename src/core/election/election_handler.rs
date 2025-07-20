@@ -49,7 +49,7 @@ where
     ) -> Result<()> {
         debug!("broadcast_vote_requests...");
 
-        let members = membership.voters();
+        let members = membership.voters().await;
         if members.is_empty() {
             error!("my(id={}) peers is empty.", self.my_id);
             return Err(ElectionError::NoVotingMemberFound {

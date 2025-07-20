@@ -72,7 +72,7 @@ where
         // Phase 1: Pre-Checks
         // ----------------------
         let membership = ctx.membership();
-        let replication_targets = membership.replication_peers();
+        let replication_targets = membership.replication_peers().await;
         if replication_targets.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
             return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());

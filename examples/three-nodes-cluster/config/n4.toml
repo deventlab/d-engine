@@ -25,3 +25,24 @@ max_delay_ms = 60000 # Maximum backoff delay (recommended: <=1m)
 
 [raft.snapshot]
 enable = false
+
+[network.control]
+concurrency_limit = 8192                #// Moderate concurrency
+max_concurrent_streams = 8192           #// Stream limit for control operations
+tcp_keepalive_in_secs = 3600            #// 5 minute TCP keepalive
+http2_keep_alive_interval_in_secs = 300 #// Frequent pings
+http2_keep_alive_timeout_in_secs = 20   #// Short timeout
+max_frame_size = 16_777_215
+connection_window_size = 2_097_152      #// 2MB connection window
+
+
+[network.data]
+connect_timeout_in_ms = 20              #// Balance speed and reliability
+request_timeout_in_ms = 200             #// Accommodate log batches
+concurrency_limit = 8192                #// High concurrency for parallel logs
+max_concurrent_streams = 500            #// More streams for pipelining
+tcp_keepalive_in_secs = 3600            #// 10 minute TCP keepalive
+http2_keep_alive_interval_in_secs = 300 #// Moderate ping interval
+http2_keep_alive_timeout_in_secs = 30   #// Longer grace period
+max_frame_size = 16_777_215
+connection_window_size = 6_291_456      #// 6MB connection window

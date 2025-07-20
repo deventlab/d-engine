@@ -600,7 +600,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ) -> Result<()> {
         let now = Instant::now();
         // Keep syncing leader_id
-        ctx.membership_ref().mark_leader_id(self.node_id())?;
+        ctx.membership_ref().mark_leader_id(self.node_id()).await?;
 
         // 1. Clear expired learners
         if let Err(e) = self.run_periodic_maintenance(role_tx, ctx).await {
@@ -682,7 +682,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx.membership().retrieve_cluster_membership_config();
+                let cluster_conf = ctx.membership().retrieve_cluster_membership_config().await;
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
@@ -693,7 +693,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
-                let current_conf_version = ctx.membership().get_cluster_conf_version();
+                let current_conf_version = ctx.membership().get_cluster_conf_version().await;
                 debug!(%current_conf_version, ?cluste_conf_change_request,
                     "handle_raft_event::RaftEvent::ClusterConfUpdate",
                 );
@@ -882,7 +882,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             // Phase 2.1: Pre-Checks before sending Purge request
                             // ----------------------
                             let membership = ctx.membership();
-                            let members = membership.voters();
+                            let members = membership.voters().await;
                             if members.is_empty() {
                                 warn!("no peer found for leader({})", my_id);
                                 return Err(MembershipError::NoPeersAvailable.into());
@@ -940,7 +940,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             RaftEvent::DiscoverLeader(request, sender) => {
                 debug!(?request, "Leader::RaftEvent::DiscoverLeader");
 
-                if let Some(meta) = ctx.membership().retrieve_node_meta(my_id) {
+                if let Some(meta) = ctx.membership().retrieve_node_meta(my_id).await {
                     let response = LeaderDiscoveryResponse {
                         leader_id: my_id,
                         leader_address: meta.address,
@@ -1142,7 +1142,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 2. Execute the copy
         let membership = ctx.membership();
-        let voters = membership.voters();
+        let voters = membership.voters().await;
         let cluster_size = voters.len() + 1;
         trace!(%cluster_size);
 
@@ -1290,7 +1290,7 @@ impl<T: TypeConfig> LeaderState<T> {
         let mut ready_learners = Vec::new();
 
         for (node_id, match_index) in learner_progress {
-            let node_status = match ctx.membership().get_node_status(*node_id) {
+            let node_status = match ctx.membership().get_node_status(*node_id).await {
                 Some(status) => status,
                 None => {
                     warn!("Node {} not in membership", node_id);
@@ -1320,7 +1320,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
             debug!("Caught up: {}", caught_up);
             if caught_up {
-                if ctx.membership().contains_node(*node_id) {
+                if ctx.membership().contains_node(*node_id).await {
                     ready_learners.push(*node_id);
                 } else {
                     warn!("Node {} is already removed from cluster", node_id);
@@ -1363,7 +1363,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 1. Determine optimal promotion status based on quorum safety
         debug!("1. Determine optimal promotion status based on quorum safety");
         let membership = ctx.membership();
-        let current_voters = membership.voters().len();
+        let current_voters = membership.voters().await.len();
         // let syncings = membership.nodes_with_status(NodeStatus::Syncing).len();
         let new_active_count = current_voters + ready_learners_ids.len();
 
@@ -1421,7 +1421,7 @@ impl<T: TypeConfig> LeaderState<T> {
     //     role_tx: &mpsc::UnboundedSender<RoleEvent>,
     // ) -> Result<()> {
     //     let membership = ctx.membership();
-    //     let current_voters = membership.voters().len();
+    //     let current_voters = membership.voters().await.len();
     //     let pending_nodes = membership.nodes_with_status(NodeStatus::Syncing);
 
     //     if pending_nodes.is_empty() {
@@ -1637,7 +1637,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 1. Validate join request
         debug!("1. Validate join request");
-        if membership.contains_node(node_id) {
+        if membership.contains_node(node_id).await {
             let error_msg = format!("Node {node_id} already exists in cluster");
             warn!(%error_msg);
             return self
@@ -1653,7 +1653,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 3. Create configuration change payload
         debug!("3. Create configuration change payload");
-        if let Err(e) = membership.can_rejoin(node_id) {
+        if let Err(e) = membership.can_rejoin(node_id).await {
             error!("Node {node_id} cannot rejoin: {}", e);
             return Err(e);
         }
@@ -1678,7 +1678,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
                 debug!(
                     "5.1 After updating, the replications peers: {:?}",
-                    ctx.membership().replication_peers()
+                    ctx.membership().replication_peers().await
                 );
 
                 // 6. Send successful response
@@ -1741,8 +1741,8 @@ impl<T: TypeConfig> LeaderState<T> {
         let response = JoinResponse {
             success: true,
             error: String::new(),
-            config: Some(ctx.membership().retrieve_cluster_membership_config()),
-            config_version: ctx.membership().get_cluster_conf_version(),
+            config: Some(ctx.membership().retrieve_cluster_membership_config().await),
+            config_version: ctx.membership().get_cluster_conf_version().await,
             snapshot_metadata,
             leader_id: self.node_id(),
         };
@@ -1872,7 +1872,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Step 2: Get current voter count
         let membership = ctx.membership();
-        let current_voters = membership.voters().len();
+        let current_voters = membership.voters().await.len();
 
         // Step 3: Calculate the maximum batch size that preserves an odd total
         let max_batch_size = calculate_safe_batch_size(current_voters, self.pending_promotions.len());
@@ -1909,7 +1909,7 @@ impl<T: TypeConfig> LeaderState<T> {
             }
 
             println!("============== Promotion successful ================");
-            println!("Now cluster members: {:?}", membership.voters());
+            println!("Now cluster members: {:?}", membership.voters().await);
         }
 
         trace!(
@@ -1973,7 +1973,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        if let Err(e) = self.conditionally_purge_stale_learners(ctx) {
+        if let Err(e) = self.conditionally_purge_stale_learners(ctx).await {
             error!("Stale learner purge failed: {}", e);
         }
 
@@ -1990,7 +1990,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// using priority-based lazy scheduling. Actual average frequency
     /// is inversely proportional to system load.
     #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    pub(super) fn conditionally_purge_stale_learners(
+    pub(super) async fn conditionally_purge_stale_learners(
         &mut self,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
@@ -2034,7 +2034,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Process collected stale entries
         for entry in stale_entries {
-            if let Err(e) = self.handle_stale_learner(entry.node_id, ctx) {
+            if let Err(e) = self.handle_stale_learner(entry.node_id, ctx).await {
                 error!("Failed to handle stale learner: {}", e);
             }
         }
@@ -2053,7 +2053,7 @@ impl<T: TypeConfig> LeaderState<T> {
         let mut nodes_to_remove = Vec::new();
 
         for node_id in zombie_candidates {
-            if let Some(status) = ctx.membership().get_node_status(node_id) {
+            if let Some(status) = ctx.membership().get_node_status(node_id).await {
                 if status != NodeStatus::Active {
                     nodes_to_remove.push(node_id);
                 }
@@ -2098,13 +2098,15 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// FINRA Rule 4370-approved remediation
     #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    pub(super) fn handle_stale_learner(
+    pub(super) async fn handle_stale_learner(
         &mut self,
         node_id: u32,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         // Step 1: Automated downgrade
-        ctx.membership().update_node_status(node_id, NodeStatus::StandBy)?;
+        ctx.membership()
+            .update_node_status(node_id, NodeStatus::StandBy)
+            .await?;
 
         // Step 2: Trigger operator notification
         // ctx.ops_tx().send(OpsEvent::LearnerStalled(node_id));

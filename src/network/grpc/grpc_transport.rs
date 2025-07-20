@@ -77,7 +77,7 @@ where
         debug!("Sending cluster configuration update requests");
 
         // Get voting members (control plane operation)
-        let peers = membership.voters();
+        let peers = membership.voters().await;
         if peers.is_empty() {
             warn!("No voting members available for cluster update");
             return Err(NetworkError::EmptyPeerList {
@@ -172,15 +172,15 @@ where
         let mut tasks = FuturesUnordered::new();
         let mut peer_ids = HashSet::new();
 
-        // Calculate the real value in advance
-        let avg_request_size = requests
-            .iter()
-            .map(|(_, r)| r.entries.len())
-            .sum::<usize>()
-            .saturating_div(requests.len().max(1)); // Prevent zero division
+        // // Calculate the real value in advance
+        // let avg_request_size = requests
+        //     .iter()
+        //     .map(|(_, r)| r.entries.len())
+        //     .sum::<usize>()
+        //     .saturating_div(requests.len().max(1)); // Prevent zero division
 
-        // Update log fields
-        tracing::Span::current().record("avg_request_size", avg_request_size);
+        // // Update log fields
+        // tracing::Span::current().record("avg_request_size", avg_request_size);
 
         for (peer_id, req) in requests {
             if peer_id == self.my_id || peer_ids.contains(&peer_id) {
@@ -251,7 +251,7 @@ where
         debug!("Sending vote requests");
 
         // Get voting members (control plane operation)
-        let peers = membership.voters();
+        let peers = membership.voters().await;
         if peers.is_empty() {
             warn!("No voting members available for vote requests");
             return Err(NetworkError::EmptyPeerList {
@@ -331,7 +331,7 @@ where
         debug!("Sending log purge requests");
 
         // Get all members (data operation)
-        let peers = membership.voters();
+        let peers = membership.voters().await;
 
         if peers.is_empty() {
             warn!("No peers available for purge requests");
@@ -449,7 +449,7 @@ where
     ) -> Result<Vec<LeaderDiscoveryResponse>> {
         debug!("Starting leader discovery for node {}", request.node_id);
 
-        let member_ids: Vec<_> = membership.voters().iter().map(|m| m.id).collect();
+        let member_ids: Vec<_> = membership.voters().await.iter().map(|m| m.id).collect();
 
         let tasks = member_ids.into_iter().map(|member_id| {
             Self::process_member(membership.clone(), member_id, request.clone(), rpc_enable_compression)

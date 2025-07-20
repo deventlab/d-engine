@@ -42,56 +42,56 @@ where
 {
     /// All nodes (including itself)
     #[allow(unused)]
-    fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+    async fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     /// All non-self nodes (including Syncing and Active)
     /// Note:
     /// Joining node has not start its Raft event processing engine yet.
-    fn replication_peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+    async fn replication_peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     /// All non-self nodes in Active state
-    fn voters(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+    async fn voters(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     /// All pending active nodes in Active state
     #[allow(unused)]
-    fn nodes_with_status(
+    async fn nodes_with_status(
         &self,
         status: NodeStatus,
     ) -> Vec<crate::proto::cluster::NodeMeta>;
 
-    fn get_node_status(
+    async fn get_node_status(
         &self,
         node_id: u32,
     ) -> Option<NodeStatus>;
 
     async fn check_cluster_is_ready(&self) -> Result<()>;
 
-    fn get_peers_id_with_condition<F>(
+    async fn get_peers_id_with_condition<F>(
         &self,
         condition: F,
     ) -> Vec<u32>
     where
-        F: Fn(i32) -> bool + 'static;
+        F: Fn(i32) -> bool + Send + Sync + 'static;
 
-    fn mark_leader_id(
+    async fn mark_leader_id(
         &self,
         leader_id: u32,
     ) -> Result<()>;
 
-    fn current_leader_id(&self) -> Option<u32>;
+    async fn current_leader_id(&self) -> Option<u32>;
 
     /// Reset old leader to follower
-    fn reset_leader(&self) -> Result<()>;
+    async fn reset_leader(&self) -> Result<()>;
 
     /// If node role not found return Error
-    fn update_node_role(
+    async fn update_node_role(
         &self,
         node_id: u32,
         new_role: i32,
     ) -> Result<()>;
 
     /// retrieve latest cluster membership
-    fn retrieve_cluster_membership_config(&self) -> ClusterMembership;
+    async fn retrieve_cluster_membership_config(&self) -> ClusterMembership;
 
     /// invoked when receive requests from Leader
     async fn update_cluster_conf_from_leader(
@@ -103,18 +103,18 @@ where
         cluster_conf_change_req: &ClusterConfChangeRequest,
     ) -> Result<ClusterConfUpdateResponse>;
 
-    fn get_cluster_conf_version(&self) -> u64;
+    async fn get_cluster_conf_version(&self) -> u64;
 
-    fn update_conf_version(
+    async fn update_conf_version(
         &self,
         version: u64,
     );
 
     #[allow(unused)]
-    fn incr_conf_version(&self);
+    async fn incr_conf_version(&self);
 
     /// Add a new node as a learner
-    fn add_learner(
+    async fn add_learner(
         &self,
         node_id: u32,
         address: String,
@@ -122,25 +122,25 @@ where
 
     /// Activate node
     #[allow(unused)]
-    fn activate_node(
+    async fn activate_node(
         &mut self,
         new_node_id: u32,
     ) -> Result<()>;
 
     /// Update status of a node
-    fn update_node_status(
+    async fn update_node_status(
         &self,
         node_id: u32,
         status: NodeStatus,
     ) -> Result<()>;
 
     /// Check if the node already exists
-    fn contains_node(
+    async fn contains_node(
         &self,
         node_id: u32,
     ) -> bool;
 
-    fn retrieve_node_meta(
+    async fn retrieve_node_meta(
         &self,
         node_id: u32,
     ) -> Option<crate::proto::cluster::NodeMeta>;
@@ -160,7 +160,7 @@ where
 
     /// Get all node status
     #[allow(unused)]
-    fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+    async fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
     /// Pre-warms connection cache for all replication peers
     async fn pre_warm_connections(&self) -> Result<()>;
@@ -171,7 +171,7 @@ where
         conn_type: ConnectionType,
     ) -> Option<Channel>;
 
-    fn get_address(
+    async fn get_address(
         &self,
         node_id: u32,
     ) -> Option<String>;
@@ -190,7 +190,7 @@ where
     async fn get_zombie_candidates(&self) -> Vec<u32>;
 
     /// If new node could rejoin the cluster again
-    fn can_rejoin(
+    async fn can_rejoin(
         &self,
         node_id: u32,
     ) -> Result<()>;

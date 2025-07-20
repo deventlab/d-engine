@@ -3237,6 +3237,7 @@ mod pending_promotion_tests {
         assert!(fixture
             .leader_state
             .handle_stale_learner(1, &fixture.raft_context)
+            .await
             .is_ok());
     }
 
@@ -3460,7 +3461,7 @@ mod stale_learner_tests {
         );
 
         // Should only check first 100 entries (out of 200)
-        leader.conditionally_purge_stale_learners(&ctx).unwrap();
+        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
 
         // Should purge exactly 2 entries (1% of 200 = 2)
         assert_eq!(leader.pending_promotions.len(), 198);
@@ -3478,7 +3479,7 @@ mod stale_learner_tests {
 
         let ctx = mock_raft_context("test_no_purge_when_fresh", Arc::new(membership), None);
 
-        leader.conditionally_purge_stale_learners(&ctx).unwrap();
+        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
         assert_eq!(leader.pending_promotions.len(), 2);
     }
 
@@ -3531,7 +3532,7 @@ mod stale_learner_tests {
 
         // Time the staleness check
         let start = Instant::now();
-        leader.conditionally_purge_stale_learners(&ctx).unwrap();
+        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
         let elapsed = start.elapsed();
 
         // Should take <1ms even for large queues
@@ -3562,7 +3563,7 @@ mod stale_learner_tests {
             Some(Arc::new(node_config)),
         );
 
-        leader.conditionally_purge_stale_learners(&ctx).unwrap();
+        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 2);
         assert!(leader.pending_promotions.iter().any(|p| p.node_id == 103));
@@ -3584,7 +3585,7 @@ mod stale_learner_tests {
             .returning(|_| Some(NodeStatus::Active));
         let ctx = mock_raft_context("test_downgrade_affects_replication", Arc::new(membership), None);
 
-        assert!(leader.handle_stale_learner(101, &ctx).is_ok());
+        assert!(leader.handle_stale_learner(101, &ctx).await.is_ok());
 
         // Verify replication was stopped for this node
         assert!(!leader.next_index.contains_key(&101));

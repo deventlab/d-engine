@@ -270,7 +270,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx.membership().retrieve_cluster_membership_config();
+                let cluster_conf = ctx.membership().retrieve_cluster_membership_config().await;
                 debug!("Candidate receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
@@ -281,9 +281,9 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             }
 
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
-                let current_conf_version = ctx.membership().get_cluster_conf_version();
+                let current_conf_version = ctx.membership().get_cluster_conf_version().await;
 
-                let current_leader_id = ctx.membership().current_leader_id();
+                let current_leader_id = ctx.membership().current_leader_id().await;
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Candiate receive ClusterConfUpdate"
@@ -348,7 +348,9 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     return Ok(());
                 } else {
                     // Keep syncing leader_id
-                    ctx.membership_ref().mark_leader_id(append_entries_request.leader_id)?;
+                    ctx.membership_ref()
+                        .mark_leader_id(append_entries_request.leader_id)
+                        .await?;
 
                     if append_entries_request.term > my_term {
                         self.update_current_term(append_entries_request.term);

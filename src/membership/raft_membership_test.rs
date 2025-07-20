@@ -66,84 +66,92 @@ pub fn create_test_membership() -> RaftMembership<RaftTypeConfig> {
     RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default())
 }
 
-#[test]
-fn test_update_single_node_case1() {
+#[tokio::test]
+async fn test_update_single_node_case1() {
     let membership = create_test_membership();
 
     // Test updating an existing node
     let node_id = 4; //Learner 4
     let new_status = NodeStatus::Syncing;
-    let result = membership.update_single_node(node_id, |node| {
-        node.status = new_status as i32;
-        Ok(())
-    });
+    let result = membership
+        .update_single_node(node_id, |node| {
+            node.status = new_status as i32;
+            Ok(())
+        })
+        .await;
 
     assert!(result.is_ok(), "Failed to update single node");
 
     // Verify node was updated
-    let node_status = membership.get_node_status(node_id).unwrap();
+    let node_status = membership.get_node_status(node_id).await.unwrap();
     assert_eq!(node_status, NodeStatus::Syncing, "Node status should be updated");
 }
 
-#[test]
-fn test_update_single_node_case2() {
+#[tokio::test]
+async fn test_update_single_node_case2() {
     let membership = create_test_membership();
 
     // Test updating a non-existing node
     let node_id = 10; //none existent node
     let new_status = NodeStatus::Syncing;
-    let result = membership.update_single_node(node_id, |node| {
-        node.status = new_status as i32;
-        Ok(())
-    });
+    let result = membership
+        .update_single_node(node_id, |node| {
+            node.status = new_status as i32;
+            Ok(())
+        })
+        .await;
 
     assert!(result.is_err(), "Should return error");
 
     // Verify node was created
-    assert!(membership.get_node_status(node_id).is_none());
+    assert!(membership.get_node_status(node_id).await.is_none());
 }
 
-#[test]
-fn test_update_multiple_nodes_case1() {
+#[tokio::test]
+async fn test_update_multiple_nodes_case1() {
     let membership = create_test_membership();
     let nodes = vec![4, 5];
 
     let new_status = NodeStatus::Syncing;
-    let result = membership.update_multiple_nodes(&nodes, |node| {
-        node.status = new_status as i32;
-        Ok(())
-    });
+    let result = membership
+        .update_multiple_nodes(&nodes, |node| {
+            node.status = new_status as i32;
+            Ok(())
+        })
+        .await;
     assert!(result.is_ok(), "Failed to update multiple nodes");
 
     // Verify all nodes were updated
     for node_id in nodes {
-        let node_status = membership.get_node_status(node_id).unwrap();
+        let node_status = membership.get_node_status(node_id).await.unwrap();
         assert_eq!(node_status, NodeStatus::Syncing, "All nodes should be Syncing");
     }
 }
 
-#[test]
-fn test_update_multiple_nodes_case2() {
+#[tokio::test]
+async fn test_update_multiple_nodes_case2() {
     let membership = create_test_membership();
     let nodes = vec![4, 13];
 
     let new_status = NodeStatus::Syncing;
-    let result = membership.update_multiple_nodes(&nodes, |node| {
-        node.status = new_status as i32;
-        Ok(())
-    });
+    let result = membership
+        .update_multiple_nodes(&nodes, |node| {
+            node.status = new_status as i32;
+            Ok(())
+        })
+        .await;
     assert!(result.is_ok(), "Failed to update mixed nodes");
 
     // Verify existing node was updated
-    let node4_status = membership.get_node_status(4).unwrap();
+    let node4_status = membership.get_node_status(4).await.unwrap();
     assert_eq!(node4_status, NodeStatus::Syncing, "Existing node should be updated");
 
     // Verify new nodes were created
-    assert!(!membership.contains_node(13), "New node should exist");
+    assert!(!membership.contains_node(13).await, "New node should exist");
 }
 
-#[test]
-fn test_replication_peers_case1() {
+#[tokio::test]
+async fn test_replication_peers_case1() {
     // Prepare cluster membership
     let initial_cluster = vec![
         NodeMeta {
@@ -178,7 +186,7 @@ fn test_replication_peers_case1() {
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
-    assert_eq!(membership.replication_peers().len(), 3);
+    assert_eq!(membership.replication_peers().await.len(), 3);
 }
 
 /// # Case 1: Test old leader id been cleaned up
@@ -229,9 +237,9 @@ async fn test_mark_leader_id_case1() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
 
-    assert_eq!(membership.current_leader_id(), Some(old_leader_id));
-    assert!(membership.mark_leader_id(new_leader_id).is_ok());
-    assert_eq!(membership.current_leader_id(), Some(new_leader_id));
+    assert_eq!(membership.current_leader_id().await, Some(old_leader_id));
+    assert!(membership.mark_leader_id(new_leader_id).await.is_ok());
+    assert_eq!(membership.current_leader_id().await, Some(new_leader_id));
 }
 
 /// # Case 2: Try to mark an none exist peer as leader will throw Error
@@ -280,12 +288,12 @@ async fn test_mark_leader_id_case2() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
 
-    assert!(membership.mark_leader_id(new_leader_id).is_err());
-    assert_eq!(membership.current_leader_id(), None);
+    assert!(membership.mark_leader_id(new_leader_id).await.is_err());
+    assert_eq!(membership.current_leader_id().await, None);
 }
 
-#[test]
-fn test_retrieve_cluster_membership_config() {
+#[tokio::test]
+async fn test_retrieve_cluster_membership_config() {
     // Prepare cluster membership
     let initial_cluster = vec![
         NodeMeta {
@@ -321,7 +329,7 @@ fn test_retrieve_cluster_membership_config() {
     ];
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
 
-    let r = membership.retrieve_cluster_membership_config();
+    let r = membership.retrieve_cluster_membership_config().await;
     assert_eq!(r.nodes.len(), 5);
     assert!(!r.nodes.iter().any(|n| n.role == LEADER));
 }
@@ -352,8 +360,8 @@ async fn test_update_cluster_conf_from_leader_case1() {
         )
         .await
         .is_ok());
-    assert!(membership.contains_node(3));
-    assert_eq!(membership.get_cluster_conf_version(), 0); // Version from request
+    assert!(membership.contains_node(3).await);
+    assert_eq!(membership.get_cluster_conf_version().await, 0); // Version from request
 }
 
 #[tokio::test]
@@ -388,8 +396,8 @@ async fn test_update_cluster_conf_from_leader_case2() {
         )
         .await
         .is_ok());
-    assert!(!membership.contains_node(3));
-    assert_eq!(membership.get_cluster_conf_version(), 1);
+    assert!(!membership.contains_node(3).await);
+    assert_eq!(membership.get_cluster_conf_version().await, 1);
 }
 
 #[tokio::test]
@@ -429,8 +437,8 @@ async fn test_update_cluster_conf_from_leader_case3() {
         .expect("should succeed");
 
     assert!(response.success);
-    assert_eq!(membership.get_role_by_node_id(3).unwrap(), FOLLOWER);
-    assert_eq!(membership.get_cluster_conf_version(), 1);
+    assert_eq!(membership.get_role_by_node_id(3).await.unwrap(), FOLLOWER);
+    assert_eq!(membership.get_cluster_conf_version().await, 1);
 }
 
 #[tokio::test]
@@ -508,7 +516,7 @@ async fn test_update_cluster_conf_from_leader_case5_conf_missing_change() {
 async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
     // Test version mismatch
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
-    membership.update_conf_version(5); // Set current version to 5
+    membership.update_conf_version(5).await; // Set current version to 5
 
     let req = ClusterConfChangeRequest {
         id: 2,
@@ -568,7 +576,7 @@ async fn test_batch_remove_nodes() {
     ];
 
     let membership = RaftMembership::<MockTypeConfig>::new(1, initial_nodes, RaftNodeConfig::default());
-    membership.update_conf_version(1);
+    membership.update_conf_version(1).await;
 
     // Create batch removal request
     let req = ClusterConfChangeRequest {
@@ -596,11 +604,11 @@ async fn test_batch_remove_nodes() {
 
     // Verify results
     assert!(response.success);
-    assert!(!membership.contains_node(3));
-    assert!(!membership.contains_node(4));
-    assert!(membership.contains_node(2));
-    assert!(membership.contains_node(5));
-    assert_eq!(membership.get_cluster_conf_version(), 1);
+    assert!(!membership.contains_node(3).await);
+    assert!(!membership.contains_node(4).await);
+    assert!(membership.contains_node(2).await);
+    assert!(membership.contains_node(5).await);
+    assert_eq!(membership.get_cluster_conf_version().await, 1);
 }
 
 #[tokio::test]
@@ -683,10 +691,10 @@ async fn test_apply_batch_remove_config_change() {
         .expect("Batch remove should succeed");
 
     // Verify nodes removed and version updated
-    assert!(!membership.contains_node(2));
-    assert!(!membership.contains_node(3));
-    assert!(membership.contains_node(4));
-    assert_eq!(membership.get_cluster_conf_version(), 1);
+    assert!(!membership.contains_node(2).await);
+    assert!(!membership.contains_node(3).await);
+    assert!(membership.contains_node(4).await);
+    assert_eq!(membership.get_cluster_conf_version().await, 1);
 }
 
 // Add to existing test series
@@ -714,7 +722,7 @@ async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
         },
     ];
     let membership = RaftMembership::<MockTypeConfig>::new(1, initial_nodes, RaftNodeConfig::default());
-    membership.update_conf_version(1);
+    membership.update_conf_version(1).await;
 
     // Batch removal request
     let req = ClusterConfChangeRequest {
@@ -734,10 +742,10 @@ async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
         .expect("Batch remove should succeed");
 
     assert!(response.success);
-    assert!(!membership.contains_node(3));
-    assert!(!membership.contains_node(4));
-    assert!(membership.contains_node(2));
-    assert_eq!(membership.get_cluster_conf_version(), 1);
+    assert!(!membership.contains_node(3).await);
+    assert!(!membership.contains_node(4).await);
+    assert!(membership.contains_node(2).await);
+    assert_eq!(membership.get_cluster_conf_version().await, 1);
 }
 
 #[tokio::test]
@@ -762,7 +770,7 @@ async fn test_update_cluster_conf_from_leader_case8_batch_remove_nonexistent() {
         .expect("Should succeed with no-op");
 
     assert!(response.success);
-    assert_eq!(membership.get_cluster_conf_version(), 0);
+    assert_eq!(membership.get_cluster_conf_version().await, 0);
 }
 
 /// This test covers:
@@ -770,8 +778,8 @@ async fn test_update_cluster_conf_from_leader_case8_batch_remove_nonexistent() {
 /// Filtering for a single role (Leaders)
 /// Empty result case
 /// All-items-match case
-#[test]
-fn test_get_peers_id_with_condition() {
+#[tokio::test]
+async fn test_get_peers_id_with_condition() {
     // Setup test data
     // Prepare cluster membership
     let initial_cluster = vec![
@@ -809,24 +817,26 @@ fn test_get_peers_id_with_condition() {
     let membership = RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
 
     // Test 1: Filter followers and candidates
-    let mut result = membership.get_peers_id_with_condition(|role| role == FOLLOWER || role == CANDIDATE);
+    let mut result = membership
+        .get_peers_id_with_condition(|role| role == FOLLOWER || role == CANDIDATE)
+        .await;
     result.sort_unstable();
     let mut expect = vec![1, 3, 5];
     expect.sort_unstable();
     assert_eq!(result, expect, "Should return follower and candidate IDs");
 
     // Test 2: Filter leaders only
-    let result = membership.get_peers_id_with_condition(|role| role == LEADER);
+    let result = membership.get_peers_id_with_condition(|role| role == LEADER).await;
     assert_eq!(result, vec![6], "Should return leader ID only");
 
     // Test 3: Empty result case
-    let result = membership.get_peers_id_with_condition(|_| false);
+    let result = membership.get_peers_id_with_condition(|_| false).await;
     assert!(result.is_empty(), "Should return empty vector when no matches");
     let mut expect = vec![1, 3, 4, 5, 6];
     expect.sort_unstable();
 
     // Test 4: All items match
-    let mut result = membership.get_peers_id_with_condition(|_| true);
+    let mut result = membership.get_peers_id_with_condition(|_| true).await;
     result.sort_unstable();
     assert_eq!(result, expect, "Should return all IDs when condition is always true");
 }
@@ -867,7 +877,10 @@ mod check_cluster_is_ready_test {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
             let (port, addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
-            membership.update_node_address(id, format!("127.0.0.1:{port}")).unwrap();
+            membership
+                .update_node_address(id, format!("127.0.0.1:{port}"))
+                .await
+                .unwrap();
             mock_services.push((tx, addr));
         }
 
@@ -964,6 +977,7 @@ mod check_cluster_is_ready_test {
             let (port, addr) = MockNode::mock_listener(service, rx, false).await.unwrap();
             membership
                 .update_node_address(*id, format!("127.0.0.1:{}", port))
+                .await
                 .unwrap();
             mock_services.push((tx, addr));
         }
@@ -986,10 +1000,10 @@ mod add_learner_test {
     async fn test_add_learner_case1() {
         let membership = RaftMembership::<RaftTypeConfig>::new(1, vec![], RaftNodeConfig::default());
 
-        let result = membership.add_learner(2, "127.0.0.1:1234".to_string());
+        let result = membership.add_learner(2, "127.0.0.1:1234".to_string()).await;
         assert!(result.is_ok(), "Should add learner successfully");
 
-        let replication_members = membership.members();
+        let replication_members = membership.members().await;
         assert_eq!(replication_members.len(), 1);
         assert_eq!(replication_members[0].id, 2);
         assert_eq!(replication_members[0].address, "127.0.0.1:1234");
@@ -1010,10 +1024,10 @@ mod add_learner_test {
             RaftNodeConfig::default(),
         );
 
-        let result = membership.add_learner(1, "127.0.0.1:1234".to_string());
+        let result = membership.add_learner(1, "127.0.0.1:1234".to_string()).await;
         assert!(result.is_err(), "Node is follower");
 
-        let replication_members = membership.members();
+        let replication_members = membership.members().await;
         assert_eq!(replication_members.len(), 1);
         assert_eq!(replication_members[0].id, 1);
         assert_eq!(replication_members[0].address, "127.0.0.1:0");
@@ -1022,8 +1036,8 @@ mod add_learner_test {
     }
 }
 
-#[test]
-fn test_ensure_safe_join() {
+#[tokio::test]
+async fn test_ensure_safe_join() {
     assert!(ensure_safe_join(1, 0).is_ok());
     assert!(ensure_safe_join(1, 1).is_err());
     assert!(ensure_safe_join(1, 2).is_ok());
@@ -1041,7 +1055,10 @@ async fn test_health_monitoring_integration() {
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
 
     // Add test node
-    membership.add_learner(100, "invalid.address".to_string()).unwrap();
+    membership
+        .add_learner(100, "invalid.address".to_string())
+        .await
+        .unwrap();
 
     // Test 1: Record connection failure
     let channel = membership.get_peer_channel(100, ConnectionType::Control).await;
@@ -1060,6 +1077,7 @@ async fn test_health_monitoring_integration() {
     let (port, _addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
     membership
         .update_node_address(100, format!("127.0.0.1:{port}"))
+        .await
         .unwrap();
     membership.get_peer_channel(100, ConnectionType::Control).await; // Should "succeed"
     assert!(membership.health_monitor.failure_counts.get(&100).is_none());

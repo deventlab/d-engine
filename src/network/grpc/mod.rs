@@ -92,9 +92,9 @@ where
 
     let mut server_builder = tonic::transport::Server::builder()
         // Control-plane parameters for core RPC operations
-        // .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
+        .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
         .concurrency_limit_per_connection(control_config.concurrency_limit)
-        // .max_concurrent_streams(control_config.max_concurrent_streams)
+        .max_concurrent_streams(control_config.max_concurrent_streams)
         .tcp_keepalive(Some(Duration::from_secs(control_config.tcp_keepalive_in_secs)))
         .http2_keepalive_interval(Some(Duration::from_secs(
             control_config.http2_keep_alive_interval_in_secs,
@@ -106,7 +106,7 @@ where
         .initial_stream_window_size(data_config.stream_window_size)
         .initial_connection_window_size(data_config.connection_window_size)
         .http2_adaptive_window(Some(data_config.adaptive_window))
-        // .max_frame_size(Some(data_config.max_frame_size))
+        .max_frame_size(Some(data_config.max_frame_size))
         // Common TCP parameters
         .tcp_nodelay(config.network.tcp_nodelay);
 
