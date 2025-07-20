@@ -1685,34 +1685,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 debug!("6. Send successful response");
                 info!("Join config committed for node {}", node_id);
                 self.send_join_success(node_id, &address, sender, ctx).await?;
-
-                // // 7. Trigger snapshot transmission (only when snapshot exists in Leader node)
-                // debug!("7. Trigger snapshot transmission (only when snapshot exists in Leader
-                // node)"); if let Some(lastest_snapshot_metadata) =
-                // ctx.state_machine().snapshot_metadata() {     // Get a cloned
-                // version of the necessary parameters     let membership_clone =
-                // membership.clone();     let node_id_copy = node_id;
-                //     let config = ctx.node_config.raft.snapshot.clone();
-                //     let state_machine_handler = ctx.state_machine_handler().clone();
-                //     // Start a completely independent asynchronous task
-                //     tokio::spawn(async move {
-                //         // Add a delayed start to avoid instantaneous pressure
-                //         tokio::time::sleep(Duration::from_secs(1)).await;
-
-                //         // Asynchronously trigger snapshot transfer (do not wait for the result)
-                //         if let Err(e) = Self::trigger_background_snapshot(
-                //             node_id_copy,
-                //             lastest_snapshot_metadata,
-                //             state_machine_handler,
-                //             membership_clone,
-                //             config,
-                //         )
-                //         .await
-                //         {
-                //             error!("Background snapshot failed for {}: {:?}", node_id_copy, e);
-                //         }
-                //     });
-                // }
             }
             Ok(false) => {
                 warn!("Failed to commit join config for node {}", node_id);

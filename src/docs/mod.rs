@@ -2,3 +2,4 @@
 
 pub mod architecture;
 pub mod components;
+pub mod performance;
