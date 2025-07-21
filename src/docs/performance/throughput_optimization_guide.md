@@ -178,8 +178,7 @@ client.request_vote(...)
 3. **Improves fault containment**
    Connection issues affect only one operation type
 
-```
-
+```text
 Key enhancements:
 1. Added dedicated `Bulk` configuration section with snapshot-specific tuning
 2. Implemented connection type routing in code samples

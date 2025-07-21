@@ -10,6 +10,7 @@ use prost::Message;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
@@ -30,6 +31,7 @@ use crate::proto::replication::SuccessResult;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::is_majority;
 use crate::AppendResults;
+use crate::IdAllocationError;
 use crate::LeaderStateSnapshot;
 use crate::Membership;
 use crate::PeerUpdate;
@@ -148,7 +150,7 @@ where
                         Ok(append_response) => {
                             // Skip responses from stale terms
                             if append_response.term < leader_current_term {
-                                warn!(%append_response.term, %leader_current_term, "append_response.term < leader_current_term");
+                                info!(%append_response.term, %leader_current_term, "append_response.term < leader_current_term");
                                 continue;
                             }
 
@@ -424,7 +426,7 @@ where
         None
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self, raft_log))]
     fn check_append_entries_request_is_legal(
         &self,
         my_term: u64,
@@ -505,17 +507,34 @@ where
         current_term: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<Vec<Entry>> {
+        // Handle empty case early
+        if entry_payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Pre-allocate ID range in one atomic operation
+        let id_range = raft_log.pre_allocate_id_range(entry_payloads.len() as u64);
+        let mut next_index = *id_range.start();
+
         let mut entries = Vec::with_capacity(entry_payloads.len());
 
         for payload in entry_payloads {
-            let index = raft_log.pre_allocate_raft_logs_next_index();
-            debug!("Allocated log index: {}", index);
+            // Ensure we don't exceed allocated range
+            if next_index > *id_range.end() {
+                return Err(IdAllocationError::Overflow {
+                    start: next_index,
+                    end: *id_range.end(),
+                }
+                .into());
+            }
 
             entries.push(Entry {
-                index,
+                index: next_index,
                 term: current_term,
                 payload: Some(payload),
             });
+
+            next_index += 1;
         }
 
         if !entries.is_empty() {

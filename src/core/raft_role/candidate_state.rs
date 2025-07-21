@@ -447,6 +447,27 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 .into())
             }
 
+            RaftEvent::SnapshotCreated(_result) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!("Candidate node {} attempted to handle created snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
+            RaftEvent::LogPurgeCompleted(_purged_id) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Learner",
+                    required_role: "Leader",
+                    context: format!(
+                        "Learner node {} should not receive LogPurgeCompleted event.",
+                        ctx.node_id
+                    ),
+                }
+                .into())
+            }
+
             RaftEvent::JoinCluster(_join_request, sender) => {
                 sender
                     .send(Err(Status::permission_denied(

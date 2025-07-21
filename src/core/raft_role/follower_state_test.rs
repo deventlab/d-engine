@@ -1029,7 +1029,7 @@ async fn test_handle_raft_event_case8_2() {
     // Mock purge executor to succeed
     let mut purge_executor = MockPurgeExecutor::new();
     purge_executor.expect_execute_purge().times(1).returning(|_| Ok(()));
-    context.handlers.purge_executor = purge_executor;
+    context.handlers.purge_executor = Arc::new(purge_executor);
 
     // Mock membership with current leader
     let mut membership = MockMembership::new();
@@ -1331,7 +1331,7 @@ async fn test_handle_raft_event_case8_7() {
         .expect_execute_purge()
         .times(1)
         .returning(|_| Err(SnapshotError::OperationFailed("test".to_string()).into()));
-    context.handlers.purge_executor = purge_executor;
+    context.handlers.purge_executor = Arc::new(purge_executor);
 
     // Mock membership
     let mut membership = MockMembership::new();
@@ -1519,4 +1519,53 @@ fn test_can_purge_logs_case4() {
         None,
         LogId { index: 100, term: 1 } // 100 not < 100
     ));
+}
+
+#[cfg(test)]
+mod role_violation_tests {
+    use super::*;
+
+    /// Test handling role violation events by FollowerState
+    #[tokio::test]
+    async fn test_role_violation_events() {
+        // Step 1: Setup the test environment
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = mock_raft_context("/tmp/test_follower_role_violation_events", graceful_rx, None);
+        let mut state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // Step 2: Prepare the CreateSnapshotEvent
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let raft_event = RaftEvent::CreateSnapshotEvent;
+
+        // [Test CreateSnapshotEvent]
+        let e = state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .unwrap_err();
+
+        // Verify the error response
+        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+
+        // [Test SnapshotCreated]
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let raft_event = RaftEvent::SnapshotCreated(Err(Error::Fatal("test".to_string())));
+        let e = state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .unwrap_err();
+
+        // Verify the error response
+        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+
+        // [Test LogPurgeCompleted]
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
+        let e = state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .unwrap_err();
+
+        // Verify the error response
+        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+    }
 }

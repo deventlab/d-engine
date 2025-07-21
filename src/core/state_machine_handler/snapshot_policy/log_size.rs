@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use tracing::debug;
+
 use super::SnapshotContext;
 use super::SnapshotPolicy;
 use crate::cluster::is_leader;
@@ -57,6 +59,7 @@ impl SnapshotPolicy for LogSizePolicy {
 
         self.is_checking.store(false, Ordering::Release);
 
+        debug!("Log size policy triggered: {}", should_trigger);
         should_trigger
     }
 

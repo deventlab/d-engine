@@ -44,6 +44,13 @@ pub trait RaftLog: Send + Sync + 'static {
 
     fn pre_allocate_raft_logs_next_index(&self) -> u64;
 
+    /// Pre-allocates a contiguous range of log indices
+    /// Returns inclusive range [start, end] where (end - start + 1) == count
+    fn pre_allocate_id_range(
+        &self,
+        count: u64,
+    ) -> RangeInclusive<u64>;
+
     /// Deprecated: Use `last_log_id()` instead.
     fn last(&self) -> Option<Entry>;
 
@@ -140,7 +147,7 @@ pub trait RaftLog: Send + Sync + 'static {
 
     fn get_from_cache(
         &self,
-        key: &[u8],
+        key: u64,
     ) -> Option<Entry>;
 
     fn calculate_majority_matched_index(

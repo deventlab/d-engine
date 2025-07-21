@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -164,6 +166,9 @@ pub struct LeaderState<T: TypeConfig> {
     /// Key: Peer node ID
     /// Value: Last confirmed purge index from peer
     pub(super) peer_purge_progress: HashMap<u32, u64>,
+
+    /// Record if there is on-going snapshot creation activity
+    pub(super) snapshot_in_progress: AtomicBool,
 
     // -- Request Processing --
     /// Batched proposal buffer for client requests
@@ -609,10 +614,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         // 3. Batch trigger check (should be prioritized before heartbeat check)
         if now >= self.timer.batch_deadline() {
-            trace!("reset_batch timer");
             self.timer.reset_batch();
 
             if self.batch_buffer.should_flush() {
+                debug!(?now, "tick::reset_batch batch timer");
                 self.timer.reset_replication();
 
                 // Take out the batched messages and send them immediately
@@ -625,7 +630,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // 4. Heartbeat trigger check
         // Send heartbeat if the replication timer expires
         if now >= self.timer.replication_deadline() {
-            debug!("reset_replication timer");
+            debug!(?now, "tick::reset_replication timer");
             self.timer.reset_replication();
 
             // Do not move batch out of this block
@@ -664,7 +669,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.send_become_follower_event(None, &role_tx)?;
 
                     info!("Leader will not process Vote request, it should let Follower do it.");
-                    self.send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
+                    send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
                 } else {
                     let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
                     let response = VoteResponse {
@@ -714,7 +719,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.send_become_follower_event(Some(cluste_conf_change_request.id), &role_tx)?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
-                    self.send_replay_raft_event(
+                    send_replay_raft_event(
                         &role_tx,
                         RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender),
                     )?;
@@ -743,7 +748,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.send_become_follower_event(Some(append_entries_request.leader_id), &role_tx)?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
-                    self.send_replay_raft_event(&role_tx, RaftEvent::AppendEntries(append_entries_request, sender))?;
+                    send_replay_raft_event(&role_tx, RaftEvent::AppendEntries(append_entries_request, sender))?;
                 }
             }
 
@@ -855,11 +860,110 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::CreateSnapshotEvent => {
-                let state_machine_handler = ctx.state_machine_handler();
+                // Prevent duplicate snapshot creation
+                if self.snapshot_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+                    info!("Snapshot creation already in progress. Skipping duplicate request.");
+                    return Ok(());
+                }
 
-                match state_machine_handler.create_snapshot().await {
+                self.snapshot_in_progress
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let state_machine_handler = ctx.state_machine_handler().clone();
+
+                // Use spawn to perform snapshot creation in the background
+                tokio::spawn(async move {
+                    let result = state_machine_handler.create_snapshot().await;
+                    info!("SnapshotCreated event will be processed in another event thread");
+                    if let Err(e) = send_replay_raft_event(&role_tx, RaftEvent::SnapshotCreated(result)) {
+                        error!("Failed to send snapshot creation result: {}", e);
+                    }
+                });
+
+                // let state_machine_handler = ctx.state_machine_handler();
+
+                // match state_machine_handler.create_snapshot().await {
+                //     Err(e) => {
+                //         error!(%e,"self.state_machine_handler.create_snapshot with error.");
+                //     }
+                //     Ok((
+                //         SnapshotMetadata {
+                //             last_included: last_included_option,
+                //             checksum,
+                //         },
+                //         _final_path,
+                //     )) => {
+                //         info!("Purge Leader local raft logs");
+
+                //         if let Some(last_included) = last_included_option {
+                //             // ----------------------
+                //             // Phase 1: Update the scheduled purge state
+                //             // ----------------------
+                //             if self.can_purge_logs(self.last_purged_index, last_included) {
+                //                 self.scheduled_purge_upto(last_included);
+                //             }
+
+                //             // ----------------------
+                //             // Phase 2.1: Pre-Checks before sending Purge request
+                //             // ----------------------
+                //             let membership = ctx.membership();
+                //             let members = membership.voters().await;
+                //             if members.is_empty() {
+                //                 warn!("no peer found for leader({})", my_id);
+                //                 return Err(MembershipError::NoPeersAvailable.into());
+                //             }
+
+                //             // ----------------------
+                //             // Phase 2.2: Send Purge request to the other nodes
+                //             // ----------------------
+                //             let transport = ctx.transport();
+                //             match transport
+                //                 .send_purge_requests(
+                //                     PurgeLogRequest {
+                //                         term: my_term,
+                //                         leader_id: my_id,
+                //                         last_included: Some(last_included),
+                //                         snapshot_checksum: checksum.clone(),
+                //                         leader_commit: self.commit_index(),
+                //                     },
+                //                     &self.node_config.retry,
+                //                     membership,
+                //                 )
+                //                 .await
+                //             {
+                //                 Ok(result) => {
+                //                     info!(?result, "receive PurgeLogResult");
+
+                //                     self.peer_purge_progress(result, &role_tx)?;
+                //                 }
+                //                 Err(e) => {
+                //                     error!(?e, "RaftEvent::CreateSnapshotEvent");
+                //                     return Err(e);
+                //                 }
+                //             }
+
+                //             // ----------------------
+                //             // Phase 3: Execute scheduled purge task
+                //             // ----------------------
+                //             debug!(?last_included, "Execute scheduled purge task");
+                //             if let Some(scheduled) = self.scheduled_purge_upto {
+                //                 if let Err(e) = ctx.purge_executor().execute_purge(scheduled).await {
+                //                     error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
+                //                 }
+                //                 self.last_purged_index = Some(scheduled);
+                //             }
+                //         }
+                //     }
+                // }
+            }
+
+            RaftEvent::SnapshotCreated(result) => {
+                self.snapshot_in_progress.store(false, Ordering::SeqCst);
+                let my_id = self.shared_state.node_id;
+                let my_term = self.current_term();
+
+                match result {
                     Err(e) => {
-                        error!(%e,"self.state_machine_handler.create_snapshot with error.");
+                        error!(%e, "State machine snapshot creation failed");
                     }
                     Ok((
                         SnapshotMetadata {
@@ -868,19 +972,22 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         },
                         _final_path,
                     )) => {
-                        info!("Purge Leader local raft logs");
+                        info!("Initiating log purge after snapshot creation");
 
                         if let Some(last_included) = last_included_option {
                             // ----------------------
-                            // Phase 1: Update the scheduled purge state
+                            // Phase 1: Schedule log purge if possible
                             // ----------------------
+                            trace!("Phase 1: Schedule log purge if possible");
                             if self.can_purge_logs(self.last_purged_index, last_included) {
+                                trace!(?last_included, "Phase 1: Scheduling log purge");
                                 self.scheduled_purge_upto(last_included);
                             }
 
                             // ----------------------
                             // Phase 2.1: Pre-Checks before sending Purge request
                             // ----------------------
+                            trace!("Phase 2.1: Pre-Checks before sending Purge request");
                             let membership = ctx.membership();
                             let members = membership.voters().await;
                             if members.is_empty() {
@@ -891,6 +998,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             // ----------------------
                             // Phase 2.2: Send Purge request to the other nodes
                             // ----------------------
+                            trace!("Phase 2.2: Send Purge request to the other nodes");
                             let transport = ctx.transport();
                             match transport
                                 .send_purge_requests(
@@ -920,15 +1028,49 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             // ----------------------
                             // Phase 3: Execute scheduled purge task
                             // ----------------------
+                            trace!("Phase 3: Execute scheduled purge task");
                             debug!(?last_included, "Execute scheduled purge task");
                             if let Some(scheduled) = self.scheduled_purge_upto {
-                                if let Err(e) = ctx.purge_executor().execute_purge(scheduled).await {
-                                    error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
+                                let purge_executor = ctx.purge_executor();
+                                // tokio::spawn(async move {
+                                //     if let Err(e) = purge_executor.execute_purge(scheduled).await {
+                                //         error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
+                                //     }
+                                // });
+                                // //TODO: bug
+                                // self.last_purged_index = Some(scheduled);
+                                match purge_executor.execute_purge(scheduled).await {
+                                    Ok(_) => {
+                                        if let Err(e) =
+                                            send_replay_raft_event(&role_tx, RaftEvent::LogPurgeCompleted(scheduled))
+                                        {
+                                            error!(%e, "Failed to notify purge completion");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(?e, ?scheduled, "Log purge execution failed");
+                                    }
                                 }
-                                self.last_purged_index = Some(scheduled);
                             }
                         }
                     }
+                }
+            }
+
+            RaftEvent::LogPurgeCompleted(purged_id) => {
+                // Ensure we don't regress the purge index
+                if self
+                    .last_purged_index
+                    .map_or(true, |current| purged_id.index > current.index)
+                {
+                    debug!(?purged_id, "Updating last purged index after successful execution");
+                    self.last_purged_index = Some(purged_id);
+                } else {
+                    warn!(
+                        ?purged_id,
+                        ?self.last_purged_index,
+                        "Received outdated purge completion, ignoring"
+                    );
                 }
             }
 
@@ -1047,19 +1189,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    fn send_replay_raft_event(
-        &self,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-        raft_event: RaftEvent,
-    ) -> Result<()> {
-        role_tx
-            .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
-            .map_err(|e| {
-                let error_str = format!("{e:?}");
-                error!("Failed to send: {}", error_str);
-                NetworkError::SingalSendFailed(error_str).into()
-            })
-    }
     /// # Params
     /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
@@ -1071,7 +1200,10 @@ impl<T: TypeConfig> LeaderState<T> {
         execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        debug!(?raft_request_with_signal, "Leader::process_raft_request");
+        debug!(
+            "Leader::process_raft_request, request_id: {}",
+            raft_request_with_signal.id
+        );
 
         let push_result = self.batch_buffer.push(raft_request_with_signal);
         // only buffer exceeds the max, the size will return
@@ -1267,7 +1399,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[instrument(skip(self))]
     async fn check_learner_progress(
         &mut self,
         learner_progress: &HashMap<u32, Option<u64>>,
@@ -1777,6 +1908,7 @@ impl<T: TypeConfig> LeaderState<T> {
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
             peer_purge_progress: HashMap::new(),
+            snapshot_in_progress: AtomicBool::new(false),
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             _marker: PhantomData,
@@ -2124,6 +2256,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
+            snapshot_in_progress: AtomicBool::new(false),
             peer_purge_progress: HashMap::new(),
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
@@ -2166,4 +2299,17 @@ pub(super) fn calculate_safe_batch_size(
         // But if available - 1 == 0, then we cannot promote any?
         available.saturating_sub(1)
     }
+}
+
+pub(super) fn send_replay_raft_event(
+    role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    raft_event: RaftEvent,
+) -> Result<()> {
+    role_tx
+        .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
+        .map_err(|e| {
+            let error_str = format!("{e:?}");
+            error!("Failed to send: {}", error_str);
+            NetworkError::SingalSendFailed(error_str).into()
+        })
 }

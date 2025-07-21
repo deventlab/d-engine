@@ -224,6 +224,25 @@ pub enum StorageError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    /// ID allocation errors
+    #[error(transparent)]
+    IdAllocation(#[from] IdAllocationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum IdAllocationError {
+    /// ID allocation overflow
+    #[error("ID allocation overflow: {start} > {end}")]
+    Overflow { start: u64, end: u64 },
+
+    /// Invalid ID range
+    #[error("Invalid ID range: {start}..={end}")]
+    InvalidRange { start: u64, end: u64 },
+
+    /// No available IDs
+    #[error("No available IDs")]
+    NoIdsAvailable,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -301,6 +320,10 @@ pub enum SystemError {
     #[error("Serialization error")]
     Serialization(#[from] SerializationError),
 
+    /// Protocol buffer encoding/decoding specific errors
+    #[error("Protobuf operation failed: {0}")]
+    Prost(#[from] ProstError),
+
     // Basic node operations
     #[error("Node failed to start: {0}")]
     NodeStartFailed(String),
@@ -317,6 +340,16 @@ pub enum SystemError {
 pub enum SerializationError {
     #[error("Bincode serialization failed: {0}")]
     Bincode(#[from] bincode::Error),
+}
+
+/// Wrapper for prost encoding/decoding errors
+#[derive(Debug, thiserror::Error)]
+pub enum ProstError {
+    #[error("Encoding failed: {0}")]
+    Encode(#[from] prost::EncodeError),
+
+    #[error("Decoding failed: {0}")]
+    Decode(#[from] prost::DecodeError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -557,6 +590,19 @@ impl From<SerializationError> for Error {
     }
 }
 
+// These allow direct conversion from prost errors to SystemError
+impl From<prost::EncodeError> for SystemError {
+    fn from(error: prost::EncodeError) -> Self {
+        SystemError::Prost(ProstError::Encode(error))
+    }
+}
+
+impl From<prost::DecodeError> for SystemError {
+    fn from(error: prost::DecodeError) -> Self {
+        SystemError::Prost(ProstError::Decode(error))
+    }
+}
+
 // ===== Consensus Error conversions =====
 
 impl From<StateTransitionError> for Error {
@@ -617,5 +663,11 @@ impl From<JoinError> for Error {
 impl From<SnapshotError> for Error {
     fn from(e: SnapshotError) -> Self {
         Error::Consensus(ConsensusError::Snapshot(e))
+    }
+}
+
+impl From<IdAllocationError> for Error {
+    fn from(e: IdAllocationError) -> Self {
+        StorageError::IdAllocation(e).into()
     }
 }

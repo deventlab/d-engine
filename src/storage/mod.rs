@@ -49,9 +49,10 @@ pub fn init_sled_raft_log_db(
     sled::Config::default()
         .path(&raft_log_db_path)
         .cache_capacity(4 * 1024 * 1024 * 1024) //4GB
-        // .flush_every_ms(Some(1))
+        // .flush_every_ms(Some(1000))
         .use_compression(true)
         .compression_factor(1)
+        .mode(sled::Mode::HighThroughput)
         // .segment_size(256)
         // .print_profile_on_drop(true)
         .open()

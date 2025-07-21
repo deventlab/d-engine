@@ -25,7 +25,7 @@ pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
     pub(crate) state_machine_handler: Arc<SMHOF<T>>,
 
     // Raft Log Purge Executor
-    pub(crate) purge_executor: PE<T>,
+    pub(crate) purge_executor: Arc<PE<T>>,
 }
 
 pub(crate) struct RaftContext<T>
@@ -89,8 +89,8 @@ where
         self.membership.clone()
     }
 
-    pub fn purge_executor(&self) -> &PE<T> {
-        &self.handlers.purge_executor
+    pub fn purge_executor(&self) -> Arc<PE<T>> {
+        self.handlers.purge_executor.clone()
     }
 
     pub fn membership_ref(&self) -> &Arc<MOF<T>> {

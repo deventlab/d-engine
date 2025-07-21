@@ -364,7 +364,7 @@ impl NodeBuilder {
                 election_handler: ElectionHandler::new(node_id),
                 replication_handler: ReplicationHandler::new(node_id),
                 state_machine_handler: state_machine_handler.clone(),
-                purge_executor,
+                purge_executor: Arc::new(purge_executor),
             },
             membership.clone(),
             SignalParams {

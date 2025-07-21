@@ -67,7 +67,7 @@ where
         request: tonic::Request<VoteRequest>,
     ) -> std::result::Result<Response<VoteResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[rpc|request_vote] Node-{} is not ready!", self.node_id);
+            warn!("[rpc|request_vote] My raft setup(Node:{}) is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 

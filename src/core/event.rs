@@ -1,5 +1,3 @@
-use tonic::Status;
-
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientWriteRequest;
@@ -11,6 +9,7 @@ use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::LeaderDiscoveryRequest;
 use crate::proto::cluster::LeaderDiscoveryResponse;
 use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
 use crate::proto::replication::AppendEntriesRequest;
@@ -19,9 +18,13 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotMetadata;
 use crate::proto::storage::SnapshotResponse;
 use crate::MaybeCloneOneshotSender;
+use crate::Result;
 use crate::StreamResponseSender;
+use std::path::PathBuf;
+use tonic::Status;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NewCommitData {
@@ -105,9 +108,11 @@ pub(crate) enum RaftEvent {
         peer_id: u32,
     },
 
-    // None RPC event
-    #[allow(dead_code)]
     CreateSnapshotEvent,
+
+    LogPurgeCompleted(LogId),
+
+    SnapshotCreated(Result<(SnapshotMetadata, PathBuf)>),
 
     // Lightweight promotion trigger
     PromoteReadyLearners,
@@ -144,6 +149,10 @@ pub(crate) enum TestEvent {
     // None RPC event
     CreateSnapshotEvent,
 
+    SnapshotCreated,
+
+    LogPurgeCompleted(LogId),
+
     PromoteReadyLearners,
 }
 
@@ -162,6 +171,8 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
+        RaftEvent::SnapshotCreated(_result) => TestEvent::SnapshotCreated,
+        RaftEvent::LogPurgeCompleted(id) => TestEvent::LogPurgeCompleted(*id),
         RaftEvent::TriggerSnapshotPush { peer_id } => TestEvent::TriggerSnapshotPush { peer_id: *peer_id },
         RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
     }

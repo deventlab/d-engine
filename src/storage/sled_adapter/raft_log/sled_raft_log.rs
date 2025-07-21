@@ -24,6 +24,7 @@ use tracing::trace;
 use tracing::warn;
 
 use crate::convert::safe_kv;
+use crate::convert::safe_vk;
 use crate::convert::vki;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
@@ -35,11 +36,13 @@ use crate::StorageError;
 use crate::API_SLO;
 use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
 
+const ID_BATCH_SIZE: u64 = 100;
+
 pub struct SledRaftLog {
     node_id: u32,
     db: Arc<sled::Db>,
     tree: Arc<sled::Tree>,
-    cache: RaftLogMemCache,
+    pub(super) cache: RaftLogMemCache,
 }
 
 impl std::fmt::Debug for SledRaftLog {
@@ -64,12 +67,12 @@ impl Drop for SledRaftLog {
 /// This data structure is designed to improve read and write performance.
 /// It has to be refreshed when there is a write
 #[derive(Debug)]
-struct RaftLogMemCache {
+pub(super) struct RaftLogMemCache {
     length: AtomicU64,
-    mapped_entries: DashMap<Vec<u8>, Entry>, //mapped from disk
-    next_id: AtomicU64,                      /* because of the batch apply feature, we have to
-                                              * pre allocated some entry index before insert
-                                              * successfully */
+    mapped_entries: DashMap<u64, Entry>, //mapped from disk
+    pub(super) next_id: AtomicU64,       /* because of the batch apply feature, we have to
+                                          * pre allocated some entry index before insert
+                                          * successfully */
 }
 
 impl RaftLogMemCache {
@@ -77,19 +80,27 @@ impl RaftLogMemCache {
         &self,
         new_disk_entries: &LocalLogBatch,
         disk_len: u64,
-    ) {
+    ) -> Result<()> {
         for (key, value) in &new_disk_entries.writes {
-            let k = key.clone();
-            if let Some(v) = value {
-                let v = v.clone();
-                self.mapped_entries.insert(k.clone(), v);
-            } else {
-                self.mapped_entries.remove(&k);
+            let index = safe_vk(key)?;
+            match value {
+                Some(ivec) => {
+                    if let Ok(entry) = Entry::decode(ivec.as_ref()) {
+                        self.mapped_entries.insert(index, entry);
+                    } else {
+                        error!("Failed to decode entry at index {}", index);
+                    }
+                }
+                None => {
+                    self.mapped_entries.remove(&index);
+                }
             }
         }
         self.length.store(disk_len, Ordering::Release);
         debug!("RaftLog::refresh local raft log next log index: {}", disk_len + 1);
         self.next_id.store(disk_len + 1, Ordering::Release);
+
+        Ok(())
     }
 }
 //sized traits are not object-safe:https://doc.rust-lang.org/reference/items/traits.html#object-safety
@@ -204,7 +215,6 @@ impl RaftLog for SledRaftLog {
         return last - first + 1;
     }
 
-    #[autometrics(objective = API_SLO)]
     fn pre_allocate_raft_logs_next_index(&self) -> u64 {
         // self.get_raft_logs_length() + 1
         let next_id = self.cache.next_id.fetch_add(1, Ordering::SeqCst);
@@ -214,6 +224,18 @@ impl RaftLog for SledRaftLog {
             next_id
         );
         next_id
+    }
+
+    fn pre_allocate_id_range(
+        &self,
+        count: u64,
+    ) -> RangeInclusive<u64> {
+        // Calculate required batch size (minimum 1 batch)
+        let batches = count.div_ceil(ID_BATCH_SIZE).max(1);
+        let total = batches * ID_BATCH_SIZE;
+
+        let start = self.cache.next_id.fetch_add(total, Ordering::SeqCst);
+        start..=start + total - 1
     }
 
     /// Deprecated: Use `last_log_id()` instead.
@@ -302,9 +324,10 @@ impl RaftLog for SledRaftLog {
 
             // Append new log
             for entry in new_entries {
-                batch.insert(safe_kv(entry.index), entry);
+                let encoded = IVec::from(entry.encode_to_vec());
+                batch.insert(safe_kv(entry.index), encoded);
             }
-            self.apply(&batch).expect("Failed to apply batch");
+            self.apply(&batch)?;
             return Ok(last);
         }
 
@@ -317,7 +340,8 @@ impl RaftLog for SledRaftLog {
                 }
                 // Append new log
                 for entry in new_entries {
-                    batch.insert(safe_kv(entry.index), entry);
+                    let encoded = IVec::from(entry.encode_to_vec());
+                    batch.insert(safe_kv(entry.index), encoded);
                 }
             }
             _ => {
@@ -368,8 +392,8 @@ impl RaftLog for SledRaftLog {
         for entry in logs.into_iter() {
             let index = entry.index;
             let size = mem::size_of_val(&entry);
-
-            batch.insert(safe_kv(index), entry);
+            let encoded = IVec::from(entry.encode_to_vec());
+            batch.insert(safe_kv(index), encoded);
             //-------------------
             //performance testing: /*
             MESSAGE_SIZE_IN_BYTES_METRIC
@@ -500,17 +524,17 @@ impl RaftLog for SledRaftLog {
             "load_uncommitted_from_db_to_cache, commit_id: {}, len: {} ",
             commit_id, len
         );
-        for l in self.get_entries_between((commit_id + 1)..=len) {
-            self.cache.mapped_entries.insert(l.index.encode_to_vec(), l);
+        for entry in self.get_entries_between((commit_id + 1)..=len) {
+            self.cache.mapped_entries.insert(entry.index, entry);
         }
     }
 
     #[autometrics(objective = API_SLO)]
     fn get_from_cache(
         &self,
-        key: &[u8],
+        index: u64,
     ) -> Option<Entry> {
-        self.cache.mapped_entries.get(key).map(|v| v.clone())
+        self.cache.mapped_entries.get(&index).map(|v| v.clone())
     }
     /// If there exists an N such that N >= commitIndex, a majority
     /// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex =
@@ -757,11 +781,10 @@ impl SledRaftLog {
         &self,
         key: u64,
     ) -> Option<Entry> {
-        let k = safe_kv(key);
-        if let Some(v) = self.get_from_cache(&k) {
+        if let Some(v) = self.get_from_cache(key) {
             return Some(v);
         }
-        if let Ok(Some(bytes)) = self.tree.get(k) {
+        if let Ok(Some(bytes)) = self.tree.get(safe_kv(key)) {
             if let Ok(e) = Entry::decode(&*bytes) {
                 return Some(e);
             } else {
@@ -786,16 +809,13 @@ impl SledRaftLog {
         &self,
         range: RangeInclusive<u64>,
     ) -> Vec<Entry> {
-        let mut r = Vec::new();
+        let start = safe_kv(*range.start());
+        let end = safe_kv(*range.end());
 
-        for i in range {
-            if let Some(buffer) = self.get(i) {
-                r.push(buffer);
-            } else {
-                warn!("get_range() item can not found: {:?}", i);
-            }
-        }
-        return r;
+        self.tree
+            .range(start..=end)
+            .filter_map(|res| res.ok().and_then(|(_, v)| Entry::decode(&*v).ok()))
+            .collect()
     }
 
     #[autometrics(objective = API_SLO)]
@@ -844,17 +864,19 @@ impl SledRaftLog {
         &self,
         batch: &LocalLogBatch,
     ) -> sled::Result<()> {
+        debug!("apply local log batch length = {:?}", batch.writes.len());
+
         let mut b = Batch::default();
 
         for (key, value) in &batch.writes {
-            let k = key.clone();
+            let k: &[u8] = key.as_ref(); // avoid cloning, use reference
             if let Some(v) = value {
                 // Performance bug fix: remove value clone.
                 // let v = v.clone();
-                b.insert(k.clone(), v.encode_to_vec());
+                b.insert(k, v);
                 trace!("batch insert local log: key: {:?} - value: {:?}", k, v);
             } else {
-                b.remove(k.clone());
+                b.remove(k);
                 debug!("remove local log: key: {:?}", k);
             }
         }
@@ -863,7 +885,9 @@ impl SledRaftLog {
             error!("apply with error: {:?}", e);
         } else {
             debug!("apply successfully!");
-            self.post_write_actions(batch);
+            if let Err(e) = self.post_write_actions(batch) {
+                error!("post write actions with error: {:?}", e);
+            }
         }
         return r;
     }
@@ -872,7 +896,7 @@ impl SledRaftLog {
     fn post_write_actions(
         &self,
         batch: &LocalLogBatch,
-    ) {
-        self.cache.refresh(batch, self.last_entry_id());
+    ) -> Result<()> {
+        self.cache.refresh(batch, self.last_entry_id())
     }
 }

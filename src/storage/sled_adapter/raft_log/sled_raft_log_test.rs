@@ -7,7 +7,6 @@ use tracing::debug;
 
 use super::*;
 use crate::alias::ROF;
-use crate::convert::safe_kv;
 use crate::init_sled_storages;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
@@ -425,7 +424,7 @@ fn test_load_uncommitted_from_db_to_cache() {
     let len = context.raft_log.last_entry_id();
     context.raft_log.load_uncommitted_from_db_to_cache(8, len);
     for j in 8..len + 1 {
-        assert!(context.raft_log.get_from_cache(&safe_kv(j)).is_some());
+        assert!(context.raft_log.get_from_cache(j).is_some());
     }
 }
 
@@ -1416,4 +1415,132 @@ fn test_term_index_performance_large_dataset() {
     assert_eq!(context.raft_log.last_index_for_term(500), Some(49999));
     assert_eq!(context.raft_log.last_index_for_term(1000), Some(99999));
     println!("last_index_for_term took: {:?}", start.elapsed());
+}
+
+#[cfg(test)]
+mod id_allocation_tests {
+    use super::*;
+    use std::sync::{atomic::Ordering, Arc};
+
+    // In-memory test setup
+    fn setup_memory() -> Arc<SledRaftLog> {
+        let config = sled::Config::new().temporary(true);
+        let db = Arc::new(config.open().unwrap());
+
+        Arc::new(SledRaftLog::new(1, db, 0))
+    }
+
+    #[test]
+    fn test_pre_allocate_next_index_sequential() {
+        let raft_log = setup_memory();
+
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 1);
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 2);
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 3);
+
+        // Verify cache state
+        assert_eq!(raft_log.cache.next_id.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn test_pre_allocate_next_index_concurrent() {
+        let raft_log = setup_memory();
+        let raft_log_clone = Arc::clone(&raft_log);
+
+        let handle = std::thread::spawn(move || raft_log_clone.pre_allocate_raft_logs_next_index());
+
+        let main_id = raft_log.pre_allocate_raft_logs_next_index();
+        let thread_id = handle.join().unwrap();
+
+        // Verify IDs are unique and sequential
+        let ids = [main_id, thread_id];
+        assert!(ids.contains(&1) && ids.contains(&2));
+        assert_eq!(raft_log.cache.next_id.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_pre_allocate_id_range_exact_batch() {
+        let raft_log = setup_memory();
+
+        let range = raft_log.pre_allocate_id_range(100);
+        assert_eq!(*range.start(), 1);
+        assert_eq!(*range.end(), 100);
+
+        // Next allocation should start after the range
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 101);
+    }
+
+    #[test]
+    fn test_pre_allocate_id_range_partial_batch() {
+        let raft_log = setup_memory();
+
+        let range = raft_log.pre_allocate_id_range(50);
+        assert_eq!(*range.start(), 1);
+        assert_eq!(*range.end(), 100); // Still allocates full batch
+
+        // Verify we can use the full range
+        for i in 1..=100 {
+            assert!(range.contains(&i));
+        }
+    }
+
+    #[test]
+    fn test_pre_allocate_id_range_multiple_batches() {
+        let raft_log = setup_memory();
+
+        // First batch
+        let range1 = raft_log.pre_allocate_id_range(150);
+        assert_eq!(*range1.start(), 1);
+        assert_eq!(*range1.end(), 200); // 2 batches (200 IDs)
+
+        // Second batch
+        let range2 = raft_log.pre_allocate_id_range(50);
+        assert_eq!(*range2.start(), 201);
+        assert_eq!(*range2.end(), 300); // Another 2 batches (100 IDs requested -> 100 allocated)
+    }
+
+    #[test]
+    fn test_pre_allocate_id_range_edge_cases() {
+        let raft_log = setup_memory();
+
+        // Zero count (should allocate minimum batch)
+        let range = raft_log.pre_allocate_id_range(0);
+        assert_eq!(*range.start(), 1);
+        assert_eq!(*range.end(), 100);
+
+        // Exact batch size
+        let range = raft_log.pre_allocate_id_range(100);
+        assert_eq!(*range.start(), 101);
+        assert_eq!(*range.end(), 200);
+
+        // Single ID over batch
+        let range = raft_log.pre_allocate_id_range(101);
+        assert_eq!(*range.start(), 201);
+        assert_eq!(*range.end(), 400); // 4 batches (400 IDs)
+    }
+
+    #[test]
+    fn test_mixed_allocation_strategies() {
+        let raft_log = setup_memory();
+
+        // Single allocation
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 1);
+
+        // Range allocation
+        let range = raft_log.pre_allocate_id_range(5);
+        assert_eq!(*range.start(), 2);
+        assert_eq!(*range.end(), 101); // Full batch
+
+        // More single allocations
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 102);
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 103);
+
+        // Large range allocation
+        let range = raft_log.pre_allocate_id_range(250);
+        assert_eq!(*range.start(), 104);
+        assert_eq!(*range.end(), 403); // 3 batches (300 IDs)
+
+        // Final check
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 404);
+    }
 }

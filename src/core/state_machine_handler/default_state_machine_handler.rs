@@ -29,6 +29,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
+use tracing::trace;
 
 use super::SnapshotAssembler;
 use super::SnapshotContext;
@@ -147,9 +148,11 @@ where
         chunk: Vec<Entry>,
     ) -> Result<()> {
         let last_index = chunk.last().map(|entry| entry.index);
-        debug!(
+        trace!(
             "[node-{}] apply_chunk::entry={:?} last_index: {:?}",
-            self.node_id, &chunk, last_index
+            self.node_id,
+            &chunk,
+            last_index
         );
 
         let sm = self.state_machine.clone();

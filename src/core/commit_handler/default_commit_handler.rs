@@ -151,14 +151,18 @@ where
     /// Consider this sequence in a single batch: [ConfigRemove(A), ConfigAdd(B), EntryNormal(X)]
     pub(crate) async fn process_batch(&self) -> Result<()> {
         let pending_range = self.state_machine_handler.pending_range();
-        debug!("[Node-{}] Pending range: {:?}", self.my_id, pending_range);
+        trace!("[Node-{}] Pending range: {:?}", self.my_id, pending_range);
 
         let Some(range) = pending_range else {
             return Ok(());
         };
         let entries = self.raft_log.get_entries_between(range);
 
-        debug!("[Node-{}] Merge consecutive normal commands: {:?}", self.my_id, entries);
+        debug!(
+            "[Node-{}] Merge consecutive normal commands length = {}",
+            self.my_id,
+            entries.len()
+        );
         // Merge consecutive normal commands
         let mut command_batch = vec![];
         let flush = |batch: &mut Vec<_>| -> Result<()> {

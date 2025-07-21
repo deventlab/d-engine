@@ -1,18 +1,3 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
-
 use super::candidate_state::CandidateState;
 use super::leader_state::LeaderState;
 use super::learner_state::LearnerState;
@@ -47,6 +32,19 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+use tracing::warn;
 
 /// Follower node's state in Raft consensus.
 ///
@@ -460,11 +458,32 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Ok(());
             }
 
+            RaftEvent::LogPurgeCompleted(_purged_id) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!(
+                        "Follower node {} should not receive LogPurgeCompleted event.",
+                        ctx.node_id
+                    ),
+                }
+                .into())
+            }
+
             RaftEvent::CreateSnapshotEvent => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
                     context: format!("Follower node {} attempted to create snapshot.", ctx.node_id),
+                }
+                .into())
+            }
+
+            RaftEvent::SnapshotCreated(_result) => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!("Follower node {} attempted to handle created snapshot.", ctx.node_id),
                 }
                 .into())
             }

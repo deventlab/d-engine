@@ -1122,6 +1122,7 @@ mod handle_raft_request_in_batch_test {
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -1267,6 +1268,7 @@ mod handle_raft_request_in_batch_test {
         raft_log
             .expect_last_index_for_term()
             .returning(move |_| Some(last_index_for_term));
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_last_entry_id().return_const(10_u64);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 11);
         raft_log.expect_get_entries_between().returning(|range| {
@@ -1449,6 +1451,7 @@ mod handle_raft_request_in_batch_test {
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -1603,6 +1606,7 @@ mod handle_raft_request_in_batch_test {
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -1727,6 +1731,7 @@ mod handle_raft_request_in_batch_test {
             .expect_last_index_for_term()
             .returning(move |_| Some(last_index_for_term));
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -1835,6 +1840,7 @@ mod handle_raft_request_in_batch_test {
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
         // Force log generation error
@@ -2038,6 +2044,7 @@ mod handle_raft_request_in_batch_test {
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -2161,6 +2168,7 @@ mod handle_raft_request_in_batch_test {
         // Mock raft log and transport
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -2266,6 +2274,7 @@ mod handle_raft_request_in_batch_test {
         // Mock raft log and transport
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -2364,6 +2373,7 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
@@ -2526,6 +2536,7 @@ mod handle_raft_request_in_batch_test {
         // Mock raft log and transport
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(10_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 11);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -2630,6 +2641,7 @@ mod handle_raft_request_in_batch_test {
         // Mock raft log and transport
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
         raft_log.expect_get_entries_between().returning(|_| vec![]);
         raft_log.expect_prev_log_term().returning(|_, _| 0);
@@ -2720,6 +2732,7 @@ mod handle_raft_request_in_batch_test {
 
         // Mock raft log and transport
         let mut raft_log = MockRaftLog::new();
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_last_entry_id().return_const(leader_commit_index);
         raft_log
             .expect_pre_allocate_raft_logs_next_index()
@@ -2820,6 +2833,7 @@ mod handle_raft_request_in_batch_test {
         raft_log
             .expect_last_index_for_term()
             .returning(move |_| Some(last_index_for_term));
+        raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_last_entry_id().return_const(1_u64);
         raft_log
             .expect_pre_allocate_raft_logs_next_index()

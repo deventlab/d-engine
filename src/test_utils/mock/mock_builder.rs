@@ -121,7 +121,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
-            purge_executor,
+            purge_executor: Arc::new(purge_executor),
         };
         mock_raft_context_internal(1, storage, transport, membership, handlers, node_config)
     }
@@ -205,7 +205,7 @@ impl MockBuilder {
                 election_handler,
                 replication_handler,
                 state_machine_handler,
-                purge_executor,
+                purge_executor: Arc::new(purge_executor),
             },
             membership,
             SignalParams {

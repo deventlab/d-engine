@@ -24,7 +24,7 @@ batch_size = 5000
 rpc_append_entries_in_batch_threshold = 5000
 
 [raft.snapshot]
-enable = false
+enable = true
 
 [network.control]
 concurrency_limit = 8192                #// Moderate concurrency
