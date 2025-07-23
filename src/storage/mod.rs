@@ -1,9 +1,13 @@
+mod buffered_raft_log;
 mod raft_log;
 mod sled_adapter;
 mod snapshot_path_manager;
 mod state_machine;
 mod state_storage;
+mod storage_engine;
 
+#[doc(hidden)]
+pub use buffered_raft_log::*;
 #[doc(hidden)]
 pub use raft_log::*;
 #[doc(hidden)]
@@ -14,14 +18,23 @@ pub(crate) use snapshot_path_manager::*;
 pub use state_machine::*;
 #[doc(hidden)]
 pub use state_storage::*;
+#[doc(hidden)]
+pub use storage_engine::*;
 
+#[cfg(test)]
+mod buffered_raft_log_test;
 #[cfg(test)]
 mod storage_test;
 
 use std::path::Path;
-
 use tracing::debug;
 use tracing::warn;
+
+// -----------------------------------------------------------------------------
+// Database namespaces
+/// Sled database tree namespaces
+const RAFT_LOG_NAMESPACE: &str = "raft_log";
+const STATE_STORAGE_NAMESPACE: &str = "state_storage";
 
 /// raft logs storage
 /// (raft_log_db, state_machine_db, state_storage_db, snapshot_storge_db)
@@ -64,6 +77,34 @@ pub fn init_sled_raft_log_db(
             std::io::Error::other(e)
         })
 }
+
+pub fn init_sled_storage_engine_db(
+    sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
+) -> std::result::Result<sled::Db, std::io::Error> {
+    debug!("init_sled_storage_engine_db from path: {:?}", &sled_db_root_path);
+
+    let path = sled_db_root_path.as_ref();
+    let raft_log_db_path = path.join("raft_log");
+
+    sled::Config::default()
+        .path(&raft_log_db_path)
+        .cache_capacity(4 * 1024 * 1024 * 1024) //4GB
+        // .flush_every_ms(Some(1000))
+        .use_compression(true)
+        .compression_factor(1)
+        .mode(sled::Mode::HighThroughput)
+        // .segment_size(256)
+        // .print_profile_on_drop(true)
+        .open()
+        .map_err(|e| {
+            warn!(
+                "Try to open DB at this location: {:?} and failed: {:?}",
+                raft_log_db_path, e
+            );
+            std::io::Error::other(e)
+        })
+}
+
 pub fn init_sled_state_machine_db(
     sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
 ) -> std::result::Result<sled::Db, std::io::Error> {
@@ -114,6 +155,7 @@ pub fn init_sled_state_storage_db(
             std::io::Error::other(e)
         })
 }
+
 pub fn init_sled_snapshot_storage_db(
     sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
 ) -> std::result::Result<sled::Db, std::io::Error> {

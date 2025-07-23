@@ -17,16 +17,6 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use d_engine::client::ClientApiError;
-use d_engine::convert::safe_kv;
-use d_engine::storage::RaftLog;
-use d_engine::storage::StateMachine;
-use tokio::time::sleep;
-
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_node_config;
@@ -41,6 +31,14 @@ use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::SNAPSHOT_PORT_BASE;
+use d_engine::client::ClientApiError;
+use d_engine::convert::safe_kv;
+use d_engine::storage::RaftLog;
+use d_engine::storage::StateMachine;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 
 // Constants for test configuration
 const SNAPSHOT_DIR: &str = "./snapshots/snapshot/case1";
@@ -74,15 +72,15 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     ));
 
     // Prepare raft logs
-    let r1 = Arc::new(prepare_raft_log(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
-    let r2 = Arc::new(prepare_raft_log(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
-    let r3 = Arc::new(prepare_raft_log(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0));
+    let r1 = prepare_raft_log(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
+    let r2 = prepare_raft_log(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
+    let r3 = prepare_raft_log(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
 
     let last_log_id: u64 = 10;
-    manipulate_log(&r1, vec![1, 2, 3], 1);
-    manipulate_log(&r2, vec![1, 2, 3, 4], 1);
-    manipulate_log(&r3, (1..=3).collect(), 1);
-    manipulate_log(&r3, (4..=last_log_id).collect(), 2);
+    manipulate_log(&r1, vec![1, 2, 3], 1).await;
+    manipulate_log(&r2, vec![1, 2, 3, 4], 1).await;
+    manipulate_log(&r3, (1..=3).collect(), 1).await;
+    manipulate_log(&r3, (4..=last_log_id).collect(), 2).await;
 
     // Prepare state storage
     let ss1 = Arc::new(prepare_state_storage(&format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)));
@@ -160,7 +158,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     // Verify raft log been purged
     for i in 1..=3 {
-        assert!(r3.get_entry_by_index(i).is_none());
+        assert!(r3.entry(i).unwrap().is_none());
     }
 
     // Clean up

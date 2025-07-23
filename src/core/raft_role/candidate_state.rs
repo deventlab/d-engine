@@ -239,7 +239,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
-                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+
+                let LogId {
+                    index: last_log_index,
+                    term: last_log_term,
+                } = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
                 if ctx.election_handler().check_vote_request_is_legal(
                     &vote_request,

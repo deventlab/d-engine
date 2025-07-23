@@ -1,8 +1,3 @@
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
 use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
 use d_engine::alias::SSOF;
@@ -12,18 +7,13 @@ use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
 use d_engine::proto::client::WriteCommand;
-use d_engine::proto::common::Entry;
-use d_engine::proto::common::EntryPayload;
-use d_engine::proto::election::VotedFor;
-use d_engine::storage::RaftLog;
-use d_engine::storage::SledRaftLog;
-use d_engine::storage::SledStateMachine;
-use d_engine::storage::SledStateStorage;
-use d_engine::storage::StateStorage;
-use d_engine::HardState;
 use d_engine::Result;
 use d_engine::StorageError;
 use prost::Message;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
@@ -138,73 +128,6 @@ async fn run_node(
 
 pub fn get_root_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-pub fn prepare_raft_log(
-    node_id: u32,
-    db_path: &str,
-    last_applied_index: u64,
-) -> SledRaftLog {
-    let raft_log_db_path = format!("{db_path}/raft_log");
-    let raft_log_db = sled::Config::default()
-        .path(raft_log_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledRaftLog::new(node_id, Arc::new(raft_log_db), last_applied_index)
-}
-pub fn prepare_state_machine(
-    node_id: u32,
-    db_path: &str,
-) -> SledStateMachine {
-    let state_machine_db_path = format!("{db_path}/state_machine");
-    let state_machine_db = sled::Config::default()
-        .path(state_machine_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
-}
-pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
-    let state_storage_db_path = format!("{db_path}/state_storage");
-    let state_storage_db = sled::Config::default()
-        .path(state_storage_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledStateStorage::new(Arc::new(state_storage_db))
-}
-
-pub fn manipulate_log(
-    raft_log: &dyn RaftLog,
-    log_ids: Vec<u64>,
-    term: u64,
-) {
-    let mut entries = Vec::new();
-    for id in log_ids {
-        let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
-            term,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
-        };
-        entries.push(log);
-    }
-    assert!(raft_log.insert_batch(entries).is_ok());
-}
-pub fn init_state_storage(
-    state_storage: &dyn StateStorage,
-    current_term: u64,
-    voted_for: Option<VotedFor>,
-) {
-    assert!(state_storage
-        .save_hard_state(HardState {
-            current_term,
-            voted_for,
-        })
-        .is_ok());
 }
 
 pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {

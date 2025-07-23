@@ -8,6 +8,7 @@ use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockStateStorage;
+use crate::MockStorageEngine;
 use crate::MockTransport;
 use crate::TypeConfig;
 
@@ -16,6 +17,8 @@ pub struct MockTypeConfig;
 
 impl TypeConfig for MockTypeConfig {
     type R = MockRaftLog;
+
+    type S = MockStorageEngine;
 
     type E = MockElectionCore<Self>;
 

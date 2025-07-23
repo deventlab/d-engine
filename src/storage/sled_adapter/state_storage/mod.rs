@@ -3,9 +3,9 @@ use std::sync::Arc;
 use tracing::error;
 use tracing::info;
 
-use super::STATE_STORAGE_NAMESPACE;
 use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::convert::skv;
+use crate::storage::STATE_STORAGE_NAMESPACE;
 use crate::HardState;
 use crate::Result;
 use crate::StateStorage;

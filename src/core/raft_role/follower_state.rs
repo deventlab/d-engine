@@ -195,7 +195,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 let candidate_id = vote_request.candidate_id;
 
-                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+                let LogId {
+                    index: last_log_index,
+                    term: last_log_term,
+                } = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
                 match ctx
                     .election_handler()

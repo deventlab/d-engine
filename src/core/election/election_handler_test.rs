@@ -6,6 +6,7 @@ use tracing::debug;
 use crate::alias::ROF;
 use crate::alias::TROF;
 use crate::proto::cluster::NodeMeta;
+use crate::proto::common::LogId;
 use crate::proto::common::NodeStatus;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VoteResponse;
@@ -53,9 +54,9 @@ async fn test_broadcast_vote_requests_case1() {
     let term = 1;
     let mut raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
     raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(0)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
     transport_mock
@@ -105,9 +106,9 @@ async fn test_broadcast_vote_requests_case2() {
     let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(0)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
     transport_mock
@@ -160,9 +161,9 @@ async fn test_broadcast_vote_requests_case3() {
     let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(1)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
     transport_mock
         .expect_send_vote_requests()
@@ -294,9 +295,9 @@ async fn test_handle_vote_request_case1() {
     let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(1)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let current_term = 1;
     let last_log_index = 1;
@@ -335,9 +336,9 @@ async fn test_handle_vote_request_case2() {
     let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(1)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let current_term = 10;
     let last_log_index = 1;

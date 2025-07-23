@@ -1,9 +1,4 @@
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::client_manager::ClientManager;
 use config::Config;
 use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
@@ -11,6 +6,7 @@ use d_engine::alias::SSOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
+use d_engine::config::PersistenceStrategy;
 use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
@@ -23,15 +19,21 @@ use d_engine::proto::client::WriteCommand;
 use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
+use d_engine::storage::BufferedRaftLog;
 use d_engine::storage::RaftLog;
-use d_engine::storage::SledRaftLog;
 use d_engine::storage::SledStateMachine;
 use d_engine::storage::SledStateStorage;
+use d_engine::storage::SledStorageEngine;
 use d_engine::storage::StateMachine;
 use d_engine::storage::StateStorage;
 use d_engine::ClientApiError;
 use d_engine::HardState;
 use prost::Message;
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
@@ -42,8 +44,6 @@ use tokio::time;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
-
-use crate::client_manager::ClientManager;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -253,8 +253,8 @@ pub fn get_root_path() -> PathBuf {
 pub fn prepare_raft_log(
     node_id: u32,
     db_path: &str,
-    last_applied_index: u64,
-) -> SledRaftLog {
+    _last_applied_index: u64,
+) -> Arc<BufferedRaftLog<RaftTypeConfig>> {
     let raft_log_db_path = format!("{db_path}/raft_log",);
     let raft_log_db = sled::Config::default()
         .path(raft_log_db_path)
@@ -262,7 +262,12 @@ pub fn prepare_raft_log(
         .compression_factor(1)
         .open()
         .unwrap();
-    SledRaftLog::new(node_id, Arc::new(raft_log_db), last_applied_index)
+
+    BufferedRaftLog::<RaftTypeConfig>::new(
+        node_id,
+        PersistenceStrategy::Batched(1024, 10),
+        Some(Arc::new(SledStorageEngine::new(node_id, raft_log_db).expect("success"))),
+    )
 }
 pub fn prepare_state_machine(
     node_id: u32,
@@ -288,7 +293,7 @@ pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
     SledStateStorage::new(Arc::new(state_storage_db))
 }
 
-pub fn manipulate_log(
+pub async fn manipulate_log(
     raft_log: &Arc<impl RaftLog>,
     log_ids: Vec<u64>,
     term: u64,
@@ -306,7 +311,7 @@ pub fn manipulate_log(
         };
         entries.push(log);
     }
-    assert!(raft_log.insert_batch(entries).is_ok());
+    assert!(raft_log.insert_batch(entries).await.is_ok());
 }
 
 #[allow(dead_code)]
@@ -315,7 +320,7 @@ pub fn manipulate_state_machine(
     state_machine: &Arc<impl StateMachine>,
     id_range: RangeInclusive<u64>,
 ) {
-    let entries = raft_log.get_entries_between(id_range);
+    let entries = raft_log.get_entries_range(id_range).expect("Failed to get entries");
     assert!(state_machine.apply_chunk(entries).is_ok());
 }
 

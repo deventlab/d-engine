@@ -101,7 +101,9 @@ where
         let raft_log = ctx.raft_log();
         let leader_last_index_before = raft_log.last_entry_id();
 
-        let new_entries = self.generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)?;
+        let new_entries = self
+            .generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)
+            .await?;
 
         // ----------------------
         // Phase 3: Prepare Replication Data
@@ -324,7 +326,13 @@ where
                         leader_last_index_before_inserting_new_entries
                     };
 
-                let legacy_entries = raft_log.get_entries_between(peer_next_id..=until_index);
+                let legacy_entries = match raft_log.get_entries_range(peer_next_id..=until_index) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        error!("Failed to get legacy entries for peer {}: {:?}", id, e);
+                        Vec::new()
+                    }
+                };
 
                 if !legacy_entries.is_empty() {
                     trace!("legacy_entries: {:?}", &legacy_entries);
@@ -377,11 +385,9 @@ where
         let success = true;
 
         if !request.entries.is_empty() {
-            last_log_id_option = raft_log.filter_out_conflicts_and_append(
-                request.prev_log_index,
-                request.prev_log_term,
-                request.entries.clone(),
-            )?;
+            last_log_id_option = raft_log
+                .filter_out_conflicts_and_append(request.prev_log_index, request.prev_log_term, request.entries.clone())
+                .await?;
         }
 
         if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
@@ -501,7 +507,7 @@ where
 
     /// Generate a new log entry
     ///     including insert them into local raft log
-    pub(super) fn generate_new_entries(
+    pub(super) async fn generate_new_entries(
         &self,
         entry_payloads: Vec<EntryPayload>,
         current_term: u64,
@@ -538,7 +544,7 @@ where
         }
 
         if !entries.is_empty() {
-            raft_log.insert_batch(entries.clone())?;
+            raft_log.insert_batch(entries.clone()).await?;
         }
 
         Ok(entries)
@@ -572,7 +578,7 @@ where
         // Calculate prev_log metadata
         let (prev_log_index, prev_log_term) = data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
             let prev_index = next_id.saturating_sub(1);
-            let term = raft_log.prev_log_term(peer_id, prev_index);
+            let term = raft_log.entry_term(prev_index).unwrap_or(0);
             (prev_index, term)
         });
 

@@ -26,6 +26,7 @@ use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::LeaderDiscoveryRequest;
 use crate::proto::cluster::LeaderDiscoveryResponse;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
@@ -179,12 +180,12 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
 
                 // 2. Response sender with vote_granted=false
-                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+                let last_log_id = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
                 let response = VoteResponse {
                     term: my_term,
                     vote_granted: false,
-                    last_log_index,
-                    last_log_term,
+                    last_log_index: last_log_id.index,
+                    last_log_term: last_log_id.term,
                 };
                 debug!(
                     "Response candidate_{:?} with response: {:?}",

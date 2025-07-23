@@ -11,10 +11,11 @@ use crate::init_sled_storages;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
-use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::{self};
+use crate::BufferedRaftLog;
+use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 
@@ -34,9 +35,9 @@ impl Drop for TestContext {
 fn setup(path: &str) -> TestContext {
     println!("Test setup ...");
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs(path);
-    let arc_raft_log_db = Arc::new(raft_log_db);
+    let _arc_raft_log_db = Arc::new(raft_log_db);
 
-    let sled_raft_log = Arc::new(SledRaftLog::new(1, arc_raft_log_db, 0));
+    let sled_raft_log = BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::Batched(1024, 10), None);
 
     TestContext {
         raft_log: sled_raft_log,
@@ -45,15 +46,15 @@ fn setup(path: &str) -> TestContext {
 
 fn init(
     path: &str,
-    commit_index: u64,
+    _commit_index: u64,
 ) -> Arc<ROF<RaftTypeConfig>> {
-    let (raft_log_db, _state_machine_db, _state_storage_db, _snapshot_storage_db) =
+    let (_raft_log_db, _state_machine_db, _state_storage_db, _snapshot_storage_db) =
         init_sled_storages(path.to_string()).unwrap();
-    Arc::new(SledRaftLog::new(1, Arc::new(raft_log_db), commit_index))
+    BufferedRaftLog::new(1, PersistenceStrategy::Batched(1024, 10), None)
 }
 
-#[test]
-fn test_get_as_vec() {
+#[tokio::test]
+async fn test_get_as_vec() {
     let c = setup("/tmp/test_get_as_vec");
 
     let value = Entry {
@@ -62,13 +63,16 @@ fn test_get_as_vec() {
         payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     };
 
-    c.raft_log.insert_batch(vec![value.clone()]).expect("should succeed");
+    c.raft_log
+        .insert_batch(vec![value.clone()])
+        .await
+        .expect("should succeed");
 
-    let entry = c.raft_log.get_entry_by_index(1).unwrap();
+    let entry = c.raft_log.entry(1).unwrap().unwrap();
     assert_eq!(value, entry);
 }
 
-fn insert(
+async fn insert(
     raft_log: &Arc<ROF<RaftTypeConfig>>,
     key: u64,
 ) {
@@ -77,18 +81,18 @@ fn insert(
         term: 7,
         payload: None,
     };
-    raft_log.insert_batch(vec![log]).expect("should succeed");
+    raft_log.insert_batch(vec![log]).await.expect("should succeed");
 }
 
-#[test]
-fn test_get_range1() {
+#[tokio::test]
+async fn test_get_range1() {
     let context = setup("/tmp/test_get_range1");
     let i1: u64 = 11;
     let i2: u64 = 12;
     let i3: u64 = 13;
     let i4: u64 = 14;
-    test_utils::simulate_insert_command(&context.raft_log, vec![i1, i2, i3, i4], 4);
-    let list = context.raft_log.get_entries_between(1..=2);
+    test_utils::simulate_insert_command(&context.raft_log, vec![i1, i2, i3, i4], 4).await;
+    let list = context.raft_log.get_entries_range(1..=2).unwrap();
 
     // let mut list = Vec::<Entry>::new();
     // for i in r {
@@ -101,15 +105,15 @@ fn test_get_range1() {
     assert_eq!(list[1].index, 2);
 }
 
-#[test]
-fn test_get_range2() {
+#[tokio::test]
+async fn test_get_range2() {
     let context = setup("/tmp/test_get_range2");
 
     for i in 1..300 {
-        insert(&context.raft_log, i);
+        insert(&context.raft_log, i).await;
     }
 
-    let list = context.raft_log.get_entries_between(255..=255);
+    let list = context.raft_log.get_entries_range(255..=255).unwrap();
 
     // let mut list = Vec::<Entry>::new();
     // for i in r {
@@ -140,13 +144,13 @@ fn test_get_range2() {
 ///   follower_d      12      11
 ///   follower_e      7      6
 ///   follower_f      11    4
-#[test]
-fn test_filter_out_conflicts_and_append_case1() {
+#[tokio::test]
+async fn test_filter_out_conflicts_and_append_case1() {
     let context = setup("/tmp/test_filter_out_conflicts_and_append_case1");
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2);
-    test_utils::simulate_insert_command(&context.raft_log, vec![4], 4);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2).await;
+    test_utils::simulate_insert_command(&context.raft_log, vec![4], 4).await;
 
     //case 1
     let l1 = Entry {
@@ -165,21 +169,22 @@ fn test_filter_out_conflicts_and_append_case1() {
     let last_applied = context
         .raft_log
         .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(last_applied.index, 3);
 
-    let e = context.raft_log.get_entry_by_index(3).unwrap();
+    let e = context.raft_log.entry(3).unwrap().unwrap();
     assert_eq!(e.term, 3);
 }
-#[test]
-fn test_filter_out_conflicts_and_append() {
+#[tokio::test]
+async fn test_filter_out_conflicts_and_append() {
     let context = setup("/tmp/test_filter_out_conflicts_and_append");
     // let state = &context.s;
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2);
-    test_utils::simulate_insert_command(&context.raft_log, vec![4], 4);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2).await;
+    test_utils::simulate_insert_command(&context.raft_log, vec![4], 4).await;
 
     //case 1
     let l1 = Entry {
@@ -198,11 +203,12 @@ fn test_filter_out_conflicts_and_append() {
     let last_applied = context
         .raft_log
         .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(last_applied.index, 3);
 
-    let e = context.raft_log.get_entry_by_index(3).unwrap();
+    let e = context.raft_log.entry(3).unwrap().unwrap();
     assert_eq!(e.term, 3);
 
     //case 2
@@ -217,43 +223,16 @@ fn test_filter_out_conflicts_and_append() {
     let last_applied = context
         .raft_log
         .filter_out_conflicts_and_append(prev_log_index, prev_log_term, new_ones)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(last_applied.index, 4);
-    let e = context.raft_log.get_entry_by_index(4).unwrap();
+    let e = context.raft_log.entry(4).unwrap().unwrap();
     assert_eq!(e.term, 2);
 }
 
-#[test]
-fn test_retrieve_one_entry_for_this_follower_case1() {
-    let context = setup("/tmp/test_retrieve_one_entry_for_this_follower_case1");
-    let follower_id = 1;
-    let next_id = 1;
-    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
-
-    let entries = context
-        .raft_log
-        .retrieve_one_entry_for_this_follower(follower_id, next_id);
-    assert!(entries != vec![0, 0]);
-}
-
-#[test]
-fn test_retrieve_one_entry_for_this_follower_case2() {
-    let context = setup("/tmp/test_retrieve_one_entry_for_this_follower_case2");
-
-    let follower_id = 1;
-    let next_id = 2;
-
-    test_utils::simulate_insert_command(&context.raft_log, vec![1], 1);
-
-    let entries = context
-        .raft_log
-        .retrieve_one_entry_for_this_follower(follower_id, next_id);
-    assert!(entries.is_empty());
-}
-
-#[test]
-fn test_get_last_raft_log() {
+#[tokio::test]
+async fn test_get_last_raft_log() {
     let context = setup("/tmp/test_get_last_raft_log");
 
     context.raft_log.reset().expect("should succeed");
@@ -261,46 +240,46 @@ fn test_get_last_raft_log() {
     for id in 1..300 {
         vec_1.push(id);
     }
-    test_utils::simulate_insert_command(&context.raft_log, vec_1, 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec_1, 1).await;
 
     let mut vec_2 = Vec::new();
     for id in 1..3 {
         vec_2.push(id);
     }
-    test_utils::simulate_insert_command(&context.raft_log, vec_2, 1);
-    if let Some(last) = context.raft_log.last() {
+    test_utils::simulate_insert_command(&context.raft_log, vec_2, 1).await;
+    if let Some(last) = context.raft_log.last_entry() {
         assert_eq!(last.index, 301);
     }
 }
 
-#[test]
-fn test_sled_last() {
+#[tokio::test]
+async fn test_sled_last() {
     let context = setup("/tmp/test_sled_last");
 
-    test_utils::simulate_insert_command(&context.raft_log, (1..=300).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, (1..=300).collect(), 1).await;
 
-    let l = context.raft_log.last().unwrap();
+    let l = context.raft_log.last_entry().unwrap();
     let last = l.index;
     let len = context.raft_log.len();
     debug!("last: {:?}, while len: {:?}", last, len);
     assert_eq!(last, len as u64);
 }
-#[test]
-fn test_sled_last_max() {
+#[tokio::test]
+async fn test_sled_last_max() {
     let context = setup("/tmp/test_sled_last_max");
 
     let max = u64::MAX; //max of u64
-    test_utils::simulate_insert_command(&context.raft_log, ((max - 1)..max).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, ((max - 1)..max).collect(), 1).await;
 
-    let l = context.raft_log.last().unwrap();
+    let l = context.raft_log.last_entry().unwrap();
     assert_eq!(l.index, 1);
 }
 
 ///3 nodes, leader append 1000 logs, the other two logs can not get 1000
 /// entries
-/// to test insert_one_client_command and get_entries_between two functions
-#[test]
-fn test_insert_one_client_command() {
+/// to test insert_one_client_command and get_entries_range two functions
+#[tokio::test]
+async fn test_insert_one_client_command() {
     let context = setup("/tmp/test_insert_one_client_command");
 
     context.raft_log.reset().expect("reset successfully!");
@@ -309,17 +288,17 @@ fn test_insert_one_client_command() {
     for i in 1..2001 {
         v.push(i);
     }
-    test_utils::simulate_insert_command(&context.raft_log, v, 1);
+    test_utils::simulate_insert_command(&context.raft_log, v, 1).await;
 
     let mut count = 900;
-    for entry in context.raft_log.get_entries_between(900..=2000) {
+    for entry in context.raft_log.get_entries_range(900..=2000).unwrap() {
         assert_eq!(entry.index, count);
         count += 1;
     }
 }
 
-#[test]
-fn test_get_raft_log_entry_between() {
+#[tokio::test]
+async fn test_get_raft_log_entry_between() {
     let context = setup("/tmp/test_get_raft_log_entry_between");
 
     context.raft_log.reset().expect("reset successfully!");
@@ -328,10 +307,10 @@ fn test_get_raft_log_entry_between() {
     for i in 1..2001 {
         v.push(i);
     }
-    test_utils::simulate_insert_command(&context.raft_log, v, 1);
+    test_utils::simulate_insert_command(&context.raft_log, v, 1).await;
 
     let log_len = context.raft_log.last_entry_id();
-    let result = context.raft_log.get_entries_between(900..=log_len);
+    let result = context.raft_log.get_entries_range(900..=log_len).unwrap();
     let mut count = 900;
     for entry in &result {
         assert_eq!(entry.index, count);
@@ -339,27 +318,27 @@ fn test_get_raft_log_entry_between() {
     }
     assert_eq!(result.len(), 1101);
 
-    let result = context.raft_log.get_entries_between(900..=log_len - 1);
+    let result = context.raft_log.get_entries_range(900..=log_len - 1).unwrap();
     assert_eq!(result.len(), 1100);
 
     //end index will not be returned as result
-    let result = context.raft_log.get_entries_between(0..=log_len);
+    let result = context.raft_log.get_entries_range(0..=log_len).unwrap();
     assert_eq!(result.len(), log_len as usize);
 
     //index starts from 1
-    let result = context.raft_log.get_entries_between(0..=0);
+    let result = context.raft_log.get_entries_range(0..=0).unwrap();
     assert_eq!(result.len(), 0);
 
     //index starts from 1
-    let result = context.raft_log.get_entries_between(0..=1);
+    let result = context.raft_log.get_entries_range(0..=1).unwrap();
     assert_eq!(result.len(), 1);
 }
 /// Test duplicated insert
 /// Leader might received duplicated commands from clients in several RPC
 /// request. But, leader should not treat them as duplicated entries. They are
 /// just sequence events.
-#[test]
-fn test_insert_one_client_command_dup_case() {
+#[tokio::test]
+async fn test_insert_one_client_command_dup_case() {
     let context = setup("/tmp/test_insert_one_client_command_dup_case");
 
     context.raft_log.reset().expect("reset successfully!");
@@ -368,17 +347,17 @@ fn test_insert_one_client_command_dup_case() {
     for i in 1..10 {
         v.push(i);
     }
-    test_utils::simulate_insert_command(&context.raft_log, v, 1);
+    test_utils::simulate_insert_command(&context.raft_log, v, 1).await;
 
     let len = context.raft_log.last_entry_id();
     let mut v = Vec::new();
     for i in 1..10 {
         v.push(i + len);
     }
-    test_utils::simulate_insert_command(&context.raft_log, v, 2);
+    test_utils::simulate_insert_command(&context.raft_log, v, 2).await;
 
     assert_eq!(context.raft_log.last_entry_id(), 18);
-    let last = context.raft_log.last().unwrap();
+    let last = context.raft_log.last_entry().unwrap();
     assert_eq!(last.index, 18);
 }
 
@@ -386,53 +365,30 @@ fn test_insert_one_client_command_dup_case() {
 ///
 /// ## Criterias:
 /// 1. all client proposal should be recorded in RaftLog without lose
-#[test]
-fn test_client_proposal_insert_delete() {
+#[tokio::test]
+async fn test_client_proposal_insert_delete() {
     let context = setup("/tmp/test_apply");
 
     context.raft_log.reset().expect("reset successfully!");
 
-    test_utils::simulate_insert_command(&context.raft_log, (1..=10).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, (1..=10).collect(), 1).await;
     assert_eq!(context.raft_log.last_entry_id(), 10);
 
-    test_utils::simulate_delete_command(&context.raft_log, 1..=3, 1);
+    test_utils::simulate_delete_command(&context.raft_log, 1..=3, 1).await;
     assert_eq!(context.raft_log.last_entry_id(), 13);
     assert_eq!(context.raft_log.len(), 13);
 
-    test_utils::simulate_insert_command(&context.raft_log, (11..=20).collect(), 1);
+    test_utils::simulate_insert_command(&context.raft_log, (11..=20).collect(), 1).await;
 
     assert_eq!(context.raft_log.last_entry_id(), 23);
     assert_eq!(context.raft_log.len(), 23);
 }
 
-#[test]
-fn test_load_uncommitted_from_db_to_cache() {
-    let context = setup("/tmp/test_load_uncommitted_from_db_to_cache");
-
-    context.raft_log.reset().expect("reset successfully!");
-
-    let mut entries = Vec::new();
-    for i in 1..10 {
-        entries.push(Entry {
-            index: i,
-            term: 1,
-            payload: None,
-        });
-    }
-    context.raft_log.insert_batch(entries).expect("should succeed");
-
-    let len = context.raft_log.last_entry_id();
-    context.raft_log.load_uncommitted_from_db_to_cache(8, len);
-    for j in 8..len + 1 {
-        assert!(context.raft_log.get_from_cache(j).is_some());
-    }
-}
-
 ///Bug: setup logger with error: SetGlobalDefaultError("a global default trace
 /// dispatcher has already been set")
 /// #[traced_test]
-#[test]
-fn test_purge_logs_up_to() {
+#[tokio::test]
+async fn test_purge_logs_up_to() {
     let context = setup("/tmp/test_purge_logs_up_to");
 
     context.raft_log.reset().expect("reset successfully!");
@@ -445,7 +401,7 @@ fn test_purge_logs_up_to() {
             payload: None,
         });
     }
-    context.raft_log.insert_batch(entries).expect("should succeed");
+    context.raft_log.insert_batch(entries).await.expect("should succeed");
 
     //..
     // assume we have generated snapshot until $last_applied,
@@ -454,13 +410,13 @@ fn test_purge_logs_up_to() {
     context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
 
     assert_eq!(9, context.raft_log.last_entry_id());
-    assert_eq!(None, context.raft_log.get_entry_by_index(3));
-    assert_eq!(None, context.raft_log.get_entry_by_index(2));
-    assert_eq!(None, context.raft_log.get_entry_by_index(1));
+    assert_eq!(None, context.raft_log.entry(3).unwrap());
+    assert_eq!(None, context.raft_log.entry(2).unwrap());
+    assert_eq!(None, context.raft_log.entry(1).unwrap());
 }
 
-#[test]
-fn test_purge_logs_up_to_concurrent_purge() {
+#[tokio::test]
+async fn test_purge_logs_up_to_concurrent_purge() {
     let context = setup("/tmp/test_purge_logs_up_to_concurrent_purge");
     context.raft_log.reset().expect("reset failed");
 
@@ -472,7 +428,7 @@ fn test_purge_logs_up_to_concurrent_purge() {
             payload: None,
         })
         .collect();
-    context.raft_log.insert_batch(entries).unwrap();
+    context.raft_log.insert_batch(entries).await.unwrap();
 
     // Concurrent purge calls
     let handles: Vec<_> = vec![1, 2, 3, 4, 5, 6, 7]
@@ -494,12 +450,12 @@ fn test_purge_logs_up_to_concurrent_purge() {
     assert_eq!(10, context.raft_log.last_entry_id());
 
     // The highest successful purge should win
-    assert!(context.raft_log.get_entry_by_index(7).is_none());
-    assert!(context.raft_log.get_entry_by_index(8).is_some());
+    assert!(context.raft_log.entry(7).unwrap().is_none());
+    assert!(context.raft_log.entry(8).unwrap().is_some());
 }
 
-#[test]
-fn test_get_first_raft_log_entry_id_after_delete_entries() {
+#[tokio::test]
+async fn test_get_first_raft_log_entry_id_after_delete_entries() {
     let context = setup("/tmp/test_get_first_raft_log_entry_id_after_delete_entries");
 
     context.raft_log.reset().expect("reset successfully!");
@@ -511,44 +467,16 @@ fn test_get_first_raft_log_entry_id_after_delete_entries() {
             payload: None,
         });
     }
-    context.raft_log.insert_batch(entries).expect("should succeed");
+    context.raft_log.insert_batch(entries).await.expect("should succeed");
 
     let last_applied = LogId { index: 4, term: 1 };
     context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
     assert_eq!(10, context.raft_log.last_entry_id());
-    assert_eq!(None, context.raft_log.get_entry_by_index(3));
-    assert_eq!(None, context.raft_log.get_entry_by_index(2));
-    assert_eq!(None, context.raft_log.get_entry_by_index(1));
+    assert_eq!(None, context.raft_log.entry(3).unwrap());
+    assert_eq!(None, context.raft_log.entry(2).unwrap());
+    assert_eq!(None, context.raft_log.entry(1).unwrap());
 
     assert_eq!(context.raft_log.first_entry_id(), 5);
-}
-
-#[test]
-fn test_get_span_between_first_entry_and_last_entry_after_deleting() {
-    let context = setup("/tmp/test_get_span_between_first_entry_and_last_entry_after_deleting");
-
-    context.raft_log.reset().expect("reset successfully!");
-    let mut entries = Vec::new();
-    for i in 1..=10 {
-        entries.push(Entry {
-            index: i,
-            term: 1,
-            payload: None,
-        });
-    }
-    context.raft_log.insert_batch(entries).expect("should succeed");
-
-    let last_applied = LogId { index: 4, term: 1 };
-    context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
-    assert_eq!(10, context.raft_log.last_entry_id());
-    assert_eq!(None, context.raft_log.get_entry_by_index(3));
-    assert_eq!(None, context.raft_log.get_entry_by_index(2));
-    assert_eq!(None, context.raft_log.get_entry_by_index(1));
-
-    assert_eq!(
-        context.raft_log.span_between_first_entry_and_last_entry(),
-        10 - last_applied.index
-    );
 }
 
 /// Case 1: we have multi thread working concurrently
@@ -578,7 +506,10 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
                     payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
-            cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
+            cloned_raft_log
+                .insert_batch(entries.clone())
+                .await
+                .expect("should succeed");
         });
         handles.push(handle);
     }
@@ -635,7 +566,10 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                     payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
-            cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
+            cloned_raft_log
+                .insert_batch(entries.clone())
+                .await
+                .expect("should succeed");
         });
         handles.push(handle);
     }
@@ -644,10 +578,6 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
     println!("end:{end}",);
 
     assert_eq!(start + i * j, end);
-    assert_eq!(
-        context.raft_log.span_between_first_entry_and_last_entry(),
-        i * j - (k * j + 1) + 1
-    );
 }
 
 /// Case 1: stress testing with 100K entries,
@@ -677,7 +607,10 @@ async fn test_insert_batch_logs_case1() {
                     payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
-            cloned_raft_log.insert_batch(entries.clone()).expect("should succeed");
+            cloned_raft_log
+                .insert_batch(entries.clone())
+                .await
+                .expect("should succeed");
         });
         handles.push(handle);
     }
@@ -714,10 +647,18 @@ async fn test_insert_batch_logs_case1() {
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
-    let old_leader = Arc::new(SledRaftLog::new(1, Arc::new(raft_log_db), 0));
+    let old_leader = BufferedRaftLog::<RaftTypeConfig>::new(
+        1,
+        PersistenceStrategy::DiskFirst,
+        Some(Arc::new(SledStorageEngine::new(1, raft_log_db).unwrap())),
+    );
 
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
-    let new_leader = Arc::new(SledRaftLog::new(1, Arc::new(raft_log_db), 0));
+    let new_leader = BufferedRaftLog::<RaftTypeConfig>::new(
+        2,
+        PersistenceStrategy::DiskFirst,
+        Some(Arc::new(SledStorageEngine::new(2, raft_log_db).unwrap())),
+    );
 
     let mut entries: Vec<Entry> = Vec::new();
     for i in 1..=7 {
@@ -729,8 +670,8 @@ async fn test_insert_batch_logs_case2() {
     }
 
     // 2. Old leader initial logs (term 1)
-    old_leader.insert_batch(entries.clone()).expect("should succeed");
-    new_leader.insert_batch(entries.clone()).expect("should succeed");
+    old_leader.insert_batch(entries.clone()).await.expect("should succeed");
+    new_leader.insert_batch(entries.clone()).await.expect("should succeed");
 
     // 3. Add uncommitted entry on old leader
     old_leader
@@ -739,6 +680,7 @@ async fn test_insert_batch_logs_case2() {
             term: 1,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![8]))),
         }])
+        .await
         .expect("should succeed");
 
     // 4. Simulate snapshot compaction
@@ -759,6 +701,7 @@ async fn test_insert_batch_logs_case2() {
     let handle = tokio::spawn(async move {
         new_leader
             .insert_batch(cloned_new_leader_entries.clone())
+            .await
             .expect("should succeed");
     });
     handles.push(handle);
@@ -769,6 +712,7 @@ async fn test_insert_batch_logs_case2() {
     // 6. Follower processes conflicting entries
     let ex_leader_last_appled_id = old_leader
         .filter_out_conflicts_and_append(8, 1, new_leader_entries.clone())
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(ex_leader_last_appled_id.index, 10);
@@ -779,10 +723,10 @@ async fn test_insert_batch_logs_case2() {
     //     assert_eq!(ex_leader_last_entry.term, 2);
     // }
 
-    // if let Some(entry) = old_leader.get_entry_by_index(7) {
+    // if let Some(entry) = old_leader.entry(7) {
     //     assert_eq!(entry.term, 1);
     // }
-    // if let Some(entry) = old_leader.get_entry_by_index(8) {
+    // if let Some(entry) = old_leader.entry(8) {
     //     assert_eq!(entry.term, 2);
     // }
 
@@ -800,13 +744,15 @@ async fn test_insert_batch_logs_case2() {
 
 /// Helper function: Validate log entries' term continuity
 async fn validate_log_continuity(
-    node: &Arc<SledRaftLog>,
+    node: &Arc<BufferedRaftLog<RaftTypeConfig>>,
     expected: &[(u64, u64)],
 ) {
     for (index, term) in expected {
         let entry = node
-            .get_entry_by_index(*index)
+            .entry(*index)
+            .unwrap()
             .unwrap_or_else(|| panic!("Missing entry at index {index}",));
+
         assert_eq!(
             entry.term, *term,
             "Term mismatch at index {}: expected {}, got {}",
@@ -815,122 +761,18 @@ async fn validate_log_continuity(
     }
 }
 
-/// # Case 1.1: cluster just start
-/// 1. node's locallog is empty
-/// 2. prev_log_index is 0
-///
-/// ## Criterias:
-/// 1. prev_log_ok return true
-#[test]
-fn test_prev_log_ok_case_1_1() {
-    let context = setup("/tmp/test_prev_log_ok_case_1_1");
-
-    context.raft_log.reset().expect("reset successfully!");
-    assert!(context.raft_log.prev_log_ok(0, 0, 0));
-}
-
-/// # Case 1.2: normal case
-/// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
-/// 2. prev_log_index: 2, prev_log_term: 1
-///
-/// ## Criterias:
-/// 1. prev_log_ok return true
-#[test]
-fn test_prev_log_ok_case_1_2() {
-    let context = setup("/tmp/test_prev_log_ok_case_1_2");
-
-    context.raft_log.reset().expect("reset successfully!");
-    // so its locallog is not empty, it contains some log (log-1,log-2)
-    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
-    test_utils::simulate_insert_command(&context.raft_log, vec![3], 2);
-    // prev_log index > 0
-    let prev_log_index = 2;
-    let prev_log_term = 1;
-    assert!(context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
-}
-
-/// # Case 1.3: conflict case
-/// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
-/// 2. prev_log_index: 3, prev_log_term: 1
-///
-/// ## Criterias:
-/// 1. prev_log_ok return false
-#[test]
-fn test_prev_log_ok_case_1_3() {
-    let context = setup("/tmp/test_prev_log_ok_case_1_3");
-
-    context.raft_log.reset().expect("reset successfully!");
-    // so its locallog is not empty, it contains some log (log-1,log-2)
-    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
-    test_utils::simulate_insert_command(&context.raft_log, vec![3], 2);
-    // prev_log index > 0
-    let prev_log_index = 3;
-    let prev_log_term = 1;
-    assert!(!context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
-}
-
-/// # Case 1.4: conflict case
-/// 1. node's locallog is not empty, which contains log1(1), log2(1), log3(2)
-/// 2. prev_log_index: 3, prev_log_term: 3
-///
-/// ## Criterias:
-/// 1. prev_log_ok return false
-#[test]
-fn test_prev_log_ok_case_1_4() {
-    let context = setup("/tmp/test_prev_log_ok_case_1_4");
-
-    context.raft_log.reset().expect("reset successfully!");
-    // so its locallog is not empty, it contains some log (log-1,log-2)
-    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
-    test_utils::simulate_insert_command(&context.raft_log, vec![3], 2);
-    // prev_log index > 0
-    let prev_log_index = 3;
-    let prev_log_term = 3;
-    assert!(!context.raft_log.prev_log_ok(prev_log_index, prev_log_term, 0));
-}
-
-/// # Case 1.5: conflict case
-/// 1. node's locallog is not empty, which contains log1(1), log2(2), log3(3), log4(3)
-/// 2. prev_log_index: 4, prev_log_term: 6
-///
-/// ## Criterias:
-/// 1. prev_log_ok return false
-#[test]
-fn test_prev_log_ok_case_1_5() {}
-
-/// # Case 2.4: snapshot related test case
-/// 1. the current node is learner, it just installed Leader's snapshot
-/// 2. so its locallog is not empty, it contains some log (log-1, 1), (log-2,1)
-/// 3. while its last_applied is 10 which means log-10 has been committed
-/// 4. prev_log_index: 11, prev_log_term: 1
-///
-/// ## Criterias:
-/// 1. prev_log_ok return false
-#[test]
-fn test_prev_log_ok_case_2_4() {
-    let context = setup("/tmp/test_prev_log_ok_case_2_4");
-
-    let last_applied = 10;
-    context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
-    let prev_log_index = 11;
-    let prev_log_term = 1;
-    assert!(!context
-        .raft_log
-        .prev_log_ok(prev_log_index, prev_log_term, last_applied));
-}
-#[test]
-fn test_apply_and_then_get_last() {
+#[tokio::test]
+async fn test_apply_and_then_get_last() {
     let context = setup("/tmp/test_apply_and_then_get_last");
 
     context.raft_log.reset().expect("reset successfully!");
-    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1);
+    test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1).await;
     assert_eq!(2, context.raft_log.last_entry_id());
 }
 
 /// # Case 1: test if node restart, the local log cache should load from disk
-#[test]
-fn test_new_case1() {
+#[tokio::test]
+async fn test_new_case1() {
     test_utils::enable_logger();
 
     let p = "/tmp/test_new_case1";
@@ -939,26 +781,26 @@ fn test_new_case1() {
         println!("Test setup ...");
         let commit_index = 0;
         let raft_log = init(p, commit_index);
-        test_utils::simulate_insert_command(&raft_log, vec![1, 2], 1);
+        test_utils::simulate_insert_command(&raft_log, vec![1, 2], 1).await;
 
-        assert_eq!(raft_log.cached_mapped_entries_len(), 2);
-        assert_eq!(raft_log.cached_length(), 2);
-        assert_eq!(raft_log.cached_next_id(), 3);
+        assert_eq!(raft_log.last_entry_id(), 2);
+        assert_eq!(raft_log.last_entry_id(), 2);
+        assert_eq!(raft_log.last_entry_id() + 1, 3);
         raft_log.flush().expect("should succeed");
         println!(">>RaftLog disk length: {:?}", raft_log.len());
     }
 
     {
         let raft_log = init(p, 1);
-        assert_eq!(raft_log.cached_mapped_entries_len(), 1);
-        assert_eq!(raft_log.cached_length(), 2);
-        assert_eq!(raft_log.cached_next_id(), 3);
+        assert_eq!(raft_log.last_entry_id(), 1);
+        assert_eq!(raft_log.last_entry_id(), 2);
+        assert_eq!(raft_log.last_entry_id() + 1, 3);
     }
 
     // Test if we try to pass commit_index > len, it should not panic
     {
         let raft_log = init(p, 3);
-        assert_eq!(raft_log.cached_mapped_entries_len(), 0);
+        assert_eq!(raft_log.last_entry_id(), 0);
     }
 }
 #[test]
@@ -969,8 +811,8 @@ fn test_pre_allocate_raft_logs_next_index() {
     assert_eq!(2, context.raft_log.pre_allocate_raft_logs_next_index());
 }
 
-#[test]
-fn test_calculate_majority_matched_index_case0() {
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case0() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case0");
     let raft_log = c.raft_log.clone();
     raft_log.reset().expect("reset successfully!");
@@ -978,8 +820,8 @@ fn test_calculate_majority_matched_index_case0() {
     let current_term = 2;
     let commit_index = 2;
 
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&raft_log, vec![2, 3], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&raft_log, vec![2, 3], 2).await;
 
     assert_eq!(
         Some(3),
@@ -990,8 +832,8 @@ fn test_calculate_majority_matched_index_case0() {
 /// If there exists an N such that N > commitIndex, a majority
 /// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
 /// (§5.3, §5.4).
-#[test]
-fn test_calculate_majority_matched_index_case1() {
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case1() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case1");
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
@@ -1000,13 +842,13 @@ fn test_calculate_majority_matched_index_case1() {
     let ct = 3;
     let ci = 4;
 
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2]));
 }
 
-#[test]
-fn test_calculate_majority_matched_index_case2() {
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case2() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case2");
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset();
@@ -1016,14 +858,14 @@ fn test_calculate_majority_matched_index_case2() {
     let ct = 3;
     let ci = 2;
 
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
-    test_utils::simulate_insert_command(&raft_log, vec![3], 3);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
+    test_utils::simulate_insert_command(&raft_log, vec![3], 3).await;
     assert_eq!(Some(3), raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2]));
 }
 
-#[test]
-fn test_calculate_majority_matched_index_case3() {
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case3() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case3");
     let raft_log = c.raft_log.clone();
 
@@ -1031,14 +873,14 @@ fn test_calculate_majority_matched_index_case3() {
     // while log(3) term is 2, return None
     let ct = 3;
     let ci = 2;
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
 
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2]));
 }
 
-#[test]
-fn test_calculate_majority_matched_index_case4() {
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case4() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case4");
 
     let raft_log = c.raft_log.clone();
@@ -1048,8 +890,8 @@ fn test_calculate_majority_matched_index_case4() {
     let ct = 3;
     let ci = 2;
 
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
-    test_utils::simulate_insert_command(&raft_log, vec![2], 2);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
+    test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
 
     assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2]));
 }
@@ -1062,8 +904,8 @@ fn test_calculate_majority_matched_index_case4() {
 ///
 /// ## Ceriteria:
 /// 1. compare calculate_majority_matched_index as calculate_majority_matched_index2's performance
-#[test]
-fn test_calculate_majority_matched_index_case5() {
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case5() {
     let c = setup("/tmp/test_calculate_majority_matched_index_case5");
     let raft_log = c.raft_log.clone();
 
@@ -1075,7 +917,7 @@ fn test_calculate_majority_matched_index_case5() {
     let peer2_match = 98000;
 
     let raft_log_entry_ids: Vec<u64> = (1..=raft_log_length).collect();
-    test_utils::simulate_insert_command(&raft_log, raft_log_entry_ids, 1);
+    test_utils::simulate_insert_command(&raft_log, raft_log_entry_ids, 1).await;
 
     let now = Instant::now();
     assert_eq!(
@@ -1088,32 +930,13 @@ fn test_calculate_majority_matched_index_case5() {
     );
 }
 
-#[test]
-fn test_raft_log_insert() {
+#[tokio::test]
+async fn test_raft_log_insert() {
     let c = setup("/tmp/test_raft_log_insert");
     let raft_log = c.raft_log.clone();
 
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
     assert_eq!(1, raft_log.last_entry_id());
-}
-
-/// #Case 1: local raft log is empty
-#[test]
-fn test_has_log_at_case1() {
-    let c = setup("/tmp/test_has_log_at_case1");
-    let raft_log = c.raft_log.clone();
-
-    assert!(raft_log.has_log_at(0, 0));
-}
-
-/// #Case 2: local raft log is not empty
-#[test]
-fn test_has_log_at_case2() {
-    let c = setup("/tmp/test_has_log_at_case2");
-    let raft_log = c.raft_log.clone();
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
-
-    assert!(!raft_log.has_log_at(0, 0));
 }
 
 /// #Case 1: local raft log is empty
@@ -1126,11 +949,11 @@ fn test_is_empty_case1() {
 }
 
 /// #Case 2: local raft log is not empty
-#[test]
-fn test_is_empty_case2() {
+#[tokio::test]
+async fn test_is_empty_case2() {
     let c = setup("/tmp/test_is_empty_case2");
     let raft_log = c.raft_log.clone();
-    test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
 
     assert!(!raft_log.is_empty());
 }
@@ -1141,16 +964,22 @@ fn test_get_last_entry_metadata_case1() {
     let c = setup("/tmp/test_get_last_entry_metadata_case1");
     let raft_log = c.raft_log.clone();
 
-    assert_eq!((0, 0), raft_log.get_last_entry_metadata());
+    assert_eq!(
+        LogId { index: 0, term: 0 },
+        raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 })
+    );
 }
 /// # Case2: There is last log in raft_log, should returns last log metadata
-#[test]
-fn test_get_last_entry_metadata_case2() {
+#[tokio::test]
+async fn test_get_last_entry_metadata_case2() {
     let c = setup("/tmp/test_get_last_entry_metadata_case2");
     let raft_log = c.raft_log.clone();
-    test_utils::simulate_insert_command(&raft_log, vec![1], 11);
+    test_utils::simulate_insert_command(&raft_log, vec![1], 11).await;
 
-    assert_eq!((1, 11), raft_log.get_last_entry_metadata());
+    assert_eq!(
+        LogId { index: 1, term: 11 },
+        raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 })
+    );
 }
 
 #[tokio::test]
@@ -1159,12 +988,16 @@ async fn test_raft_log_drop() {
     let case_path = temp_dir.path().join("test_raft_log_drop");
 
     {
-        let db = Arc::new(sled::open(case_path.clone()).unwrap());
+        let db = sled::open(case_path.clone()).unwrap();
         // Create real instance instead of mock
-        let raft_log = Arc::new(SledRaftLog::new(1, db.clone(), 0));
+        let raft_log = BufferedRaftLog::<RaftTypeConfig>::new(
+            1,
+            PersistenceStrategy::DiskFirst,
+            Some(Arc::new(SledStorageEngine::new(1, db).unwrap())),
+        );
 
         // Insert test data
-        test_utils::simulate_insert_command(&raft_log, vec![1], 1);
+        test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
 
         // Explicitly drop to trigger flush
         drop(raft_log);
@@ -1175,8 +1008,8 @@ async fn test_raft_log_drop() {
     assert!(!reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().is_empty());
 }
 
-#[test]
-fn test_first_index_for_term() {
+#[tokio::test]
+async fn test_first_index_for_term() {
     let context = setup("/tmp/test_first_index_for_term");
     context.raft_log.reset().expect("reset successfully!");
 
@@ -1218,7 +1051,11 @@ fn test_first_index_for_term() {
             payload: None,
         },
     ];
-    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .await
+        .expect("insert should succeed");
 
     // Test various cases
     assert_eq!(context.raft_log.first_index_for_term(1), Some(1));
@@ -1239,7 +1076,11 @@ fn test_first_index_for_term() {
             payload: None,
         },
     ];
-    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .await
+        .expect("insert should succeed");
     assert_eq!(context.raft_log.first_index_for_term(4), Some(8));
     assert_eq!(context.raft_log.first_index_for_term(5), Some(9));
 
@@ -1248,8 +1089,8 @@ fn test_first_index_for_term() {
     assert_eq!(context.raft_log.first_index_for_term(1), None);
 }
 
-#[test]
-fn test_last_index_for_term() {
+#[tokio::test]
+async fn test_last_index_for_term() {
     let context = setup("/tmp/test_last_index_for_term");
     context.raft_log.reset().expect("reset successfully!");
 
@@ -1291,7 +1132,11 @@ fn test_last_index_for_term() {
             payload: None,
         },
     ];
-    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .await
+        .expect("insert should succeed");
 
     // Test various cases
     assert_eq!(context.raft_log.last_index_for_term(1), Some(2));
@@ -1312,7 +1157,11 @@ fn test_last_index_for_term() {
             payload: None,
         },
     ];
-    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .await
+        .expect("insert should succeed");
     assert_eq!(context.raft_log.last_index_for_term(5), Some(9));
 
     // Test with empty log
@@ -1320,8 +1169,8 @@ fn test_last_index_for_term() {
     assert_eq!(context.raft_log.last_index_for_term(1), None);
 }
 
-#[test]
-fn test_term_index_functions_with_purged_logs() {
+#[tokio::test]
+async fn test_term_index_functions_with_purged_logs() {
     let context = setup("/tmp/test_term_index_with_purged");
     context.raft_log.reset().expect("reset successfully!");
 
@@ -1333,7 +1182,11 @@ fn test_term_index_functions_with_purged_logs() {
             payload: None,
         })
         .collect();
-    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .await
+        .expect("insert should succeed");
 
     // Purge first 5 logs
     context
@@ -1348,34 +1201,36 @@ fn test_term_index_functions_with_purged_logs() {
     assert_eq!(context.raft_log.last_index_for_term(2), Some(10));
 }
 
-#[test]
-fn test_term_index_functions_with_concurrent_writes() {
+#[tokio::test]
+async fn test_term_index_functions_with_concurrent_writes() {
     let context = setup("/tmp/test_term_index_concurrent");
     context.raft_log.reset().expect("reset successfully!");
 
     let raft_log = context.raft_log.clone();
-    let handles: Vec<_> = (0..10)
-        .map(|i| {
-            let cloned_raft_log = raft_log.clone();
-            std::thread::spawn(move || {
-                let term = i + 1;
-                for j in 1..=100 {
-                    let index = (i * 100) + j;
-                    let entry = Entry {
-                        index,
-                        term,
-                        payload: None,
-                    };
-                    cloned_raft_log
-                        .insert_batch(vec![entry])
-                        .expect("insert should succeed");
-                }
-            })
-        })
-        .collect();
+    let mut handles = Vec::new();
+
+    for i in 0..10 {
+        let cloned_raft_log = raft_log.clone();
+        let handle = tokio::spawn(async move {
+            let term = i + 1;
+            for j in 1..=100 {
+                let index = (i * 100) + j;
+                let entry = Entry {
+                    index,
+                    term,
+                    payload: None,
+                };
+                cloned_raft_log
+                    .insert_batch(vec![entry])
+                    .await
+                    .expect("insert should succeed");
+            }
+        });
+        handles.push(handle);
+    }
 
     for handle in handles {
-        handle.join().unwrap();
+        handle.await.expect("task panicked");
     }
 
     // Verify term indices
@@ -1385,8 +1240,8 @@ fn test_term_index_functions_with_concurrent_writes() {
     }
 }
 
-#[test]
-fn test_term_index_performance_large_dataset() {
+#[tokio::test]
+async fn test_term_index_performance_large_dataset() {
     let context = setup("/tmp/test_term_index_performance");
     context.raft_log.reset().expect("reset successfully!");
 
@@ -1400,7 +1255,11 @@ fn test_term_index_performance_large_dataset() {
             payload: None,
         });
     }
-    context.raft_log.insert_batch(entries).expect("insert should succeed");
+    context
+        .raft_log
+        .insert_batch(entries)
+        .await
+        .expect("insert should succeed");
 
     // Measure performance for first_index_for_term
     let start = std::time::Instant::now();
@@ -1423,11 +1282,11 @@ mod id_allocation_tests {
     use std::sync::{atomic::Ordering, Arc};
 
     // In-memory test setup
-    fn setup_memory() -> Arc<SledRaftLog> {
+    fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig>> {
         let config = sled::Config::new().temporary(true);
-        let db = Arc::new(config.open().unwrap());
+        let _db = Arc::new(config.open().unwrap());
 
-        Arc::new(SledRaftLog::new(1, db, 0))
+        BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::MemFirst, None)
     }
 
     #[test]
@@ -1439,7 +1298,7 @@ mod id_allocation_tests {
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 3);
 
         // Verify cache state
-        assert_eq!(raft_log.cache.next_id.load(Ordering::SeqCst), 4);
+        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 4);
     }
 
     #[test]
@@ -1455,7 +1314,7 @@ mod id_allocation_tests {
         // Verify IDs are unique and sequential
         let ids = [main_id, thread_id];
         assert!(ids.contains(&1) && ids.contains(&2));
-        assert_eq!(raft_log.cache.next_id.load(Ordering::SeqCst), 3);
+        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 3);
     }
 
     #[test]

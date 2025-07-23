@@ -156,7 +156,7 @@ where
         let Some(range) = pending_range else {
             return Ok(());
         };
-        let entries = self.raft_log.get_entries_between(range);
+        let entries = self.raft_log.get_entries_range(range)?;
 
         debug!(
             "[Node-{}] Merge consecutive normal commands length = {}",

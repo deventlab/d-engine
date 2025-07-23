@@ -10,12 +10,15 @@ use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateStorage;
+use crate::StorageEngine;
 use crate::Transport;
 
 pub trait TypeConfig:
     Sync + Send + Sized + Debug + Clone + Copy + Default + Eq + PartialEq + Ord + PartialOrd + 'static
 {
     type R: RaftLog + Debug;
+
+    type S: StorageEngine + Debug;
 
     type TR: Transport<Self> + Debug;
 
@@ -42,6 +45,8 @@ pub mod alias {
     use super::TypeConfig;
 
     pub type ROF<T> = <T as TypeConfig>::R;
+
+    pub type SOF<T> = <T as TypeConfig>::S;
 
     pub type TROF<T> = <T as TypeConfig>::TR;
 

@@ -671,12 +671,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     info!("Leader will not process Vote request, it should let Follower do it.");
                     send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
                 } else {
-                    let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+                    let last_log_id = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
                     let response = VoteResponse {
                         term: my_term,
                         vote_granted: false,
-                        last_log_index,
-                        last_log_term,
+                        last_log_index: last_log_id.index,
+                        last_log_term: last_log_id.term,
                     };
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{e:?}");

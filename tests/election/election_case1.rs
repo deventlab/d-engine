@@ -54,11 +54,11 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     init_state_storage(&ss2, 3, None);
 
     // Prepare raft logs
-    let r1 = Arc::new(prepare_raft_log(1, &format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR), 0));
-    manipulate_log(&r1, (1..=10).collect(), 2);
-    let r2 = Arc::new(prepare_raft_log(2, &format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR), 0));
-    manipulate_log(&r2, (1..=2).collect(), 2);
-    manipulate_log(&r2, (3..=8).collect(), 3);
+    let r1 = prepare_raft_log(1, &format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    manipulate_log(&r1, (1..=10).collect(), 2).await;
+    let r2 = prepare_raft_log(2, &format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    manipulate_log(&r2, (1..=2).collect(), 2).await;
+    manipulate_log(&r2, (3..=8).collect(), 3).await;
 
     // Start cluster nodes
     let mut ctx = TestContext {

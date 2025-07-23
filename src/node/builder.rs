@@ -32,16 +32,6 @@
 //! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-
 use super::RaftTypeConfig;
 use crate::alias::COF;
 use crate::alias::MOF;
@@ -50,16 +40,18 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
+use crate::alias::SOF;
 use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::init_sled_raft_log_db;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_state_storage_db;
+use crate::init_sled_storage_engine_db;
 use crate::learner_state::LearnerState;
 use crate::metrics;
+use crate::BufferedRaftLog;
 use crate::ClusterConfig;
 use crate::CommitHandler;
 use crate::CommitHandlerDependencies;
@@ -80,12 +72,20 @@ use crate::RaftStorageHandles;
 use crate::ReplicationHandler;
 use crate::Result;
 use crate::SignalParams;
-use crate::SledRaftLog;
 use crate::SledStateMachine;
 use crate::SledStateStorage;
+use crate::SledStorageEngine;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::SystemError;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
 
 pub enum NodeMode {
     Joiner,
@@ -100,6 +100,7 @@ pub struct NodeBuilder {
 
     pub(super) node_config: RaftNodeConfig,
     pub(super) raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    pub(super) storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     pub(super) state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
@@ -165,6 +166,7 @@ impl NodeBuilder {
         Self {
             node_id: node_config.cluster.node_id,
             raft_log: None,
+            storage_engine: None,
             state_machine: None,
             state_storage: None,
             transport: None,
@@ -179,12 +181,21 @@ impl NodeBuilder {
         }
     }
 
-    /// Sets a custom Raft log storage implementation
+    /// Sets a custom Raft log  implementation
     pub fn raft_log(
         mut self,
         raft_log: Arc<ROF<RaftTypeConfig>>,
     ) -> Self {
         self.raft_log = Some(raft_log);
+        self
+    }
+
+    /// Sets a custom storage engine implementation
+    pub fn storage_engine(
+        mut self,
+        storage_engine: Arc<SOF<RaftTypeConfig>>,
+    ) -> Self {
+        self.storage_engine = Some(storage_engine);
         self
     }
 
@@ -281,9 +292,13 @@ impl NodeBuilder {
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
 
+        let storage_engine = self.storage_engine.take().unwrap_or_else(|| {
+            let storage_engine_db =
+                init_sled_storage_engine_db(&db_root_dir).expect("init_sled_storage_engine_db successfully.");
+            Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("Init storage engine successfully."))
+        });
         let raft_log = self.raft_log.take().unwrap_or_else(|| {
-            let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
-            Arc::new(SledRaftLog::new(node_id, Arc::new(raft_log_db), last_applied_index))
+            BufferedRaftLog::new(node_id, node_config.raft.persistence.strategy, Some(storage_engine))
         });
 
         let state_storage = self.state_storage.take().unwrap_or_else(|| {

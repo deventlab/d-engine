@@ -37,6 +37,11 @@ pub struct RaftConfig {
     #[serde(default)]
     pub snapshot: SnapshotConfig,
 
+    /// Configuration settings for log persistence behavior
+    /// Controls how and when log entries are persisted to stable storage
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
+
     /// Maximum allowed log entry gap between leader and learner nodes
     /// Learners with larger gaps than this value will trigger catch-up replication
     /// Default value is set via default_learner_catchup_threshold() function
@@ -74,6 +79,7 @@ impl Default for RaftConfig {
             membership: MembershipConfig::default(),
             commit_handler: CommitHandlerConfig::default(),
             snapshot: SnapshotConfig::default(),
+            persistence: PersistenceConfig::default(),
             learner_catchup_threshold: default_learner_catchup_threshold(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
@@ -653,4 +659,71 @@ fn default_stale_learner_threshold() -> Duration {
 // 30 seconds
 fn default_stale_check_interval() -> Duration {
     Duration::from_secs(30)
+}
+
+/// Configurable persistence strategy for Raft logs
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub enum PersistenceStrategy {
+    /// Write logs to disk first, then update in-memory state
+    /// (Strong durability, lower throughput)
+    DiskFirst,
+
+    /// Write logs to memory first, then asynchronously persist to disk
+    /// (Higher throughput, but may lose recent logs on crash)
+    MemFirst,
+
+    /// Write logs to memory first, then persist to disk in batches
+    /// (Balances throughput and durability with controlled latency)
+    Batched(usize, u64), // (batch_size, interval_ms)
+}
+
+/// Configuration parameters for log persistence behavior
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PersistenceConfig {
+    /// Strategy for persisting Raft logs
+    ///
+    /// This controls the trade-off between durability guarantees and performance
+    /// characteristics. The choice impacts both write throughput and recovery
+    /// behavior after node failures.
+    #[serde(default = "default_persistence_strategy")]
+    pub strategy: PersistenceStrategy,
+
+    /// Maximum number of in-memory log entries to buffer when using async strategies
+    ///
+    /// This acts as a safety valve to prevent memory exhaustion during periods of
+    /// high write throughput or when disk persistence is slow.
+    #[serde(default = "default_max_buffered_entries")]
+    pub max_buffered_entries: usize,
+
+    /// Whether to fsync persisted logs to disk
+    ///
+    /// When enabled (true), provides stronger durability guarantees but significantly
+    /// impacts write performance. Recommended for environments requiring crash safety.
+    #[serde(default = "default_fsync")]
+    pub fsync: bool,
+}
+
+/// Default persistence strategy (optimized for balanced workloads)
+fn default_persistence_strategy() -> PersistenceStrategy {
+    PersistenceStrategy::Batched(1024, 100) // 1KB batch every 100ms
+}
+
+/// Default maximum buffered log entries
+fn default_max_buffered_entries() -> usize {
+    10_000
+}
+
+/// Default fsync behavior (disabled for better performance)
+fn default_fsync() -> bool {
+    false
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        Self {
+            strategy: default_persistence_strategy(),
+            max_buffered_entries: default_max_buffered_entries(),
+            fsync: default_fsync(),
+        }
+    }
 }

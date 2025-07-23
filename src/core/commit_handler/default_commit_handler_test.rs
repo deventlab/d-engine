@@ -125,8 +125,8 @@ where
     // Mock raft log
     let mut mock_log = MockRaftLog::new();
     mock_log
-        .expect_get_entries_between()
-        .returning(move |_| entries.clone());
+        .expect_get_entries_range()
+        .returning(move |_| Ok(entries.clone()));
 
     // Mock membership
     let mut mock_membership = MockMembership::new();
@@ -281,12 +281,12 @@ fn setup(
     // Mock Raft Log
     let mut mock_raft_log = MockRaftLog::new();
     mock_raft_log.expect_purge_logs_up_to().returning(|_| Ok(()));
-    mock_raft_log.expect_get_entries_between().returning(|_| {
-        vec![Entry {
+    mock_raft_log.expect_get_entries_range().returning(|_| {
+        Ok(vec![Entry {
             index: 1,
             term: 1,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        }]
+        }])
     });
     let mock_membership = MockMembership::new();
 
@@ -812,7 +812,7 @@ mod process_batch_test {
 
     //     // Mock raft log
     //     let mut mock_log = MockRaftLog::new();
-    //     mock_log.expect_get_entries_between()
+    //     mock_log.expect_get_entries_range()
     //         .return_once(move |_| entries.clone());
 
     //     // Mock membership

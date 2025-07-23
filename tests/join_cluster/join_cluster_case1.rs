@@ -85,32 +85,16 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     ));
 
     // Prepare raft logs
-    let r1 = Arc::new(prepare_raft_log(
-        1,
-        &format!("{}/cs/1", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-        0,
-    ));
-    let r2 = Arc::new(prepare_raft_log(
-        2,
-        &format!("{}/cs/2", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-        0,
-    ));
-    let r3 = Arc::new(prepare_raft_log(
-        3,
-        &format!("{}/cs/3", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-        0,
-    ));
-    let r4 = Arc::new(prepare_raft_log(
-        4,
-        &format!("{}/cs/4", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-        0,
-    ));
+    let r1 = prepare_raft_log(1, &format!("{}/cs/1", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
+    let r2 = prepare_raft_log(2, &format!("{}/cs/2", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
+    let r3 = prepare_raft_log(3, &format!("{}/cs/3", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
+    let r4 = prepare_raft_log(4, &format!("{}/cs/4", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
 
     let last_log_id: u64 = 10;
-    manipulate_log(&r1, vec![1, 2, 3], 1);
-    manipulate_log(&r2, vec![1, 2, 3, 4], 1);
-    manipulate_log(&r3, (1..=3).collect(), 1);
-    manipulate_log(&r3, (4..=last_log_id).collect(), 2);
+    manipulate_log(&r1, vec![1, 2, 3], 1).await;
+    manipulate_log(&r2, vec![1, 2, 3, 4], 1).await;
+    manipulate_log(&r3, (1..=3).collect(), 1).await;
+    manipulate_log(&r3, (4..=last_log_id).collect(), 2).await;
 
     // Prepare state storage
     let ss1 = Arc::new(prepare_state_storage(&format!(

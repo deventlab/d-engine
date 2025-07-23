@@ -15,6 +15,7 @@ use crate::alias::TROF;
 use crate::cluster::is_majority;
 use crate::if_higher_term_found;
 use crate::is_target_log_more_recent;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VotedFor;
 use crate::ElectionError;
@@ -60,7 +61,10 @@ where
             debug!("going to send_vote_requests to: {:?}", &members);
         }
 
-        let (last_log_index, last_log_term) = raft_log.get_last_entry_metadata();
+        let LogId {
+            index: last_log_index,
+            term: last_log_term,
+        } = raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 });
         let request = VoteRequest {
             term,
             candidate_id: self.my_id,
@@ -139,9 +143,15 @@ where
         debug!("VoteRequest::Received: {:?}", request);
         let mut new_voted_for = None;
         let mut term_update = None;
-        let (last_index, last_term) = raft_log.get_last_entry_metadata();
+        let last_logid = raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
-        if self.check_vote_request_is_legal(&request, current_term, last_index, last_term, voted_for_option) {
+        if self.check_vote_request_is_legal(
+            &request,
+            current_term,
+            last_logid.index,
+            last_logid.term,
+            voted_for_option,
+        ) {
             debug!("switch to follower");
             let term = request.term;
 

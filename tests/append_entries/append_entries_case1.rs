@@ -12,13 +12,6 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use d_engine::storage::StateMachine;
-use d_engine::ClientApiError;
-use tracing::debug;
-
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
@@ -35,6 +28,11 @@ use crate::common::test_put_get;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
+use d_engine::storage::StateMachine;
+use d_engine::ClientApiError;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::debug;
 
 const TEST_CASE_DIR: &str = "append_entries/case1";
 const DB_ROOT_DIR: &str = "./db/append_entries/case1";
@@ -60,15 +58,15 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     let sm1 = Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1")));
     let raft_logs = [
-        Arc::new(prepare_raft_log(1, &format!("{DB_ROOT_DIR}/cs/1"), 0)),
-        Arc::new(prepare_raft_log(2, &format!("{DB_ROOT_DIR}/cs/2"), 0)),
-        Arc::new(prepare_raft_log(3, &format!("{DB_ROOT_DIR}/cs/3"), 0)),
+        prepare_raft_log(1, &format!("{DB_ROOT_DIR}/cs/1"), 0),
+        prepare_raft_log(2, &format!("{DB_ROOT_DIR}/cs/2"), 0),
+        prepare_raft_log(3, &format!("{DB_ROOT_DIR}/cs/3"), 0),
     ];
 
-    manipulate_log(&raft_logs[0], vec![1, 2, 3], 1);
-    manipulate_log(&raft_logs[1], vec![1, 2, 3, 4], 1);
-    manipulate_log(&raft_logs[2], (1..=3).collect(), 1);
-    manipulate_log(&raft_logs[2], (4..=10).collect(), 2);
+    manipulate_log(&raft_logs[0], vec![1, 2, 3], 1).await;
+    manipulate_log(&raft_logs[1], vec![1, 2, 3, 4], 1).await;
+    manipulate_log(&raft_logs[2], (1..=3).collect(), 1).await;
+    manipulate_log(&raft_logs[2], (4..=10).collect(), 2).await;
 
     // Prepare state storage
     let state_storages = (1..=3)

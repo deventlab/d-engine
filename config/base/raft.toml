@@ -52,3 +52,21 @@ cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"
 
 [raft.auto_join]
 rpc_enable_compression = true
+
+
+[raft.persistence]
+# Persistence strategy (options: DiskFirst, MemFirst, Batched)
+# DiskFirst = strongest durability, sync disk write (lowest throughput)
+# MemFirst = highest throughput, async disk write (risk of recent log loss)
+# Batched = balanced approach (batch_size, interval_ms)
+strategy = "Batched(1024, 10)"
+
+# Upcoming feature(v0.1.4)
+# Maximum number of log entries to buffer in memory
+# when using async persistence strategies (MemFirst/Batched)
+max_buffered_entries = 10000
+
+# Upcoming feature(v0.1.4)
+# Whether to fsync to disk after each write (strong durability)
+# Disabled by default for better performance
+fsync = false

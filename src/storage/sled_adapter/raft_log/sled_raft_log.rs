@@ -4,18 +4,31 @@
 //! the reason, we could catch the entry in memory is because:
 //!     no entry could be deleted or modified in RAFT.
 
-use std::mem;
-use std::ops::RangeInclusive;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-
+use crate::convert::safe_kv;
+use crate::convert::safe_vk;
+use crate::convert::vki;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
+use crate::BufferedRaftLog;
+use crate::FlushCommand;
+use crate::LocalLogBatch;
+use crate::RaftLog;
+use crate::Result;
+use crate::StorageError;
+use crate::API_SLO;
+use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
 use autometrics::autometrics;
 use dashmap::DashMap;
 use prost::Message;
 use sled::Batch;
 use sled::IVec;
 use sled::Subscriber;
+use std::ops::RangeInclusive;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tokio::sync::oneshot;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -23,26 +36,13 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
-use crate::convert::safe_kv;
-use crate::convert::safe_vk;
-use crate::convert::vki;
-use crate::proto::common::Entry;
-use crate::proto::common::LogId;
-use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
-use crate::LocalLogBatch;
-use crate::RaftLog;
-use crate::Result;
-use crate::StorageError;
-use crate::API_SLO;
-use crate::MESSAGE_SIZE_IN_BYTES_METRIC;
-
 const ID_BATCH_SIZE: u64 = 100;
 
 pub struct SledRaftLog {
     node_id: u32,
     db: Arc<sled::Db>,
     tree: Arc<sled::Tree>,
-    pub(super) cache: RaftLogMemCache,
+    pub(super) buffer: Arc<BufferedRaftLog>,
 }
 
 impl std::fmt::Debug for SledRaftLog {
@@ -64,15 +64,14 @@ impl Drop for SledRaftLog {
         }
     }
 }
+
 /// This data structure is designed to improve read and write performance.
 /// It has to be refreshed when there is a write
 #[derive(Debug)]
 pub(super) struct RaftLogMemCache {
     length: AtomicU64,
     mapped_entries: DashMap<u64, Entry>, //mapped from disk
-    pub(super) next_id: AtomicU64,       /* because of the batch apply feature, we have to
-                                          * pre allocated some entry index before insert
-                                          * successfully */
+    pub(super) next_id: AtomicU64, /* because of the batch apply feature, we have to pre allocated some entry index before insert successfully */
 }
 
 impl RaftLogMemCache {
@@ -103,7 +102,6 @@ impl RaftLogMemCache {
         Ok(())
     }
 }
-//sized traits are not object-safe:https://doc.rust-lang.org/reference/items/traits.html#object-safety
 
 #[async_trait]
 impl RaftLog for SledRaftLog {
@@ -112,112 +110,39 @@ impl RaftLog for SledRaftLog {
     ///  it might be the learner who has already applied the snapshot.
     #[autometrics(objective = API_SLO)]
     fn last_entry_id(&self) -> u64 {
-        if let Some(v) = self.last_entry() {
-            v.0
-        } else {
-            0
-        }
+        self.buffer.last_entry_id()
+    }
+
+    fn last_entry(&self) -> Option<Entry> {
+        self.buffer.last_entry()
+    }
+
+    fn last_log_id(&self) -> Option<LogId> {
+        self.last_entry().map(|entry| LogId {
+            term: entry.term,
+            index: entry.index,
+        })
     }
 
     #[autometrics(objective = API_SLO)]
     fn first_entry_id(&self) -> u64 {
-        if let Some(v) = self.first_entry() {
-            v.0
-        } else {
-            0
-        }
+        self.buffer.first_entry_id()
     }
 
     fn is_empty(&self) -> bool {
-        self.last_entry().is_none()
-    }
-
-    /// Check if the log exists at the specified location and the term matches
-    fn has_log_at(
-        &self,
-        index: u64,
-        term: u64,
-    ) -> bool {
-        if index == 0 && term == 0 {
-            return self.is_empty();
-        }
-        match self.get_entry_by_index(index) {
-            Some(entry) => entry.term == term,
-            None => false, // The log does not exist
-        }
-    }
-
-    fn first_index_for_term(
-        &self,
-        term: u64,
-    ) -> Option<u64> {
-        for res in self.tree.iter() {
-            let (key, value) = match res {
-                Ok(pair) => pair,
-                Err(_) => continue,
-            };
-
-            // Convert IVec to bytes slice for decoding
-            let entry_bytes = value.as_ref();
-            match Entry::decode(entry_bytes) {
-                Ok(entry) if entry.term == term => {
-                    return Some(vki(&key));
-                }
-                Ok(entry) if entry.term > term => {
-                    // Terms are non-decreasing so we won't find it later
-                    break;
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    fn last_index_for_term(
-        &self,
-        term: u64,
-    ) -> Option<u64> {
-        let mut iter = self.tree.iter().rev();
-        while let Some(Ok((key, value))) = iter.next() {
-            // Convert IVec to bytes slice for decoding
-            let entry_bytes = value.as_ref();
-            if let Ok(entry) = Entry::decode(entry_bytes) {
-                if entry.term == term {
-                    return Some(vki(&key));
-                }
-                if entry.term < term {
-                    // Terms are non-increasing backwards so we won't find it
-                    break;
-                }
-            }
-        }
-        None
+        self.buffer.is_empty()
     }
 
     fn entry_term(
         &self,
         entry_id: u64,
     ) -> Option<u64> {
-        self.get_entry_by_index(entry_id).map(|entry| entry.term)
-    }
-
-    #[autometrics(objective = API_SLO)]
-    fn span_between_first_entry_and_last_entry(&self) -> u64 {
-        let last = self.last_entry_id();
-        let first = self.first_entry_id();
-        if last < first {
-            error!("local log: last entry:{} < first entry:{}'s id", last, first);
-            return 0;
-        } else {
-            trace!("local log: last entry:{} >= first entry:{}'s id", last, first);
-        }
-
-        return last - first + 1;
+        self.buffer.get_entry(entry_id).map(|entry| entry.term)
     }
 
     fn pre_allocate_raft_logs_next_index(&self) -> u64 {
         // self.get_raft_logs_length() + 1
-        let next_id = self.cache.next_id.fetch_add(1, Ordering::SeqCst);
+        let next_id = self.buffer.next_id.fetch_add(1, Ordering::SeqCst);
         trace!(
             "[Node-{}] RaftLog pre_allocate_raft_logs_next_index: {}",
             self.node_id,
@@ -234,150 +159,157 @@ impl RaftLog for SledRaftLog {
         let batches = count.div_ceil(ID_BATCH_SIZE).max(1);
         let total = batches * ID_BATCH_SIZE;
 
-        let start = self.cache.next_id.fetch_add(total, Ordering::SeqCst);
+        let start = self.buffer.next_id.fetch_add(total, Ordering::SeqCst);
         start..=start + total - 1
     }
 
-    /// Deprecated: Use `last_log_id()` instead.
-    #[autometrics(objective = API_SLO)]
-    fn last(&self) -> Option<Entry> {
-        if let Some(pair) = self.last_entry() {
-            if let Ok(e) = Entry::decode(&*pair.1) {
-                return Some(e);
-            } else {
-                error!("last decode error!");
-            }
-        }
-        return None;
-    }
-
-    fn last_log_id(&self) -> Option<LogId> {
-        self.last()
-            .map(|entry| {
-                Some(LogId {
-                    term: entry.term,
-                    index: entry.index,
-                })
-            })
-            .unwrap_or(None)
-    }
-
-    /// Deprecated: Use `last_log_id()` instead.
-    fn get_last_entry_metadata(&self) -> (u64, u64) {
-        self.last().map(|entry| (entry.index, entry.term)).unwrap_or((0, 0))
-    }
-
-    #[autometrics(objective = API_SLO)]
-    fn get_entry_by_index(
+    fn first_index_for_term(
         &self,
-        index: u64,
-    ) -> Option<Entry> {
-        self.get(index)
+        term: u64,
+    ) -> Option<u64> {
+        self.buffer.first_index_for_term(term)
+    }
+
+    fn last_index_for_term(
+        &self,
+        term: u64,
+    ) -> Option<u64> {
+        self.buffer.last_index_for_term(term)
     }
 
     /// start is 'get_last_synced_commit_index', it might be zero
     /// Note: start: start_entry_id
     #[autometrics(objective = API_SLO)]
-    fn get_entries_between(
+    fn get_entries_range(
         &self,
         range: RangeInclusive<u64>,
     ) -> Vec<Entry> {
-        self.get_range(range)
+        self.buffer.get_entries_range(range)
     }
 
-    #[autometrics(objective = API_SLO)]
-    fn get_entry_term_by_index(
-        &self,
-        index: u64,
-    ) -> Option<u64> {
-        let e = self.get_entry_by_index(index);
-        e.map(|entry| entry.term)
-    }
+    // fn filter_out_conflicts_and_append(
+    //     &self,
+    //     prev_log_index: u64,
+    //     prev_log_term: u64,
+    //     new_entries: Vec<Entry>,
+    // ) -> Result<Option<LogId>> {
+    //     debug!(
+    //         "Handling AppendEntries: prev_log_index={}, prev_log_term={}",
+    //         prev_log_index, prev_log_term
+    //     );
 
+    //     let mut batch = LocalLogBatch::default();
+    //     // Process virtual log (prev_log_index=0)
+    //     if prev_log_index == 0 && prev_log_term == 0 {
+    //         // Clear all local logs
+    //         self.clear()?;
+
+    //         // Last entry after insert
+    //         let last = new_entries
+    //             .last()
+    //             .map(|e| {
+    //                 Some(LogId {
+    //                     term: e.term,
+    //                     index: e.index,
+    //                 })
+    //             })
+    //             .unwrap_or(None);
+
+    //         // Append new log
+    //         for entry in new_entries {
+    //             let encoded = IVec::from(entry.encode_to_vec());
+    //             batch.insert(safe_kv(entry.index), encoded);
+    //         }
+    //         self.apply(&batch)?;
+    //         return Ok(last);
+    //     }
+
+    //     // Check if prev_log_index matches
+    //     match self.entry(prev_log_index) {
+    //         Some(entry) if entry.term == prev_log_term => {
+    //             // Delete all logs after prev_log_index
+    //             for index in (prev_log_index + 1)..=self.last_entry_id() {
+    //                 batch.remove(safe_kv(index));
+    //             }
+    //             // Append new log
+    //             for entry in new_entries {
+    //                 let encoded = IVec::from(entry.encode_to_vec());
+    //                 batch.insert(safe_kv(entry.index), encoded);
+    //             }
+    //         }
+    //         _ => {
+    //             // Mismatch, refuse to append (the upper-level logic handles the conflict response)
+    //             return Ok(self.last_log_id());
+    //         }
+    //     }
+
+    //     // Apply batch processing
+    //     if !batch.is_empty() {
+    //         self.apply(&batch)?;
+    //     }
+
+    //     Ok(self.last_log_id())
+    // }
+    //
     fn filter_out_conflicts_and_append(
         &self,
         prev_log_index: u64,
         prev_log_term: u64,
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>> {
-        debug!(
-            "Handling AppendEntries: prev_log_index={}, prev_log_term={}",
-            prev_log_index, prev_log_term
-        );
-
-        let mut batch = LocalLogBatch::default();
-        // Process virtual log (prev_log_index=0)
+        // Virtual log handling (snapshot installation)
         if prev_log_index == 0 && prev_log_term == 0 {
-            // Clear all local logs
-            self.clear()?;
-
-            // Last entry after insert
-            let last = new_entries
-                .last()
-                .map(|e| {
-                    Some(LogId {
-                        term: e.term,
-                        index: e.index,
-                    })
-                })
-                .unwrap_or(None);
-
-            // Append new log
-            for entry in new_entries {
-                let encoded = IVec::from(entry.encode_to_vec());
-                batch.insert(safe_kv(entry.index), encoded);
-            }
-            self.apply(&batch)?;
-            return Ok(last);
+            self.reset()?;
+            self.buffer.add_entries(new_entries.clone());
+            return Ok(new_entries.last().map(|e| LogId {
+                term: e.term,
+                index: e.index,
+            }));
         }
 
-        // Check if prev_log_index matches
-        match self.get_entry_by_index(prev_log_index) {
-            Some(entry) if entry.term == prev_log_term => {
-                // Delete all logs after prev_log_index
-                for index in (prev_log_index + 1)..=self.last_entry_id() {
+        // Check log match
+        match self.entry_term(prev_log_index) {
+            Some(term) if term == prev_log_term => {
+                // Remove conflicting entries from buffer
+                for index in (prev_log_index + 1)..=self.buffer.last_entry_id() {
+                    self.buffer.entries_cache.remove(&index);
+                }
+
+                // Update flush state
+                let mut state = self.buffer.flush_state.lock().unwrap();
+                state.pending_flush.retain(|&id| id <= prev_log_index);
+
+                // Prepare disk batch
+                let mut batch = LocalLogBatch::default();
+                for index in (prev_log_index + 1)..=self.buffer.durable_index.load(Ordering::Acquire) {
                     batch.remove(safe_kv(index));
                 }
-                // Append new log
-                for entry in new_entries {
-                    let encoded = IVec::from(entry.encode_to_vec());
-                    batch.insert(safe_kv(entry.index), encoded);
-                }
+
+                // Add new entries to buffer
+                self.buffer.add_entries(new_entries.clone());
+
+                // Apply to disk asynchronously
+                let tree = Arc::clone(&self.tree);
+                tokio::spawn(async move {
+                    if let Err(e) = tree.apply_batch(batch) {
+                        error!("Conflict resolution batch failed: {}", e);
+                    }
+                });
+
+                // Return last log ID
+                Ok(new_entries.last().map(|e| LogId {
+                    term: e.term,
+                    index: e.index,
+                }))
             }
             _ => {
-                // Mismatch, refuse to append (the upper-level logic handles the conflict response)
-                return Ok(self.last_log_id());
+                // Conflict - return current state
+                let last_id = self.buffer.last_entry_id();
+                Ok(self.buffer.entries_cache.get(&last_id).map(|e| LogId {
+                    term: e.term,
+                    index: e.index,
+                }))
             }
-        }
-
-        // Apply batch processing
-        if !batch.is_empty() {
-            self.apply(&batch)?;
-        }
-
-        Ok(self.last_log_id())
-    }
-
-    #[autometrics(objective = API_SLO)]
-    fn prev_log_term(
-        &self,
-        _follower_id: u32,
-        prev_log_index: u64,
-    ) -> u64 {
-        self.get_entry_term_by_index(prev_log_index).unwrap_or_default()
-    }
-
-    /// used as binary rpc communication
-    #[autometrics(objective = API_SLO)]
-    fn retrieve_one_entry_for_this_follower(
-        &self,
-        _follower_id: u32,
-        next_id: u64,
-    ) -> Vec<u8> {
-        if let Some(log) = self.get_entry_by_index(next_id) {
-            log.encode_to_vec()
-        } else {
-            Vec::new()
         }
     }
 
@@ -386,104 +318,68 @@ impl RaftLog for SledRaftLog {
         &self,
         logs: Vec<Entry>,
     ) -> Result<()> {
-        debug!("starting insert_client_batch_commands...");
-
-        let mut batch = LocalLogBatch::default();
-        for entry in logs.into_iter() {
-            let index = entry.index;
-            let size = mem::size_of_val(&entry);
-            let encoded = IVec::from(entry.encode_to_vec());
-            batch.insert(safe_kv(index), encoded);
-            //-------------------
-            //performance testing: /*
-            MESSAGE_SIZE_IN_BYTES_METRIC
-                .with_label_values(&[&index.to_string()])
-                .observe(size as f64);
-            //performance testing: */
-        }
-        if let Err(e) = self.apply(&batch) {
-            error!("apply batch error: {:?}", e);
-            return Err(StorageError::DbError(e.to_string()).into());
-        }
+        self.buffer.add_entries(logs);
         Ok(())
     }
 
-    #[autometrics(objective = API_SLO)]
-    fn prev_log_ok(
-        &self,
-        req_prev_log_index: u64,
-        req_prev_log_term: u64,
-        _last_applied: u64,
-    ) -> bool {
-        debug!(
-            "start checking if prev_log_ok: req_prev_log_index: {:?}, req_prev_log_term: {:?}",
-            req_prev_log_index, req_prev_log_term
-        );
-
-        // Cache the last local log entry ID to avoid multiple calls
-        let last_raft_log_entry_id = self.last_entry_id();
-
-        //unexpected
-        if req_prev_log_index > 0 && last_raft_log_entry_id < 1 {
-            error!(
-                "prev_log_ok(&self, req_prev_log_index: {}, req_prev_log_term: {},) failed.",
-                req_prev_log_index, req_prev_log_term,
-            );
-            return false;
-        }
-
-        // Early exit for the case when req_prev_log_index is zero
-        if req_prev_log_index == 0 {
-            debug!("req_prev_log_index == 0, return true");
-            return true;
-        }
-
-        // Check if the index is within bounds
-        if req_prev_log_index > 0 && req_prev_log_index <= last_raft_log_entry_id {
-            // Use pattern matching to handle Option more efficiently
-            if let Some(matched_raft_log_entry) = self.get_entry_by_index(req_prev_log_index) {
-                // Check term directly from the matched log entry
-                if req_prev_log_term == matched_raft_log_entry.term {
-                    debug!("prev_log_ok return true.");
-                    return true;
-                } else {
-                    warn!(
-                        "req_prev_log_term({}) != matched_raft_log_entry.term({})",
-                        req_prev_log_term, matched_raft_log_entry.term
-                    );
-                }
-            } else {
-                warn!("can not find entry by index({}) in my local log.", req_prev_log_index);
-            }
-        }
-
-        // Log details only when returning false
-        debug!(
-            "prev_log_ok return false. local log length: {:?}, req_prev_log_index: {:?}, req_prev_log_term: {:?}",
-            last_raft_log_entry_id, req_prev_log_index, req_prev_log_term
-        );
-
-        false
-    }
-
+    // #[autometrics(objective = API_SLO)]
+    // fn reset(&self) -> Result<()> {
+    //     if let Err(e) = self.tree.clear() {
+    //         error!("error: {:?}", e);
+    //         Err(StorageError::DbError(e.to_string()).into())
+    //     } else {
+    //         Ok(())
+    //     }
+    // }
     #[autometrics(objective = API_SLO)]
     fn reset(&self) -> Result<()> {
-        if let Err(e) = self.tree.clear() {
-            error!("error: {:?}", e);
-            Err(StorageError::DbError(e.to_string()).into())
-        } else {
-            Ok(())
-        }
+        // Clear in-memory buffer
+        self.buffer.entries_cache.clear();
+        self.buffer.durable_index.store(0, Ordering::Release);
+        self.buffer.next_id.store(1, Ordering::Release);
+
+        // Reset flush state
+        let mut state = self.buffer.flush_state.lock().unwrap();
+        state.pending_flush.clear();
+        state.flushing = false;
+
+        // Clear persistent storage
+        self.tree.clear().map_err(|e| {
+            error!("Storage reset failed: {}", e);
+            StorageError::DbError(e.to_string())
+        })?;
+
+        Ok(())
     }
 
-    #[autometrics(objective = API_SLO)]
-    fn retrieve_subscriber(
-        &self,
-        watch_key: &[u8],
-    ) -> Subscriber {
-        self.tree.watch_prefix(watch_key)
-    }
+    // #[autometrics(objective = API_SLO)]
+    // fn purge_logs_up_to(
+    //     &self,
+    //     cutoff: LogId,
+    // ) -> Result<()> {
+    //     debug!(?cutoff, "purge_logs_up_to");
 
+    //     let cutoff = cutoff.index;
+
+    //     let mut batch = LocalLogBatch::default();
+
+    //     for result in self.tree.range(..safe_kv(cutoff + 1)) {
+    //         let (key, _value) = result?;
+    //         batch.remove(key.to_vec());
+    //     }
+
+    //     if let Err(e) = self.apply(&batch) {
+    //         error!("purge_logs_up_to error: {}", e);
+    //         return Err(StorageError::DbError(e.to_string()).into());
+    //     }
+
+    //     // Bugfix: #55: Flushing can take quite a lot of time,
+    //     //  and you should measure the performance impact of using it
+    //     //  on realistic sustained workloads running on realistic hardware.
+    //     // self.tree.flush_async().await?;
+
+    //     Ok(())
+    // }
     #[autometrics(objective = API_SLO)]
     fn purge_logs_up_to(
         &self,
@@ -491,50 +387,50 @@ impl RaftLog for SledRaftLog {
     ) -> Result<()> {
         debug!(?cutoff, "purge_logs_up_to");
 
-        let cutoff = cutoff.index;
+        let cutoff_index = cutoff.index;
 
+        // Step 1: Remove purged entries from buffer
+        {
+            let mut entries_to_remove = Vec::new();
+            for entry_ref in self.buffer.entries_cache.iter() {
+                if entry_ref.index <= cutoff_index {
+                    entries_to_remove.push(entry_ref.index);
+                }
+            }
+
+            for index in entries_to_remove {
+                self.buffer.entries_cache.remove(&index);
+            }
+
+            // Update durable index if needed
+            let current_durable = self.buffer.durable_index.load(Ordering::Acquire);
+            if cutoff_index > current_durable {
+                self.buffer.durable_index.store(cutoff_index, Ordering::Release);
+            }
+        }
+
+        // Step 2: Batch remove from disk storage
         let mut batch = LocalLogBatch::default();
-
-        for result in self.tree.range(..safe_kv(cutoff + 1)) {
-            let (key, _value) = result?;
+        for result in self.tree.range(..safe_kv(cutoff_index + 1)) {
+            let (key, _) = result?;
             batch.remove(key.to_vec());
         }
 
-        if let Err(e) = self.apply(&batch) {
-            error!("purge_logs_up_to error: {}", e);
-            return Err(StorageError::DbError(e.to_string()).into());
-        }
+        // Step 3: Apply deletion asynchronously
+        let tree = Arc::clone(&self.tree);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = tree.apply_batch(batch) {
+                error!("Async purge failed: {:?}", e);
+            }
+        });
 
-        // Bugfix: #55: Flushing can take quite a lot of time,
-        //  and you should measure the performance impact of using it
-        //  on realistic sustained workloads running on realistic hardware.
-        // self.tree.flush_async().await?;
+        // Step 4: Update buffer metadata
+        let new_length = self.buffer.entries_cache.iter().map(|e| e.index).max().unwrap_or(0);
+
+        self.buffer.length.store(new_length, Ordering::Release);
+        self.buffer.next_id.store(new_length + 1, Ordering::Release);
 
         Ok(())
-    }
-
-    /// Load entries from disk to memory.
-    #[autometrics(objective = API_SLO)]
-    fn load_uncommitted_from_db_to_cache(
-        &self,
-        commit_id: u64,
-        len: u64,
-    ) {
-        info!(
-            "load_uncommitted_from_db_to_cache, commit_id: {}, len: {} ",
-            commit_id, len
-        );
-        for entry in self.get_entries_between((commit_id + 1)..=len) {
-            self.cache.mapped_entries.insert(entry.index, entry);
-        }
-    }
-
-    #[autometrics(objective = API_SLO)]
-    fn get_from_cache(
-        &self,
-        index: u64,
-    ) -> Option<Entry> {
-        self.cache.mapped_entries.get(&index).map(|v| v.clone())
     }
     /// If there exists an N such that N >= commitIndex, a majority
     /// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex =
@@ -543,44 +439,81 @@ impl RaftLog for SledRaftLog {
     /// return None, when majority_matched_index < current commit index or
     ///     the log term which index is majority_matched_index, doesn't equal to
     /// the current leader term.
+
+    // #[autometrics(objective = API_SLO)]
+    // fn calculate_majority_matched_index(
+    //     &self,
+    //     current_term: u64,
+    //     commit_index: u64,
+    //     mut peer_matched_ids: Vec<u64>, // only contain peer's matched index
+    // ) -> Option<u64> {
+    //     // Get the current term and commit index
+    //     // let current_term = self.persistent_state().current_term(); // Leader's
+    //     // current term let commit_index = self.commit_index(); // Leader's
+    //     // current commit index
+    //     let my_raft_log_last_index = self.last_entry_id();
+    //     trace!("my_raft_log_last_index: {}", my_raft_log_last_index);
+
+    //     // Collect match indices for all peers
+    //     // let mut matched_ids: Vec<u64> = peer_ids
+    //     //     .iter()
+    //     //     .map(|&id| self.match_index(id).unwrap_or(0))
+    //     //     .collect();
+    //     // Include the leader's own last log index
+    //     peer_matched_ids.push(my_raft_log_last_index);
+
+    //     // Sort the indices in descending order
+    //     peer_matched_ids.sort_unstable_by(|a, b| b.cmp(a));
+
+    //     // Calculate the majority index (floor of (n + 1) / 2)
+    //     let majority_index = peer_matched_ids.len() / 2;
+
+    //     // Get the potential majority-matched index
+    //     let majority_matched_index = peer_matched_ids.get(majority_index)?;
+    //     debug!("calculate_majority_matched_index:peer_matched_ids: {:?}. majority_index: {:?}, majority_matched_index: {:?}", peer_matched_ids, majority_index, majority_matched_index);
+    //     // Check if this index satisfies the conditions:
+    //     // 1. It's greater than or equal to the current commit index.
+    //     // 2. The term of the log at this index equals the current term.
+    //     if *majority_matched_index >= commit_index {
+    //         if let Some(term) = self.get_entry_term(*majority_matched_index) {
+    //             if term == current_term {
+    //                 return Some(*majority_matched_index);
+    //             }
+    //         }
+    //     }
+
+    //     None
+    // }
+
     #[autometrics(objective = API_SLO)]
     fn calculate_majority_matched_index(
         &self,
         current_term: u64,
         commit_index: u64,
-        mut peer_matched_ids: Vec<u64>, // only contain peer's matched index
+        mut peer_matched_ids: Vec<u64>,
     ) -> Option<u64> {
-        // Get the current term and commit index
-        // let current_term = self.persistent_state().current_term(); // Leader's
-        // current term let commit_index = self.commit_index(); // Leader's
-        // current commit index
-        let my_raft_log_last_index = self.last_entry_id();
-        trace!("my_raft_log_last_index: {}", my_raft_log_last_index);
+        // Include leader's last index (from buffer)
+        let leader_last_index = self.buffer.last_entry_id();
+        peer_matched_ids.push(leader_last_index);
 
-        // Collect match indices for all peers
-        // let mut matched_ids: Vec<u64> = peer_ids
-        //     .iter()
-        //     .map(|&id| self.match_index(id).unwrap_or(0))
-        //     .collect();
-        // Include the leader's own last log index
-        peer_matched_ids.push(my_raft_log_last_index);
-
-        // Sort the indices in descending order
+        // Sort in descending order
         peer_matched_ids.sort_unstable_by(|a, b| b.cmp(a));
 
-        // Calculate the majority index (floor of (n + 1) / 2)
+        // Calculate majority index
         let majority_index = peer_matched_ids.len() / 2;
+        let majority_matched_index = *peer_matched_ids.get(majority_index)?;
 
-        // Get the potential majority-matched index
-        let majority_matched_index = peer_matched_ids.get(majority_index)?;
-        debug!("calculate_majority_matched_index:peer_matched_ids: {:?}. majority_index: {:?}, majority_matched_index: {:?}", peer_matched_ids, majority_index, majority_matched_index);
-        // Check if this index satisfies the conditions:
-        // 1. It's greater than or equal to the current commit index.
-        // 2. The term of the log at this index equals the current term.
-        if *majority_matched_index >= commit_index {
-            if let Some(term) = self.get_entry_term_by_index(*majority_matched_index) {
+        debug!(
+            "Majority calculation: peers={:?}, majority_index={}, value={}",
+            peer_matched_ids, majority_index, majority_matched_index
+        );
+
+        // Check commit conditions
+        if majority_matched_index >= commit_index {
+            // Use buffer's get_entry_term which checks both durable and pending entries
+            if let Some(term) = self.entry_term(majority_matched_index) {
                 if term == current_term {
-                    return Some(*majority_matched_index);
+                    return Some(majority_matched_index);
                 }
             }
         }
@@ -588,18 +521,42 @@ impl RaftLog for SledRaftLog {
         None
     }
 
+    // fn flush(&self) -> Result<()> {
+    //     match self.db.flush() {
+    //         Ok(bytes) => {
+    //             info!("Successfully flushed Local Log, bytes flushed: {}", bytes);
+    //             println!("Successfully flushed Local Log, bytes flushed: {bytes}");
+    //         }
+    //         Err(e) => {
+    //             error!("Failed to flush Local Log: {}", e);
+    //             eprintln!("Failed to flush Local Log: {e}");
+    //         }
+    //     }
+    //     Ok(())
+    // }
+    #[autometrics(objective = API_SLO)]
     fn flush(&self) -> Result<()> {
+        // Trigger immediate flush of all pending entries
+        let (tx, rx) = oneshot::channel();
+        self.buffer
+            .flush_sender
+            .blocking_send(FlushCommand::Immediate(tx))
+            .map_err(|_| StorageError::ChannelClosed)?;
+
+        // Wait for flush completion
+        rx.blocking_recv().map_err(|_| StorageError::ChannelClosed)?;
+
+        // Now flush the underlying sled DB
         match self.db.flush() {
             Ok(bytes) => {
-                info!("Successfully flushed Local Log, bytes flushed: {}", bytes);
-                println!("Successfully flushed Local Log, bytes flushed: {bytes}");
+                info!("Successfully flushed DB, bytes written: {}", bytes);
+                Ok(())
             }
             Err(e) => {
-                error!("Failed to flush Local Log: {}", e);
-                eprintln!("Failed to flush Local Log: {e}");
+                error!("DB flush failed: {}", e);
+                Err(StorageError::DbError(e.to_string()).into())
             }
         }
-        Ok(())
     }
 
     /// db_size_cache_duration - how long the cache will be valid (since last
@@ -645,57 +602,6 @@ impl RaftLog for SledRaftLog {
     fn len(&self) -> usize {
         self.tree.len()
     }
-
-    // #[autometrics(objective = API_SLO)]
-    // fn load_from_db(&self, commit_index: u64) {
-    //     //step1: load local log length
-    //     let len = self.last_entry_id();
-    //     debug!("load local log length from database: {:?}", len);
-    //     if let Some(l) = &self.cache.length {
-    //         l.store(len as u64, Ordering::Release);
-    //     } else {
-    //         error!("local log length is not inited yet");
-    //     }
-
-    //     //step3: load any uncommited entries into Cache
-    //     debug!(
-    //         "load_from_db, commit_id: {:?}, len: {:?}",
-    //         commit_index, len
-    //     );
-    //     self.;
-    // }
-
-    #[cfg(test)]
-    fn delete_entries(
-        &self,
-        range: RangeInclusive<u64>,
-    ) -> Result<()> {
-        let mut batch = LocalLogBatch::default();
-
-        for key in range {
-            batch.remove(key.encode_to_vec());
-        }
-
-        if let Err(e) = self.apply(&batch) {
-            error!("delete_entries error: {}", e);
-            return Err(StorageError::DbError(e.to_string()).into());
-        }
-
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn cached_length(&self) -> u64 {
-        self.cache.length.load(Ordering::Acquire)
-    }
-    #[cfg(test)]
-    fn cached_mapped_entries_len(&self) -> usize {
-        self.cache.mapped_entries.len()
-    }
-    #[cfg(test)]
-    fn cached_next_id(&self) -> u64 {
-        self.cache.next_id.load(Ordering::Acquire)
-    }
 }
 
 impl SledRaftLog {
@@ -730,69 +636,62 @@ impl SledRaftLog {
                     node_id,
                     db: raft_log_db,
                     tree: Arc::new(raft_log_tree),
-                    cache: RaftLogMemCache {
-                        length: AtomicU64::new(disk_len),
-                        mapped_entries: DashMap::new(),
-                        next_id: AtomicU64::new(disk_len + 1),
-                    },
+                    buffer: BufferedRaftLog::new(disk_len),
                 };
                 l.load_uncommitted_from_db_to_cache(commit_index, disk_len);
                 l
             }
-            Err(e) => {
-                error!("Failed to open logs db: {}", e);
-                panic!("failed to open sled tree: {e}");
-            }
+            Err(e) => panic!("failed to open sled tree: {:?}", e),
         }
     }
 
-    #[autometrics(objective = API_SLO)]
-    fn last_entry(&self) -> Option<(u64, Vec<u8>)> {
-        debug!("getting last entry as matched index");
-        if let Ok(Some((key, value))) = self.tree.last() {
-            let key: u64 = vki(&key);
-            let value = value.to_vec();
-            trace!("last entry, key: {:?}, value: {:?}", &key, &value);
+    // #[autometrics(objective = API_SLO)]
+    // fn last_entry(&self) -> Option<(u64, Vec<u8>)> {
+    //     debug!("getting last entry as matched index");
+    //     if let Ok(Some((key, value))) = self.tree.last() {
+    //         let key: u64 = vki(&key);
+    //         let value = value.to_vec();
+    //         trace!("last entry, key: {:?}, value: {:?}", &key, &value);
 
-            Some((key, value))
-        } else {
-            debug!("no last entry found");
-            None
-        }
-    }
+    //         Some((key, value))
+    //     } else {
+    //         debug!("no last entry found");
+    //         None
+    //     }
+    // }
 
-    #[autometrics(objective = API_SLO)]
-    fn first_entry(&self) -> Option<(u64, Vec<u8>)> {
-        debug!("getting first entry as matched index");
-        if let Ok(Some((key, value))) = self.tree.first() {
-            let key: u64 = vki(&key);
-            let value = value.to_vec();
-            debug!("first entry, key: {:?}, value: {:?}", &key, &value);
+    // #[autometrics(objective = API_SLO)]
+    // fn first_entry(&self) -> Option<(u64, Vec<u8>)> {
+    //     debug!("getting first entry as matched index");
+    //     if let Ok(Some((key, value))) = self.tree.first() {
+    //         let key: u64 = vki(&key);
+    //         let value = value.to_vec();
+    //         debug!("first entry, key: {:?}, value: {:?}", &key, &value);
 
-            Some((key, value))
-        } else {
-            debug!("no first entry found");
-            None
-        }
-    }
+    //         Some((key, value))
+    //     } else {
+    //         debug!("no first entry found");
+    //         None
+    //     }
+    // }
 
-    #[autometrics(objective = API_SLO)]
-    fn get(
-        &self,
-        key: u64,
-    ) -> Option<Entry> {
-        if let Some(v) = self.get_from_cache(key) {
-            return Some(v);
-        }
-        if let Ok(Some(bytes)) = self.tree.get(safe_kv(key)) {
-            if let Ok(e) = Entry::decode(&*bytes) {
-                return Some(e);
-            } else {
-                error!("get():: decode error!");
-            }
-        }
-        return None;
-    }
+    // #[autometrics(objective = API_SLO)]
+    // fn get(
+    //     &self,
+    //     key: u64,
+    // ) -> Option<Entry> {
+    //     if let Some(v) = self.get_from_cache(key) {
+    //         return Some(v);
+    //     }
+    //     if let Ok(Some(bytes)) = self.tree.get(safe_kv(key)) {
+    //         if let Ok(e) = Entry::decode(&*bytes) {
+    //             return Some(e);
+    //         } else {
+    //             error!("get():: decode error!");
+    //         }
+    //     }
+    //     return None;
+    // }
 
     // fn get_as_vec(&self, key: u64) -> Option<Vec<u8>> {
     //     if let Some(ivec) = self.get(key).unwrap() {
@@ -897,6 +796,26 @@ impl SledRaftLog {
         &self,
         batch: &LocalLogBatch,
     ) -> Result<()> {
-        self.cache.refresh(batch, self.last_entry_id())
+        self.buffer.refresh(batch, self.last_entry_id())
+    }
+
+    #[autometrics(objective = API_SLO)]
+    pub fn recover(&self) {
+        let disk_len = self.tree.len() as u64;
+        let durable_index = disk_len;
+
+        // Load all disk entries into cache
+        for entry in self.get_entries_range(1..=disk_len) {
+            self.buffer.pending_entries.insert(entry.index, entry);
+        }
+
+        // Reset state
+        self.buffer.durable_index.store(durable_index, Ordering::Release);
+        self.buffer.next_id.store(durable_index + 1, Ordering::Release);
+
+        // Rebuild flush state
+        let mut state = self.buffer.flush_state.blocking_lock();
+        state.pending_flush.clear();
+        state.flushing = false;
     }
 }
