@@ -121,7 +121,7 @@ pub fn setup_raft_components(
     let state_machine_db = Arc::new(state_machine_db);
     let state_storage_db = Arc::new(state_storage_db);
 
-    let buffered_raft_log = BufferedRaftLog::new(id, PersistenceStrategy::Batched(1024, 10), None);
+    let (buffered_raft_log, _) = BufferedRaftLog::new(id, PersistenceStrategy::Batched(1024, 10), None);
     let sled_state_machine = SledStateMachine::new(id, state_machine_db.clone()).expect("success");
     let last_applied_pair = sled_state_machine.last_applied();
     let sled_state_storage = SledStateStorage::new(state_storage_db);
@@ -175,7 +175,7 @@ pub fn setup_raft_components(
 
     TestContext::<RaftTypeConfig> {
         id,
-        raft_log: buffered_raft_log,
+        raft_log: Arc::new(buffered_raft_log),
         state_machine,
         state_storage: Box::new(sled_state_storage),
         transport: Arc::new(grpc_transport),

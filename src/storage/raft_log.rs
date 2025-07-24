@@ -105,10 +105,10 @@ pub trait RaftLog: Send + Sync + 'static {
         cutoff_index: LogId,
     ) -> Result<()>;
 
-    fn flush(&self) -> Result<()>;
+    async fn flush(&self) -> Result<()>;
 
     /// @Write
-    fn reset(&self) -> Result<()>;
+    async fn reset(&self) -> Result<()>;
 
     fn calculate_majority_matched_index(
         &self,

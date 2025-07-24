@@ -12,7 +12,7 @@ pub trait StorageEngine: Send + Sync + 'static {
         entries: Vec<Entry>,
     ) -> Result<()>;
 
-    fn get_entry(
+    fn entry(
         &self,
         index: u64,
     ) -> Result<Option<Entry>>;

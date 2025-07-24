@@ -36,7 +36,6 @@ use super::RaftTypeConfig;
 use crate::alias::COF;
 use crate::alias::MOF;
 use crate::alias::PE;
-use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
@@ -99,7 +98,6 @@ pub struct NodeBuilder {
     node_id: u32,
 
     pub(super) node_config: RaftNodeConfig,
-    pub(super) raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
     pub(super) storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
@@ -165,7 +163,6 @@ impl NodeBuilder {
     ) -> Self {
         Self {
             node_id: node_config.cluster.node_id,
-            raft_log: None,
             storage_engine: None,
             state_machine: None,
             state_storage: None,
@@ -179,15 +176,6 @@ impl NodeBuilder {
             node: None,
             purge_executor: None,
         }
-    }
-
-    /// Sets a custom Raft log  implementation
-    pub fn raft_log(
-        mut self,
-        raft_log: Arc<ROF<RaftTypeConfig>>,
-    ) -> Self {
-        self.raft_log = Some(raft_log);
-        self
     }
 
     /// Sets a custom storage engine implementation
@@ -297,9 +285,13 @@ impl NodeBuilder {
                 init_sled_storage_engine_db(&db_root_dir).expect("init_sled_storage_engine_db successfully.");
             Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("Init storage engine successfully."))
         });
-        let raft_log = self.raft_log.take().unwrap_or_else(|| {
-            BufferedRaftLog::new(node_id, node_config.raft.persistence.strategy, Some(storage_engine))
-        });
+        let raft_log = {
+            let (log, receiver) =
+                BufferedRaftLog::new(node_id, node_config.raft.persistence.strategy, Some(storage_engine));
+
+            // Start processor and get Arc-wrapped instance
+            log.start(receiver)
+        };
 
         let state_storage = self.state_storage.take().unwrap_or_else(|| {
             let state_storage_db =

@@ -1,12 +1,11 @@
 use crate::client_manager::ClientManager;
 use config::Config;
-use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
+use d_engine::alias::SOF;
 use d_engine::alias::SSOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
-use d_engine::config::PersistenceStrategy;
 use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
@@ -19,13 +18,13 @@ use d_engine::proto::client::WriteCommand;
 use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
-use d_engine::storage::BufferedRaftLog;
 use d_engine::storage::RaftLog;
 use d_engine::storage::SledStateMachine;
 use d_engine::storage::SledStateStorage;
 use d_engine::storage::SledStorageEngine;
 use d_engine::storage::StateMachine;
 use d_engine::storage::StateStorage;
+use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
 use d_engine::HardState;
 use prost::Message;
@@ -180,7 +179,7 @@ pub async fn start_cluster(nodes_config: Vec<RaftNodeConfig>) -> std::result::Re
 pub async fn start_node(
     config: RaftNodeConfig,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
     state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<
     (
@@ -191,7 +190,7 @@ pub async fn start_node(
 > {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let node = build_node(config, graceful_rx, state_machine, raft_log, state_storage).await?;
+    let node = build_node(config, graceful_rx, state_machine, storage_engine, state_storage).await?;
 
     let node_clone = node.clone();
     let node_id = node.node_config.cluster.node_id;
@@ -204,15 +203,15 @@ async fn build_node(
     config: RaftNodeConfig,
     graceful_rx: watch::Receiver<()>,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
     state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
     // Prepare raft log entries
     let mut builder = NodeBuilder::init(config, graceful_rx);
-    if let Some(r) = raft_log {
+    if let Some(s) = storage_engine {
         // let sled_raft_log = prepare_raft_log(&config_path, last_applied_index);
         // manipulate_log(&sled_raft_log, ids, term);
-        builder = builder.raft_log(r);
+        builder = builder.storage_engine(s);
     }
     if let Some(sm) = state_machine {
         builder = builder.state_machine(sm);
@@ -254,7 +253,7 @@ pub fn prepare_raft_log(
     node_id: u32,
     db_path: &str,
     _last_applied_index: u64,
-) -> Arc<BufferedRaftLog<RaftTypeConfig>> {
+) -> Arc<SledStorageEngine> {
     let raft_log_db_path = format!("{db_path}/raft_log",);
     let raft_log_db = sled::Config::default()
         .path(raft_log_db_path)
@@ -262,12 +261,7 @@ pub fn prepare_raft_log(
         .compression_factor(1)
         .open()
         .unwrap();
-
-    BufferedRaftLog::<RaftTypeConfig>::new(
-        node_id,
-        PersistenceStrategy::Batched(1024, 10),
-        Some(Arc::new(SledStorageEngine::new(node_id, raft_log_db).expect("success"))),
-    )
+    Arc::new(SledStorageEngine::new(node_id, raft_log_db).expect("success"))
 }
 pub fn prepare_state_machine(
     node_id: u32,
@@ -294,13 +288,13 @@ pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
 }
 
 pub async fn manipulate_log(
-    raft_log: &Arc<impl RaftLog>,
+    raft_log: &Arc<SOF<RaftTypeConfig>>,
     log_ids: Vec<u64>,
     term: u64,
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        let index = raft_log.pre_allocate_raft_logs_next_index();
+        let index = raft_log.last_index() + 1;
 
         trace!("pre_allocate_raft_logs_next_index: {}", index);
 
@@ -311,7 +305,7 @@ pub async fn manipulate_log(
         };
         entries.push(log);
     }
-    assert!(raft_log.insert_batch(entries).await.is_ok());
+    assert!(raft_log.persist_entries(entries).is_ok());
 }
 
 #[allow(dead_code)]

@@ -1,7 +1,6 @@
 use crate::convert::safe_vk;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
-use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::storage::RAFT_LOG_NAMESPACE;
 use crate::Error;
 use crate::ProstError;
@@ -14,6 +13,7 @@ use std::ops::RangeInclusive;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
+use tracing::trace;
 
 pub struct SledStorageEngine {
     #[allow(dead_code)]
@@ -22,12 +22,13 @@ pub struct SledStorageEngine {
 }
 
 impl StorageEngine for SledStorageEngine {
-    #[instrument(skip(self, entries))]
     fn persist_entries(
         &self,
         entries: Vec<Entry>,
     ) -> Result<()> {
         let mut batch = Batch::default();
+
+        trace!("Pending entries len = {:?}", entries.len());
 
         for entry in entries {
             let key = Self::index_to_key(entry.index);
@@ -40,7 +41,7 @@ impl StorageEngine for SledStorageEngine {
     }
 
     #[instrument(skip(self))]
-    fn get_entry(
+    fn entry(
         &self,
         index: u64,
     ) -> Result<Option<Entry>> {
