@@ -53,8 +53,8 @@ use tokio::sync::watch;
 ///
 /// ## Validate criterias
 /// 1. only new_entries returned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case1() {
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case1() {
     let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case1", None, false);
     let my_id = 1;
     let peer3_id = 3;
@@ -260,8 +260,8 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
 ///
 /// ## Validate criterias
 /// 1. No leader ones should be retruned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case5() {
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
     let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case5", None, false);
     let my_id = 1;
     let peer3_id = 3;

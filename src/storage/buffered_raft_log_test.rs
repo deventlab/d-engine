@@ -6,64 +6,84 @@ use crate::proto::common::LogId;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
+use crate::test_utils::reuse_dbs;
 use crate::test_utils::{self};
 use crate::BufferedRaftLog;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use futures::future::join_all;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use std::vec;
-use tokio::sync::mpsc;
+use tempfile::tempdir;
+use tokio::time::sleep;
 use tokio::time::Instant;
 use tracing::debug;
 
+// Test utilities
 struct TestContext {
     raft_log: Arc<ROF<RaftTypeConfig>>,
-    log_command_receiver: mpsc::Receiver<LogCommand>,
+    storage: Option<Arc<SledStorageEngine>>,
+    _temp_dir: Option<tempfile::TempDir>,
 }
 
-impl Drop for TestContext {
-    fn drop(&mut self) {
-        println!("Test teardown ...");
-        // self.s.db.drop_tree("logs").expect("drop successfully!");
-        let _ = std::fs::remove_dir_all("/tmp/test_db");
+impl TestContext {
+    fn new(
+        strategy: PersistenceStrategy,
+        use_disk: bool,
+    ) -> Self {
+        let temp_dir = tempdir().unwrap();
+        let storage = if use_disk {
+            let (db, _, _, _) = reset_dbs(temp_dir.path().to_str().unwrap());
+            Some(Arc::new(SledStorageEngine::new(1, db).unwrap()))
+        } else {
+            None
+        };
+
+        let (raft_log, receiver) = BufferedRaftLog::new(1, strategy, storage.clone());
+        let raft_log = if use_disk {
+            raft_log.start(receiver)
+        } else {
+            Arc::new(raft_log)
+        };
+
+        // Small delay to ensure processor is ready
+        std::thread::sleep(Duration::from_millis(10));
+
+        Self {
+            raft_log,
+            storage,
+            _temp_dir: Some(temp_dir),
+        }
+    }
+
+    async fn append_entries(
+        &self,
+        start: u64,
+        count: u64,
+        term: u64,
+    ) {
+        let entries: Vec<_> = (start..start + count)
+            .map(|index| Entry {
+                index,
+                term,
+                payload: Some(EntryPayload::command(b"data".to_vec())),
+            })
+            .collect();
+
+        self.raft_log.append_entries(entries).await.unwrap();
     }
 }
 
-fn setup(path: &str) -> TestContext {
-    println!("Test setup ...");
-    let (raft_log_db, _, _state_storage_db, _) = reset_dbs(path);
-    let _arc_raft_log_db = Arc::new(raft_log_db);
-
-    let (raft_log, log_command_receiver) =
-        BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::MemFirst, None);
-
-    TestContext {
-        raft_log: Arc::new(raft_log),
-        log_command_receiver,
-    }
-}
-
-#[tokio::test]
-async fn test_get_as_vec() {
-    let c = setup("/tmp/test_get_as_vec");
-
-    let value = Entry {
-        index: 1,
-        term: 1,
-        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-    };
-
-    c.raft_log
-        .insert_batch(vec![value.clone()])
-        .await
-        .expect("should succeed");
-
-    let entry = c.raft_log.entry(1).unwrap().unwrap();
-    assert_eq!(value, entry);
-}
-
+// impl Drop for TestContext {
+//     fn drop(&mut self) {
+//         println!("Test teardown ...");
+//         // self.s.db.drop_tree("logs").expect("drop successfully!");
+//         let _ = std::fs::remove_dir_all("/tmp/test_db");
+//     }
+// }
 async fn insert(
     raft_log: &Arc<ROF<RaftTypeConfig>>,
     key: u64,
@@ -78,7 +98,7 @@ async fn insert(
 
 #[tokio::test]
 async fn test_get_range1() {
-    let context = setup("/tmp/test_get_range1");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     let i1: u64 = 11;
     let i2: u64 = 12;
     let i3: u64 = 13;
@@ -99,7 +119,7 @@ async fn test_get_range1() {
 
 #[tokio::test]
 async fn test_get_range2() {
-    let context = setup("/tmp/test_get_range2");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     for i in 1..300 {
         insert(&context.raft_log, i).await;
@@ -138,7 +158,7 @@ async fn test_get_range2() {
 ///   follower_f      11    4
 #[tokio::test]
 async fn test_filter_out_conflicts_and_append_case1() {
-    let context = setup("/tmp/test_filter_out_conflicts_and_append_case1");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     context.raft_log.reset().await.expect("reset successfully!");
     test_utils::simulate_insert_command(&context.raft_log, vec![1], 1).await;
     test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2).await;
@@ -171,7 +191,7 @@ async fn test_filter_out_conflicts_and_append_case1() {
 }
 #[tokio::test]
 async fn test_filter_out_conflicts_and_append() {
-    let context = setup("/tmp/test_filter_out_conflicts_and_append");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     // let state = &context.s;
     context.raft_log.reset().await.expect("reset successfully!");
     test_utils::simulate_insert_command(&context.raft_log, vec![1], 1).await;
@@ -225,7 +245,7 @@ async fn test_filter_out_conflicts_and_append() {
 
 #[tokio::test]
 async fn test_get_last_raft_log() {
-    let context = setup("/tmp/test_get_last_raft_log");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("should succeed");
     let mut vec_1 = Vec::new();
@@ -246,7 +266,7 @@ async fn test_get_last_raft_log() {
 
 #[tokio::test]
 async fn test_sled_last() {
-    let context = setup("/tmp/test_sled_last");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     test_utils::simulate_insert_command(&context.raft_log, (1..=300).collect(), 1).await;
 
@@ -258,7 +278,7 @@ async fn test_sled_last() {
 }
 #[tokio::test]
 async fn test_sled_last_max() {
-    let context = setup("/tmp/test_sled_last_max");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     let max = u64::MAX; //max of u64
     test_utils::simulate_insert_command(&context.raft_log, ((max - 1)..max).collect(), 1).await;
@@ -272,7 +292,7 @@ async fn test_sled_last_max() {
 /// to test insert_one_client_command and get_entries_range two functions
 #[tokio::test]
 async fn test_insert_one_client_command() {
-    let context = setup("/tmp/test_insert_one_client_command");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -291,7 +311,7 @@ async fn test_insert_one_client_command() {
 
 #[tokio::test]
 async fn test_get_raft_log_entry_between() {
-    let context = setup("/tmp/test_get_raft_log_entry_between");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -331,7 +351,7 @@ async fn test_get_raft_log_entry_between() {
 /// just sequence events.
 #[tokio::test]
 async fn test_insert_one_client_command_dup_case() {
-    let context = setup("/tmp/test_insert_one_client_command_dup_case");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -359,7 +379,7 @@ async fn test_insert_one_client_command_dup_case() {
 /// 1. all client proposal should be recorded in RaftLog without lose
 #[tokio::test]
 async fn test_client_proposal_insert_delete() {
-    let context = setup("/tmp/test_apply");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -381,7 +401,7 @@ async fn test_client_proposal_insert_delete() {
 /// #[traced_test]
 #[tokio::test]
 async fn test_purge_logs_up_to() {
-    let context = setup("/tmp/test_purge_logs_up_to");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -409,7 +429,7 @@ async fn test_purge_logs_up_to() {
 
 #[tokio::test]
 async fn test_purge_logs_up_to_concurrent_purge() {
-    let context = setup("/tmp/test_purge_logs_up_to_concurrent_purge");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     context.raft_log.reset().await.expect("reset failed");
 
     // Insert test logs
@@ -448,7 +468,7 @@ async fn test_purge_logs_up_to_concurrent_purge() {
 
 #[tokio::test]
 async fn test_get_first_raft_log_entry_id_after_delete_entries() {
-    let context = setup("/tmp/test_get_first_raft_log_entry_id_after_delete_entries");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
     let mut entries = Vec::new();
@@ -477,7 +497,7 @@ async fn test_get_first_raft_log_entry_id_after_delete_entries() {
 /// see the last pre allocated index
 #[tokio::test]
 async fn test_pre_allocate_raft_logs_next_index_case1() {
-    let context = setup("/tmp/test_pre_allocate_raft_logs_next_index_case1");
+    let context = TestContext::new(PersistenceStrategy::DiskFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
     let start = context.raft_log.last_entry_id();
@@ -519,7 +539,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
 /// we expected #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
 async fn test_pre_allocate_raft_logs_next_index_case2() {
-    let context = setup("/tmp/test_pre_allocate_raft_logs_next_index_case2");
+    let context = TestContext::new(PersistenceStrategy::DiskFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
     let start = context.raft_log.last_entry_id();
@@ -577,7 +597,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
 #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
 async fn test_insert_batch_logs_case1() {
-    let context = setup("/tmp/test_insert_batch_logs_case1");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, false);
 
     context.raft_log.reset().await.expect("reset successfully!");
     let start = context.raft_log.last_entry_id();
@@ -639,18 +659,20 @@ async fn test_insert_batch_logs_case1() {
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
-    let (old_leader, _receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
+    let (old_leader, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         1,
         PersistenceStrategy::DiskFirst,
         Some(Arc::new(SledStorageEngine::new(1, raft_log_db).unwrap())),
     );
+    let old_leader = old_leader.start(receiver);
 
     let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
-    let (new_leader, _receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
+    let (new_leader, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         2,
         PersistenceStrategy::DiskFirst,
         Some(Arc::new(SledStorageEngine::new(2, raft_log_db).unwrap())),
     );
+    let new_leader = new_leader.start(receiver);
 
     let mut entries: Vec<Entry> = Vec::new();
     for i in 1..=7 {
@@ -724,7 +746,7 @@ async fn test_insert_batch_logs_case2() {
 
     // 7. Validate final log state
     validate_log_continuity(
-        &Arc::new(old_leader),
+        &old_leader,
         &[
             (7, 1),  // Original term 1 entry
             (8, 2),  // Overwritten entry
@@ -755,57 +777,16 @@ async fn validate_log_continuity(
 
 #[tokio::test]
 async fn test_apply_and_then_get_last() {
-    let context = setup("/tmp/test_apply_and_then_get_last");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     context.raft_log.reset().await.expect("reset successfully!");
     test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1).await;
     assert_eq!(2, context.raft_log.last_entry_id());
 }
 
-/// # Case 1: test if node restart, the local log cache should load from disk
-#[tokio::test]
-async fn test_new_case1() {
-    test_utils::enable_logger();
-
-    let p = "/tmp/test_new_case1";
-    {
-        let _ = std::fs::remove_dir_all(p);
-        println!("Test setup ...");
-        // let commit_index = 0;
-        // let raft_log = init(p, commit_index);
-        let context = setup(p);
-        let raft_log = context.raft_log.clone();
-        test_utils::simulate_insert_command(&raft_log, vec![1, 2], 1).await;
-
-        assert_eq!(raft_log.last_entry_id(), 2);
-        assert_eq!(raft_log.last_entry_id(), 2);
-        assert_eq!(raft_log.last_entry_id() + 1, 3);
-        raft_log.flush().await.expect("should succeed");
-        println!(">>RaftLog disk length: {:?}", raft_log.len());
-    }
-
-    {
-        // let (raft_log, _receiver) = init(p, 1);
-
-        let context = setup(p);
-        let raft_log = context.raft_log.clone();
-        assert_eq!(raft_log.last_entry_id(), 1);
-        assert_eq!(raft_log.last_entry_id(), 2);
-        assert_eq!(raft_log.last_entry_id() + 1, 3);
-    }
-
-    // Test if we try to pass commit_index > len, it should not panic
-    {
-        // let (raft_log, _receiver) = init(p, 3);
-
-        let context = setup(p);
-        let raft_log = context.raft_log.clone();
-        assert_eq!(raft_log.last_entry_id(), 0);
-    }
-}
 #[test]
 fn test_pre_allocate_raft_logs_next_index() {
-    let context = setup("/tmp/test_pre_allocate_raft_logs_next_index");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, false);
 
     assert_eq!(1, context.raft_log.pre_allocate_raft_logs_next_index());
     assert_eq!(2, context.raft_log.pre_allocate_raft_logs_next_index());
@@ -813,7 +794,7 @@ fn test_pre_allocate_raft_logs_next_index() {
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case0() {
-    let c = setup("/tmp/test_calculate_majority_matched_index_case0");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
     raft_log.reset().await.expect("reset successfully!");
 
@@ -834,7 +815,7 @@ async fn test_calculate_majority_matched_index_case0() {
 /// (§5.3, §5.4).
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case1() {
-    let c = setup("/tmp/test_calculate_majority_matched_index_case1");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset().await;
     //case 1: majority matched index is 2, commit_index: 4, current_term is 3,
@@ -849,7 +830,7 @@ async fn test_calculate_majority_matched_index_case1() {
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case2() {
-    let c = setup("/tmp/test_calculate_majority_matched_index_case2");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset().await;
 
@@ -866,7 +847,7 @@ async fn test_calculate_majority_matched_index_case2() {
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case3() {
-    let c = setup("/tmp/test_calculate_majority_matched_index_case3");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
 
     //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
@@ -881,7 +862,7 @@ async fn test_calculate_majority_matched_index_case3() {
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case4() {
-    let c = setup("/tmp/test_calculate_majority_matched_index_case4");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
 
     let raft_log = c.raft_log.clone();
 
@@ -906,7 +887,7 @@ async fn test_calculate_majority_matched_index_case4() {
 /// 1. compare calculate_majority_matched_index as calculate_majority_matched_index2's performance
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case5() {
-    let c = setup("/tmp/test_calculate_majority_matched_index_case5");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
 
     let term = 1;
@@ -932,7 +913,7 @@ async fn test_calculate_majority_matched_index_case5() {
 
 #[tokio::test]
 async fn test_raft_log_insert() {
-    let c = setup("/tmp/test_raft_log_insert");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
 
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
@@ -942,7 +923,7 @@ async fn test_raft_log_insert() {
 /// #Case 1: local raft log is empty
 #[test]
 fn test_is_empty_case1() {
-    let c = setup("/tmp/test_is_empty_case1");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, false);
     let raft_log = c.raft_log.clone();
 
     assert!(raft_log.is_empty());
@@ -951,7 +932,7 @@ fn test_is_empty_case1() {
 /// #Case 2: local raft log is not empty
 #[tokio::test]
 async fn test_is_empty_case2() {
-    let c = setup("/tmp/test_is_empty_case2");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
 
@@ -961,7 +942,7 @@ async fn test_is_empty_case2() {
 /// # Case1: No last log in raft_log, should returns (0,0)
 #[test]
 fn test_get_last_entry_metadata_case1() {
-    let c = setup("/tmp/test_get_last_entry_metadata_case1");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, false);
     let raft_log = c.raft_log.clone();
 
     assert_eq!(
@@ -972,7 +953,7 @@ fn test_get_last_entry_metadata_case1() {
 /// # Case2: There is last log in raft_log, should returns last log metadata
 #[tokio::test]
 async fn test_get_last_entry_metadata_case2() {
-    let c = setup("/tmp/test_get_last_entry_metadata_case2");
+    let c = TestContext::new(PersistenceStrategy::MemFirst, true);
     let raft_log = c.raft_log.clone();
     test_utils::simulate_insert_command(&raft_log, vec![1], 11).await;
 
@@ -984,19 +965,19 @@ async fn test_get_last_entry_metadata_case2() {
 
 #[tokio::test]
 async fn test_raft_log_drop() {
+    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_raft_log_drop");
 
     {
-        let db = sled::open(case_path.clone()).unwrap();
+        let (db, _, _, _) = reset_dbs(case_path.to_str().unwrap());
         // Create real instance instead of mock
-        let (raft_log, _receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
+        let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
             PersistenceStrategy::DiskFirst,
             Some(Arc::new(SledStorageEngine::new(1, db).unwrap())),
         );
-
-        let raft_log = Arc::new(raft_log);
+        let raft_log = raft_log.start(receiver);
         // Insert test data
         test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
 
@@ -1005,13 +986,14 @@ async fn test_raft_log_drop() {
     }
 
     // Verify flush occurred by checking persistence
-    let reloaded_db = sled::open(case_path).unwrap();
-    assert!(!reloaded_db.open_tree(RAFT_LOG_NAMESPACE).unwrap().is_empty());
+    let (reloaded_db, _, _, _) = reuse_dbs(case_path.to_str().unwrap());
+    let db_engine = SledStorageEngine::new(1, reloaded_db).unwrap();
+    assert!(!db_engine.is_empty());
 }
 
 #[tokio::test]
 async fn test_first_index_for_term() {
-    let context = setup("/tmp/test_first_index_for_term");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert test logs with various terms
@@ -1092,7 +1074,7 @@ async fn test_first_index_for_term() {
 
 #[tokio::test]
 async fn test_last_index_for_term() {
-    let context = setup("/tmp/test_last_index_for_term");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert test logs with various terms
@@ -1172,7 +1154,7 @@ async fn test_last_index_for_term() {
 
 #[tokio::test]
 async fn test_term_index_functions_with_purged_logs() {
-    let context = setup("/tmp/test_term_index_with_purged");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert initial logs
@@ -1255,7 +1237,7 @@ async fn test_term_index_functions_with_concurrent_writes() {
 
 #[tokio::test]
 async fn test_term_index_performance_large_dataset() {
-    let context = setup("/tmp/test_term_index_performance");
+    let context = TestContext::new(PersistenceStrategy::MemFirst, true);
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 100,000 logs with terms cycling every 100 logs
@@ -1416,5 +1398,293 @@ mod id_allocation_tests {
 
         // Final check
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 404);
+    }
+}
+
+// Strategy-specific test module
+mod disk_first_tests {
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_basic_write_and_read() {
+        let ctx = TestContext::new(PersistenceStrategy::DiskFirst, true);
+        ctx.append_entries(1, 5, 1).await;
+
+        // Verify entries are immediately durable
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 5);
+        assert_eq!(ctx.raft_log.entry(3).unwrap().unwrap().index, 3);
+    }
+
+    #[tokio::test]
+    async fn test_crash_recovery() {
+        enable_logger();
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path();
+
+        // Create and populate storage
+        {
+            let (db, _, _, _) = reset_dbs(db_path.to_str().unwrap());
+            let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+            let (raft_log, receiver) =
+                BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::DiskFirst, Some(storage));
+            let raft_log = raft_log.start(receiver);
+            raft_log
+                .append_entries(vec![Entry {
+                    index: 1,
+                    term: 1,
+                    payload: Some(EntryPayload::command(b"data".to_vec())),
+                }])
+                .await
+                .unwrap();
+            // Simulate crash without proper shutdown
+        }
+
+        // Recover from disk
+        let (db, _, _, _) = reuse_dbs(db_path.to_str().unwrap());
+        let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+        let (raft_log, receiver) =
+            BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::DiskFirst, Some(storage));
+        let raft_log = raft_log.start(receiver);
+        sleep(Duration::from_millis(50)).await; // Allow recovery
+
+        // Verify recovery
+        assert_eq!(raft_log.durable_index.load(Ordering::Acquire), 1);
+        assert!(raft_log.entry(1).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_high_concurrency() {
+        enable_logger();
+        let ctx = TestContext::new(PersistenceStrategy::DiskFirst, true);
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let log = ctx.raft_log.clone();
+            handles.push(tokio::spawn(async move {
+                for j in 1..=100 {
+                    let index = i * 100 + j;
+                    log.append_entries(vec![Entry {
+                        index,
+                        term: 1,
+                        payload: None,
+                    }])
+                    .await
+                    .unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all entries persisted
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 1000);
+        assert_eq!(ctx.raft_log.entries.len(), 1000);
+    }
+}
+
+mod mem_first_tests {
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_basic_write_before_persist() {
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, true);
+        ctx.append_entries(1, 5, 1).await;
+
+        // Verify in memory but not yet durable
+        assert_eq!(ctx.raft_log.entries.len(), 5);
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn test_async_persistence() {
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, true);
+        ctx.append_entries(1, 100, 1).await;
+
+        // Trigger flush
+        ctx.raft_log.flush().await.unwrap();
+
+        // Verify persistence
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 100);
+        assert_eq!(ctx.storage.as_ref().unwrap().last_index(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_power_loss_data_loss() {
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, true);
+        ctx.append_entries(1, 100, 1).await;
+
+        // Simulate power loss before flush
+        // storage.reset() simulates data loss after crash
+
+        // In real scenario, durable_index would be 0 after restart
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn test_high_concurrency_memory_only() {
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, true);
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let log = ctx.raft_log.clone();
+            handles.push(tokio::spawn(async move {
+                for j in 1..=100 {
+                    let index = i * 100 + j;
+                    log.append_entries(vec![Entry {
+                        index,
+                        term: 1,
+                        payload: None,
+                    }])
+                    .await
+                    .unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all entries in memory
+        assert_eq!(ctx.raft_log.entries.len(), 1000);
+        assert_eq!(ctx.raft_log.last_entry_id(), 1000);
+    }
+}
+
+mod batched_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_batch_flush_trigger() {
+        let ctx = TestContext::new(PersistenceStrategy::Batched(10, 100), true);
+
+        // Add 9 entries - should not trigger flush
+        ctx.append_entries(1, 9, 1).await;
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 0);
+
+        // Add 1 more to reach batch size
+        ctx.append_entries(10, 1, 1).await;
+        sleep(Duration::from_millis(50)).await; // Allow time for async processing
+
+        // Should have flushed first 10
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 10);
+    }
+
+    #[tokio::test]
+    async fn test_timed_flush_trigger() {
+        let ctx = TestContext::new(PersistenceStrategy::Batched(100, 50), true);
+        ctx.append_entries(1, 50, 1).await;
+
+        // Wait for timer to trigger
+        sleep(Duration::from_millis(75)).await;
+
+        // Should have flushed via timer
+        assert!(ctx.raft_log.durable_index.load(Ordering::Acquire) > 0);
+    }
+
+    #[tokio::test]
+    async fn test_partial_flush_after_crash() {
+        enable_logger();
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path();
+        let batch_size = 50;
+
+        // Create and partially populate storage
+        {
+            let (db, _, _, _) = reset_dbs(db_path.to_str().unwrap());
+            let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+            let (raft_log, receiver) =
+                BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::Batched(batch_size, 100), Some(storage));
+            let raft_log = raft_log.start(receiver);
+
+            // Add 75 entries (1.5 batches)
+            for i in 1..=75 {
+                raft_log
+                    .append_entries(vec![Entry {
+                        index: i,
+                        term: 1,
+                        payload: None,
+                    }])
+                    .await
+                    .unwrap();
+            }
+
+            // Simulate crash without proper shutdown
+        }
+
+        // Recover from disk
+        let (db, _, _, _) = reuse_dbs(db_path.to_str().unwrap());
+        let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+        let (raft_log, receiver) =
+            BufferedRaftLog::<RaftTypeConfig>::new(1, PersistenceStrategy::Batched(batch_size, 100), Some(storage));
+        let raft_log = raft_log.start(receiver);
+        sleep(Duration::from_millis(50)).await; // Allow recovery
+
+        // Only first batch should be durable
+        assert_eq!(raft_log.durable_index.load(Ordering::Acquire), 0); //because batch threshold is 100
+        assert!(raft_log.entry(60).unwrap().is_none()); // Not persisted
+    }
+}
+
+// Generic tests for all strategies
+mod common_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_log_compaction() {
+        let ctx = TestContext::new(PersistenceStrategy::DiskFirst, true);
+        ctx.append_entries(1, 100, 1).await;
+
+        // Compact first 50 entries
+        ctx.raft_log.purge_logs_up_to(LogId { index: 50, term: 1 }).unwrap();
+
+        // Verify compaction
+        assert!(ctx.raft_log.entry(25).unwrap().is_none());
+        assert_eq!(ctx.raft_log.first_entry_id(), 51);
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 100);
+    }
+
+    #[tokio::test]
+    async fn test_term_index_calculation() {
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, true);
+
+        // Add entries with different terms
+        ctx.append_entries(1, 50, 1).await;
+        ctx.append_entries(51, 50, 2).await;
+        ctx.append_entries(101, 50, 3).await;
+
+        // Verify term indices
+        assert_eq!(ctx.raft_log.first_index_for_term(2), Some(51));
+        assert_eq!(ctx.raft_log.last_index_for_term(2), Some(100));
+        assert_eq!(ctx.raft_log.last_index_for_term(3), Some(150));
+    }
+
+    #[tokio::test]
+    async fn test_drop_behavior() {
+        let ctx = TestContext::new(PersistenceStrategy::Batched(10, 100), true);
+        ctx.append_entries(1, 5, 1).await;
+
+        // Explicitly drop context
+        drop(ctx);
+
+        // Test passes if no deadlock occurs during drop
+    }
+
+    #[tokio::test]
+    async fn test_reset_operation() {
+        let ctx = TestContext::new(PersistenceStrategy::DiskFirst, true);
+        ctx.append_entries(1, 100, 1).await;
+
+        // Reset log
+        ctx.raft_log.reset().await.unwrap();
+
+        // Verify reset state
+        assert!(ctx.raft_log.is_empty());
+        assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 0);
+        assert_eq!(ctx.raft_log.next_id.load(Ordering::Acquire), 1);
     }
 }

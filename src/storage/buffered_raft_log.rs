@@ -100,11 +100,7 @@ where
 
         // Fallback to storage only if configured
         match &self.storage {
-            Some(storage) => {
-                // Async only when absolutely necessary
-                let storage = storage.clone();
-                tokio::task::block_in_place(|| storage.entry(index))
-            }
+            Some(storage) => storage.entry(index),
             None => Ok(None),
         }
     }
@@ -213,8 +209,7 @@ where
 
         // Hybrid mode: fill gaps from storage
         let storage_entries = if let Some(storage) = &self.storage {
-            let storage = storage.clone();
-            tokio::task::block_in_place(|| storage.get_entries_range(range.clone()))?
+            storage.get_entries_range(range.clone())?
         } else {
             Vec::new()
         };
@@ -251,7 +246,6 @@ where
         // Handle persistence strategy
         match self.strategy {
             PersistenceStrategy::DiskFirst => {
-                // Block until persisted
                 self.persist_entries(entries.iter().map(|e| e.index).collect()).await?;
             }
             PersistenceStrategy::MemFirst | PersistenceStrategy::Batched(_, _) => {
@@ -455,6 +449,12 @@ where
             0
         };
 
+        trace!(
+            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, disk_len: {:?}",
+            node_id,
+            strategy,
+            disk_len
+        );
         let (command_sender, command_receiver) = mpsc::channel(100);
 
         (
@@ -510,13 +510,13 @@ where
         while let Some(cmd) = receiver.recv().await {
             trace!("Received command: {:?}", cmd);
             let Some(this) = this.upgrade() else {
-                trace!("Command processor shutting down - instance dropped");
+                warn!("Command processor shutting down - instance dropped");
                 break;
             };
 
             match cmd {
-                LogCommand::PersistEntries(indexes) => {
-                    this.handle_persist_command(indexes).await;
+                LogCommand::PersistEntries(mut indexes) => {
+                    this.handle_persist_command(&mut indexes).await;
                 }
                 LogCommand::WaitDurable(ack) => {
                     this.handle_wait_command(ack).await;
@@ -541,7 +541,13 @@ where
                     }
                 }
                 LogCommand::Shutdown => {
-                    trace!("Command processor shutting down");
+                    let result = this.flush_pending().await;
+                    if let Some(storage) = &this.storage {
+                        if let Err(e) = storage.flush() {
+                            error!("Storage flush failed: {:?}", e);
+                        }
+                    }
+                    trace!(?result, "Command processor shutting down");
                     break;
                 }
             }
@@ -565,14 +571,16 @@ where
     #[instrument(skip(self))]
     async fn handle_persist_command(
         &self,
-        indexes: Vec<u64>,
+        indexes: &mut Vec<u64>,
     ) {
         trace!("Handling persist command");
         let pending_indexes_len = {
-            let state = self.flush_state.lock().await;
+            let mut state = self.flush_state.lock().await;
+            state.pending_indexes.append(indexes);
             state.pending_indexes.len()
         };
 
+        trace!("Pending indexes length: {}", pending_indexes_len);
         match self.strategy {
             PersistenceStrategy::Batched(batch_size, _) if pending_indexes_len >= batch_size => {
                 if let Err(e) = self.flush_pending().await {
@@ -725,6 +733,7 @@ where
         if let Err(e) = self.command_sender.clone().try_send(LogCommand::Shutdown) {
             error!("Failed to send shutdown command: {:?}", e);
         }
+        trace!("BufferedRaftLog dropped");
     }
 }
 

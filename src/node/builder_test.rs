@@ -52,8 +52,9 @@ async fn test_set_raft_log_replaces_default() {
     let state_storage_db = Arc::new(state_storage_db);
 
     let sled_storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("success"));
-    let (buffered_raft_log, _) =
+    let (buffered_raft_log, receiver) =
         BufferedRaftLog::new(id, PersistenceStrategy::DiskFirst, Some(sled_storage_engine.clone()));
+    let buffered_raft_log = buffered_raft_log.start(receiver);
 
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];

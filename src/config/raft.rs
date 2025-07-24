@@ -664,16 +664,28 @@ fn default_stale_check_interval() -> Duration {
 /// Configurable persistence strategy for Raft logs
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
-    /// Write logs to disk first, then update in-memory state
-    /// (Strong durability, lower throughput)
+    /// Write logs to disk first, then update in-memory state.
+    ///
+    /// - Strong durability: Logs are persisted to stable storage (e.g., SSD) before being considered accepted.
+    /// - Slower throughput due to synchronous disk I/O.
+    /// - Recommended for critical systems that cannot tolerate any data loss, such as databases or blockchain consensus.
     DiskFirst,
 
-    /// Write logs to memory first, then asynchronously persist to disk
-    /// (Higher throughput, but may lose recent logs on crash)
+    /// Write logs to memory first, then asynchronously persist to disk in the background.
+    ///
+    /// - Higher throughput since log writes return immediately without waiting for disk.
+    /// - May **lose recent entries** if the process crashes or the node loses power before the background flush completes.
+    /// - Suitable for high-availability systems that favor performance and can tolerate re-synchronization after crash.
+    /// - !!! **Risk of data loss** in power outage or hard crash scenarios.
     MemFirst,
 
-    /// Write logs to memory first, then persist to disk in batches
-    /// (Balances throughput and durability with controlled latency)
+    /// Write logs to memory first, then flush to disk in **batched mode**, either when the batch size is reached or after a time interval.
+    ///
+    /// - Trade-off between performance and durability.
+    /// - Reduces write amplification by persisting multiple entries in one batch.
+    /// - Like `MemFirst`, it may **lose recent entries** if a crash or power loss occurs **before the batch is flushed**.
+    /// - Suitable for workloads with high log volume where occasional replays or recoveries are acceptable.
+    /// - !!! **Partial durability**: Logs within the unflushed batch may be lost on node failure.
     Batched(usize, u64), // (batch_size, interval_ms)
 }
 

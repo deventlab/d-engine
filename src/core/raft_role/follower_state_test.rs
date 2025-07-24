@@ -65,8 +65,8 @@ use crate::SystemError;
 /// 7. match_index = None
 /// 8. noop_log_id = None
 /// 9. raft_log len is 0
-#[test]
-fn test_new_with_fresh_start() {
+#[tokio::test]
+async fn test_new_with_fresh_start() {
     let components = setup_raft_components("/tmp/test_new_with_fresh_start", None, false);
     let node_id = 1;
     let node_config = components.arc_node_config.clone();
@@ -98,8 +98,8 @@ fn test_new_with_fresh_start() {
 /// 5. role is Follower
 /// 8. noop_log_id = None
 /// 9. raft_log len is 10
-#[test]
-fn test_new_with_restart() {
+#[tokio::test]
+async fn test_new_with_restart() {
     let voted_for = VotedFor {
         voted_for_id: 3,
         voted_for_term: 2,

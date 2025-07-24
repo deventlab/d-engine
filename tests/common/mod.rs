@@ -6,6 +6,8 @@ use d_engine::alias::SSOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
+use d_engine::config::PersistenceConfig;
+use d_engine::config::PersistenceStrategy;
 use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
@@ -139,6 +141,10 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             max_log_entries_before_snapshot: 1,
             cleanup_retain_count: 2,
             retained_log_entries: 1,
+            ..Default::default()
+        },
+        persistence: PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
             ..Default::default()
         },
         ..Default::default()

@@ -29,8 +29,8 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
 
-#[test]
-fn test_start_stop() {
+#[tokio::test]
+async fn test_start_stop() {
     let root_path = "/tmp/test_start_stop";
     let context = setup_raft_components(root_path, None, false);
 
@@ -45,8 +45,8 @@ fn test_start_stop() {
     assert!(context.state_machine.is_running());
 }
 
-#[test]
-fn test_apply_committed_raft_logs_in_batch() {
+#[tokio::test]
+async fn test_apply_committed_raft_logs_in_batch() {
     let root_path = "/tmp/test_apply_committed_raft_logs_in_batch";
     let context = setup_raft_components(root_path, None, false);
 
@@ -124,8 +124,8 @@ async fn test_basic_kv_operations() {
     assert_eq!(sm.get(&test_value).unwrap(), None);
 }
 
-#[test]
-fn test_last_entry_detection() {
+#[tokio::test]
+async fn test_last_entry_detection() {
     let root_path = "/tmp/test_last_entry_detection";
     let context = setup_raft_components(root_path, None, false);
     let sm = context.state_machine.clone();
@@ -161,8 +161,8 @@ async fn test_batch_error_handling() {
     assert!(sm.apply_batch(batch).is_ok());
 }
 
-#[test]
-fn test_iter_functionality() {
+#[tokio::test]
+async fn test_iter_functionality() {
     let root_path = "/tmp/test_iter_functionality";
     let context = setup_raft_components(root_path, None, false);
     let sm = context.state_machine.clone();
