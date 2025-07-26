@@ -18,7 +18,8 @@ use tracing::trace;
 pub struct SledStorageEngine {
     #[allow(dead_code)]
     db: sled::Db,
-    tree: sled::Tree,
+
+    pub(super) tree: sled::Tree,
 }
 
 impl StorageEngine for SledStorageEngine {
@@ -28,7 +29,7 @@ impl StorageEngine for SledStorageEngine {
     ) -> Result<()> {
         let mut batch = Batch::default();
 
-        trace!("Pending entries len = {:?}", entries.len());
+        trace!("persist_entries len = {:?}", entries.len(),);
 
         for entry in entries {
             let key = Self::index_to_key(entry.index);
@@ -37,6 +38,7 @@ impl StorageEngine for SledStorageEngine {
         }
 
         self.tree.apply_batch(batch)?;
+        trace!("last_index = {}", self.last_index());
         Ok(())
     }
 
@@ -92,6 +94,7 @@ impl StorageEngine for SledStorageEngine {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<()> {
+        trace!("SledStorageEngine flush");
         self.tree.flush()?;
         Ok(())
     }
@@ -180,13 +183,13 @@ impl SledStorageEngine {
     }
 
     /// Helper: convert index to big-endian bytes
-    fn index_to_key(index: u64) -> [u8; 8] {
+    pub fn index_to_key(index: u64) -> [u8; 8] {
         index.to_be_bytes()
     }
 
     /// Helper: convert key bytes to index
     #[allow(dead_code)]
-    fn key_to_index(key: &[u8]) -> u64 {
+    pub fn key_to_index(key: &[u8]) -> u64 {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&key[0..8]);
         u64::from_be_bytes(bytes)

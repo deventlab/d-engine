@@ -660,33 +660,55 @@ fn default_stale_learner_threshold() -> Duration {
 fn default_stale_check_interval() -> Duration {
     Duration::from_secs(30)
 }
-
-/// Configurable persistence strategy for Raft logs
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+/// Defines how Raft log entries are persisted and retrieved.
+///
+/// All strategies use a configurable [`FlushPolicy`] to control when memory contents
+/// are flushed to disk. This affects write latency and durability guarantees.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
-    /// Write logs to disk first, then update in-memory state.
+    /// Disk-first persistence strategy.
     ///
-    /// - Strong durability: Logs are persisted to stable storage (e.g., SSD) before being considered accepted.
-    /// - Slower throughput due to synchronous disk I/O.
-    /// - Recommended for critical systems that cannot tolerate any data loss, such as databases or blockchain consensus.
+    /// - **Write path**: On append, the log entry is first written to disk. Only after a successful
+    ///   disk write is it copied into the in-memory cache.
+    ///
+    /// - **Read path**: Reads are served from the in-memory cache. If not found, the system falls back
+    ///   to reading from disk, and the result is cached in memory.
+    ///
+    /// - **Startup behavior**: Entries are **not** fully loaded from disk into memory at startup.
+    ///   Entries are only cached lazily on demand.
+    ///
+    /// - Suitable for systems prioritizing strong durability, with memory used primarily for caching.
     DiskFirst,
 
-    /// Write logs to memory first, then asynchronously persist to disk in the background.
+    /// Memory-first persistence strategy.
     ///
-    /// - Higher throughput since log writes return immediately without waiting for disk.
-    /// - May **lose recent entries** if the process crashes or the node loses power before the background flush completes.
-    /// - Suitable for high-availability systems that favor performance and can tolerate re-synchronization after crash.
-    /// - !!! **Risk of data loss** in power outage or hard crash scenarios.
+    /// - **Write path**: On append, the log entry is written to the in-memory buffer and immediately acknowledged.
+    ///   Disk persistence happens asynchronously in the background, governed by [`FlushPolicy`].
+    ///
+    /// - **Read path**: Reads are served from memory only. If an entry is not in memory, it is considered nonexistent.
+    ///
+    /// - **Startup behavior**: On startup, all log entries are loaded from disk into memory.
+    ///
+    /// - Suitable for systems that favor performance and fast failover, and can tolerate data loss during crashes.
     MemFirst,
+}
 
-    /// Write logs to memory first, then flush to disk in **batched mode**, either when the batch size is reached or after a time interval.
+/// Controls when in-memory logs should be flushed to disk.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum FlushPolicy {
+    /// Flush each log write immediately to disk.
     ///
-    /// - Trade-off between performance and durability.
-    /// - Reduces write amplification by persisting multiple entries in one batch.
-    /// - Like `MemFirst`, it may **lose recent entries** if a crash or power loss occurs **before the batch is flushed**.
-    /// - Suitable for workloads with high log volume where occasional replays or recoveries are acceptable.
-    /// - !!! **Partial durability**: Logs within the unflushed batch may be lost on node failure.
-    Batched(usize, u64), // (batch_size, interval_ms)
+    /// - Guarantees the highest durability.
+    /// - Each append operation causes a disk write.
+    Immediate,
+
+    /// Flush entries to disk when either of two conditions is met:
+    /// - The number of unflushed entries reaches the given threshold.
+    /// - The elapsed time since the last flush exceeds the configured interval.
+    ///
+    /// - Balances performance and durability.
+    /// - Recent unflushed entries may be lost in the event of a crash or power failure.
+    Batch { threshold: usize, interval_ms: u64 },
 }
 
 /// Configuration parameters for log persistence behavior
@@ -700,24 +722,35 @@ pub struct PersistenceConfig {
     #[serde(default = "default_persistence_strategy")]
     pub strategy: PersistenceStrategy,
 
+    /// Flush policy for asynchronous strategies
+    ///
+    /// This controls when log entries are flushed to disk. The choice impacts
+    /// write performance and durability guarantees.
+    #[serde(default = "default_flush_policy")]
+    pub flush_policy: FlushPolicy,
+
     /// Maximum number of in-memory log entries to buffer when using async strategies
     ///
     /// This acts as a safety valve to prevent memory exhaustion during periods of
     /// high write throughput or when disk persistence is slow.
     #[serde(default = "default_max_buffered_entries")]
     pub max_buffered_entries: usize,
-
-    /// Whether to fsync persisted logs to disk
-    ///
-    /// When enabled (true), provides stronger durability guarantees but significantly
-    /// impacts write performance. Recommended for environments requiring crash safety.
-    #[serde(default = "default_fsync")]
-    pub fsync: bool,
 }
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
-    PersistenceStrategy::Batched(1024, 100) // 1KB batch every 100ms
+    PersistenceStrategy::MemFirst
+}
+
+/// Default flush policy for asynchronous strategies
+///
+/// This controls when log entries are flushed to disk. The choice impacts
+/// write performance and durability guarantees.
+fn default_flush_policy() -> FlushPolicy {
+    FlushPolicy::Batch {
+        threshold: 1024,
+        interval_ms: 100,
+    }
 }
 
 /// Default maximum buffered log entries
@@ -725,17 +758,12 @@ fn default_max_buffered_entries() -> usize {
     10_000
 }
 
-/// Default fsync behavior (disabled for better performance)
-fn default_fsync() -> bool {
-    false
-}
-
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
             strategy: default_persistence_strategy(),
+            flush_policy: default_flush_policy(),
             max_buffered_entries: default_max_buffered_entries(),
-            fsync: default_fsync(),
         }
     }
 }

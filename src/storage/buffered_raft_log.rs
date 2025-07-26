@@ -3,6 +3,8 @@ use super::StorageEngine;
 use crate::alias::SOF;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
+use crate::FlushPolicy;
+use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::Result;
 use crate::API_SLO;
@@ -12,15 +14,16 @@ use dashmap::DashMap;
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Mutex};
-use tokio::task::JoinHandle;
+use tokio::time::interval;
+use tokio::time::Instant;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::instrument;
 use tracing::trace;
-use tracing::warn;
 
 const ID_BATCH_SIZE: u64 = 100;
 
@@ -28,7 +31,7 @@ const ID_BATCH_SIZE: u64 = 100;
 #[derive(Debug)]
 pub enum LogCommand {
     /// Request to wait until specific index is durable
-    WaitDurable(oneshot::Sender<()>),
+    WaitDurable(u64, oneshot::Sender<()>),
     /// Request to persist specific log entries
     PersistEntries(Vec<u64>),
     /// Trigger immediate flush with result notification
@@ -41,7 +44,7 @@ pub enum LogCommand {
 
 pub struct FlushState {
     pending_indexes: Vec<u64>, // Indexes pending flush
-    flushing: bool,            // Is a flush in progress?
+    last_flush_time: Instant,
 }
 
 /// High-performance buffered Raft log with event-driven architecture
@@ -63,6 +66,7 @@ where
 
     storage: Option<Arc<SOF<T>>>,
     strategy: PersistenceStrategy,
+    flush_policy: FlushPolicy,
 
     // --- In-memory state ---
     // Pending entries
@@ -78,8 +82,6 @@ where
     // Track flush state
     pub flush_state: Mutex<FlushState>,
     pub waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
-
-    processor_handle: Option<JoinHandle<()>>,
 }
 
 #[async_trait]
@@ -98,11 +100,17 @@ where
             return Ok(Some(entry_ref.clone()));
         }
 
-        // Fallback to storage only if configured
-        match &self.storage {
-            Some(storage) => storage.entry(index),
-            None => Ok(None),
+        // Disk fallback only for DiskFirst strategy
+        if let PersistenceStrategy::DiskFirst = self.strategy {
+            if let Some(storage) = &self.storage {
+                if let Some(entry) = storage.entry(index)? {
+                    self.entries.insert(index, entry.clone());
+                    return Ok(Some(entry));
+                }
+            }
         }
+
+        Ok(None)
     }
 
     fn first_entry_id(&self) -> u64 {
@@ -114,27 +122,38 @@ where
     }
 
     fn last_entry_id(&self) -> u64 {
-        self.entries
-            .iter()
-            .map(|e| *e.key())
-            .max()
-            .unwrap_or_else(|| self.durable_index.load(Ordering::Acquire))
+        match self.strategy {
+            // For DiskFirst: storage has the most accurate last index
+            PersistenceStrategy::DiskFirst => self.storage.as_ref().map(|s| s.last_index()).unwrap_or(0),
+            // For MemFirst: memory has the complete log
+            PersistenceStrategy::MemFirst => self.entries.iter().map(|e| *e.key()).max().unwrap_or(0),
+        }
     }
 
     fn last_entry(&self) -> Option<Entry> {
-        self.entries
-            .iter()
-            // Find the entry with the maximum key (index)
-            .max_by_key(|entry| *entry.key())
-            // Clone the entry value if found
-            .map(|entry| entry.value().clone())
+        // Disk fallback only for DiskFirst strategy
+        let last_index = match self.strategy {
+            PersistenceStrategy::DiskFirst => self.storage.as_ref().map(|s| s.last_index()).unwrap_or(0),
+            PersistenceStrategy::MemFirst => self.entries.iter().map(|e| *e.key()).max().unwrap_or(0),
+        };
+
+        if last_index > 0 {
+            self.entry(last_index).ok().flatten()
+        } else {
+            None
+        }
     }
 
     fn last_log_id(&self) -> Option<LogId> {
-        self.last_entry().map(|entry| LogId {
-            term: entry.term,
-            index: entry.index,
-        })
+        let last_index = self.last_entry_id();
+        if last_index > 0 {
+            self.entry(last_index).ok().flatten().map(|entry| LogId {
+                term: entry.term,
+                index: entry.index,
+            })
+        } else {
+            None
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -186,7 +205,7 @@ where
         let total = batches * ID_BATCH_SIZE;
 
         let start = self.next_id.fetch_add(total, Ordering::SeqCst);
-        trace!("RaftLog pre_allocate_id_range: {}", start);
+        trace!("RaftLog pre_allocate_id_range: {}..={}", start, start + total - 1);
         start..=start + total - 1
     }
 
@@ -194,6 +213,19 @@ where
         &self,
         range: RangeInclusive<u64>,
     ) -> Result<Vec<Entry>> {
+        // For MemFirst: all entries are in memory
+        if matches!(self.strategy, PersistenceStrategy::MemFirst) {
+            let mut result: Vec<Entry> = self
+                .entries
+                .iter()
+                .filter(|e| range.contains(e.key()))
+                .map(|e| e.value().clone())
+                .collect();
+            result.sort_by_key(|e| e.index);
+            return Ok(result);
+        }
+
+        // For DiskFirst: hybrid memory + disk
         let mut result: Vec<Entry> = self
             .entries
             .iter()
@@ -201,23 +233,12 @@ where
             .map(|e| e.value().clone())
             .collect();
 
-        // Early return if memory-only
-        if self.storage.is_none() {
-            result.sort_by_key(|e| e.index);
-            return Ok(result);
-        }
-
-        // Hybrid mode: fill gaps from storage
-        let storage_entries = if let Some(storage) = &self.storage {
-            storage.get_entries_range(range.clone())?
-        } else {
-            Vec::new()
-        };
-
-        // Merge results
-        for entry in storage_entries {
-            if !self.entries.contains_key(&entry.index) {
-                result.push(entry);
+        if let Some(storage) = &self.storage {
+            let storage_entries = storage.get_entries_range(range.clone())?;
+            for entry in storage_entries {
+                if !self.entries.contains_key(&entry.index) {
+                    result.push(entry);
+                }
             }
         }
 
@@ -232,30 +253,32 @@ where
     ) -> Result<()> {
         let max_index = entries.iter().map(|e| e.index).max().unwrap_or(0);
 
-        // Add to memory entries
-        for entry in &entries {
-            self.entries.insert(entry.index, entry.clone());
-        }
-
-        // Update next index
-        let current_next = self.next_id.load(Ordering::Acquire);
-        if max_index >= current_next {
-            self.next_id.store(max_index + 1, Ordering::Release);
-        }
-
-        // Handle persistence strategy
+        // Update memory based on strategy
         match self.strategy {
             PersistenceStrategy::DiskFirst => {
-                self.persist_entries(entries.iter().map(|e| e.index).collect()).await?;
+                // For DiskFirst, persist first then update memory
+                self.persist_entries(&entries).await?;
+                for entry in &entries {
+                    self.entries.insert(entry.index, entry.clone());
+                }
             }
-            PersistenceStrategy::MemFirst | PersistenceStrategy::Batched(_, _) => {
-                // Queue for async persistence
+            PersistenceStrategy::MemFirst => {
+                // For MemFirst, update memory first then persist async
+                for entry in &entries {
+                    self.entries.insert(entry.index, entry.clone());
+                }
                 let indexes: Vec<u64> = entries.iter().map(|e| e.index).collect();
                 self.command_sender
                     .send(LogCommand::PersistEntries(indexes))
                     .await
                     .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send signal: {:?}", e)))?;
             }
+        }
+
+        // Update next index
+        let current_next = self.next_id.load(Ordering::Acquire);
+        if max_index >= current_next {
+            self.next_id.store(max_index + 1, Ordering::Release);
         }
 
         Ok(())
@@ -355,6 +378,8 @@ where
 
         // Update durable index if needed
         let current_durable = self.durable_index.load(Ordering::Acquire);
+
+        // TODO: to be double thinking
         if cutoff_index.index >= current_durable {
             self.durable_index.store(cutoff_index.index, Ordering::Release);
         }
@@ -440,7 +465,7 @@ where
 {
     pub fn new(
         node_id: u32,
-        strategy: PersistenceStrategy,
+        persistence_config: PersistenceConfig,
         storage: Option<Arc<SOF<T>>>,
     ) -> (Self, mpsc::Receiver<LogCommand>) {
         let disk_len = if let Some(storage) = &storage {
@@ -449,29 +474,50 @@ where
             0
         };
 
-        trace!(
-            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, disk_len: {:?}",
-            node_id,
-            strategy,
-            disk_len
+        debug!(
+            "Creating BufferedRaftLog with node_id: {}, persistence_config: {:?}, disk_len: {:?}",
+            node_id, persistence_config, disk_len
         );
+
+        //TODO: if switch to UnboundedChannel?
         let (command_sender, command_receiver) = mpsc::channel(100);
+
+        let entries = DashMap::new();
+
+        // Load all entries from disk to memory
+        if let PersistenceStrategy::MemFirst = persistence_config.strategy {
+            if let Some(storage) = &storage {
+                if disk_len > 0 {
+                    match storage.get_entries_range(1..=disk_len) {
+                        Ok(all_entries) => {
+                            for entry in all_entries {
+                                entries.insert(entry.index, entry);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to load entries from storage: {:?}", e);
+                            // Handle critical error if needed
+                        }
+                    }
+                }
+            }
+        }
 
         (
             Self {
                 node_id,
                 storage,
-                strategy,
-                entries: DashMap::new(),
+                strategy: persistence_config.strategy,
+                flush_policy: persistence_config.flush_policy,
+                entries,
                 durable_index: AtomicU64::new(disk_len),
                 next_id: AtomicU64::new(disk_len + 1),
                 command_sender: command_sender.clone(),
                 flush_state: Mutex::new(FlushState {
                     pending_indexes: Vec::new(),
-                    flushing: false,
+                    last_flush_time: Instant::now(),
                 }),
                 waiters: DashMap::new(),
-                processor_handle: None,
             },
             command_receiver,
         )
@@ -485,21 +531,14 @@ where
         let arc_self = Arc::new(self);
         let weak_self = Arc::downgrade(&arc_self);
 
-        // Spawn command processor directly - no mutation needed
-        tokio::spawn(Self::command_processor(weak_self, receiver));
+        // Start background processor based on flush policy
+        if let FlushPolicy::Batch { interval_ms, .. } = arc_self.flush_policy {
+            tokio::spawn(Self::batch_processor(weak_self, receiver, interval_ms));
+        } else {
+            tokio::spawn(Self::command_processor(weak_self, receiver));
+        }
 
         arc_self
-    }
-
-    /// Stop the command processor
-    pub async fn stop(&mut self) {
-        // Send shutdown command
-        let _ = self.command_sender.clone().send(LogCommand::Shutdown).await;
-
-        if let Some(handle) = self.processor_handle.take() {
-            // Wait for processor to exit
-            handle.await.expect("Command processor panicked");
-        }
     }
 
     async fn command_processor(
@@ -508,51 +547,112 @@ where
     ) {
         trace!("Starting command processor");
         while let Some(cmd) = receiver.recv().await {
-            trace!("Received command: {:?}", cmd);
-            let Some(this) = this.upgrade() else {
-                warn!("Command processor shutting down - instance dropped");
-                break;
-            };
+            let Some(this) = this.upgrade() else { break };
+            this.handle_command(cmd).await;
+        }
+        trace!("Command processor shutting down");
+    }
 
-            match cmd {
-                LogCommand::PersistEntries(mut indexes) => {
-                    this.handle_persist_command(&mut indexes).await;
+    async fn batch_processor(
+        this: std::sync::Weak<Self>,
+        mut receiver: mpsc::Receiver<LogCommand>,
+        interval_ms: u64,
+    ) {
+        let mut interval = interval(Duration::from_millis(interval_ms));
+        let mut pending_commands = Vec::new();
+
+        loop {
+            tokio::select! {
+                cmd = receiver.recv() => {
+                    if let Some(cmd) = cmd {
+                        pending_commands.push(cmd);
+
+                        // Size-based flush trigger
+                        if let Some(this) = this.upgrade() {
+                            if let FlushPolicy::Batch { threshold, .. } = this.flush_policy {
+                                let state = this.flush_state.lock().await;
+                                if state.pending_indexes.len() >= threshold {
+                                    let indexes = this.get_pending_indexes().await;
+                                    if !indexes.is_empty() {
+                                        let _ = this.process_flush(&indexes).await;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        break;
+                    }
                 }
-                LogCommand::WaitDurable(ack) => {
-                    this.handle_wait_command(ack).await;
-                }
-                LogCommand::Flush(ack) => {
-                    let result = this.flush_pending().await;
-                    if let Some(storage) = &this.storage {
-                        if let Err(e) = storage.flush() {
-                            error!("Storage flush failed: {:?}", e);
+                _ = interval.tick() => {
+                    if let Some(this) = this.upgrade() {
+                        // Process all pending commands first
+                        for cmd in pending_commands.drain(..) {
+                            this.handle_command(cmd).await;
+                        }
+
+                        // Time-based flush trigger
+                        let indexes = this.get_pending_indexes().await;
+                        if !indexes.is_empty() {
+                            let _ = this.process_flush(&indexes).await;
                         }
                     }
-                    let send_result = ack.send(result);
-                    if send_result.is_err() {
-                        warn!("Reset response send failed - receiver may have dropped");
-                    }
-                }
-                LogCommand::Reset(ack) => {
-                    let result = this.reset_internal();
-                    let send_result = ack.send(result);
-                    if send_result.is_err() {
-                        warn!("Reset response send failed - receiver may have dropped");
-                    }
-                }
-                LogCommand::Shutdown => {
-                    let result = this.flush_pending().await;
-                    if let Some(storage) = &this.storage {
-                        if let Err(e) = storage.flush() {
-                            error!("Storage flush failed: {:?}", e);
-                        }
-                    }
-                    trace!(?result, "Command processor shutting down");
-                    break;
                 }
             }
         }
-        trace!("Command processor shutting down");
+    }
+
+    async fn handle_command(
+        &self,
+        cmd: LogCommand,
+    ) {
+        match cmd {
+            LogCommand::PersistEntries(indexes) => {
+                self.handle_persist_entries(&indexes).await;
+            }
+            LogCommand::WaitDurable(index, ack) => {
+                self.handle_wait_durable(index, ack).await;
+            }
+            LogCommand::Flush(ack) => {
+                let result = self.force_flush().await;
+                let _ = ack.send(result);
+            }
+            LogCommand::Reset(ack) => {
+                let result = self.reset_internal();
+                let _ = ack.send(result);
+            }
+            LogCommand::Shutdown => {
+                let _ = self.force_flush().await;
+                if let Some(storage) = &self.storage {
+                    let _ = storage.flush();
+                }
+            }
+        }
+    }
+
+    async fn handle_persist_entries(
+        &self,
+        indexes: &[u64],
+    ) {
+        let should_flush = match self.flush_policy {
+            FlushPolicy::Immediate => true,
+            FlushPolicy::Batch { threshold, .. } => {
+                let mut state = self.flush_state.lock().await;
+                state.pending_indexes.extend_from_slice(indexes);
+                state.pending_indexes.len() >= threshold
+            }
+        };
+
+        if should_flush {
+            let indexes = self.get_pending_indexes().await;
+            if !indexes.is_empty() {
+                let _ = self.process_flush(&indexes).await;
+            }
+        }
+    }
+
+    async fn get_pending_indexes(&self) -> Vec<u64> {
+        let mut state = self.flush_state.lock().await;
+        std::mem::take(&mut state.pending_indexes)
     }
 
     fn reset_internal(&self) -> Result<()> {
@@ -568,31 +668,6 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn handle_persist_command(
-        &self,
-        indexes: &mut Vec<u64>,
-    ) {
-        trace!("Handling persist command");
-        let pending_indexes_len = {
-            let mut state = self.flush_state.lock().await;
-            state.pending_indexes.append(indexes);
-            state.pending_indexes.len()
-        };
-
-        trace!("Pending indexes length: {}", pending_indexes_len);
-        match self.strategy {
-            PersistenceStrategy::Batched(batch_size, _) if pending_indexes_len >= batch_size => {
-                if let Err(e) = self.flush_pending().await {
-                    error!("Batch flush failed: {:?}", e);
-                }
-            }
-            _ => {
-                let _ = self.flush_pending().await;
-            }
-        }
-    }
-
     async fn handle_wait_command(
         &self,
         ack: oneshot::Sender<()>,
@@ -605,48 +680,22 @@ where
         }
     }
 
-    async fn flush_pending(&self) -> Result<()> {
-        trace!("Flushing pending entries...");
-        // 1. QUICKLY get indexes without holding lock during processing
-        let indexes = {
-            let mut state = self.flush_state.lock().await;
-            if state.flushing {
-                return Ok(());
-            }
-            state.flushing = true;
-            std::mem::take(&mut state.pending_indexes)
-        };
-
-        trace!("Pending entries: {:?}", indexes);
-
-        // Early exit if nothing to process (reset flag immediately)
-        if indexes.is_empty() {
-            // Always reset flushing flag even for empty flush
-            let mut state = self.flush_state.lock().await;
-            state.flushing = false;
-            return Ok(());
+    async fn handle_wait_durable(
+        &self,
+        index: u64,
+        ack: oneshot::Sender<()>,
+    ) {
+        let durable_index = self.durable_index.load(Ordering::Acquire);
+        if index <= durable_index {
+            let _ = ack.send(());
+        } else {
+            self.waiters.entry(index).or_default().push(ack);
         }
-
-        // 2. Process entries WITHOUT holding flush_state lock
-        let result = self.process_flush_entries(&indexes).await;
-
-        // 3. Update flushing status
-        {
-            let mut state = self.flush_state.lock().await;
-            state.flushing = false;
-        }
-
-        // Handle waiter notifications
-        if result.is_ok() {
-            self.notify_waiters(&indexes).await;
-        }
-
-        result
     }
 
     /// Process entries for flush operation
     /// Separated to make error handling clearer
-    async fn process_flush_entries(
+    async fn process_flush(
         &self,
         indexes: &[u64],
     ) -> Result<()> {
@@ -658,31 +707,51 @@ where
 
         trace!("Collected {} entries for persistence", entries.len());
 
-        // Persist to storage if available
+        // Persist to storage
         if let Some(storage) = &self.storage {
-            if let Err(e) = storage.persist_entries(entries) {
-                error!("Storage persist failed: {:?}", e);
-                return Err(e);
+            storage.persist_entries(entries)?;
+
+            // Handle immediate flush policy
+            if matches!(self.flush_policy, FlushPolicy::Immediate) {
+                storage.flush()?;
             }
         }
 
-        // Update durable index atomically
-        if let Some(&max_index) = indexes.iter().max() {
-            self.durable_index.store(max_index, Ordering::Release);
-            trace!("Updated durable index to {}", max_index);
+        // Update durable index
+        if let Some(max_index) = indexes.iter().max() {
+            self.durable_index.store(*max_index, Ordering::Release);
+            self.notify_waiters(*max_index);
         }
 
         Ok(())
     }
 
+    async fn force_flush(&self) -> Result<()> {
+        let indexes = self.get_pending_indexes().await;
+        let result = self.process_flush(&indexes).await;
+
+        if let Some(storage) = &self.storage {
+            storage.flush()?;
+        }
+
+        result
+    }
+
     /// Notify waiters for completed flush operations
-    async fn notify_waiters(
+    fn notify_waiters(
         &self,
-        indexes: &[u64],
+        flushed_index: u64,
     ) {
-        for &index in indexes {
+        let mut to_remove = Vec::new();
+
+        for entry in self.waiters.iter() {
+            if *entry.key() <= flushed_index {
+                to_remove.push(*entry.key());
+            }
+        }
+
+        for index in to_remove {
             if let Some((_, waiters)) = self.waiters.remove(&index) {
-                trace!("Notifying {} waiters for index {}", waiters.len(), index);
                 for waiter in waiters {
                     let _ = waiter.send(());
                 }
@@ -692,35 +761,23 @@ where
 
     async fn persist_entries(
         &self,
-        indexes: Vec<u64>,
+        entries: &[Entry],
     ) -> Result<()> {
-        self.command_sender
-            .send(LogCommand::PersistEntries(indexes.clone()))
-            .await
-            .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send persist command: {:?}", e)))?;
+        if let Some(storage) = &self.storage {
+            storage.persist_entries(entries.to_vec())?;
 
-        if matches!(self.strategy, PersistenceStrategy::DiskFirst) {
-            if let Some(&last_index) = indexes.last() {
-                self.wait_durable(last_index).await?;
+            // Handle flush policy
+            match self.flush_policy {
+                FlushPolicy::Immediate => storage.flush()?,
+                FlushPolicy::Batch { .. } => {} // Defer flush
             }
         }
 
-        Ok(())
-    }
-
-    async fn wait_durable(
-        &self,
-        index: u64,
-    ) -> Result<()> {
-        if index <= self.durable_index.load(Ordering::Acquire) {
-            return Ok(());
+        // Update durable index
+        if let Some(max_index) = entries.iter().map(|e| e.index).max() {
+            self.durable_index.store(max_index, Ordering::Release);
         }
 
-        let (tx, rx) = oneshot::channel();
-        self.waiters.entry(index).or_default().push(tx);
-
-        rx.await
-            .map_err(|_| NetworkError::SingalSendFailed("Wait for durable ack channel closed".into()))?;
         Ok(())
     }
 }

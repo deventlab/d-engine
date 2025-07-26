@@ -6,6 +6,7 @@ use d_engine::alias::SSOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
+use d_engine::config::FlushPolicy;
 use d_engine::config::PersistenceConfig;
 use d_engine::config::PersistenceStrategy;
 use d_engine::config::RaftConfig;
@@ -20,6 +21,7 @@ use d_engine::proto::client::WriteCommand;
 use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
+use d_engine::storage::init_sled_storage_engine_db;
 use d_engine::storage::RaftLog;
 use d_engine::storage::SledStateMachine;
 use d_engine::storage::SledStateStorage;
@@ -145,6 +147,7 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
         },
         persistence: PersistenceConfig {
             strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
             ..Default::default()
         },
         ..Default::default()
@@ -261,14 +264,11 @@ pub fn prepare_raft_log(
     _last_applied_index: u64,
 ) -> Arc<SledStorageEngine> {
     let raft_log_db_path = format!("{db_path}/raft_log",);
-    let raft_log_db = sled::Config::default()
-        .path(raft_log_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    Arc::new(SledStorageEngine::new(node_id, raft_log_db).expect("success"))
+    let storage_engine_db =
+        init_sled_storage_engine_db(&raft_log_db_path).expect("init_sled_storage_engine_db successfully.");
+    Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("success"))
 }
+
 pub fn prepare_state_machine(
     node_id: u32,
     db_path: &str,
@@ -294,13 +294,13 @@ pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
 }
 
 pub async fn manipulate_log(
-    raft_log: &Arc<SOF<RaftTypeConfig>>,
+    storage_engine: &Arc<SOF<RaftTypeConfig>>,
     log_ids: Vec<u64>,
     term: u64,
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        let index = raft_log.last_index() + 1;
+        let index = storage_engine.last_index() + id;
 
         trace!("pre_allocate_raft_logs_next_index: {}", index);
 
@@ -311,7 +311,8 @@ pub async fn manipulate_log(
         };
         entries.push(log);
     }
-    assert!(raft_log.persist_entries(entries).is_ok());
+    assert!(storage_engine.persist_entries(entries).is_ok());
+    assert!(storage_engine.flush().is_ok());
 }
 
 #[allow(dead_code)]

@@ -46,6 +46,7 @@ use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
+use crate::init_sled_storage_engine_db;
 use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
@@ -56,7 +57,9 @@ use crate::test_utils::MockTypeConfig;
 use crate::BufferedRaftLog;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::FlushPolicy;
 use crate::LogSizePolicy;
+use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftMembership;
@@ -66,6 +69,7 @@ use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
 use crate::SledStateMachine;
 use crate::SledStateStorage;
+use crate::SledStorageEngine;
 use crate::StateMachine;
 use crate::StateStorage;
 use crate::TypeConfig;
@@ -111,7 +115,7 @@ pub fn setup_raft_components(
     println!("Test setup_raft_components ...");
     enable_logger();
     //start from fresh
-    let (_raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) = if restart {
+    let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) = if restart {
         reuse_dbs(db_path)
     } else {
         reset_dbs(db_path)
@@ -121,7 +125,17 @@ pub fn setup_raft_components(
     let state_machine_db = Arc::new(state_machine_db);
     let state_storage_db = Arc::new(state_storage_db);
 
-    let (buffered_raft_log, receiver) = BufferedRaftLog::new(id, PersistenceStrategy::Batched(1024, 10), None);
+    let storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("Init storage engine successfully."));
+
+    let (buffered_raft_log, receiver) = BufferedRaftLog::new(
+        id,
+        PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
+            max_buffered_entries: 10000,
+        },
+        Some(storage_engine),
+    );
     let buffered_raft_log = buffered_raft_log.start(receiver);
     let sled_state_machine = SledStateMachine::new(id, state_machine_db.clone()).expect("success");
     let last_applied_pair = sled_state_machine.last_applied();

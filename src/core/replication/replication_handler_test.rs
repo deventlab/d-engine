@@ -17,6 +17,7 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::replication::ConflictResult;
 use crate::proto::replication::SuccessResult;
+use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
@@ -46,6 +47,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
+use tracing::debug;
 
 /// # Case 1: The peer3's next_index is equal to
 ///     the end of the leader's old log,
@@ -315,10 +317,12 @@ async fn test_generate_new_entries_case1() {
 /// 2. update on local raft log with one extra entry
 #[tokio::test]
 async fn test_generate_new_entries_case2() {
+    enable_logger();
     let context = setup_raft_components("/tmp/test_generate_new_entries_case2", None, false);
     let my_id = 1;
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
+    debug!("last_id: {}", last_id);
     let commands = vec![WriteCommand::delete(safe_kv(1))];
     let current_term = 1;
     assert_eq!(

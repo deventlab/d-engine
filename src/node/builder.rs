@@ -287,7 +287,7 @@ impl NodeBuilder {
         });
         let raft_log = {
             let (log, receiver) =
-                BufferedRaftLog::new(node_id, node_config.raft.persistence.strategy, Some(storage_engine));
+                BufferedRaftLog::new(node_id, node_config.raft.persistence.clone(), Some(storage_engine));
 
             // Start processor and get Arc-wrapped instance
             log.start(receiver)

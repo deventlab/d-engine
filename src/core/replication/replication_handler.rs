@@ -544,6 +544,11 @@ where
         }
 
         if !entries.is_empty() {
+            trace!(
+                "RaftLog insert_batch: {}..={}",
+                entries[0].index,
+                entries.last().unwrap().index
+            );
             raft_log.insert_batch(entries.clone()).await?;
         }
 

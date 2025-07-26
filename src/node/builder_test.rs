@@ -5,7 +5,9 @@ use crate::test_utils::node_config;
 use crate::test_utils::reset_dbs;
 use crate::BufferedRaftLog;
 use crate::Error;
+use crate::FlushPolicy;
 use crate::NodeBuilder;
+use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftNodeConfig;
 use crate::SledStateMachine;
@@ -52,8 +54,15 @@ async fn test_set_raft_log_replaces_default() {
     let state_storage_db = Arc::new(state_storage_db);
 
     let sled_storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("success"));
-    let (buffered_raft_log, receiver) =
-        BufferedRaftLog::new(id, PersistenceStrategy::DiskFirst, Some(sled_storage_engine.clone()));
+    let (buffered_raft_log, receiver) = BufferedRaftLog::new(
+        id,
+        PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
+            max_buffered_entries: 1000,
+        },
+        Some(sled_storage_engine.clone()),
+    );
     let buffered_raft_log = buffered_raft_log.start(receiver);
 
     // diff customization raft_log with orgional one
