@@ -520,6 +520,8 @@ where
 
         // Pre-allocate ID range in one atomic operation
         let id_range = raft_log.pre_allocate_id_range(entry_payloads.len() as u64);
+        assert!(!id_range.is_empty());
+
         let mut next_index = *id_range.start();
 
         let mut entries = Vec::with_capacity(entry_payloads.len());

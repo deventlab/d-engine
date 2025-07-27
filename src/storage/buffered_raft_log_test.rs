@@ -1462,11 +1462,13 @@ async fn test_term_index_performance_large_dataset() {
     assert_eq!(context.raft_log.last_index_for_term(1000), Some(99999));
     println!("last_index_for_term took: {:?}", start.elapsed());
 }
-
 #[cfg(test)]
 mod id_allocation_tests {
     use super::*;
-    use std::sync::{atomic::Ordering, Arc};
+    use std::{
+        ops::RangeInclusive,
+        sync::{atomic::Ordering, Arc},
+    };
 
     // In-memory test setup
     fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig>> {
@@ -1486,6 +1488,11 @@ mod id_allocation_tests {
         Arc::new(raft_log)
     }
 
+    // Helper to check empty ranges
+    fn is_empty_range(range: &RangeInclusive<u64>) -> bool {
+        range.start() == &u64::MAX && range.end() == &u64::MAX
+    }
+
     #[test]
     fn test_pre_allocate_next_index_sequential() {
         let raft_log = setup_memory();
@@ -1494,24 +1501,7 @@ mod id_allocation_tests {
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 2);
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 3);
 
-        // Verify cache state
         assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 4);
-    }
-
-    #[test]
-    fn test_pre_allocate_next_index_concurrent() {
-        let raft_log = setup_memory();
-        let raft_log_clone = Arc::clone(&raft_log);
-
-        let handle = std::thread::spawn(move || raft_log_clone.pre_allocate_raft_logs_next_index());
-
-        let main_id = raft_log.pre_allocate_raft_logs_next_index();
-        let thread_id = handle.join().unwrap();
-
-        // Verify IDs are unique and sequential
-        let ids = [main_id, thread_id];
-        assert!(ids.contains(&1) && ids.contains(&2));
-        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 3);
     }
 
     #[test]
@@ -1522,57 +1512,76 @@ mod id_allocation_tests {
         assert_eq!(*range.start(), 1);
         assert_eq!(*range.end(), 100);
 
-        // Next allocation should start after the range
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 101);
     }
 
     #[test]
-    fn test_pre_allocate_id_range_partial_batch() {
+    fn test_pre_allocate_id_range_zero_count() {
+        let raft_log = setup_memory();
+        let initial_id = raft_log.next_id.load(Ordering::SeqCst);
+
+        let range = raft_log.pre_allocate_id_range(0);
+        assert!(is_empty_range(&range));
+        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), initial_id);
+    }
+
+    #[test]
+    fn test_pre_allocate_id_range_after_zero() {
         let raft_log = setup_memory();
 
-        let range = raft_log.pre_allocate_id_range(50);
-        assert_eq!(*range.start(), 1);
-        assert_eq!(*range.end(), 100); // Still allocates full batch
+        // Allocate 0 (should be empty)
+        let empty_range = raft_log.pre_allocate_id_range(0);
+        assert!(is_empty_range(&empty_range));
 
-        // Verify we can use the full range
-        for i in 1..=100 {
-            assert!(range.contains(&i));
-        }
+        // Valid allocation should work after empty
+        let range = raft_log.pre_allocate_id_range(5);
+        assert_eq!(*range.start(), 1);
+        assert_eq!(*range.end(), 5);
+    }
+
+    #[test]
+    fn test_pre_allocate_id_range_concurrent() {
+        let raft_log = setup_memory();
+        let raft_log_clone = Arc::clone(&raft_log);
+
+        let handle = std::thread::spawn(move || raft_log_clone.pre_allocate_id_range(50));
+
+        let main_range = raft_log.pre_allocate_id_range(30);
+        let thread_range = handle.join().unwrap();
+
+        // Verify ranges are contiguous and non-overlapping
+        assert_eq!(*main_range.start(), 1);
+        assert_eq!(*main_range.end(), 30);
+        assert_eq!(*thread_range.start(), 31);
+        assert_eq!(*thread_range.end(), 80);
+
+        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 81);
     }
 
     #[test]
     fn test_pre_allocate_id_range_multiple_batches() {
         let raft_log = setup_memory();
 
-        // First batch
+        // Valid batches
         let range1 = raft_log.pre_allocate_id_range(150);
-        assert_eq!(*range1.start(), 1);
-        assert_eq!(*range1.end(), 200); // 2 batches (200 IDs)
-
-        // Second batch
         let range2 = raft_log.pre_allocate_id_range(50);
-        assert_eq!(*range2.start(), 201);
-        assert_eq!(*range2.end(), 300); // Another 2 batches (100 IDs requested -> 100 allocated)
-    }
 
-    #[test]
-    fn test_pre_allocate_id_range_edge_cases() {
-        let raft_log = setup_memory();
+        // Empty batch
+        let empty_range = raft_log.pre_allocate_id_range(0);
 
-        // Zero count (should allocate minimum batch)
-        let range = raft_log.pre_allocate_id_range(0);
-        assert_eq!(*range.start(), 1);
-        assert_eq!(*range.end(), 100);
+        // Another valid batch
+        let range3 = raft_log.pre_allocate_id_range(100);
 
-        // Exact batch size
-        let range = raft_log.pre_allocate_id_range(100);
-        assert_eq!(*range.start(), 101);
-        assert_eq!(*range.end(), 200);
+        assert_eq!(*range1.start(), 1);
+        assert_eq!(*range1.end(), 150);
 
-        // Single ID over batch
-        let range = raft_log.pre_allocate_id_range(101);
-        assert_eq!(*range.start(), 201);
-        assert_eq!(*range.end(), 400); // 4 batches (400 IDs)
+        assert_eq!(*range2.start(), 151);
+        assert_eq!(*range2.end(), 200);
+
+        assert!(is_empty_range(&empty_range));
+
+        assert_eq!(*range3.start(), 201);
+        assert_eq!(*range3.end(), 300);
     }
 
     #[test]
@@ -1582,22 +1591,42 @@ mod id_allocation_tests {
         // Single allocation
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 1);
 
+        // Empty range
+        let empty = raft_log.pre_allocate_id_range(0);
+        assert!(is_empty_range(&empty));
+
         // Range allocation
         let range = raft_log.pre_allocate_id_range(5);
         assert_eq!(*range.start(), 2);
-        assert_eq!(*range.end(), 101); // Full batch
+        assert_eq!(*range.end(), 6);
 
         // More single allocations
-        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 102);
-        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 103);
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 7);
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 8);
 
         // Large range allocation
         let range = raft_log.pre_allocate_id_range(250);
-        assert_eq!(*range.start(), 104);
-        assert_eq!(*range.end(), 403); // 3 batches (300 IDs)
+        assert_eq!(*range.start(), 9);
+        assert_eq!(*range.end(), 258);
 
         // Final check
-        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 404);
+        assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 259);
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        let raft_log = setup_memory();
+
+        // Single ID
+        let single = raft_log.pre_allocate_id_range(1);
+        assert_eq!(*single.start(), 1);
+        assert_eq!(*single.end(), 1);
+
+        // Maximum u64 (theoretical, not recommended in practice)
+        raft_log.next_id.store(u64::MAX - 5, Ordering::SeqCst);
+        let range = raft_log.pre_allocate_id_range(5);
+        assert_eq!(*range.start(), u64::MAX - 5);
+        assert_eq!(*range.end(), u64::MAX - 1);
     }
 }
 
@@ -2120,5 +2149,398 @@ mod filter_out_conflicts_and_append_performance_tests {
             assert!(log.entry(501).unwrap().is_some());
             assert!(log.entry(502).unwrap().is_none()); // Conflict removed
         }
+    }
+}
+
+mod performance_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+    use tokio::time::Duration;
+
+    // Test helper: Creates storage with controllable delay
+    fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
+        let mut storage = MockStorageEngine::new();
+        storage.expect_last_index().returning(|| 0);
+        storage.expect_truncate().returning(|_| Ok(()));
+        storage.expect_reset().returning(|| Ok(()));
+
+        // Add controllable delay to persist_entries
+        storage.expect_persist_entries().returning(move |_| {
+            let delay = Duration::from_millis(delay_ms);
+            std::thread::sleep(delay);
+            Ok(())
+        });
+
+        Arc::new(storage)
+    }
+
+    // 1. Tests reset performance during active flush
+    #[tokio::test]
+    async fn test_reset_performance_during_active_flush() {
+        enable_logger();
+        const FLUSH_DELAY_MS: u64 = 500;
+        const MAX_RESET_DURATION_MS: u64 = 50;
+
+        let test_cases = vec![
+            (
+                PersistenceStrategy::MemFirst,
+                FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms: 1000,
+                },
+            ),
+            (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
+        ];
+
+        for (strategy, flush_policy) in test_cases {
+            let storage = create_delayed_storage(FLUSH_DELAY_MS);
+            let config = PersistenceConfig {
+                strategy: strategy.clone(),
+                flush_policy: flush_policy.clone(),
+                max_buffered_entries: 1000,
+            };
+
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(storage));
+            let log_arc = Arc::new(log.start(receiver));
+            let barrier = Arc::new(Barrier::new(2));
+
+            // Start long-running flush in background
+            let flush_log = log_arc.clone();
+            let flush_barrier = barrier.clone();
+            tokio::spawn(async move {
+                let indexes: Vec<u64> = (1..=1000).collect();
+                flush_barrier.wait().await; // Sync point
+                let _ = flush_log.process_flush(&indexes).await;
+            });
+
+            // Wait for flush to start
+            barrier.wait().await;
+
+            // Measure reset performance during active flush
+            let start = Instant::now();
+            log_arc.reset().await.unwrap();
+            let duration = start.elapsed();
+
+            assert!(
+                duration.as_millis() < MAX_RESET_DURATION_MS as u128,
+                "Reset took {}ms during active flush ({:?}/{:?})",
+                duration.as_millis(),
+                strategy,
+                flush_policy
+            );
+        }
+    }
+
+    // 2. Tests filter_out_conflicts performance with active flush
+    #[tokio::test]
+    async fn test_filter_conflicts_performance_during_flush() {
+        enable_logger();
+        const FLUSH_DELAY_MS: u64 = 300;
+        // const MAX_DURATION_MS: u64 = 50;
+
+        let test_cases = vec![(10, 50), (100, 50), (1000, 50)];
+
+        for (interval_ms, max_duration_ms) in test_cases {
+            let storage = create_delayed_storage(FLUSH_DELAY_MS);
+            let config = PersistenceConfig {
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms,
+                },
+                max_buffered_entries: 1000,
+            };
+
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(storage));
+            let log_arc = Arc::new(log.start(receiver));
+            let barrier = Arc::new(Barrier::new(2));
+
+            // Populate with test data
+            let mut entries = vec![];
+            for i in 1..=1000 {
+                entries.push(Entry {
+                    index: i,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![0; 256])),
+                });
+            }
+            log_arc.append_entries(entries).await.unwrap();
+
+            // Start long flush in background
+            let flush_log = log_arc.clone();
+            let flush_barrier = barrier.clone();
+            tokio::spawn(async move {
+                let indexes: Vec<u64> = (1..=1000).collect();
+                flush_barrier.wait().await;
+                let _ = flush_log.process_flush(&indexes).await;
+            });
+
+            // Wait for flush to start
+            barrier.wait().await;
+
+            // Measure performance during active flush
+            let start = Instant::now();
+            log_arc
+                .filter_out_conflicts_and_append(
+                    500,
+                    1,
+                    vec![Entry {
+                        index: 501,
+                        term: 1,
+                        payload: Some(EntryPayload::command(vec![1; 256])),
+                    }],
+                )
+                .await
+                .unwrap();
+
+            let duration = start.elapsed();
+            assert!(
+                duration.as_millis() < max_duration_ms as u128,
+                "Operation took {}ms with {}ms interval during flush",
+                duration.as_millis(),
+                interval_ms
+            );
+        }
+    }
+
+    // 3. Tests fresh cluster performance consistency
+    #[tokio::test]
+    async fn test_fresh_cluster_performance_consistency() {
+        enable_logger();
+        const MAX_DURATION_MS: u64 = 5; // Should be very fast
+
+        let test_cases = vec![
+            (
+                PersistenceStrategy::MemFirst,
+                FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms: 1000,
+                },
+            ),
+            (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
+        ];
+
+        for (strategy, flush_policy) in test_cases {
+            let mut storage = MockStorageEngine::new();
+            storage.expect_flush().return_once(|| Ok(()));
+            storage.expect_last_index().returning(|| 0);
+            storage.expect_truncate().returning(|_| Ok(()));
+            storage.expect_persist_entries().returning(|_| Ok(()));
+            storage.expect_reset().returning(|| Ok(()));
+
+            let config = PersistenceConfig {
+                strategy: strategy.clone(),
+                flush_policy: flush_policy.clone(),
+                max_buffered_entries: 1000,
+            };
+
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(Arc::new(storage)));
+            let log_arc = Arc::new(log.start(receiver));
+
+            // Measure reset performance in fresh cluster
+            let start = Instant::now();
+            log_arc.reset().await.unwrap();
+            let duration = start.elapsed();
+
+            assert!(
+                duration.as_millis() < MAX_DURATION_MS as u128,
+                "Fresh cluster reset took {}ms ({:?}/{:?})",
+                duration.as_millis(),
+                strategy,
+                flush_policy
+            );
+        }
+    }
+
+    // // 4. Tests command processing during long flush
+    // #[tokio::test]
+    // async fn test_command_processing_during_flush() {
+    //     enable_logger();
+    //     const FLUSH_DELAY_MS: u64 = 800;
+    //     const MAX_COMMAND_DURATION_MS: u64 = 10;
+
+    //     let storage = create_delayed_storage(FLUSH_DELAY_MS);
+    //     let config = PersistenceConfig {
+    //         strategy: PersistenceStrategy::MemFirst,
+    //         flush_policy: FlushPolicy::Batch {
+    //             threshold: 1,
+    //             interval_ms: 1000,
+    //         },
+    //         max_buffered_entries: 1000,
+    //     };
+
+    //     let (log, mut receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(storage));
+    //     let log_arc = Arc::new(log.start(receiver));
+    //     let barrier = Arc::new(Barrier::new(2));
+
+    //     // Start long-running flush
+    //     let flush_log = log_arc.clone();
+    //     let flush_barrier = barrier.clone();
+    //     tokio::spawn(async move {
+    //         let indexes = vec![1];
+    //         flush_barrier.wait().await;
+    //         let _ = flush_log.process_flush(&indexes).await;
+    //     });
+
+    //     // Wait for flush to start
+    //     barrier.wait().await;
+
+    //     // Test multiple command types during flush
+    //     let commands = vec![
+    //         LogCommand::Flush(oneshot::channel().0),
+    //         LogCommand::Reset(oneshot::channel().0),
+    //         LogCommand::PersistEntries(vec![2]),
+    //         LogCommand::WaitDurable(2, oneshot::channel().0),
+    //     ];
+
+    //     for cmd in commands {
+    //         let start = Instant::now();
+    //         log_arc.command_sender.send(cmd).unwrap();
+
+    //         // Verify command is processed quickly
+    //         match timeout(Duration::from_millis(MAX_COMMAND_DURATION_MS), receiver.recv()).await {
+    //             Ok(Some(_)) => {
+    //                 let duration = start.elapsed();
+    //                 assert!(
+    //                     duration.as_millis() < MAX_COMMAND_DURATION_MS as u128,
+    //                     "Command processing took {}ms during flush",
+    //                     duration.as_millis()
+    //                 );
+    //             }
+    //             _ => panic!("Command not processed within {}ms", MAX_COMMAND_DURATION_MS),
+    //         }
+    //     }
+    // }
+}
+
+mod batch_processor_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{mpsc, oneshot, Notify};
+
+    struct TestLog {
+        // Used to observe if reset was called
+        reset_called: Arc<AtomicBool>,
+        // Used to simulate slow flush
+        flush_notify: Arc<Notify>,
+        // Used to observe flush trigger
+        flush_triggered: Arc<AtomicBool>,
+    }
+
+    impl TestLog {
+        fn new() -> Self {
+            Self {
+                reset_called: Arc::new(AtomicBool::new(false)),
+                flush_notify: Arc::new(Notify::new()),
+                flush_triggered: Arc::new(AtomicBool::new(false)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_processor_handles_command_while_flushing() {
+        // Setup
+        let test_log = TestLog::new();
+
+        // Simulate the actual struct with only what's needed for the test
+        struct DummyLog {
+            test_log: TestLog,
+        }
+        impl DummyLog {
+            async fn handle_command(
+                &self,
+                cmd: LogCommand,
+            ) {
+                if let LogCommand::Reset(_ack) = cmd {
+                    self.test_log.reset_called.store(true, Ordering::SeqCst);
+                }
+            }
+            async fn process_flush(
+                &self,
+                _indexes: &[u64],
+            ) -> Result<(), ()> {
+                self.test_log.flush_triggered.store(true, Ordering::SeqCst);
+                // Simulate slow flush
+                self.test_log.flush_notify.notified().await;
+                Ok(())
+            }
+            async fn get_pending_indexes(&self) -> Vec<u64> {
+                vec![1, 2, 3]
+            }
+        }
+
+        // Arc/Weak for test
+        let dummy_log = Arc::new(DummyLog { test_log });
+        let weak_log = Arc::downgrade(&dummy_log);
+
+        // Command channel
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        // Spawn batch_processor (copied and adapted for test)
+        let flush_notify = dummy_log.test_log.flush_notify.clone();
+        let flush_triggered = dummy_log.test_log.flush_triggered.clone();
+        let reset_called = dummy_log.test_log.reset_called.clone();
+        let processor = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(50));
+            loop {
+                tokio::select! {
+                    cmd = rx.recv() => {
+                        if let Some(cmd) = cmd {
+                            if let Some(this) = weak_log.upgrade() {
+                                this.handle_command(cmd).await;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if let Some(this) = weak_log.upgrade() {
+                            let indexes = this.get_pending_indexes().await;
+                            if !indexes.is_empty() {
+                                let this_clone = Arc::clone(&this);
+                                tokio::spawn(async move {
+                                    let _ = this_clone.process_flush(&indexes).await;
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Send a command to trigger flush
+        tx.send(LogCommand::PersistEntries(vec![])).unwrap();
+
+        // Wait for flush to be triggered
+        tokio::time::timeout(Duration::from_millis(200), async {
+            while !flush_triggered.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Flush should be triggered");
+
+        // While flush is ongoing (not released), send Reset
+        let (one_tx, _one_rx) = oneshot::channel();
+        tx.send(LogCommand::Reset(one_tx)).unwrap();
+
+        // Wait a bit to let command process
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Check that Reset was handled even while flush is not finished
+        assert!(
+            reset_called.load(Ordering::SeqCst),
+            "Reset command should be handled promptly"
+        );
+
+        // Release flush
+        flush_notify.notify_waiters();
+
+        // Cleanup: shutdown processor
+        drop(tx);
+        processor.await.unwrap();
     }
 }

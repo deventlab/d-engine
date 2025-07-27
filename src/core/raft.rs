@@ -1,14 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep_until;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 #[cfg(test)]
 use super::raft_event_to_test_event;
 use super::NewCommitData;
@@ -28,6 +17,15 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::StateStorage;
 use crate::TypeConfig;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep_until;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 pub struct Raft<T>
 where

@@ -1,18 +1,3 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::mpsc::{self};
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -47,6 +32,19 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 /// Learner node's state in Raft cluster.
 ///

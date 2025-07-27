@@ -24,8 +24,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::trace;
 
-const ID_BATCH_SIZE: u64 = 100;
-
 /// Commands for the log processor
 #[derive(Debug)]
 pub enum LogCommand {
@@ -198,13 +196,17 @@ where
         &self,
         count: u64,
     ) -> RangeInclusive<u64> {
-        // Calculate required batch size (minimum 1 batch)
-        let batches = count.div_ceil(ID_BATCH_SIZE).max(1);
-        let total = batches * ID_BATCH_SIZE;
+        match count {
+            0 => u64::MAX..=u64::MAX, // Standard empty range
+            _ => {
+                // Overflow checking (enable on demand)
+                let cur = self.next_id.load(Ordering::SeqCst);
+                assert!(cur <= u64::MAX - count, "ID overflow");
 
-        let start = self.next_id.fetch_add(total, Ordering::SeqCst);
-        trace!("RaftLog pre_allocate_id_range: {}..={}", start, start + total - 1);
-        start..=start + total - 1
+                let start = self.next_id.fetch_add(count, Ordering::SeqCst);
+                start..=(start + count - 1)
+            }
+        }
     }
 
     fn get_entries_range(
@@ -686,7 +688,7 @@ where
 
     /// Process entries for flush operation
     /// Separated to make error handling clearer
-    async fn process_flush(
+    pub(super) async fn process_flush(
         &self,
         indexes: &[u64],
     ) -> Result<()> {

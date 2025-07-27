@@ -1079,6 +1079,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::PromoteReadyLearners => {
                 // SAFETY: Called from main event loop, no reentrancy issues
+                info!("Promoting ready learners");
                 self.process_pending_promotions(ctx, &role_tx).await?;
             }
         }
