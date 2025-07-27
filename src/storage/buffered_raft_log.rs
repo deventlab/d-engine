@@ -18,7 +18,6 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
-use tokio::time::Instant;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -44,7 +43,6 @@ pub enum LogCommand {
 
 pub struct FlushState {
     pending_indexes: Vec<u64>, // Indexes pending flush
-    last_flush_time: Instant,
 }
 
 /// High-performance buffered Raft log with event-driven architecture
@@ -78,7 +76,7 @@ where
 
     // --- Flush coordination ---
     // Channel to trigger flushes
-    pub command_sender: mpsc::Sender<LogCommand>,
+    pub command_sender: mpsc::UnboundedSender<LogCommand>,
     // Track flush state
     pub flush_state: Mutex<FlushState>,
     pub waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
@@ -270,7 +268,6 @@ where
                 let indexes: Vec<u64> = entries.iter().map(|e| e.index).collect();
                 self.command_sender
                     .send(LogCommand::PersistEntries(indexes))
-                    .await
                     .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send signal: {:?}", e)))?;
             }
         }
@@ -398,7 +395,6 @@ where
         let (tx, rx) = oneshot::channel();
         self.command_sender
             .send(LogCommand::Flush(tx))
-            .await
             .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send flush command: {:?}", e)))?;
         let _result = rx
             .await
@@ -411,7 +407,6 @@ where
         // Use non-blocking send since we'll await below
         self.command_sender
             .send(LogCommand::Reset(tx))
-            .await
             .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send reset command: {:?}", e)))?;
 
         // Receive the response
@@ -467,7 +462,7 @@ where
         node_id: u32,
         persistence_config: PersistenceConfig,
         storage: Option<Arc<SOF<T>>>,
-    ) -> (Self, mpsc::Receiver<LogCommand>) {
+    ) -> (Self, mpsc::UnboundedReceiver<LogCommand>) {
         let disk_len = if let Some(storage) = &storage {
             storage.last_index()
         } else {
@@ -475,12 +470,17 @@ where
         };
 
         debug!(
-            "Creating BufferedRaftLog with node_id: {}, persistence_config: {:?}, disk_len: {:?}",
-            node_id, persistence_config, disk_len
+            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
+            node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
+        );
+
+        println!(
+            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
+            node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
         );
 
         //TODO: if switch to UnboundedChannel?
-        let (command_sender, command_receiver) = mpsc::channel(100);
+        let (command_sender, command_receiver) = mpsc::unbounded_channel();
 
         let entries = DashMap::new();
 
@@ -515,7 +515,6 @@ where
                 command_sender: command_sender.clone(),
                 flush_state: Mutex::new(FlushState {
                     pending_indexes: Vec::new(),
-                    last_flush_time: Instant::now(),
                 }),
                 waiters: DashMap::new(),
             },
@@ -526,7 +525,7 @@ where
     /// Start the command processor and return an Arc-wrapped instance
     pub fn start(
         self,
-        receiver: mpsc::Receiver<LogCommand>,
+        receiver: mpsc::UnboundedReceiver<LogCommand>,
     ) -> Arc<Self> {
         let arc_self = Arc::new(self);
         let weak_self = Arc::downgrade(&arc_self);
@@ -543,7 +542,7 @@ where
 
     async fn command_processor(
         this: std::sync::Weak<Self>,
-        mut receiver: mpsc::Receiver<LogCommand>,
+        mut receiver: mpsc::UnboundedReceiver<LogCommand>,
     ) {
         trace!("Starting command processor");
         while let Some(cmd) = receiver.recv().await {
@@ -555,7 +554,7 @@ where
 
     async fn batch_processor(
         this: std::sync::Weak<Self>,
-        mut receiver: mpsc::Receiver<LogCommand>,
+        mut receiver: mpsc::UnboundedReceiver<LogCommand>,
         interval_ms: u64,
     ) {
         let mut interval = interval(Duration::from_millis(interval_ms));
@@ -668,18 +667,6 @@ where
         Ok(())
     }
 
-    async fn handle_wait_command(
-        &self,
-        ack: oneshot::Sender<()>,
-    ) {
-        let durable_index = self.durable_index.load(Ordering::Acquire);
-        if durable_index >= self.last_entry_id() {
-            let _ = ack.send(());
-        } else {
-            self.waiters.entry(self.last_entry_id()).or_default().push(ack);
-        }
-    }
-
     async fn handle_wait_durable(
         &self,
         index: u64,
@@ -787,7 +774,7 @@ where
     T: TypeConfig,
 {
     fn drop(&mut self) {
-        if let Err(e) = self.command_sender.clone().try_send(LogCommand::Shutdown) {
+        if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
             error!("Failed to send shutdown command: {:?}", e);
         }
         trace!("BufferedRaftLog dropped");

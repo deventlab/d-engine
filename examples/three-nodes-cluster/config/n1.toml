@@ -23,8 +23,18 @@ batch_size = 5000
 [raft.replication]
 rpc_append_entries_in_batch_threshold = 5000
 
+[raft.persistence]
+strategy = "MemFirst"
+# strategy = "DiskFirst"
+flush_policy = { Batch = { threshold = 2000, interval_ms = 100 } }
+# flush_policy = "Immediate"
+
 [raft.snapshot]
 enable = true
+max_log_entries_before_snapshot = 1000
+snapshot_cool_down_since_last_check = { secs = 1 }
+snapshots_dir = "./snapshots/"
+retained_log_entries = 3
 
 [network.control]
 concurrency_limit = 8192                #// Moderate concurrency

@@ -215,6 +215,7 @@ where
         new_commit_data: NewCommitData,
     ) -> bool {
         if self.snapshot_in_progress.load(Ordering::Relaxed) {
+            trace!("Snapshot already in progress");
             return false;
         }
 
@@ -234,6 +235,8 @@ where
     }
 
     async fn create_snapshot(&self) -> Result<(SnapshotMetadata, PathBuf)> {
+        println!("[SNAPHSOT] Generating snapshot now ...");
+
         // 0. Create a guard (automatically manage state)
         let _guard1 = SnapshotGuard::new(&self.snapshot_in_progress)?;
 
@@ -321,6 +324,8 @@ where
         {
             error!(%e, "clean up old snapshot file failed");
         }
+
+        println!("[SNAPHSOT] New snapshot created: {:?}", &final_path);
 
         Ok((
             SnapshotMetadata {
@@ -902,6 +907,11 @@ where
     #[cfg(test)]
     pub fn pending_commit(&self) -> u64 {
         self.pending_commit.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn snapshot_in_progress(&self) -> bool {
+        self.snapshot_in_progress.load(Ordering::Acquire)
     }
 }
 

@@ -42,6 +42,7 @@ impl<'a> SnapshotGuard<'a> {
 
 impl Drop for SnapshotGuard<'_> {
     fn drop(&mut self) {
-        self.flag.store(false, Ordering::Release);
+        // Always reset when guard goes out of scope
+        self.flag.store(false, Ordering::SeqCst);
     }
 }

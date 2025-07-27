@@ -531,9 +531,9 @@ fn default_max_log_entries_before_snapshot() -> u64 {
 /// Default cooldown duration between snapshot checks.
 ///
 /// Prevents constant evaluation of snapshot conditions in tight loops.
-/// Currently set to 60 days (5,184,000 seconds).
+/// Currently set to 1 hour (3600 seconds).
 fn default_snapshot_cool_down_since_last_check() -> Duration {
-    Duration::from_secs(5_184_000)
+    Duration::from_secs(3600)
 }
 
 /// Default number of historical snapshots to retain

@@ -878,82 +878,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         error!("Failed to send snapshot creation result: {}", e);
                     }
                 });
-
-                // let state_machine_handler = ctx.state_machine_handler();
-
-                // match state_machine_handler.create_snapshot().await {
-                //     Err(e) => {
-                //         error!(%e,"self.state_machine_handler.create_snapshot with error.");
-                //     }
-                //     Ok((
-                //         SnapshotMetadata {
-                //             last_included: last_included_option,
-                //             checksum,
-                //         },
-                //         _final_path,
-                //     )) => {
-                //         info!("Purge Leader local raft logs");
-
-                //         if let Some(last_included) = last_included_option {
-                //             // ----------------------
-                //             // Phase 1: Update the scheduled purge state
-                //             // ----------------------
-                //             if self.can_purge_logs(self.last_purged_index, last_included) {
-                //                 self.scheduled_purge_upto(last_included);
-                //             }
-
-                //             // ----------------------
-                //             // Phase 2.1: Pre-Checks before sending Purge request
-                //             // ----------------------
-                //             let membership = ctx.membership();
-                //             let members = membership.voters().await;
-                //             if members.is_empty() {
-                //                 warn!("no peer found for leader({})", my_id);
-                //                 return Err(MembershipError::NoPeersAvailable.into());
-                //             }
-
-                //             // ----------------------
-                //             // Phase 2.2: Send Purge request to the other nodes
-                //             // ----------------------
-                //             let transport = ctx.transport();
-                //             match transport
-                //                 .send_purge_requests(
-                //                     PurgeLogRequest {
-                //                         term: my_term,
-                //                         leader_id: my_id,
-                //                         last_included: Some(last_included),
-                //                         snapshot_checksum: checksum.clone(),
-                //                         leader_commit: self.commit_index(),
-                //                     },
-                //                     &self.node_config.retry,
-                //                     membership,
-                //                 )
-                //                 .await
-                //             {
-                //                 Ok(result) => {
-                //                     info!(?result, "receive PurgeLogResult");
-
-                //                     self.peer_purge_progress(result, &role_tx)?;
-                //                 }
-                //                 Err(e) => {
-                //                     error!(?e, "RaftEvent::CreateSnapshotEvent");
-                //                     return Err(e);
-                //                 }
-                //             }
-
-                //             // ----------------------
-                //             // Phase 3: Execute scheduled purge task
-                //             // ----------------------
-                //             debug!(?last_included, "Execute scheduled purge task");
-                //             if let Some(scheduled) = self.scheduled_purge_upto {
-                //                 if let Err(e) = ctx.purge_executor().execute_purge(scheduled).await {
-                //                     error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
-                //                 }
-                //                 self.last_purged_index = Some(scheduled);
-                //             }
-                //         }
-                //     }
-                // }
             }
 
             RaftEvent::SnapshotCreated(result) => {
@@ -1032,11 +956,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             debug!(?last_included, "Execute scheduled purge task");
                             if let Some(scheduled) = self.scheduled_purge_upto {
                                 let purge_executor = ctx.purge_executor();
-                                // tokio::spawn(async move {
-                                //     if let Err(e) = purge_executor.execute_purge(scheduled).await {
-                                //         error!(?e, ?scheduled, "raft_log.purge_logs_up_to");
-                                //     }
-                                // });
                                 // //TODO: bug
                                 // self.last_purged_index = Some(scheduled);
                                 match purge_executor.execute_purge(scheduled).await {

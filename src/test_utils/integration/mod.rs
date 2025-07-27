@@ -46,7 +46,6 @@ use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::init_sled_storage_engine_db;
 use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
