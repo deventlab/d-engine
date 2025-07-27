@@ -3,6 +3,7 @@ use super::StorageEngine;
 use crate::alias::SOF;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
+use crate::scoped_timer::ScopedTimer;
 use crate::FlushPolicy;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
@@ -21,7 +22,6 @@ use tokio::time::interval;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
-use tracing::instrument;
 use tracing::trace;
 
 const ID_BATCH_SIZE: u64 = 100;
@@ -244,11 +244,12 @@ where
         Ok(result)
     }
 
-    #[instrument(skip(self))]
     async fn append_entries(
         &self,
         entries: Vec<Entry>,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("append_entries");
+
         let max_index = entries.iter().map(|e| e.index).max().unwrap_or(0);
 
         // Update memory based on strategy
@@ -280,6 +281,7 @@ where
 
         Ok(())
     }
+
     async fn insert_batch(
         &self,
         logs: Vec<Entry>,
@@ -294,6 +296,7 @@ where
         prev_log_term: u64,
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>> {
+        let _timer = ScopedTimer::new("filter_out_conflicts_and_append");
         // Virtual log handling (snapshot installation)
         if prev_log_index == 0 && prev_log_term == 0 {
             self.reset().await?;
@@ -310,14 +313,27 @@ where
             return Ok(self.last_log_id());
         }
 
-        // Remove conflicting entries
-        for index in (prev_log_index + 1)..=self.last_entry_id() {
-            self.entries.remove(&index);
+        // OPTIMIZATION: Skip removal if no conflicts
+        let last_current_index = self.last_entry_id();
+        if prev_log_index >= last_current_index {
+            // Directly append new entries if no conflicts
+            self.append_entries(new_entries.clone()).await?;
+            return Ok(new_entries.last().map(|e| LogId {
+                term: e.term,
+                index: e.index,
+            }));
         }
 
-        // Truncate storage if exists
-        if let Some(storage) = &self.storage {
-            storage.truncate(prev_log_index + 1)?;
+        // OPTIMIZATION: Bulk removal
+        let start_index = prev_log_index + 1;
+        if start_index <= last_current_index {
+            // Remove range using retain (O(n) but more efficient than per-entry removal)
+            self.entries.retain(|index, _| *index < start_index);
+
+            // Truncate storage
+            if let Some(storage) = &self.storage {
+                storage.truncate(start_index)?;
+            }
         }
 
         // Append new entries
@@ -337,6 +353,7 @@ where
         commit_index: u64,
         mut peer_matched_ids: Vec<u64>,
     ) -> Option<u64> {
+        let _timer = ScopedTimer::new("calculate_majority_matched_index");
         // Include leader's last index
         peer_matched_ids.push(self.last_entry_id());
 
@@ -368,6 +385,7 @@ where
         &self,
         cutoff_index: LogId,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("purge_logs_up_to");
         debug!(?cutoff_index, "purge_logs_up_to");
 
         // Remove from memory
@@ -403,18 +421,15 @@ where
     }
 
     async fn reset(&self) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        // Use non-blocking send since we'll await below
-        self.command_sender
-            .send(LogCommand::Reset(tx))
-            .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send reset command: {:?}", e)))?;
+        let _timer = ScopedTimer::new("buffered_raft_log::reset");
+        self.reset_internal()?;
 
-        // Receive the response
-        let r = rx
-            .await
-            .map_err(|_| NetworkError::SingalSendFailed("Reset ack channel closed".to_string()))?;
-
-        debug!("Reset completed: {:?}", r);
+        if let Some(storage) = &self.storage {
+            let storage_clone = storage.clone();
+            tokio::spawn(async move {
+                let _ = storage_clone.reset();
+            });
+        }
 
         Ok(())
     }
@@ -558,41 +573,30 @@ where
         interval_ms: u64,
     ) {
         let mut interval = interval(Duration::from_millis(interval_ms));
-        let mut pending_commands = Vec::new();
 
         loop {
             tokio::select! {
+                // Priority 1: immediate command processing
                 cmd = receiver.recv() => {
                     if let Some(cmd) = cmd {
-                        pending_commands.push(cmd);
-
-                        // Size-based flush trigger
                         if let Some(this) = this.upgrade() {
-                            if let FlushPolicy::Batch { threshold, .. } = this.flush_policy {
-                                let state = this.flush_state.lock().await;
-                                if state.pending_indexes.len() >= threshold {
-                                    let indexes = this.get_pending_indexes().await;
-                                    if !indexes.is_empty() {
-                                        let _ = this.process_flush(&indexes).await;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                _ = interval.tick() => {
-                    if let Some(this) = this.upgrade() {
-                        // Process all pending commands first
-                        for cmd in pending_commands.drain(..) {
+                            // Process immediately without delay
                             this.handle_command(cmd).await;
                         }
-
-                        // Time-based flush trigger
+                    }
+                }
+                // Priority 2: non-blocking refresh trigger
+                _ = interval.tick() => {
+                    if let Some(this) = this.upgrade() {
+                        // Quickly get the index to be refreshed (non-blocking)
                         let indexes = this.get_pending_indexes().await;
+
                         if !indexes.is_empty() {
-                            let _ = this.process_flush(&indexes).await;
+                            // Background asynchronous refresh (do not block the command processor)
+                            let this_clone = this.clone();
+                            tokio::spawn(async move {
+                                let _ = this_clone.process_flush(&indexes).await;
+                            });
                         }
                     }
                 }

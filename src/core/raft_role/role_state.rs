@@ -13,6 +13,7 @@ use crate::proto::common::EntryPayload;
 use crate::proto::election::VotedFor;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
+use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
 use crate::AppendResponseWithUpdates;
 use crate::MaybeCloneOneshotSender;
@@ -324,6 +325,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         role_tx: mpsc::UnboundedSender<RoleEvent>,
         state_snapshot: &StateSnapshot,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("handle_append_entries_request_workflow");
         debug!(
             "handle_raft_event::RaftEvent::AppendEntries: {:?}",
             &append_entries_request

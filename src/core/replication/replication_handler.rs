@@ -1,19 +1,3 @@
-use std::cmp;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use dashmap::DashMap;
-use prost::Message;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 use super::AppendResponseWithUpdates;
 use super::ReplicationCore;
 use crate::alias::ROF;
@@ -43,6 +27,20 @@ use crate::StateSnapshot;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::API_SLO;
+use autometrics::autometrics;
+use dashmap::DashMap;
+use prost::Message;
+use std::cmp;
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
@@ -513,6 +511,8 @@ where
         current_term: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<Vec<Entry>> {
+        let _timer = ScopedTimer::new("generate_new_entries");
+
         // Handle empty case early
         if entry_payloads.is_empty() {
             return Ok(Vec::new());
@@ -580,6 +580,7 @@ where
         entries_per_peer: &DashMap<u32, Vec<Entry>>,
         data: &ReplicationData,
     ) -> (u32, AppendEntriesRequest) {
+        let _timer = ScopedTimer::new("build_append_request");
         // Calculate prev_log metadata
         let (prev_log_index, prev_log_term) = data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
             let prev_index = next_id.saturating_sub(1);

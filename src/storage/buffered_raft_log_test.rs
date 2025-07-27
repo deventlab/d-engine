@@ -7,6 +7,7 @@ use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::reuse_dbs;
+use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
 use crate::BufferedRaftLog;
 use crate::FlushPolicy;
@@ -1967,5 +1968,157 @@ mod common_tests {
         assert!(ctx.raft_log.is_empty());
         assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 0);
         assert_eq!(ctx.raft_log.next_id.load(Ordering::Acquire), 1);
+    }
+}
+
+mod filter_out_conflicts_and_append_performance_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster() {
+        enable_logger();
+
+        // Test configuration
+        let test_cases = vec![
+            (10, 50),   // 10ms interval, 50ms max duration
+            (100, 50),  // 100ms interval, 50ms max duration
+            (1000, 50), // 1000ms interval, 50ms max duration
+        ];
+
+        for (interval_ms, max_duration_ms) in test_cases {
+            // Create MemFirst storage with batch policy
+            let config = PersistenceConfig {
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms,
+                },
+                max_buffered_entries: 1000,
+            };
+
+            let mut storage = MockStorageEngine::new();
+            storage.expect_last_index().returning(|| 0);
+            storage.expect_truncate().returning(|_| Ok(()));
+            storage.expect_persist_entries().returning(|_| Ok(()));
+            storage.expect_reset().returning(|| Ok(()));
+
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(Arc::new(storage)));
+            let log = log.start(receiver);
+
+            // Populate with test data (1000 entries)
+            let mut entries = vec![];
+            for i in 1..=1000 {
+                entries.push(Entry {
+                    index: i,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![0; 256])), // 256B payload
+                });
+            }
+            log.append_entries(entries.clone()).await.unwrap();
+
+            // Measure conflict resolution performance
+            let start = Instant::now();
+            log.filter_out_conflicts_and_append(
+                0, // prev_log_index
+                0, // prev_log_term
+                vec![Entry {
+                    index: 501,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![1; 256])),
+                }],
+            )
+            .await
+            .unwrap();
+
+            let duration = start.elapsed().as_millis() as u64;
+            println!("Interval {}ms: Took {}ms", interval_ms, duration);
+
+            // Verify performance consistency
+            assert!(
+                duration <= max_duration_ms,
+                "Duration {}ms exceeds max {}ms for {}ms interval",
+                duration,
+                max_duration_ms,
+                interval_ms
+            );
+
+            // Verify correctness
+            assert!(log.entry(500).unwrap().is_none());
+            assert!(log.entry(501).unwrap().is_some());
+            assert!(log.entry(502).unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals() {
+        // Test configuration
+        let test_cases = vec![
+            (10, 50),   // 10ms interval, 50ms max duration
+            (100, 50),  // 100ms interval, 50ms max duration
+            (1000, 50), // 1000ms interval, 50ms max duration
+        ];
+
+        for (interval_ms, max_duration_ms) in test_cases {
+            // Create MemFirst storage with batch policy
+            let config = PersistenceConfig {
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms,
+                },
+                max_buffered_entries: 1000,
+            };
+
+            let mut storage = MockStorageEngine::new();
+            storage.expect_last_index().returning(|| 0);
+            storage.expect_truncate().returning(|_| Ok(()));
+            storage.expect_persist_entries().returning(|_| Ok(()));
+            storage.expect_reset().returning(|| Ok(()));
+
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(Arc::new(storage)));
+            let log = log.start(receiver);
+
+            // Populate with test data (1000 entries)
+            let mut entries = vec![];
+            for i in 1..=1000 {
+                entries.push(Entry {
+                    index: i,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![0; 256])), // 256B payload
+                });
+            }
+            log.append_entries(entries.clone()).await.unwrap();
+
+            // Measure conflict resolution performance
+            let start = Instant::now();
+            log.filter_out_conflicts_and_append(
+                500, // prev_log_index
+                1,   // prev_log_term
+                vec![Entry {
+                    index: 501,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![1; 256])),
+                }],
+            )
+            .await
+            .unwrap();
+
+            let duration = start.elapsed().as_millis() as u64;
+            println!("Interval {}ms: Took {}ms", interval_ms, duration);
+
+            // Verify performance consistency
+            assert!(
+                duration <= max_duration_ms,
+                "Duration {}ms exceeds max {}ms for {}ms interval",
+                duration,
+                max_duration_ms,
+                interval_ms
+            );
+
+            // Verify correctness
+            assert!(log.entry(500).unwrap().is_some());
+            assert!(log.entry(501).unwrap().is_some());
+            assert!(log.entry(502).unwrap().is_none()); // Conflict removed
+        }
     }
 }

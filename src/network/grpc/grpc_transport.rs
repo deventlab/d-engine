@@ -35,6 +35,7 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
+use crate::scoped_timer::ScopedTimer;
 use crate::AppendResult;
 use crate::BackoffPolicy;
 use crate::ClusterUpdateResult;
@@ -161,6 +162,8 @@ where
         retry: &RetryPolicies,
         membership: Arc<MOF<T>>,
     ) -> Result<AppendResult> {
+        let _timer = ScopedTimer::new("send_append_requests");
+
         debug!("Sending append entries requests");
         if requests.is_empty() {
             warn!("No append requests to process");
