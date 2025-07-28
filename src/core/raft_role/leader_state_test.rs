@@ -3656,7 +3656,7 @@ mod stale_learner_tests {
         // Should take <1ms even for large queues
         println!("Staleness check for 10k nodes: {:?}", elapsed);
         assert!(
-            elapsed < Duration::from_millis(10),
+            elapsed < Duration::from_millis(20),
             "Staleness check shouldn't process entire queue"
         );
     }

@@ -1466,6 +1466,7 @@ async fn test_term_index_performance_large_dataset() {
 mod id_allocation_tests {
     use super::*;
     use std::{
+        collections::HashSet,
         ops::RangeInclusive,
         sync::{atomic::Ordering, Arc},
     };
@@ -1549,13 +1550,111 @@ mod id_allocation_tests {
         let main_range = raft_log.pre_allocate_id_range(30);
         let thread_range = handle.join().unwrap();
 
-        // Verify ranges are contiguous and non-overlapping
-        assert_eq!(*main_range.start(), 1);
-        assert_eq!(*main_range.end(), 30);
-        assert_eq!(*thread_range.start(), 31);
-        assert_eq!(*thread_range.end(), 80);
+        // Verify range size (no null check required)
+        let main_count = main_range.end() - main_range.start() + 1;
+        let thread_count = thread_range.end() - thread_range.start() + 1;
+        assert_eq!(main_count, 30);
+        assert_eq!(thread_count, 50);
 
-        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 81);
+        // Get all range endpoints
+        let points = [
+            *main_range.start(),
+            *main_range.end(),
+            *thread_range.start(),
+            *thread_range.end(),
+        ];
+
+        let min_id = *points.iter().min().unwrap();
+        let max_id = *points.iter().max().unwrap();
+
+        // Verify continuity: total number of IDs = (max_id - min_id + 1)
+        assert_eq!(main_count + thread_count, max_id - min_id + 1);
+
+        // Verify final status
+        assert_eq!(raft_log.next_id.load(Ordering::SeqCst), max_id + 1);
+    }
+
+    // Define result enumeration inside the test module
+    #[derive(Debug)]
+    enum AllocationResult {
+        Single(u64),
+        Range(RangeInclusive<u64>),
+    }
+
+    #[test]
+    fn test_concurrent_mixed_allocations() {
+        let raft_log = setup_memory();
+        let mut handles = vec![];
+
+        // Start multiple threads for mixed allocation
+        for _ in 0..10 {
+            let log_clone = Arc::clone(&raft_log);
+            handles.push(std::thread::spawn(move || {
+                // Single ID allocation
+                let id = log_clone.pre_allocate_raft_logs_next_index();
+                AllocationResult::Single(id)
+            }));
+        }
+
+        for _ in 0..5 {
+            let log_clone = Arc::clone(&raft_log);
+            handles.push(std::thread::spawn(move || {
+                // range allocation
+                let range = log_clone.pre_allocate_id_range(10);
+                AllocationResult::Range(range)
+            }));
+        }
+
+        // collect results
+        let mut results = vec![];
+        for handle in handles {
+            results.push(handle.join().unwrap());
+        }
+
+        // Verify there are no duplicate IDs
+        let mut all_ids = HashSet::new();
+        for result in &results {
+            match result {
+                AllocationResult::Single(id) => {
+                    assert!(!all_ids.contains(id), "Duplicate ID: {}", id);
+                    all_ids.insert(*id);
+                }
+                AllocationResult::Range(range) => {
+                    if !range.is_empty() {
+                        for id in *range.start()..=*range.end() {
+                            assert!(!all_ids.contains(&id), "Duplicate ID: {}", id);
+                            all_ids.insert(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Get the minimum and maximum IDs
+        let min_id = *all_ids.iter().min().unwrap_or(&0);
+        let max_id = *all_ids.iter().max().unwrap_or(&0);
+
+        // Verify continuity and total count
+        if !all_ids.is_empty() {
+            assert_eq!(
+                all_ids.len() as u64,
+                max_id - min_id + 1,
+                "IDs are not contiguous: min={}, max={}, count={}, expected_count={}",
+                min_id,
+                max_id,
+                all_ids.len(),
+                max_id - min_id + 1
+            );
+
+            // Verify final status
+            assert_eq!(
+                raft_log.next_id.load(Ordering::SeqCst),
+                max_id + 1,
+                "Next ID mismatch: expected {}, actual {}",
+                max_id + 1,
+                raft_log.next_id.load(Ordering::SeqCst)
+            );
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ start-node1:
 	@echo "Starting Node 1..."
 	CONFIG_PATH=config/n1 \
 	LOG_DIR="./logs/1" \
-	RUST_LOG=demo=warn,d_engine=warn,timing=debug \
+	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
 	RUST_BACKTRACE=1 \
 	./target/release/demo
 
@@ -21,14 +21,14 @@ start-node2:
 	@echo "Starting Node 2..."
 	CONFIG_PATH=config/n2 \
 	LOG_DIR="./logs/2" \
-	RUST_LOG=demo=warn,d_engine=warn,timing=debug \
+	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
 	./target/release/demo
 
 start-node3:
 	@echo "Starting Node 3..."
 	CONFIG_PATH=config/n3 \
 	LOG_DIR="./logs/3" \
-	RUST_LOG=demo=warn,d_engine=warn,timing=debug \
+	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
 	./target/release/demo
 
 join-node4:
