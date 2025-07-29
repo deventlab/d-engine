@@ -12,12 +12,15 @@ scrape_configs:
     static_configs:
       - targets: ["node1:8081", "node2:8082", "node3:8083"]
 
-  - job_name: "mbp"
-    static_configs:
-      - targets:
-          ["192.168.31.143:8081", "192.168.31.143:8082", "192.168.31.143:8083"]
-
   - job_name: "mini"
     static_configs:
       - targets:
           ["192.168.31.246:8081", "192.168.31.246:8082", "192.168.31.246:8083"]
+
+  - job_name: "node_exporter"
+    static_configs:
+      - targets:
+          - "192.168.31.246:9100"
+          - "node1:9100"
+          - "node2:9100"
+          - "node3:9100"

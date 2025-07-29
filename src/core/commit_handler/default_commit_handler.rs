@@ -4,6 +4,7 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
+use crate::scoped_timer::ScopedTimer;
 use crate::Membership;
 use crate::NewCommitData;
 use crate::RaftEvent;
@@ -148,6 +149,8 @@ where
     /// # Note:Sequential Integrity
     /// Consider this sequence in a single batch: [ConfigRemove(A), ConfigAdd(B), EntryNormal(X)]
     pub(crate) async fn process_batch(&self) -> Result<()> {
+        let _timer = ScopedTimer::new("CommitHandler::process_batch");
+
         let pending_range = self.state_machine_handler.pending_range();
         trace!("[Node-{}] Pending range: {:?}", self.my_id, pending_range);
 
@@ -242,6 +245,7 @@ where
         &self,
         entry: Entry,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("apply_config_change");
         debug!("Received config change:{:?}", &entry);
 
         if let Some(payload) = entry.payload {

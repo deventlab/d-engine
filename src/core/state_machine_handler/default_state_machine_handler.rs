@@ -1,36 +1,3 @@
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-
-use async_compression::tokio::write::GzipEncoder;
-use async_stream::try_stream;
-use autometrics::autometrics;
-use futures::stream::BoxStream;
-use tokio::fs;
-use tokio::fs::remove_dir_all;
-use tokio::fs::remove_file;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tokio_stream::StreamExt;
-use tonic::async_trait;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-
 use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
@@ -61,6 +28,37 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
+use async_compression::tokio::write::GzipEncoder;
+use async_stream::try_stream;
+use autometrics::autometrics;
+use futures::stream::BoxStream;
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::fs;
+use tokio::fs::remove_dir_all;
+use tokio::fs::remove_file;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tokio_stream::StreamExt;
+use tonic::async_trait;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -147,6 +145,8 @@ where
         &self,
         chunk: Vec<Entry>,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("apply_chunk");
+
         let last_index = chunk.last().map(|entry| entry.index);
         trace!(
             "[node-{}] apply_chunk::entry={:?} last_index: {:?}",
@@ -214,6 +214,8 @@ where
         &self,
         new_commit_data: NewCommitData,
     ) -> bool {
+        let _timer = ScopedTimer::new("should_snapshot");
+
         if self.snapshot_in_progress.load(Ordering::Relaxed) {
             trace!("Snapshot already in progress");
             return false;
