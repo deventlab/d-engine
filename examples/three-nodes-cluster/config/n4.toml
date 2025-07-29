@@ -25,7 +25,7 @@ rpc_append_entries_in_batch_threshold = 5000
 
 [raft.persistence]
 strategy = "MemFirst"
-flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
+flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
 
 
 [retry.join_cluster]

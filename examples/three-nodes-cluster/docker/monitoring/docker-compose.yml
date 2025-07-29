@@ -10,6 +10,8 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      - "--collector.systemd"
+      - "--collector.processes"
     restart: unless-stopped
     networks:
       - docker_mynetwork

@@ -1,24 +1,6 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
-use std::collections::HashSet;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
-use autometrics::autometrics;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use tokio::sync::mpsc;
-use tokio::task;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::async_trait;
-use tonic::codec::CompressionEncoding;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
 use crate::alias::MOF;
 use crate::grpc_task_with_timeout_and_exponential_backoff;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
@@ -50,6 +32,22 @@ use crate::Transport;
 use crate::TypeConfig;
 use crate::VoteResult;
 use crate::API_SLO;
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::task;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct GrpcTransport<T>

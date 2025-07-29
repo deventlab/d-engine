@@ -12,9 +12,6 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
-use std::fmt::Debug;
-use std::marker::PhantomData;
-
 use super::MembershipGuard;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::net::address_str;
@@ -43,6 +40,8 @@ use autometrics::autometrics;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
+use std::fmt::Debug;
+use std::marker::PhantomData;
 use tokio::task;
 use tonic::async_trait;
 use tonic::transport::Channel;
