@@ -194,3 +194,116 @@ The connection type strategy is crucial because:
 - Log replication needs steady high throughput
 Separating these onto dedicated connections prevents resource contention and tail latency spikes.
 ```
+
+## Reference Deployment Configurations
+
+Below are example configurations for different deployment scenarios.
+Adjust values based on snapshot size, log append rate, and cluster size.
+
+1. Single Node (Local Dev / Testing)
+   • CPU: 4 cores
+   • Memory: 8 GB
+   • Network: Localhost
+
+```toml
+[network.control]
+concurrency_limit = 10
+max_concurrent_streams = 64
+connection_window_size = 1_048_576   # 1MB
+
+[network.data]
+concurrency_limit = 20
+max_concurrent_streams = 128
+connection_window_size = 2_097_152   # 2MB
+
+[network.bulk]
+concurrency_limit = 2
+connection_window_size = 8_388_608   # 8MB
+request_timeout_in_ms = 10_000       # 10s
+```
+
+Tip: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local.
+
+2. 3-Node Public Cloud Cluster (Medium)
+   • Instance Type: 4 vCPU / 16 GB RAM (e.g., AWS m6i.large, GCP n2-standard-4)
+   • Network: 10 Gbps
+
+```toml
+[network.control]
+concurrency_limit = 20
+max_concurrent_streams = 128
+connection_window_size = 2_097_152   # 2MB
+
+[network.data]
+concurrency_limit = 30
+max_concurrent_streams = 256
+connection_window_size = 4_194_304   # 4MB
+
+[network.bulk]
+concurrency_limit = 4
+connection_window_size = 33_554_432  # 32MB
+request_timeout_in_ms = 30_000       # 30s for multi-GB snapshots
+```
+
+Tip: For public cloud, moderate concurrency and 32MB bulk windows ensure stable snapshot streaming without affecting heartbeats.
+
+3. 5-Node High-Throughput Cluster (Production)
+   • Instance Type: 8 vCPU / 32 GB RAM (e.g., AWS m6i.xlarge)
+   • Network: 25 Gbps
+
+```toml
+[network.control]
+concurrency_limit = 50
+max_concurrent_streams = 256
+connection_window_size = 4_194_304   # 4MB
+
+[network.data]
+concurrency_limit = 80
+max_concurrent_streams = 512
+connection_window_size = 8_388_608   # 8MB
+
+[network.bulk]
+concurrency_limit = 8
+connection_window_size = 67_108_864  # 64MB
+request_timeout_in_ms = 60_000       # 60s for large snapshots
+```
+
+Tip: Increase concurrency and window size to prevent log replication bottlenecks in high-throughput clusters.
+Bulk plane is tuned for multi-GB snapshots without blocking the control plane.
+
+## Network Environment Tuning Recommendations
+
+These parameters are primarily **network-dependent**, not CPU/memory dependent.
+
+Adjust them based on latency, packet loss, and connection stability.
+
+| **Environment**                  | **tcp_keepalive_in_secs** | **http2_keep_alive_interval_in_secs** | **http2_keep_alive_timeout_in_secs** | **max_frame_size** | **Notes**                                                                |
+| -------------------------------- | ------------------------- | ------------------------------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------------------ |
+| **Local / In-Cluster (LAN)**     | 60                        | 10                                    | 5                                    | 16_777_215 (16MB)  | Low latency & stable; defaults are fine                                  |
+| **Cross-Region / Stable WAN**    | 60                        | 15                                    | 8                                    | 16_777_215 (16MB)  | Slightly longer keep-alive to avoid false disconnects                    |
+| **Public Cloud / Moderate Loss** | 60                        | 20                                    | 10                                   | 33_554_432 (32MB)  | Higher interval & timeout for lossy links; larger frame helps batch logs |
+| **High Latency / Unstable WAN**  | 120                       | 30                                    | 15                                   | 33_554_432 (32MB)  | Longer timeouts prevent spurious drops                                   |
+
+**Guidelines:**
+
+1. Keep-alive interval ≈ 1/3 of timeout.
+2. Increase `max_frame_size` only if batch logs or snapshots exceed 16MB.
+3. High-latency WAN: favor fewer reconnects over aggressive failure detection.
+4. These settings are independent of CPU and memory; focus on network RTT and stability.
+
+### RPC Timeout Guidance
+
+`connect_timeout_in_ms` and `request_timeout_in_ms` depend on **network latency and I/O**, not CPU or memory.
+
+| **Environment**                  | **connect_timeout_in_ms** | **request_timeout_in_ms** | **Notes**                                             |
+| -------------------------------- | ------------------------- | ------------------------- | ----------------------------------------------------- |
+| **Local / In-Cluster (LAN)**     | 50–100                    | 100–300                   | Very low RTT; fast retries                            |
+| **Cross-Region / Stable WAN**    | 200–500                   | 300–1000                  | Higher RTT, moderate batch sizes                      |
+| **Public Cloud / Moderate Loss** | 500–1000                  | 1000–5000                 | Compensate for packet loss and I/O latency            |
+| **High Latency / Unstable WAN**  | 1000+                     | 5000+                     | Favor fewer reconnects; allow large batch replication |
+
+**Tips:**
+
+1. `connect_timeout_in_ms` covers TCP+TLS+gRPC handshake; increase for high-latency links.
+2. `request_timeout_in_ms` should accommodate log batches and disk write delays on followers.
+3. Timeouts mainly depend on **network RTT** and **disk I/O**, not hardware compute.
