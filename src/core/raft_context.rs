@@ -1,6 +1,3 @@
-use std::fmt::Debug;
-use std::sync::Arc;
-
 use crate::alias::EOF;
 use crate::alias::MOF;
 use crate::alias::PE;
@@ -8,15 +5,15 @@ use crate::alias::REPOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
-use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::RaftNodeConfig;
 use crate::TypeConfig;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 pub(crate) struct RaftStorageHandles<T: TypeConfig> {
     pub(crate) raft_log: Arc<ROF<T>>,
     pub(crate) state_machine: Arc<SMOF<T>>,
-    pub(crate) state_storage: Arc<SSOF<T>>,
 }
 
 pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
@@ -60,10 +57,6 @@ where
 
     pub fn state_machine(&self) -> &SMOF<T> {
         &self.storage.state_machine
-    }
-
-    pub fn state_storage(&self) -> &SSOF<T> {
-        &self.storage.state_storage
     }
 
     pub fn transport(&self) -> &Arc<TROF<T>> {

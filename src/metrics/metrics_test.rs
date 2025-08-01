@@ -91,7 +91,6 @@ async fn test_metrics_endpoint_format() {
     // Verify indicator format
     let body = String::from_utf8(response.body().to_vec()).unwrap();
 
-    println!("body: {:?}", &body);
     // Check custom indicator characteristics
     assert!(body.contains("d_engine_committed_log")); // Verify prefix
 }

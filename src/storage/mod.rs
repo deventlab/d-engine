@@ -3,7 +3,6 @@ mod raft_log;
 mod sled_adapter;
 mod snapshot_path_manager;
 mod state_machine;
-mod state_storage;
 mod storage_engine;
 
 #[doc(hidden)]
@@ -16,8 +15,6 @@ pub use sled_adapter::*;
 pub(crate) use snapshot_path_manager::*;
 #[doc(hidden)]
 pub use state_machine::*;
-#[doc(hidden)]
-pub use state_storage::*;
 #[doc(hidden)]
 pub use storage_engine::*;
 
@@ -34,7 +31,7 @@ use tracing::warn;
 // Database namespaces
 /// Sled database tree namespaces
 const RAFT_LOG_NAMESPACE: &str = "raft_log";
-const STATE_STORAGE_NAMESPACE: &str = "state_storage";
+const RAFT_META_NAMESPACE: &str = "raft_meta";
 
 /// raft logs storage
 /// (raft_log_db, state_machine_db, state_storage_db, snapshot_storge_db)

@@ -1,5 +1,6 @@
 use crate::proto::common::{Entry, LogId};
-use crate::Result;
+use crate::{HardState, Result};
+use bytes::Bytes;
 use std::ops::RangeInclusive;
 
 #[cfg(test)]
@@ -11,6 +12,22 @@ pub trait StorageEngine: Send + Sync + 'static {
         &self,
         entries: Vec<Entry>,
     ) -> Result<()>;
+
+    fn insert<K, V>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<Option<Vec<u8>>>
+    where
+        K: AsRef<[u8]> + 'static,
+        V: AsRef<[u8]> + 'static;
+
+    fn get<K>(
+        &self,
+        key: K,
+    ) -> crate::Result<Option<Bytes>>
+    where
+        K: AsRef<[u8]> + Send + 'static;
 
     fn entry(
         &self,
@@ -37,6 +54,15 @@ pub trait StorageEngine: Send + Sync + 'static {
     fn truncate(
         &self,
         from_index: u64,
+    ) -> Result<()>;
+
+    /// When node restarts, check if there is stored state from disk
+    fn load_hard_state(&self) -> Result<Option<HardState>>;
+
+    /// Save role hard state into db
+    fn save_hard_state(
+        &self,
+        hard_state: HardState,
     ) -> Result<()>;
 
     #[cfg(test)]

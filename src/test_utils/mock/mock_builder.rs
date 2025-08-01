@@ -1,13 +1,3 @@
-use std::path::Path;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::error;
-use tracing::trace;
-
 use super::MockTypeConfig;
 use crate::follower_state::FollowerState;
 use crate::grpc;
@@ -21,7 +11,6 @@ use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
-use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::Node;
 use crate::Raft;
@@ -29,20 +18,27 @@ use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftCoreHandlers;
 use crate::RaftEvent;
+use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStorageHandles;
 use crate::RoleEvent;
 use crate::SignalParams;
 use crate::StateMachine;
-use crate::StateStorage;
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::error;
+use tracing::trace;
 
 pub struct MockBuilder {
     pub id: Option<u32>,
     pub role: Option<RaftRole<MockTypeConfig>>,
     pub raft_log: Option<MockRaftLog>,
     pub state_machine: Option<Arc<MockStateMachine>>,
-    pub state_storage: Option<MockStateStorage>,
     pub transport: Option<MockTransport<MockTypeConfig>>,
     pub membership: Option<Arc<MockMembership<MockTypeConfig>>>,
     pub purge_executor: Option<MockPurgeExecutor>,
@@ -67,7 +63,6 @@ impl MockBuilder {
             role: None,
             raft_log: None,
             state_machine: None,
-            state_storage: None,
             transport: None,
             membership: None,
             purge_executor: None,
@@ -89,7 +84,6 @@ impl MockBuilder {
         let (
             raft_log,
             state_machine,
-            state_storage,
             transport,
             election_handler,
             replication_handler,
@@ -100,7 +94,6 @@ impl MockBuilder {
         ) = (
             Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            Arc::new(self.state_storage.unwrap_or_else(mock_state_storage)),
             Arc::new(self.transport.unwrap_or_else(mock_transport)),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
@@ -115,7 +108,6 @@ impl MockBuilder {
         let storage = RaftStorageHandles {
             raft_log,
             state_machine,
-            state_storage,
         };
         let handlers = RaftCoreHandlers {
             election_handler,
@@ -133,7 +125,6 @@ impl MockBuilder {
             id,
             raft_log,
             state_machine,
-            state_storage,
             transport,
             election_handler,
             replication_handler,
@@ -149,7 +140,6 @@ impl MockBuilder {
             self.id.unwrap_or(1),
             self.raft_log.unwrap_or_else(mock_raft_log),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            self.state_storage.unwrap_or_else(mock_state_storage),
             self.transport.unwrap_or_else(mock_transport),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
@@ -188,7 +178,7 @@ impl MockBuilder {
         let role = self.role.unwrap_or(RaftRole::Follower(Box::new(FollowerState::new(
             id,
             arc_node_config.clone(),
-            state_storage.load_hard_state(),
+            raft_log.load_hard_state().expect("Failed to load hard state"),
             Some(state_machine.last_applied().index),
         ))));
 
@@ -198,7 +188,6 @@ impl MockBuilder {
             RaftStorageHandles::<MockTypeConfig> {
                 raft_log: Arc::new(raft_log),
                 state_machine,
-                state_storage: Arc::new(state_storage),
             },
             transport,
             RaftCoreHandlers::<MockTypeConfig> {
@@ -296,14 +285,6 @@ impl MockBuilder {
         self
     }
 
-    pub fn with_state_storage(
-        mut self,
-        state_storage: MockStateStorage,
-    ) -> Self {
-        self.state_storage = Some(state_storage);
-        self
-    }
-
     pub fn with_transport(
         mut self,
         transport: MockTransport<MockTypeConfig>,
@@ -376,6 +357,8 @@ pub fn mock_raft_log() -> MockRaftLog {
     raft_log.expect_last_entry_id().returning(|| 0);
     raft_log.expect_last_log_id().returning(|| None);
     raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_log
 }
 pub fn mock_state_machine() -> MockStateMachine {
@@ -386,12 +369,6 @@ pub fn mock_state_machine() -> MockStateMachine {
     state_machine.expect_flush().returning(|| Ok(()));
     state_machine.expect_save_hard_state().returning(|| Ok(()));
     state_machine
-}
-pub fn mock_state_storage() -> MockStateStorage {
-    let mut state_storage = MockStateStorage::new();
-    state_storage.expect_load_hard_state().returning(|| None);
-    state_storage.expect_save_hard_state().returning(|_| Ok(()));
-    state_storage
 }
 
 pub fn mock_transport() -> MockTransport<MockTypeConfig> {

@@ -30,12 +30,10 @@ use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
-use crate::NetworkError;
 use crate::Node;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
-use crate::SystemError;
 use futures::StreamExt;
 use mockall::predicate::eq;
 use mockall::Sequence;
@@ -1490,14 +1488,6 @@ fn mock_node_with_rpc_service(
             .returning(|_, _, _, _, _| {
                 Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
                     100,
-                ))))
-            });
-        election_handler
-            .expect_handle_vote_request()
-            .times(1)
-            .returning(|_, _, _, _| {
-                Err(Error::System(SystemError::Network(NetworkError::SingalSendFailed(
-                    "".to_string(),
                 ))))
             });
     }

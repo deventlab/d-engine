@@ -40,13 +40,11 @@ use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::alias::SOF;
-use crate::alias::SSOF;
 use crate::alias::TROF;
 use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_state_machine_db;
-use crate::init_sled_state_storage_db;
 use crate::init_sled_storage_engine_db;
 use crate::learner_state::LearnerState;
 use crate::metrics;
@@ -64,6 +62,7 @@ use crate::Node;
 use crate::Raft;
 use crate::RaftConfig;
 use crate::RaftCoreHandlers;
+use crate::RaftLog;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
@@ -72,10 +71,8 @@ use crate::ReplicationHandler;
 use crate::Result;
 use crate::SignalParams;
 use crate::SledStateMachine;
-use crate::SledStateStorage;
 use crate::SledStorageEngine;
 use crate::StateMachine;
-use crate::StateStorage;
 use crate::SystemError;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -101,7 +98,6 @@ pub struct NodeBuilder {
     pub(super) storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
     pub(super) membership: Option<MOF<RaftTypeConfig>>,
     pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    pub(super) state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
     pub(super) transport: Option<TROF<RaftTypeConfig>>,
     pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
     pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
@@ -165,7 +161,6 @@ impl NodeBuilder {
             node_id: node_config.cluster.node_id,
             storage_engine: None,
             state_machine: None,
-            state_storage: None,
             transport: None,
             membership: None,
             node_config,
@@ -193,15 +188,6 @@ impl NodeBuilder {
         state_machine: Arc<SMOF<RaftTypeConfig>>,
     ) -> Self {
         self.state_machine = Some(state_machine);
-        self
-    }
-
-    /// Sets a custom state storage implementation
-    pub fn state_storage(
-        mut self,
-        state_storage: Arc<SSOF<RaftTypeConfig>>,
-    ) -> Self {
-        self.state_storage = Some(state_storage);
         self
     }
 
@@ -276,28 +262,20 @@ impl NodeBuilder {
                     .expect("Init raft state machine successfully."),
             )
         });
-
-        //Retrieve last applied index from state machine
-        let last_applied_index = state_machine.last_applied().index;
-
         let storage_engine = self.storage_engine.take().unwrap_or_else(|| {
             let storage_engine_db =
                 init_sled_storage_engine_db(&db_root_dir).expect("init_sled_storage_engine_db successfully.");
             Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("Init storage engine successfully."))
         });
+        //Retrieve last applied index from state machine
+        let last_applied_index = state_machine.last_applied().index;
         let raft_log = {
             let (log, receiver) =
-                BufferedRaftLog::new(node_id, node_config.raft.persistence.clone(), Some(storage_engine));
+                BufferedRaftLog::new(node_id, node_config.raft.persistence.clone(), storage_engine.clone());
 
             // Start processor and get Arc-wrapped instance
             log.start(receiver)
         };
-
-        let state_storage = self.state_storage.take().unwrap_or_else(|| {
-            let state_storage_db =
-                init_sled_state_storage_db(&db_root_dir).expect("init_sled_state_storage_db successfully.");
-            Arc::new(SledStateStorage::new(Arc::new(state_storage_db)))
-        });
 
         let transport = self.transport.take().unwrap_or(GrpcTransport::new(node_id));
 
@@ -349,7 +327,7 @@ impl NodeBuilder {
             RaftRole::Follower(Box::new(FollowerState::new(
                 node_id,
                 node_config_arc.clone(),
-                state_storage.load_hard_state(),
+                raft_log.load_hard_state().expect("Failed to load hard state"),
                 last_applied_index,
             )))
         };
@@ -364,7 +342,6 @@ impl NodeBuilder {
             RaftStorageHandles::<RaftTypeConfig> {
                 raft_log,
                 state_machine: state_machine.clone(),
-                state_storage,
             },
             transport,
             RaftCoreHandlers::<RaftTypeConfig> {

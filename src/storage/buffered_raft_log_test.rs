@@ -28,7 +28,7 @@ use tracing::debug;
 // Test utilities
 struct TestContext {
     raft_log: Arc<ROF<RaftTypeConfig>>,
-    storage: Option<Arc<SledStorageEngine>>,
+    storage: Arc<SledStorageEngine>,
     _temp_dir: Option<tempfile::TempDir>,
 }
 
@@ -39,8 +39,9 @@ impl TestContext {
     ) -> Self {
         let temp_dir = tempdir().unwrap();
         let storage = {
-            let (db, _, _, _) = reset_dbs(temp_dir.path().to_str().unwrap());
-            Some(Arc::new(SledStorageEngine::new(1, db).unwrap()))
+            let config = sled::Config::new().temporary(true);
+            let db = config.open().unwrap();
+            Arc::new(SledStorageEngine::new(1, db).unwrap())
         };
 
         let (raft_log, receiver) = BufferedRaftLog::new(
@@ -747,7 +748,8 @@ async fn test_insert_batch_logs_case1() {
 #[tokio::test]
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
-    let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node1");
+    let config = sled::Config::new().temporary(true);
+    let db = config.open().unwrap();
     let (old_leader, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         1,
         PersistenceConfig {
@@ -755,11 +757,12 @@ async fn test_insert_batch_logs_case2() {
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 1000,
         },
-        Some(Arc::new(SledStorageEngine::new(1, raft_log_db).unwrap())),
+        Arc::new(SledStorageEngine::new(1, db).unwrap()),
     );
     let old_leader = old_leader.start(receiver);
 
-    let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_insert_batch_logs_case2_node2");
+    let config = sled::Config::new().temporary(true);
+    let db = config.open().unwrap();
     let (new_leader, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         2,
         PersistenceConfig {
@@ -767,7 +770,7 @@ async fn test_insert_batch_logs_case2() {
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 1000,
         },
-        Some(Arc::new(SledStorageEngine::new(2, raft_log_db).unwrap())),
+        Arc::new(SledStorageEngine::new(2, db).unwrap()),
     );
     let new_leader = new_leader.start(receiver);
 
@@ -1136,7 +1139,7 @@ async fn test_raft_log_drop() {
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
             },
-            Some(Arc::new(SledStorageEngine::new(1, db).unwrap())),
+            Arc::new(SledStorageEngine::new(1, db).unwrap()),
         );
         let raft_log = raft_log.start(receiver);
         // Insert test data
@@ -1366,9 +1369,9 @@ async fn test_term_index_functions_with_purged_logs() {
 #[tokio::test]
 async fn test_term_index_functions_with_concurrent_writes() {
     enable_logger();
-    let (raft_log_db, _, _state_storage_db, _) = reset_dbs("/tmp/test_term_index_functions_with_concurrent_writes");
-    let _arc_raft_log_db = Arc::new(raft_log_db);
-
+    let config = sled::Config::new().temporary(true);
+    let db = config.open().unwrap();
+    let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
     let (raft_log, log_command_receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         1,
         PersistenceConfig {
@@ -1376,7 +1379,7 @@ async fn test_term_index_functions_with_concurrent_writes() {
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 1000,
         },
-        None,
+        storage,
     );
     let raft_log = raft_log.start(log_command_receiver);
     // raft_log.reset().await.expect("reset successfully!");
@@ -1474,7 +1477,8 @@ mod id_allocation_tests {
     // In-memory test setup
     fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig>> {
         let config = sled::Config::new().temporary(true);
-        let _db = Arc::new(config.open().unwrap());
+        let db = config.open().unwrap();
+        let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
 
         let (raft_log, _receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
@@ -1483,7 +1487,7 @@ mod id_allocation_tests {
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
             },
-            None,
+            storage,
         );
 
         Arc::new(raft_log)
@@ -1761,7 +1765,7 @@ mod disk_first_tests {
                     flush_policy: FlushPolicy::Immediate,
                     max_buffered_entries: 1000,
                 },
-                Some(storage),
+                storage,
             );
             let raft_log = raft_log.start(receiver);
             raft_log
@@ -1785,7 +1789,7 @@ mod disk_first_tests {
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
             },
-            Some(storage),
+            storage,
         );
         let raft_log = raft_log.start(receiver);
         sleep(Duration::from_millis(50)).await; // Allow recovery
@@ -1863,7 +1867,7 @@ mod mem_first_tests {
 
         // Verify persistence
         assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 100);
-        assert_eq!(ctx.storage.as_ref().unwrap().last_index(), 100);
+        assert_eq!(ctx.storage.as_ref().last_index(), 100);
     }
 
     #[tokio::test]
@@ -1985,7 +1989,7 @@ mod batched_tests {
                     },
                     max_buffered_entries: 1000,
                 },
-                Some(storage),
+                storage,
             );
             let raft_log = raft_log.start(receiver);
 
@@ -2017,7 +2021,7 @@ mod batched_tests {
                 },
                 max_buffered_entries: 1000,
             },
-            Some(storage),
+            storage,
         );
         let raft_log = raft_log.start(receiver);
         sleep(Duration::from_millis(50)).await; // Allow recovery
@@ -2130,7 +2134,7 @@ mod filter_out_conflicts_and_append_performance_tests {
             storage.expect_persist_entries().returning(|_| Ok(()));
             storage.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(Arc::new(storage)));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
             let log = log.start(receiver);
 
             // Populate with test data (1000 entries)
@@ -2203,7 +2207,7 @@ mod filter_out_conflicts_and_append_performance_tests {
             storage.expect_persist_entries().returning(|_| Ok(()));
             storage.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(Arc::new(storage)));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
             let log = log.start(receiver);
 
             // Populate with test data (1000 entries)
@@ -2263,6 +2267,7 @@ mod performance_tests {
         storage.expect_last_index().returning(|| 0);
         storage.expect_truncate().returning(|_| Ok(()));
         storage.expect_reset().returning(|| Ok(()));
+        storage.expect_flush().returning(|| Ok(()));
 
         // Add controllable delay to persist_entries
         storage.expect_persist_entries().returning(move |_| {
@@ -2300,7 +2305,7 @@ mod performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(storage));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
             let log_arc = Arc::new(log.start(receiver));
             let barrier = Arc::new(Barrier::new(2));
 
@@ -2351,7 +2356,7 @@ mod performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(storage));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
             let log_arc = Arc::new(log.start(receiver));
             let barrier = Arc::new(Barrier::new(2));
 
@@ -2434,7 +2439,7 @@ mod performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(Arc::new(storage)));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
             let log_arc = Arc::new(log.start(receiver));
 
             // Measure reset performance in fresh cluster
@@ -2469,7 +2474,7 @@ mod performance_tests {
     //         max_buffered_entries: 1000,
     //     };
 
-    //     let (log, mut receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Some(storage));
+    //     let (log, mut receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
     //     let log_arc = Arc::new(log.start(receiver));
     //     let barrier = Arc::new(Barrier::new(2));
 

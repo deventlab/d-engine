@@ -1,5 +1,5 @@
-use std::time::Duration;
-
+use crate::common::ClientCommands;
+use crate::common::{self};
 use d_engine::client::Client;
 use d_engine::client::ClientBuilder;
 use d_engine::convert::safe_kv;
@@ -9,13 +9,11 @@ use d_engine::proto::error::ErrorCode;
 use d_engine::ClientApiError;
 use d_engine::Result;
 use d_engine::LEADER;
+use std::time::Duration;
 use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-
-use crate::common::ClientCommands;
-use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
 const RETRY_DELAY_MS: u64 = 100;

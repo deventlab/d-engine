@@ -117,6 +117,13 @@ pub trait RaftLog: Send + Sync + 'static {
         matched_ids: Vec<u64>,
     ) -> Option<u64>;
 
+    fn load_hard_state(&self) -> Result<Option<crate::HardState>>;
+
+    fn save_hard_state(
+        &self,
+        hard_state: crate::HardState,
+    ) -> Result<()>;
+
     #[cfg(test)]
     fn db_size(
         &self,

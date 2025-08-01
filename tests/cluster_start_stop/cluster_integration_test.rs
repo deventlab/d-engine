@@ -1,8 +1,3 @@
-use std::time::Duration;
-
-use d_engine::ClientApiError;
-use tracing::error;
-
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
@@ -15,6 +10,9 @@ use crate::common::TestContext;
 use crate::common::ITERATIONS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::CLUSTER_PORT_BASE;
+use d_engine::ClientApiError;
+use std::time::Duration;
+use tracing::error;
 
 // Constants for test configuration
 const TEST_CASE1_DIR: &str = "cluster_start_stop/case1";
@@ -55,7 +53,6 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
                 )
                 .await,
             ),
-            None,
             None,
             None,
         )
@@ -156,7 +153,6 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
             ),
             None,
             None,
-            None,
         )
         .await?;
         ctx.graceful_txs.push(graceful_tx);
@@ -193,7 +189,6 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     println!("------------------T3-----------------");
     let (graceful_tx1, node_n1) = start_node(
         node_config(&create_node_config(1, ports[0], &ports, TEST_CASE2_DB_ROOT_DIR, TEST_CASE2_LOG_DIR).await),
-        None,
         None,
         None,
     )
@@ -233,7 +228,6 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
                 )
                 .await,
             ),
-            None,
             None,
             None,
         )

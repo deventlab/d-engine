@@ -1,6 +1,5 @@
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
-use crate::test_utils::insert_state_storage;
 use crate::test_utils::node_config;
 use crate::test_utils::reset_dbs;
 use crate::BufferedRaftLog;
@@ -11,10 +10,8 @@ use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftNodeConfig;
 use crate::SledStateMachine;
-use crate::SledStateStorage;
 use crate::SledStorageEngine;
 use crate::StateMachine;
-use crate::StateStorage;
 use crate::StorageEngine;
 use crate::SystemError;
 use std::path::PathBuf;
@@ -31,7 +28,6 @@ fn test_new_initializes_default_components_with_none() {
 
     assert!(builder.storage_engine.is_none());
     assert!(builder.state_machine.is_none());
-    assert!(builder.state_storage.is_none());
     assert!(builder.transport.is_none());
     assert!(builder.membership.is_none());
     assert!(builder.commit_handler.is_none());
@@ -46,12 +42,11 @@ async fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let db_path = "/tmp/test_set_raft_log_replaces_default";
 
-    let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) = reset_dbs(db_path);
+    let (raft_log_db, state_machine_db, _state_storage_db, _snapshot_storage_db) = reset_dbs(db_path);
 
     let id = 1;
     let raft_log_db = raft_log_db;
     let state_machine_db = Arc::new(state_machine_db);
-    let state_storage_db = Arc::new(state_storage_db);
 
     let sled_storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("success"));
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
@@ -61,7 +56,7 @@ async fn test_set_raft_log_replaces_default() {
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 1000,
         },
-        Some(sled_storage_engine.clone()),
+        sled_storage_engine.clone(),
     );
     let buffered_raft_log = buffered_raft_log.start(receiver);
 
@@ -73,14 +68,9 @@ async fn test_set_raft_log_replaces_default() {
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
 
-    let sled_state_storage = Arc::new(SledStateStorage::new(state_storage_db));
-    let expected_state_storage_ids = vec![1, 2, 3, 4, 5];
-    insert_state_storage(&sled_state_storage, expected_state_storage_ids.clone());
-
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new_from_db_path(db_path, shutdown_rx)
         .storage_engine(sled_storage_engine)
-        .state_storage(sled_state_storage)
         .state_machine(sled_state_machine);
 
     // Verify that raft_log is replaced with customization one
@@ -91,10 +81,6 @@ async fn test_set_raft_log_replaces_default() {
     assert_eq!(
         builder.state_machine.as_ref().unwrap().len(),
         expected_state_machine_ids.len()
-    );
-    assert_eq!(
-        builder.state_storage.as_ref().unwrap().len(),
-        expected_state_storage_ids.len()
     );
 }
 

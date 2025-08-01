@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::watch;
+use tracing::debug;
 use tracing_test::traced_test;
 
 use crate::{
@@ -72,6 +73,8 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
         .returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);
     raft_log.expect_flush().return_once(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
     (raft_log, replication_handler)
 }
@@ -288,9 +291,7 @@ async fn run_fails_on_health_check() {
     let shutdown_tx = _shutdown_tx.clone();
 
     // Spawn node execution in background
-    let handle = tokio::spawn(async move {
-        node_clone.run().await.expect("Node run should succeed");
-    });
+    let handle = tokio::spawn(async move { node_clone.run().await });
 
     tokio::time::advance(Duration::from_millis(2)).await;
     // Give some time for execution to start
@@ -300,7 +301,9 @@ async fn run_fails_on_health_check() {
     shutdown_tx.send(()).expect("Should send shutdown");
 
     // Wait for completion
-    assert!(handle.await.is_err());
+    let result = handle.await.unwrap();
+    debug!(?result, "Node execution result");
+    assert!(result.is_err());
 
     // Verify node state
     assert!(!node.server_is_ready(), "Node should not be marked ready");

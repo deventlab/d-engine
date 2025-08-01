@@ -60,7 +60,7 @@ where
     #[allow(dead_code)]
     node_id: u32,
 
-    storage: Option<Arc<SOF<T>>>,
+    storage: Arc<SOF<T>>,
     strategy: PersistenceStrategy,
     flush_policy: FlushPolicy,
 
@@ -98,11 +98,9 @@ where
 
         // Disk fallback only for DiskFirst strategy
         if let PersistenceStrategy::DiskFirst = self.strategy {
-            if let Some(storage) = &self.storage {
-                if let Some(entry) = storage.entry(index)? {
-                    self.entries.insert(index, entry.clone());
-                    return Ok(Some(entry));
-                }
+            if let Some(entry) = self.storage.entry(index)? {
+                self.entries.insert(index, entry.clone());
+                return Ok(Some(entry));
             }
         }
 
@@ -120,7 +118,7 @@ where
     fn last_entry_id(&self) -> u64 {
         match self.strategy {
             // For DiskFirst: storage has the most accurate last index
-            PersistenceStrategy::DiskFirst => self.storage.as_ref().map(|s| s.last_index()).unwrap_or(0),
+            PersistenceStrategy::DiskFirst => self.storage.last_index(),
             // For MemFirst: memory has the complete log
             PersistenceStrategy::MemFirst => self.entries.iter().map(|e| *e.key()).max().unwrap_or(0),
         }
@@ -129,7 +127,7 @@ where
     fn last_entry(&self) -> Option<Entry> {
         // Disk fallback only for DiskFirst strategy
         let last_index = match self.strategy {
-            PersistenceStrategy::DiskFirst => self.storage.as_ref().map(|s| s.last_index()).unwrap_or(0),
+            PersistenceStrategy::DiskFirst => self.storage.last_index(),
             PersistenceStrategy::MemFirst => self.entries.iter().map(|e| *e.key()).max().unwrap_or(0),
         };
 
@@ -187,9 +185,7 @@ where
 
     fn pre_allocate_raft_logs_next_index(&self) -> u64 {
         // self.get_raft_logs_length() + 1
-        let next_id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        trace!(" RaftLog pre_allocate_raft_logs_next_index: {}", next_id);
-        next_id
+        self.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
     fn pre_allocate_id_range(
@@ -233,12 +229,10 @@ where
             .map(|e| e.value().clone())
             .collect();
 
-        if let Some(storage) = &self.storage {
-            let storage_entries = storage.get_entries_range(range.clone())?;
-            for entry in storage_entries {
-                if !self.entries.contains_key(&entry.index) {
-                    result.push(entry);
-                }
+        let storage_entries = self.storage.get_entries_range(range.clone())?;
+        for entry in storage_entries {
+            if !self.entries.contains_key(&entry.index) {
+                result.push(entry);
             }
         }
 
@@ -333,9 +327,7 @@ where
             self.entries.retain(|index, _| *index < start_index);
 
             // Truncate storage
-            if let Some(storage) = &self.storage {
-                storage.truncate(start_index)?;
-            }
+            self.storage.truncate(start_index)?;
         }
 
         // Append new entries
@@ -402,9 +394,7 @@ where
         }
 
         // Persist to storage
-        if let Some(storage) = &self.storage {
-            storage.purge_logs(cutoff_index)?;
-        }
+        self.storage.purge_logs(cutoff_index)?;
 
         Ok(())
     }
@@ -426,14 +416,23 @@ where
         let _timer = ScopedTimer::new("buffered_raft_log::reset");
         self.reset_internal()?;
 
-        if let Some(storage) = &self.storage {
-            let storage_clone = storage.clone();
-            tokio::spawn(async move {
-                let _ = storage_clone.reset();
-            });
-        }
+        let storage_clone = self.storage.clone();
+        tokio::spawn(async move {
+            let _ = storage_clone.reset();
+        });
 
         Ok(())
+    }
+
+    fn load_hard_state(&self) -> Result<Option<crate::HardState>> {
+        self.storage.load_hard_state()
+    }
+
+    fn save_hard_state(
+        &self,
+        hard_state: crate::HardState,
+    ) -> Result<()> {
+        self.storage.save_hard_state(hard_state)
     }
 
     /// db_size_cache_duration - how long the cache will be valid (since last
@@ -446,23 +445,20 @@ where
         _db_size_cache_window: u128,
     ) -> Result<u64> {
         // if nothing found in cache, we will query the size from the db directly
-        if let Some(ref storage) = self.storage {
-            match storage.db_size() {
-                Ok(size) => {
-                    // db_size_cache.size.store(size, Ordering::Release);
-                    // db_size_cache.last_activity.insert(node_id, now);
-                    debug!("retrieved the real db size: {size}",);
-                    println!("retrieved the real db size: {size}",);
-                    return Ok(size);
-                }
-                Err(e) => {
-                    error!("db_size() failed: {e:?}");
-                    eprintln!("db_size() failed: {e:?}");
-                    return Err(e);
-                }
+        match self.storage.db_size() {
+            Ok(size) => {
+                // db_size_cache.size.store(size, Ordering::Release);
+                // db_size_cache.last_activity.insert(node_id, now);
+                debug!("retrieved the real db size: {size}",);
+                println!("retrieved the real db size: {size}",);
+                return Ok(size);
+            }
+            Err(e) => {
+                error!("db_size() failed: {e:?}");
+                eprintln!("db_size() failed: {e:?}");
+                return Err(e);
             }
         }
-        Ok(0)
     }
 
     #[cfg(test)]
@@ -478,13 +474,9 @@ where
     pub fn new(
         node_id: u32,
         persistence_config: PersistenceConfig,
-        storage: Option<Arc<SOF<T>>>,
+        storage: Arc<SOF<T>>,
     ) -> (Self, mpsc::UnboundedReceiver<LogCommand>) {
-        let disk_len = if let Some(storage) = &storage {
-            storage.last_index()
-        } else {
-            0
-        };
+        let disk_len = storage.last_index();
 
         debug!(
             "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
@@ -503,18 +495,16 @@ where
 
         // Load all entries from disk to memory
         if let PersistenceStrategy::MemFirst = persistence_config.strategy {
-            if let Some(storage) = &storage {
-                if disk_len > 0 {
-                    match storage.get_entries_range(1..=disk_len) {
-                        Ok(all_entries) => {
-                            for entry in all_entries {
-                                entries.insert(entry.index, entry);
-                            }
+            if disk_len > 0 {
+                match storage.get_entries_range(1..=disk_len) {
+                    Ok(all_entries) => {
+                        for entry in all_entries {
+                            entries.insert(entry.index, entry);
                         }
-                        Err(e) => {
-                            error!("Failed to load entries from storage: {:?}", e);
-                            // Handle critical error if needed
-                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to load entries from storage: {:?}", e);
+                        // Handle critical error if needed
                     }
                 }
             }
@@ -627,9 +617,7 @@ where
             }
             LogCommand::Shutdown => {
                 let _ = self.force_flush().await;
-                if let Some(storage) = &self.storage {
-                    let _ = storage.flush();
-                }
+                let _ = self.storage.flush();
             }
         }
     }
@@ -666,9 +654,7 @@ where
         self.next_id.store(1, Ordering::Release);
         self.waiters.clear();
 
-        if let Some(storage) = &self.storage {
-            storage.reset()?;
-        }
+        self.storage.reset()?;
 
         Ok(())
     }
@@ -701,13 +687,11 @@ where
         trace!("Collected {} entries for persistence", entries.len());
 
         // Persist to storage
-        if let Some(storage) = &self.storage {
-            storage.persist_entries(entries)?;
+        self.storage.persist_entries(entries)?;
 
-            // Handle immediate flush policy
-            if matches!(self.flush_policy, FlushPolicy::Immediate) {
-                storage.flush()?;
-            }
+        // Handle immediate flush policy
+        if matches!(self.flush_policy, FlushPolicy::Immediate) {
+            self.storage.flush()?;
         }
 
         // Update durable index
@@ -723,9 +707,7 @@ where
         let indexes = self.get_pending_indexes().await;
         let result = self.process_flush(&indexes).await;
 
-        if let Some(storage) = &self.storage {
-            storage.flush()?;
-        }
+        self.storage.flush()?;
 
         result
     }
@@ -756,14 +738,12 @@ where
         &self,
         entries: &[Entry],
     ) -> Result<()> {
-        if let Some(storage) = &self.storage {
-            storage.persist_entries(entries.to_vec())?;
+        self.storage.persist_entries(entries.to_vec())?;
 
-            // Handle flush policy
-            match self.flush_policy {
-                FlushPolicy::Immediate => storage.flush()?,
-                FlushPolicy::Batch { .. } => {} // Defer flush
-            }
+        // Handle flush policy
+        match self.flush_policy {
+            FlushPolicy::Immediate => self.storage.flush()?,
+            FlushPolicy::Batch { .. } => {} // Defer flush
         }
 
         // Update durable index
@@ -783,6 +763,7 @@ where
         if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
             error!("Failed to send shutdown command: {:?}", e);
         }
+
         trace!("BufferedRaftLog dropped");
     }
 }

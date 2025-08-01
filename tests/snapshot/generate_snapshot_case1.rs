@@ -20,12 +20,11 @@
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_node_config;
-use crate::common::init_state_storage;
+use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
 use crate::common::prepare_raft_log;
 use crate::common::prepare_state_machine;
-use crate::common::prepare_state_storage;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
@@ -78,18 +77,12 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1).await;
+    init_hard_state(&r1, 1, None);
     manipulate_log(&r2, vec![1, 2, 3, 4], 1).await;
+    init_hard_state(&r2, 1, None);
     manipulate_log(&r3, (1..=3).collect(), 1).await;
+    init_hard_state(&r3, 2, None);
     manipulate_log(&r3, (4..=last_log_id).collect(), 2).await;
-
-    // Prepare state storage
-    let ss1 = Arc::new(prepare_state_storage(&format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)));
-    let ss2 = Arc::new(prepare_state_storage(&format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR)));
-    let ss3 = Arc::new(prepare_state_storage(&format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR)));
-
-    init_state_storage(&ss1, 1, None);
-    init_state_storage(&ss2, 1, None);
-    init_state_storage(&ss3, 2, None);
 
     // Start cluster nodes
     let mut ctx = TestContext {
@@ -112,11 +105,11 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         )
         .await;
 
-        let (state_machine, raft_log, state_storage) = match i {
-            0 => (Some(sm1.clone()), Some(r1.clone()), Some(ss1.clone())),
-            1 => (Some(sm2.clone()), Some(r2.clone()), Some(ss2.clone())),
-            2 => (Some(sm3.clone()), Some(r3.clone()), Some(ss3.clone())),
-            _ => (None, None, None),
+        let (state_machine, raft_log) = match i {
+            0 => (Some(sm1.clone()), Some(r1.clone())),
+            1 => (Some(sm2.clone()), Some(r2.clone())),
+            2 => (Some(sm3.clone()), Some(r3.clone())),
+            _ => (None, None),
         };
 
         let mut node_config = node_config(&config);
@@ -125,7 +118,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         //Dirty code: could leave it like this for now.
         snapshot_last_included_id = Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
-        let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log, state_storage).await?;
+        let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);

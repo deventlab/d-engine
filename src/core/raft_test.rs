@@ -1,12 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time;
-use tokio::time::timeout;
-
 use super::*;
 use crate::candidate_state::CandidateState;
 use crate::cluster::is_candidate;
@@ -29,11 +20,17 @@ use crate::MaybeCloneOneshot;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockRaftLog;
-use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::PeerUpdate;
 use crate::RaftOneshot;
 use crate::VoteResult;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::timeout;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
@@ -854,6 +851,8 @@ async fn test_handle_role_event_state_update_case1_3_2() {
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(|_, _, _| Some(11));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft.ctx.membership = Arc::new(membership);
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -939,6 +938,8 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
         .returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);
     raft_log.expect_flush().return_once(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
     (raft_log, replication_handler)
 }
@@ -966,6 +967,8 @@ async fn test_handle_role_event_state_update_case1_5_1() {
         .returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);
     raft_log.expect_flush().return_once(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
 
@@ -1064,10 +1067,10 @@ async fn test_raft_drop() {
     // 1. Create a Raft instance
     let (graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_raft_drop", graceful_rx, None);
-    let mut state_storage = MockStateStorage::new();
+    let mut raft_log = MockRaftLog::new();
 
-    state_storage.expect_save_hard_state().times(1).returning(|_| Ok(()));
-    raft.ctx.storage.state_storage = Arc::new(state_storage);
+    raft_log.expect_save_hard_state().times(1).returning(|_| Ok(()));
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
 
     // 2. Start the Raft main loop
     let raft_handle = tokio::spawn(async move { raft.run().await });

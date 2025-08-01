@@ -9,7 +9,6 @@ use crate::ReplicationCore;
 use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::StateMachineHandler;
-use crate::StateStorage;
 use crate::StorageEngine;
 use crate::Transport;
 
@@ -23,8 +22,6 @@ pub trait TypeConfig:
     type TR: Transport<Self> + Debug;
 
     type SM: StateMachine + Debug;
-
-    type SS: StateStorage;
 
     type M: Membership<Self> + Debug;
 
@@ -51,8 +48,6 @@ pub mod alias {
     pub type TROF<T> = <T as TypeConfig>::TR;
 
     pub type SMOF<T> = <T as TypeConfig>::SM;
-
-    pub type SSOF<T> = <T as TypeConfig>::SS;
 
     pub type MOF<T> = <T as TypeConfig>::M;
 

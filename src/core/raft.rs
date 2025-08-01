@@ -15,7 +15,6 @@ use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::StateStorage;
 use crate::TypeConfig;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -364,7 +363,7 @@ where
 
         if let Err(e) = self
             .ctx
-            .state_storage()
+            .raft_log()
             .save_hard_state(self.role.state().shared_state().hard_state)
         {
             error!(?e, "State storage persist node hard state failed.");

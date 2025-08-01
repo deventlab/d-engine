@@ -2,7 +2,6 @@ use crate::client_manager::ClientManager;
 use config::Config;
 use d_engine::alias::SMOF;
 use d_engine::alias::SOF;
-use d_engine::alias::SSOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
@@ -24,10 +23,8 @@ use d_engine::proto::election::VotedFor;
 use d_engine::storage::init_sled_storage_engine_db;
 use d_engine::storage::RaftLog;
 use d_engine::storage::SledStateMachine;
-use d_engine::storage::SledStateStorage;
 use d_engine::storage::SledStorageEngine;
 use d_engine::storage::StateMachine;
-use d_engine::storage::StateStorage;
 use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
 use d_engine::HardState;
@@ -46,7 +43,6 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
-use tracing::trace;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -171,7 +167,7 @@ pub async fn start_cluster(nodes_config: Vec<RaftNodeConfig>) -> std::result::Re
     // Start all nodes
     let mut controllers = vec![];
     for config in nodes_config {
-        let (tx, handle) = start_node(config, None, None, None).await?;
+        let (tx, handle) = start_node(config, None, None).await?;
         controllers.push((tx, handle));
     }
 
@@ -189,7 +185,6 @@ pub async fn start_node(
     config: RaftNodeConfig,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
-    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<
     (
         watch::Sender<()>,
@@ -199,7 +194,7 @@ pub async fn start_node(
 > {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let node = build_node(config, graceful_rx, state_machine, storage_engine, state_storage).await?;
+    let node = build_node(config, graceful_rx, state_machine, storage_engine).await?;
 
     let node_clone = node.clone();
     let node_id = node.node_config.cluster.node_id;
@@ -213,7 +208,6 @@ async fn build_node(
     graceful_rx: watch::Receiver<()>,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
     storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
-    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
 ) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
     // Prepare raft log entries
     let mut builder = NodeBuilder::init(config, graceful_rx);
@@ -224,9 +218,6 @@ async fn build_node(
     }
     if let Some(sm) = state_machine {
         builder = builder.state_machine(sm);
-    }
-    if let Some(ss) = state_storage {
-        builder = builder.state_storage(ss);
     }
     // Build and start the node
     let node = builder
@@ -282,16 +273,6 @@ pub fn prepare_state_machine(
         .unwrap();
     SledStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
 }
-pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
-    let state_storage_db_path = format!("{db_path}/state_storage",);
-    let state_storage_db = sled::Config::default()
-        .path(state_storage_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledStateStorage::new(Arc::new(state_storage_db))
-}
 
 pub async fn manipulate_log(
     storage_engine: &Arc<SOF<RaftTypeConfig>>,
@@ -300,12 +281,10 @@ pub async fn manipulate_log(
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        let index = storage_engine.last_index() + id;
-
-        trace!("pre_allocate_raft_logs_next_index: {}", index);
+        println!("pre_allocate_raft_logs_next_index: {}", id);
 
         let log = Entry {
-            index,
+            index: id,
             term,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
@@ -325,12 +304,12 @@ pub fn manipulate_state_machine(
     assert!(state_machine.apply_chunk(entries).is_ok());
 }
 
-pub fn init_state_storage(
-    state_storage: &Arc<impl StateStorage>,
+pub fn init_hard_state(
+    storage_engine: &Arc<impl StorageEngine>,
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
-    assert!(state_storage
+    assert!(storage_engine
         .save_hard_state(HardState {
             current_term,
             voted_for,

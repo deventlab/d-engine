@@ -7,7 +7,6 @@ use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
-use crate::MockStateStorage;
 use crate::MockStorageEngine;
 use crate::MockTransport;
 use crate::TypeConfig;
@@ -25,8 +24,6 @@ impl TypeConfig for MockTypeConfig {
     type TR = MockTransport<Self>;
 
     type SM = MockStateMachine;
-
-    type SS = MockStateStorage;
 
     type M = MockMembership<Self>;
 

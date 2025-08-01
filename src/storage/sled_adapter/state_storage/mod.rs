@@ -1,52 +1,36 @@
-use std::sync::Arc;
-
-use tracing::error;
-use tracing::info;
-
+use crate::alias::SOF;
 use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::convert::skv;
-use crate::storage::STATE_STORAGE_NAMESPACE;
 use crate::HardState;
 use crate::Result;
 use crate::StateStorage;
+use crate::StorageEngine;
 use crate::StorageError;
+use crate::TypeConfig;
+use bytes::Bytes;
+use std::sync::Arc;
+use tracing::error;
+use tracing::info;
 
 #[allow(dead_code)]
 #[derive(Clone)]
-pub struct SledStateStorage {
-    db: Arc<sled::Db>,
-    tree: Arc<sled::Tree>,
+pub struct SledStateStorage<T>
+where
+    T: TypeConfig,
+{
+    node_id: u32,
+    storage: Arc<SOF<T>>,
 }
 
-impl std::fmt::Debug for SledStateStorage {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        f.debug_struct("SledStateStorage")
-            .field("tree_len", &self.tree.len())
-            .finish()
-    }
-}
-
-impl Drop for SledStateStorage {
-    fn drop(&mut self) {
-        match self.flush() {
-            Ok(_) => info!("Successfully flush StateStorage"),
-            Err(e) => error!(?e, "Failed to flush StateStorage"),
-        }
-    }
-}
-
-impl StateStorage for SledStateStorage {
+impl<T> StateStorage for SledStateStorage<T>
+where
+    T: TypeConfig,
+{
     fn get(
         &self,
         key: Vec<u8>,
-    ) -> crate::Result<Option<Vec<u8>>> {
-        match self.tree.get(key)? {
-            Some(ivec) => Ok(Some(ivec.to_vec())),
-            None => Ok(None),
-        }
+    ) -> crate::Result<Option<Bytes>> {
+        self.storage.get(key)
     }
 
     fn insert(
@@ -54,16 +38,11 @@ impl StateStorage for SledStateStorage {
         key: Vec<u8>,
         value: Vec<u8>,
     ) -> crate::Result<Option<Vec<u8>>> {
-        match self.tree.insert(key, value)? {
-            Some(ivec) => Ok(Some(ivec.to_vec())),
-            None => Ok(None),
-        }
+        self.storage.insert(key, value)
     }
 
-    fn flush(&self) -> crate::Result<usize> {
-        self.tree
-            .flush()
-            .map_err(|e| StorageError::DbError(e.to_string()).into())
+    fn flush(&self) -> Result<()> {
+        self.storage.flush()
     }
 
     fn load_hard_state(&self) -> Option<crate::HardState> {
@@ -71,29 +50,38 @@ impl StateStorage for SledStateStorage {
             "pending load_role_hard_state_from_db with key: {}",
             STATE_STORAGE_HARD_STATE_KEY
         );
-        if let Ok(Some(v)) = self.get(skv(STATE_STORAGE_HARD_STATE_KEY.to_string())) {
-            info!("found node state from DB with key: {}", STATE_STORAGE_HARD_STATE_KEY);
+        let result = self.get(skv(STATE_STORAGE_HARD_STATE_KEY.to_string()));
 
-            let v = v.to_vec();
-            match bincode::deserialize::<HardState>(&v) {
-                Ok(hard_state) => {
-                    info!(
-                        "load_role_hard_state_from_db: current_term={:?}",
-                        hard_state.current_term
-                    );
-                    return Some(hard_state);
-                }
-                Err(e) => {
-                    error!("state:load_role_hard_state_from_db deserialize error. {}", e);
+        match result {
+            Ok(Some(bytes)) => {
+                info!("found node state from DB with key: {}", STATE_STORAGE_HARD_STATE_KEY);
+
+                match bincode::deserialize::<HardState>(bytes.as_ref()) {
+                    Ok(hard_state) => {
+                        info!(
+                            "load_role_hard_state_from_db: current_term={:?}",
+                            hard_state.current_term
+                        );
+                        Some(hard_state)
+                    }
+                    Err(e) => {
+                        error!("state:load_role_hard_state_from_db deserialize error. {}", e);
+                        None
+                    }
                 }
             }
-        } else {
-            info!(
-                "no hard state found from db with key: {}.",
-                STATE_STORAGE_HARD_STATE_KEY
-            );
+            Ok(None) => {
+                info!(
+                    "no hard state found from db with key: {}.",
+                    STATE_STORAGE_HARD_STATE_KEY
+                );
+                None
+            }
+            Err(e) => {
+                error!("Failed to get hard state: {}", e);
+                None
+            }
         }
-        None
     }
 
     fn save_hard_state(
@@ -116,8 +104,8 @@ impl StateStorage for SledStateStorage {
             }
         }
         match self.flush() {
-            Ok(bytes) => {
-                info!("Successfully flushed sled DB, bytes flushed: {}", bytes);
+            Ok(()) => {
+                info!("Successfully flushed sled DB");
             }
             Err(e) => {
                 error!("Failed to flush sled DB: {}", e);
@@ -131,21 +119,44 @@ impl StateStorage for SledStateStorage {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.tree.len()
+        self.storage.len()
     }
 }
 
-impl SledStateStorage {
-    pub fn new(db: Arc<sled::Db>) -> Self {
-        match db.open_tree(STATE_STORAGE_NAMESPACE) {
-            Ok(tree) => SledStateStorage {
-                db,
-                tree: Arc::new(tree),
-            },
-            Err(e) => {
-                error!("Failed to open state machine db tree: {}", e);
-                panic!("failed to open sled tree: {e}");
-            }
+impl<T> SledStateStorage<T>
+where
+    T: TypeConfig,
+{
+    pub fn new(
+        node_id: u32,
+        storage: Arc<SOF<T>>,
+    ) -> Self {
+        Self { node_id, storage }
+    }
+}
+
+impl<T> std::fmt::Debug for SledStateStorage<T>
+where
+    T: TypeConfig,
+{
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("SledStateStorage")
+            .field("node_id", &self.node_id)
+            .finish()
+    }
+}
+
+impl<T> Drop for SledStateStorage<T>
+where
+    T: TypeConfig,
+{
+    fn drop(&mut self) {
+        match self.flush() {
+            Ok(_) => info!("Successfully flush StateStorage"),
+            Err(e) => error!(?e, "Failed to flush StateStorage"),
         }
     }
 }
