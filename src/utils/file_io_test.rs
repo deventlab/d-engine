@@ -103,7 +103,9 @@ async fn test_delete_nonexistent_file() {
     assert!(
         matches!(
             e,
-            Error::System(SystemError::Storage(StorageError::File(FileError::NotFound(_))))
+            Error::System(SystemError::Storage(StorageError::File(
+                FileError::NotFound(_)
+            )))
         ),
         "Should return NotFound error"
     );
@@ -120,7 +122,9 @@ async fn test_delete_directory() {
     assert!(
         matches!(
             e,
-            Error::System(SystemError::Storage(StorageError::File(FileError::IsDirectory(_))))
+            Error::System(SystemError::Storage(StorageError::File(
+                FileError::IsDirectory(_)
+            )))
         ),
         "Should return IsDirectory error"
     );
@@ -141,11 +145,8 @@ async fn test_delete_busy_file() {
     #[cfg(windows)]
     {
         // Keep file open to prevent deletion on Windows
-        let _file_handle = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(&file_path)
-            .unwrap();
+        let _file_handle =
+            std::fs::OpenOptions::new().write(true).create(true).open(&file_path).unwrap();
     }
     #[cfg(unix)]
     {
@@ -208,7 +209,9 @@ async fn test_delete_permission_denied() {
     assert!(
         matches!(
             e,
-            Error::System(SystemError::Storage(StorageError::File(FileError::PermissionDenied(_))))
+            Error::System(SystemError::Storage(StorageError::File(
+                FileError::PermissionDenied(_)
+            )))
         ),
         "Should return PermissionDenied error"
     );
@@ -426,7 +429,10 @@ mod compute_checksum_from_folder_path_tests {
         hasher.update(b"Hello, world!");
         let expected: [u8; 32] = hasher.finalize().into();
 
-        assert_eq!(checksum, expected, "Checksum should match SHA-256 of file content");
+        assert_eq!(
+            checksum, expected,
+            "Checksum should match SHA-256 of file content"
+        );
     }
 
     /// Test computing checksum for a directory with multiple files
@@ -435,15 +441,9 @@ mod compute_checksum_from_folder_path_tests {
         let temp_dir = tempdir().unwrap();
 
         // Create files with different content
-        tokio::fs::write(temp_dir.path().join("file1.txt"), b"Content 1")
-            .await
-            .unwrap();
-        tokio::fs::write(temp_dir.path().join("file2.txt"), b"Content 2")
-            .await
-            .unwrap();
-        tokio::fs::write(temp_dir.path().join("file3.txt"), b"Content 3")
-            .await
-            .unwrap();
+        tokio::fs::write(temp_dir.path().join("file1.txt"), b"Content 1").await.unwrap();
+        tokio::fs::write(temp_dir.path().join("file2.txt"), b"Content 2").await.unwrap();
+        tokio::fs::write(temp_dir.path().join("file3.txt"), b"Content 3").await.unwrap();
 
         let checksum = compute_checksum_from_folder_path(temp_dir.path())
             .await
@@ -473,9 +473,7 @@ mod compute_checksum_from_folder_path_tests {
             .unwrap();
         let sub_dir = temp_dir.path().join("subdir");
         tokio::fs::create_dir(&sub_dir).await.unwrap();
-        tokio::fs::write(sub_dir.join("ignored.txt"), b"Ignored content")
-            .await
-            .unwrap();
+        tokio::fs::write(sub_dir.join("ignored.txt"), b"Ignored content").await.unwrap();
 
         let checksum = compute_checksum_from_folder_path(temp_dir.path())
             .await
@@ -486,7 +484,10 @@ mod compute_checksum_from_folder_path_tests {
         hasher.update(b"File content");
         let expected: [u8; 32] = hasher.finalize().into();
 
-        assert_eq!(checksum, expected, "Checksum should only include top-level files");
+        assert_eq!(
+            checksum, expected,
+            "Checksum should only include top-level files"
+        );
     }
 
     /// Test error handling for non-existent directory
@@ -497,7 +498,10 @@ mod compute_checksum_from_folder_path_tests {
 
         let result = compute_checksum_from_folder_path(&non_existent_path).await;
 
-        assert!(result.is_err(), "Should return error for non-existent directory");
+        assert!(
+            result.is_err(),
+            "Should return error for non-existent directory"
+        );
         match result.unwrap_err() {
             Error::System(SystemError::Storage(StorageError::IoError(_))) => {} // Expected
             other => panic!("Expected IoError, got {other:?}"),
@@ -570,7 +574,10 @@ mod compute_checksum_from_file_path_tests {
         hasher.update(b"Hello, world!");
         let expected: [u8; 32] = hasher.finalize().into();
 
-        assert_eq!(checksum, expected, "Checksum should match SHA-256 of file content");
+        assert_eq!(
+            checksum, expected,
+            "Checksum should match SHA-256 of file content"
+        );
     }
 
     /// Test computing checksum for a large file
@@ -653,6 +660,9 @@ mod compute_checksum_from_file_path_tests {
             .await
             .expect("Second computation should succeed");
 
-        assert_ne!(checksum1, checksum2, "Checksum should change when file content changes");
+        assert_ne!(
+            checksum1, checksum2,
+            "Checksum should change when file content changes"
+        );
     }
 }

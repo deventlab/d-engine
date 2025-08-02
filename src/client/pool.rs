@@ -38,7 +38,8 @@ impl ConnectionPool {
         endpoints: Vec<String>,
         config: ClientConfig,
     ) -> std::result::Result<Self, ClientApiError> {
-        let (leader_conn, follower_conns, members) = Self::build_connections(&endpoints, &config).await?;
+        let (leader_conn, follower_conns, members) =
+            Self::build_connections(&endpoints, &config).await?;
 
         Ok(Self {
             leader_conn,
@@ -63,7 +64,8 @@ impl ConnectionPool {
         if let Some(endpoints) = new_endpoints {
             self.endpoints = endpoints;
         }
-        let (leader_conn, follower_conns, members) = Self::build_connections(&self.endpoints, &self.config).await?;
+        let (leader_conn, follower_conns, members) =
+            Self::build_connections(&self.endpoints, &self.config).await?;
 
         // Atomic update of fields
         self.leader_conn = leader_conn;
@@ -87,15 +89,16 @@ impl ConnectionPool {
 
         // 3. Establish all connections in parallel
         let leader_future = Self::create_channel(leader_addr, config);
-        let follower_futures = follower_addrs
-            .into_iter()
-            .map(|addr| Self::create_channel(addr, config));
+        let follower_futures =
+            follower_addrs.into_iter().map(|addr| Self::create_channel(addr, config));
 
-        let (leader_conn, follower_conns) = tokio::join!(leader_future, futures::future::join_all(follower_futures));
+        let (leader_conn, follower_conns) =
+            tokio::join!(leader_future, futures::future::join_all(follower_futures));
 
         // 4. Filter valid connections
         let leader_conn = leader_conn?;
-        let follower_conns = follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
+        let follower_conns =
+            follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
 
         Ok((leader_conn, follower_conns, members))
     }
@@ -146,9 +149,7 @@ impl ConnectionPool {
                             .send_compressed(CompressionEncoding::Gzip)
                             .accept_compressed(CompressionEncoding::Gzip);
                     }
-                    match client
-                        .get_cluster_metadata(tonic::Request::new(MetadataRequest {}))
-                        .await
+                    match client.get_cluster_metadata(tonic::Request::new(MetadataRequest {})).await
                     {
                         Ok(response) => return Ok(response.into_inner().nodes),
                         Err(e) => {
@@ -159,7 +160,10 @@ impl ConnectionPool {
                     }
                 }
                 Err(e) => {
-                    error!("load_cluster_metadata from addr: {:?}, failed: {:?}", &addr, e);
+                    error!(
+                        "load_cluster_metadata from addr: {:?}, failed: {:?}",
+                        &addr, e
+                    );
                     continue;
                 } // Connection failed, try next
             }
@@ -184,8 +188,6 @@ impl ConnectionPool {
             }
         }
 
-        leader_addr
-            .map(|addr| (addr, followers))
-            .ok_or(ErrorCode::NotLeader.into())
+        leader_addr.map(|addr| (addr, followers)).ok_or(ErrorCode::NotLeader.into())
     }
 }

@@ -85,14 +85,11 @@ async fn setup_process_raft_request_test_context(
 ) -> ProcessRaftRequestTestContext {
     let mut node_config = node_config(&format!("/tmp/{test_name}",));
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
-    let mut raft_context = MockBuilder::new(shutdown_signal)
-        .wiht_node_config(node_config)
-        .build_context();
+    let mut raft_context =
+        MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_context();
 
     let mut state = LeaderState::new(1, raft_context.node_config());
-    state
-        .update_commit_index(4)
-        .expect("Should succeed to update commit index");
+    state.update_commit_index(4).expect("Should succeed to update commit index");
 
     // Initialize the mock object
     let mut replication_handler = MockReplicationCore::new();
@@ -106,30 +103,22 @@ async fn setup_process_raft_request_test_context(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
                 learner_progress: HashMap::new(),
             })
         });
 
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
     raft_context.handlers.replication_handler = replication_handler;
     raft_context.storage.raft_log = Arc::new(raft_log);
@@ -145,9 +134,14 @@ async fn setup_process_raft_request_test_context(
 }
 
 /// Verify client response
-pub async fn assert_client_response(mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>) {
+pub async fn assert_client_response(
+    mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>
+) {
     match rx.recv().await {
-        Ok(Ok(response)) => assert_eq!(ErrorCode::try_from(response.error).unwrap(), ErrorCode::Success),
+        Ok(Ok(response)) => assert_eq!(
+            ErrorCode::try_from(response.error).unwrap(),
+            ErrorCode::Success
+        ),
         Ok(Err(e)) => panic!("Unexpected error response: {e:?}",),
         Err(_) => panic!("Response channel closed unexpectedly"),
     }
@@ -185,8 +179,13 @@ async fn test_process_raft_request_case1_1() {
     // Initialize the test environment (threshold = 0 means immediate execution)
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context =
-        setup_process_raft_request_test_context("/tmp/test_process_raft_request_case1_1", 0, 1, graceful_rx).await;
+    let mut test_context = setup_process_raft_request_test_context(
+        "/tmp/test_process_raft_request_case1_1",
+        0,
+        1,
+        graceful_rx,
+    )
+    .await;
 
     // Prepare test request
     let request = ClientWriteRequest {
@@ -257,8 +256,13 @@ async fn test_process_raft_request_case1_1() {
 async fn test_process_raft_request_case1_2() {
     // Initialize the test environment (threshold = 0 means immediate execution)
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context =
-        setup_process_raft_request_test_context("/tmp/test_process_raft_request_case1_2", 0, 2, graceful_rx).await;
+    let mut test_context = setup_process_raft_request_test_context(
+        "/tmp/test_process_raft_request_case1_2",
+        0,
+        2,
+        graceful_rx,
+    )
+    .await;
 
     // Prepare test request
     let request = ClientWriteRequest {
@@ -329,8 +333,13 @@ async fn test_process_raft_request_case1_2() {
 async fn test_process_raft_request_case2() {
     // let context = setup_raft_components("/tmp/test_process_raft_request_case2", None, false);
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut test_context =
-        setup_process_raft_request_test_context("/tmp/test_process_raft_request_case2", 100, 0, graceful_rx).await;
+    let mut test_context = setup_process_raft_request_test_context(
+        "/tmp/test_process_raft_request_case2",
+        100,
+        0,
+        graceful_rx,
+    )
+    .await;
 
     // 1. Prepare mocks
     let client_propose_request = ClientWriteRequest {
@@ -363,7 +372,11 @@ async fn test_process_raft_request_case2() {
 #[tokio::test]
 async fn test_ensure_state_machine_upto_commit_index_case1() {
     // Prepare Leader State
-    let context = setup_raft_components("/tmp/test_ensure_state_machine_upto_commit_index_case1", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_ensure_state_machine_upto_commit_index_case1",
+        None,
+        false,
+    );
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_node_config.clone());
 
     // Update commit index
@@ -386,7 +399,11 @@ async fn test_ensure_state_machine_upto_commit_index_case1() {
 #[tokio::test]
 async fn test_ensure_state_machine_upto_commit_index_case2() {
     // Prepare Leader State
-    let context = setup_raft_components("/tmp/test_ensure_state_machine_upto_commit_index_case2", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_ensure_state_machine_upto_commit_index_case2",
+        None,
+        false,
+    );
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_node_config.clone());
 
     // Update Commit index
@@ -479,8 +496,14 @@ async fn test_handle_raft_event_case1_2() {
     assert!(r.is_ok());
 
     // Step to Follower
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::ReprocessEvent(_))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(_))
+    ));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::ReprocessEvent(_))
+    ));
 
     // Term should be updated
     assert_eq!(state.current_term(), updated_term);
@@ -498,13 +521,12 @@ async fn test_handle_raft_event_case2() {
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = MockMembership::new();
     membership.expect_can_rejoin().returning(|_| Ok(()));
-    membership
-        .expect_retrieve_cluster_membership_config()
-        .times(1)
-        .returning(|| ClusterMembership {
+    membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
+        ClusterMembership {
             version: 1,
             nodes: vec![],
-        });
+        }
+    });
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -591,8 +613,14 @@ async fn test_handle_raft_event_case3_2_update_step_down() {
     state.handle_raft_event(raft_event, &context, role_tx).await.unwrap();
 
     // Verify step down to follower
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(Some(2)))));
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::ReprocessEvent(_))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(Some(2)))
+    ));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::ReprocessEvent(_))
+    ));
     assert!(resp_rx.recv().await.is_err()); // Original sender should not get response
 }
 
@@ -678,8 +706,14 @@ async fn test_handle_raft_event_case4_2() {
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validate criterias: step down as Follower
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(_))
+    ));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
 
     // Validate no response received
     assert!(resp_rx.recv().await.is_err());
@@ -705,9 +739,7 @@ async fn test_handle_raft_event_case5_1() {
             })
         });
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     context.storage.raft_log = Arc::new(raft_log);
 
     // New state
@@ -800,22 +832,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(3),
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(4),
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(3),
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(4),
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -889,14 +915,13 @@ async fn test_handle_raft_event_case6_3() {
     enable_logger();
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(move |_, _, _, _| {
+    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+        move |_, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(1),
             )))
-        });
+        },
+    );
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();
@@ -1003,10 +1028,12 @@ async fn test_handle_raft_event_case8() {
 
 #[cfg(test)]
 mod create_snapshot_event_tests {
-    use super::*;
     use std::sync::atomic::Ordering;
 
-    /// Test that snapshot creation is started, and duplicate requests are ignored while in progress.
+    use super::*;
+
+    /// Test that snapshot creation is started, and duplicate requests are ignored while in
+    /// progress.
     #[tokio::test]
     async fn test_create_snapshot_event_starts_and_ignores_duplicates() {
         enable_logger();
@@ -1062,7 +1089,8 @@ mod create_snapshot_event_tests {
 
         // Error case
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
-        let raft_event = RaftEvent::SnapshotCreated(Err(SnapshotError::OperationFailed("fail".into()).into()));
+        let raft_event =
+            RaftEvent::SnapshotCreated(Err(SnapshotError::OperationFailed("fail".into()).into()));
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let _ = state.handle_raft_event(raft_event, &context, role_tx).await;
         assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
@@ -1080,9 +1108,7 @@ mod create_snapshot_event_tests {
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
         let start = std::time::Instant::now();
-        let _ = state
-            .handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx)
-            .await;
+        let _ = state.handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx).await;
         let elapsed = start.elapsed();
 
         // Should return quickly (not wait for snapshot)
@@ -1130,7 +1156,10 @@ mod snapshot_created_event_tests {
 
         let raft_event = RaftEvent::SnapshotCreated(Ok((
             SnapshotMetadata {
-                last_included: Some(LogId { term: 3, index: 100 }),
+                last_included: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
                 checksum: "checksum".into(),
             },
             case_path.to_path_buf(),
@@ -1176,7 +1205,10 @@ mod snapshot_created_event_tests {
                 node_id: 2,
                 term: 3,
                 success: true,
-                last_purged: Some(LogId { term: 3, index: 100 }),
+                last_purged: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
             })])
         });
         context.transport = Arc::new(transport);
@@ -1185,7 +1217,10 @@ mod snapshot_created_event_tests {
         let mut purge_executor = MockPurgeExecutor::new();
         purge_executor
             .expect_execute_purge()
-            .with(eq(LogId { term: 3, index: 100 }))
+            .with(eq(LogId {
+                term: 3,
+                index: 100,
+            }))
             .times(1)
             .returning(|_| Ok(()));
         context.handlers.purge_executor = Arc::new(purge_executor);
@@ -1201,7 +1236,10 @@ mod snapshot_created_event_tests {
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
             SnapshotMetadata {
-                last_included: Some(LogId { term: 3, index: 100 }),
+                last_included: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
                 checksum: "checksum".into(),
             },
             case_path.to_path_buf(),
@@ -1216,7 +1254,13 @@ mod snapshot_created_event_tests {
             .expect("Should succeed");
 
         // Validate state updates
-        assert_eq!(state.scheduled_purge_upto, Some(LogId { term: 3, index: 100 }));
+        assert_eq!(
+            state.scheduled_purge_upto,
+            Some(LogId {
+                term: 3,
+                index: 100
+            })
+        );
         assert_eq!(state.peer_purge_progress.get(&2), Some(&100));
         assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
 
@@ -1224,7 +1268,10 @@ mod snapshot_created_event_tests {
         let event = role_rx.try_recv().expect("Should receive LogPurgeCompleted event");
         if let RoleEvent::ReprocessEvent(inner) = event {
             if let RaftEvent::LogPurgeCompleted(purged_id) = *inner {
-                assert_eq!(purged_id, LogId { term: 3, index: 100 });
+                assert_eq!(purged_id, LogId {
+                    term: 3,
+                    index: 100
+                });
             } else {
                 panic!("Expected LogPurgeCompleted event");
             }
@@ -1249,8 +1296,10 @@ mod snapshot_created_event_tests {
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
 
         // Trigger event with error
-        let raft_event =
-            RaftEvent::SnapshotCreated(Err(SnapshotError::OperationFailed("Test failure".to_string()).into()));
+        let raft_event = RaftEvent::SnapshotCreated(Err(SnapshotError::OperationFailed(
+            "Test failure".to_string(),
+        )
+        .into()));
 
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
@@ -1299,7 +1348,10 @@ mod snapshot_created_event_tests {
                 node_id: 2,
                 term: 4, // Higher than current term (3)
                 success: true,
-                last_purged: Some(LogId { term: 3, index: 100 }),
+                last_purged: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
             })])
         });
         context.transport = Arc::new(transport);
@@ -1315,7 +1367,10 @@ mod snapshot_created_event_tests {
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
             SnapshotMetadata {
-                last_included: Some(LogId { term: 3, index: 100 }),
+                last_included: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
                 checksum: "checksum".into(),
             },
             case_path.to_path_buf(),
@@ -1369,7 +1424,10 @@ mod snapshot_created_event_tests {
                 node_id: 2,
                 term: 3,
                 success: true,
-                last_purged: Some(LogId { term: 3, index: 100 }),
+                last_purged: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
             })])
         });
         context.transport = Arc::new(transport);
@@ -1385,7 +1443,10 @@ mod snapshot_created_event_tests {
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
             SnapshotMetadata {
-                last_included: Some(LogId { term: 3, index: 100 }),
+                last_included: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
                 checksum: "checksum".into(),
             },
             case_path.to_path_buf(),
@@ -1445,7 +1506,10 @@ mod snapshot_created_event_tests {
                     node_id: 2,
                     term: 3,
                     success: true,
-                    last_purged: Some(LogId { term: 3, index: 100 }),
+                    last_purged: Some(LogId {
+                        term: 3,
+                        index: 100,
+                    }),
                 }),
                 Ok(PurgeLogResponse {
                     node_id: 3,
@@ -1467,7 +1531,10 @@ mod snapshot_created_event_tests {
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
             SnapshotMetadata {
-                last_included: Some(LogId { term: 3, index: 100 }),
+                last_included: Some(LogId {
+                    term: 3,
+                    index: 100,
+                }),
                 checksum: "checksum".into(),
             },
             case_path.to_path_buf(),
@@ -1503,23 +1570,44 @@ mod log_purge_completed_event_tests {
         let context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, Arc::new(RaftNodeConfig::default()));
-        state.last_purged_index = Some(LogId { term: 1, index: 100 });
+        state.last_purged_index = Some(LogId {
+            term: 1,
+            index: 100,
+        });
 
         // Test updating to a higher index
-        let event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 150 });
+        let event = RaftEvent::LogPurgeCompleted(LogId {
+            term: 1,
+            index: 150,
+        });
         state
             .handle_raft_event(event, &context, mpsc::unbounded_channel().0)
             .await
             .unwrap();
-        assert_eq!(state.last_purged_index, Some(LogId { term: 1, index: 150 }));
+        assert_eq!(
+            state.last_purged_index,
+            Some(LogId {
+                term: 1,
+                index: 150
+            })
+        );
 
         // Test updating to a lower index (should be ignored)
-        let event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 120 });
+        let event = RaftEvent::LogPurgeCompleted(LogId {
+            term: 1,
+            index: 120,
+        });
         state
             .handle_raft_event(event, &context, mpsc::unbounded_channel().0)
             .await
             .unwrap();
-        assert_eq!(state.last_purged_index, Some(LogId { term: 1, index: 150 }));
+        assert_eq!(
+            state.last_purged_index,
+            Some(LogId {
+                term: 1,
+                index: 150
+            })
+        );
 
         // Test first purge
         state.last_purged_index = None;
@@ -1726,10 +1814,20 @@ fn test_can_purge_logs_case1() {
     ));
 
     // Boundary check: 99 == commit_index - 1 (valid gap)
-    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 
     // Violate gap rule: 100 not < 100
-    assert!(!state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 100, term: 1 }));
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 100,
+            term: 1
+        })
+    );
 }
 
 /// # Case 2: Reject uncommitted purge (Raft §5.4.2)
@@ -1748,7 +1846,12 @@ fn test_can_purge_logs_case2() {
     ));
 
     // Boundary violation: 50 == commit_index (requires <)
-    assert!(!state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId { index: 50, term: 1 }));
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId {
+            index: 50,
+            term: 1
+        })
+    );
 }
 
 /// # Case 3: Enforce purge sequence monotonicity (Raft §7.2)
@@ -1762,13 +1865,40 @@ fn test_can_purge_logs_case3() {
     state.peer_purge_progress.insert(3, 200);
 
     // Valid sequence: 100 → 150 → 199
-    assert!(state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 199, term: 1 }));
+    assert!(state.can_purge_logs(
+        Some(LogId {
+            index: 150,
+            term: 1
+        }),
+        LogId {
+            index: 199,
+            term: 1
+        }
+    ));
 
     // Invalid backward purge (150 → 120)
-    assert!(!state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 120, term: 1 }));
+    assert!(!state.can_purge_logs(
+        Some(LogId {
+            index: 150,
+            term: 1
+        }),
+        LogId {
+            index: 120,
+            term: 1
+        }
+    ));
 
     // Same index purge attempt
-    assert!(!state.can_purge_logs(Some(LogId { index: 150, term: 1 }), LogId { index: 150, term: 1 }));
+    assert!(!state.can_purge_logs(
+        Some(LogId {
+            index: 150,
+            term: 1
+        }),
+        LogId {
+            index: 150,
+            term: 1
+        }
+    ));
 }
 
 /// # Case 4: Cluster progress verification (Enhanced durability check)
@@ -1782,11 +1912,21 @@ fn test_can_purge_logs_case4() {
     // Single lagging peer (index 99 < 100)
     state.peer_purge_progress.insert(2, 99);
     state.peer_purge_progress.insert(3, 100);
-    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 
     // All peers at required index
     state.peer_purge_progress.insert(2, 100);
-    assert!(state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId { index: 99, term: 1 }));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 }
 
 /// # Case 5: Initial purge state validation
@@ -1805,7 +1945,10 @@ fn test_can_purge_logs_case5() {
     // Must still respect commit_index gap
     assert!(!state.can_purge_logs(
         None,
-        LogId { index: 100, term: 1 } // 100 not < 100
+        LogId {
+            index: 100,
+            term: 1
+        } // 100 not < 100
     ));
 }
 
@@ -1816,8 +1959,11 @@ fn test_can_purge_logs_case5() {
 #[tokio::test]
 async fn test_process_batch_case1_quorum_achieved() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context =
-        setup_process_batch_test_context("/tmp/test_process_batch_case1_quorum_achieved", graceful_rx).await;
+    let mut context = setup_process_batch_test_context(
+        "/tmp/test_process_batch_case1_quorum_achieved",
+        graceful_rx,
+    )
+    .await;
 
     // Mock replication to return success with quorum
     context
@@ -1831,29 +1977,21 @@ async fn test_process_batch_case1_quorum_achieved() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(6),
-                            next_index: 7,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(6),
-                            next_index: 7,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(6),
+                        next_index: 7,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(6),
+                        next_index: 7,
+                        success: true,
+                    }),
                 ]),
             })
         });
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(6));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
     // Prepare batch of 2 requests
@@ -1863,14 +2001,14 @@ async fn test_process_batch_case1_quorum_achieved() {
     let receivers = vec![rx1, rx2];
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let result = context
-        .state
-        .process_batch(batch, &role_tx, &context.raft_context)
-        .await;
+    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
 
     assert!(result.is_ok());
     assert_eq!(context.state.commit_index(), 6);
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::NotifyNewCommitIndex(_))
+    ));
 
     // Verify client responses
     for mut rx in receivers {
@@ -1885,8 +2023,11 @@ async fn test_process_batch_case1_quorum_achieved() {
 #[tokio::test]
 async fn test_process_batch_case2_quorum_failed() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context =
-        setup_process_batch_test_context("/tmp/test_process_batch_case2_1_quorum_failed", graceful_rx).await;
+    let mut context = setup_process_batch_test_context(
+        "/tmp/test_process_batch_case2_1_quorum_failed",
+        graceful_rx,
+    )
+    .await;
 
     context
         .raft_context
@@ -1899,22 +2040,16 @@ async fn test_process_batch_case2_quorum_failed() {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: None,
-                            next_index: 1,
-                            success: false,
-                        },
-                    ), // Failed
+                    (2, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: None,
+                        next_index: 1,
+                        success: false,
+                    }), // Failed
                 ]),
             })
         });
@@ -1958,14 +2093,11 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(
-                    peer2_id,
-                    PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    },
-                )]),
+                peer_updates: HashMap::from([(peer2_id, PeerUpdate {
+                    match_index: Some(5),
+                    next_index: 6,
+                    success: true,
+                })]),
                 learner_progress: HashMap::new(),
             })
         });
@@ -2015,7 +2147,9 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
 #[tokio::test]
 async fn test_process_batch_case3_higher_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = setup_process_batch_test_context("/tmp/test_process_batch_case3_higher_term", graceful_rx).await;
+    let mut context =
+        setup_process_batch_test_context("/tmp/test_process_batch_case3_higher_term", graceful_rx)
+            .await;
 
     context
         .raft_context
@@ -2032,14 +2166,14 @@ async fn test_process_batch_case3_higher_term() {
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let result = context
-        .state
-        .process_batch(batch, &role_tx, &context.raft_context)
-        .await;
+    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
 
     assert!(result.is_err());
     assert_eq!(context.state.current_term(), 10);
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(_))
+    ));
 
     let response = rx1.recv().await.unwrap().unwrap();
     assert!(response.is_term_outdated());
@@ -2051,8 +2185,11 @@ async fn test_process_batch_case3_higher_term() {
 #[tokio::test]
 async fn test_process_batch_case4_partial_timeouts() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context =
-        setup_process_batch_test_context("/tmp/test_process_batch_case4_partial_timeouts", graceful_rx).await;
+    let mut context = setup_process_batch_test_context(
+        "/tmp/test_process_batch_case4_partial_timeouts",
+        graceful_rx,
+    )
+    .await;
 
     context
         .raft_context
@@ -2064,14 +2201,11 @@ async fn test_process_batch_case4_partial_timeouts() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(
-                    2,
-                    PeerUpdate {
-                        match_index: Some(6),
-                        next_index: 7,
-                        success: true,
-                    },
-                )]),
+                peer_updates: HashMap::from([(2, PeerUpdate {
+                    match_index: Some(6),
+                    next_index: 7,
+                    success: true,
+                })]),
             })
         });
 
@@ -2117,7 +2251,9 @@ async fn test_process_batch_case4_partial_timeouts() {
 #[tokio::test]
 async fn test_process_batch_case5_all_timeout() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = setup_process_batch_test_context("/tmp/test_process_batch_case5_all_timeout", graceful_rx).await;
+    let mut context =
+        setup_process_batch_test_context("/tmp/test_process_batch_case5_all_timeout", graceful_rx)
+            .await;
 
     context
         .raft_context
@@ -2174,7 +2310,9 @@ async fn test_process_batch_case5_all_timeout() {
 #[tokio::test]
 async fn test_process_batch_case6_fatal_error() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = setup_process_batch_test_context("/tmp/test_process_batch_case6_fatal_error", graceful_rx).await;
+    let mut context =
+        setup_process_batch_test_context("/tmp/test_process_batch_case6_fatal_error", graceful_rx)
+            .await;
 
     context
         .raft_context
@@ -2245,26 +2383,28 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                peer_updates: HashMap::from([
+                    (2, PeerUpdate::success(5, 6)),
+                    (3, PeerUpdate::success(5, 6)),
+                ]),
             })
         });
 
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_context.storage.raft_log = Arc::new(raft_log);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::NotifyNewCommitIndex(_))
+    ));
 }
 
 /// # Case 2: Quorum NOT achieved (verifiable)
@@ -2290,7 +2430,10 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+                peer_updates: HashMap::from([
+                    (2, PeerUpdate::success(5, 6)),
+                    (3, PeerUpdate::failed()),
+                ]),
             })
         });
 
@@ -2298,9 +2441,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -2363,9 +2504,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::LeadershipLost);
 }
@@ -2404,9 +2543,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -2418,7 +2555,11 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
 async fn test_verify_internal_quorum_case5_all_timeouts() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft_context = mock_raft_context("/tmp/test_verify_internal_quorum_case5_all_timeouts", graceful_rx, None);
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case5_all_timeouts",
+        graceful_rx,
+        None,
+    );
 
     // Setup replication handler to return all timeouts
     raft_context
@@ -2437,9 +2578,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -2451,7 +2590,11 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
 async fn test_verify_internal_quorum_case6_higher_term() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft_context = mock_raft_context("/tmp/test_verify_internal_quorum_case6_higher_term", graceful_rx, None);
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_verify_internal_quorum_case6_higher_term",
+        graceful_rx,
+        None,
+    );
 
     // Setup replication handler to return higher term error
     raft_context
@@ -2469,16 +2612,19 @@ async fn test_verify_internal_quorum_case6_higher_term() {
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(10)))
+        Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(
+            10
+        )))
     ));
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(_))
+    ));
 }
 
 /// # Case 7: Critical failure
@@ -2506,9 +2652,7 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state
-        .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-        .await;
+    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -2522,7 +2666,11 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
 async fn test_handle_join_cluster_case1_success() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft_context = mock_raft_context("/tmp/test_handle_join_cluster_case1_success", graceful_rx, None);
+    let mut raft_context = mock_raft_context(
+        "/tmp/test_handle_join_cluster_case1_success",
+        graceful_rx,
+        None,
+    );
     let node_id = 100;
     let address = "127.0.0.1:8080".to_string();
 
@@ -2562,14 +2710,15 @@ async fn test_handle_join_cluster_case1_success() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                peer_updates: HashMap::from([
+                    (2, PeerUpdate::success(5, 6)),
+                    (3, PeerUpdate::success(5, 6)),
+                ]),
             })
         });
 
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_context.storage.raft_log = Arc::new(raft_log);
     let mut state_machine = MockStateMachine::new();
     state_machine.expect_snapshot_metadata().returning(move || {
@@ -2583,9 +2732,7 @@ async fn test_handle_join_cluster_case1_success() {
 
     // Mock state machine handler
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler
-        .expect_get_latest_snapshot_metadata()
-        .returning(|| None);
+    state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| None);
     raft_context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock quorum verification
@@ -2615,7 +2762,11 @@ async fn test_handle_join_cluster_case1_success() {
 async fn test_handle_join_cluster_case2_node_exists() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_join_cluster_case2_node_exists", graceful_rx, None);
+    let context = mock_raft_context(
+        "/tmp/test_handle_join_cluster_case2_node_exists",
+        graceful_rx,
+        None,
+    );
     let node_id = 100;
 
     // Mock membership to report existing node
@@ -2652,7 +2803,11 @@ async fn test_handle_join_cluster_case2_node_exists() {
 async fn test_handle_join_cluster_case3_quorum_failed() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_join_cluster_case3_quorum_failed", graceful_rx, None);
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_join_cluster_case3_quorum_failed",
+        graceful_rx,
+        None,
+    );
     let node_id = 100;
 
     // Mock membership
@@ -2703,7 +2858,11 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
 async fn test_handle_join_cluster_case4_quorum_error() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_join_cluster_case4_quorum_error", graceful_rx, None);
+    let mut context = mock_raft_context(
+        "/tmp/test_handle_join_cluster_case4_quorum_error",
+        graceful_rx,
+        None,
+    );
     let node_id = 100;
 
     // Mock membership
@@ -2786,14 +2945,15 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
 
     // Mock state machine handler to return snapshot metadata
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler
-        .expect_get_latest_snapshot_metadata()
-        .returning(|| {
-            Some(SnapshotMetadata {
-                last_included: Some(LogId { index: 100, term: 1 }),
-                checksum: vec![],
-            })
-        });
+    state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| {
+        Some(SnapshotMetadata {
+            last_included: Some(LogId {
+                index: 100,
+                term: 1,
+            }),
+            checksum: vec![],
+        })
+    });
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Setup replication handler to return success
@@ -2815,9 +2975,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     context.transport = Arc::new(transport);
 
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     context.storage.raft_log = Arc::new(raft_log);
     let mut state_machine = MockStateMachine::new();
     state_machine.expect_snapshot_metadata().returning(move || {
@@ -2987,9 +3145,8 @@ mod batch_promote_learners_test {
         let mut node_config = node_config(&format!("/tmp/{test_name}"));
         node_config.raft.learner_catchup_threshold = 100;
 
-        let mut raft_context = MockBuilder::new(graceful_rx)
-            .wiht_node_config(node_config)
-            .build_context();
+        let mut raft_context =
+            MockBuilder::new(graceful_rx).wiht_node_config(node_config).build_context();
 
         // Mock membership
         let mut membership = MockMembership::new();
@@ -3006,32 +3163,37 @@ mod batch_promote_learners_test {
                 .collect()
         });
         let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-        replication_handler
-            .expect_handle_raft_request_in_batch()
-            .times(1)
-            .returning(move |_, _, _, _| {
+        replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+            move |_, _, _, _| {
                 match verify_leadership_limited_retry_success {
                     VerifyInternalQuorumWithRetrySuccess::Success => Ok(AppendResults {
                         commit_quorum_achieved: true,
                         learner_progress: HashMap::new(),
-                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                        peer_updates: HashMap::from([
+                            (2, PeerUpdate::success(5, 6)),
+                            (3, PeerUpdate::success(5, 6)),
+                        ]),
                     }),
                     VerifyInternalQuorumWithRetrySuccess::Failure => Ok(AppendResults {
                         commit_quorum_achieved: false,
                         learner_progress: HashMap::new(),
-                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+                        peer_updates: HashMap::from([
+                            (2, PeerUpdate::success(5, 6)),
+                            (3, PeerUpdate::failed()),
+                        ]),
                     }),
-                    VerifyInternalQuorumWithRetrySuccess::Error => Err(Error::Consensus(ConsensusError::Replication(
-                        ReplicationError::HigherTerm(10), // Higher term
-                    ))),
+                    VerifyInternalQuorumWithRetrySuccess::Error => {
+                        Err(Error::Consensus(ConsensusError::Replication(
+                            ReplicationError::HigherTerm(10), // Higher term
+                        )))
+                    }
                 }
-            });
+            },
+        );
         raft_context.handlers.replication_handler = replication_handler;
 
         let mut raft_log = MockRaftLog::new();
-        raft_log
-            .expect_calculate_majority_matched_index()
-            .returning(|_, _, _| Some(5));
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
         raft_context.storage.raft_log = Arc::new(raft_log);
 
         // Mock learner statuses
@@ -3129,7 +3291,13 @@ mod batch_promote_learners_test {
     #[tokio::test]
     #[ignore]
     async fn test_batch_promote_learners_verification_error() {
-        let ctx = setup_test_context("test_success", 3, vec![4], VerifyInternalQuorumWithRetrySuccess::Error).await;
+        let ctx = setup_test_context(
+            "test_success",
+            3,
+            vec![4],
+            VerifyInternalQuorumWithRetrySuccess::Error,
+        )
+        .await;
 
         // Mock quorum verification to succeed
         let mut leader_state = ctx.leader_state;
@@ -3168,7 +3336,8 @@ mod pending_promotion_tests {
             verify_internal_quorum_success: bool,
         ) -> Self {
             // let (_graceful_tx, graceful_rx) = watch::channel(());
-            // let mut raft_context = test_utils::mock_raft_context("/tmp/{test_name}", graceful_rx, None);
+            // let mut raft_context = test_utils::mock_raft_context("/tmp/{test_name}", graceful_rx,
+            // None);
             let mut raft_context = if verify_internal_quorum_success {
                 Self::verify_internal_quorum_achieved_context(test_name).await
             } else {
@@ -3178,9 +3347,7 @@ mod pending_promotion_tests {
             let mut membership = MockMembership::new();
             membership.expect_can_rejoin().returning(|_| Ok(()));
             membership.expect_can_rejoin().returning(|_| Ok(()));
-            membership
-                .expect_get_node_status()
-                .returning(|_| Some(NodeStatus::Active));
+            membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
             membership
                 .expect_update_node_status()
                 .withf(|_id, status| *status == NodeStatus::StandBy)
@@ -3209,10 +3376,13 @@ mod pending_promotion_tests {
             }
         }
 
-        async fn verify_internal_quorum_achieved_context(test_name: &str) -> RaftContext<MockTypeConfig> {
+        async fn verify_internal_quorum_achieved_context(
+            test_name: &str
+        ) -> RaftContext<MockTypeConfig> {
             let payloads = vec![EntryPayload::command(vec![])];
             let (_graceful_tx, graceful_rx) = watch::channel(());
-            let mut raft_context = mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
+            let mut raft_context =
+                mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
 
             // Setup replication handler to return success
             raft_context
@@ -3223,34 +3393,40 @@ mod pending_promotion_tests {
                     Ok(AppendResults {
                         commit_quorum_achieved: true,
                         learner_progress: HashMap::new(),
-                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::success(5, 6))]),
+                        peer_updates: HashMap::from([
+                            (2, PeerUpdate::success(5, 6)),
+                            (3, PeerUpdate::success(5, 6)),
+                        ]),
                     })
                 });
 
             let mut raft_log = MockRaftLog::new();
-            raft_log
-                .expect_calculate_majority_matched_index()
-                .returning(|_, _, _| Some(5));
+            raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
             raft_context.storage.raft_log = Arc::new(raft_log);
 
             let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
 
             let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-            let result = state
-                .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-                .await;
+            let result =
+                state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
-            assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))));
+            assert!(matches!(
+                role_rx.try_recv(),
+                Ok(RoleEvent::NotifyNewCommitIndex(_))
+            ));
 
             raft_context
         }
 
-        async fn verify_internal_quorum_failure_context(test_name: &str) -> RaftContext<MockTypeConfig> {
+        async fn verify_internal_quorum_failure_context(
+            test_name: &str
+        ) -> RaftContext<MockTypeConfig> {
             let payloads = vec![EntryPayload::command(vec![])];
             let (_graceful_tx, graceful_rx) = watch::channel(());
-            let mut raft_context = mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
+            let mut raft_context =
+                mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
 
             // Setup replication handler to return verifiable failure
             raft_context
@@ -3261,7 +3437,10 @@ mod pending_promotion_tests {
                     Ok(AppendResults {
                         commit_quorum_achieved: false,
                         learner_progress: HashMap::new(),
-                        peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6)), (3, PeerUpdate::failed())]),
+                        peer_updates: HashMap::from([
+                            (2, PeerUpdate::success(5, 6)),
+                            (3, PeerUpdate::failed()),
+                        ]),
                     })
                 });
 
@@ -3269,9 +3448,8 @@ mod pending_promotion_tests {
 
             let (role_tx, _) = mpsc::unbounded_channel();
 
-            let result = state
-                .verify_internal_quorum(payloads, true, &raft_context, &role_tx)
-                .await;
+            let result =
+                state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 
@@ -3432,7 +3610,8 @@ mod pending_promotion_tests {
         // Setup failure in verify_leadership_limited_retry
         let mut fixture = TestFixture::new("test_batch_promotion_failure", false).await;
 
-        fixture.leader_state.pending_promotions = (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
+        fixture.leader_state.pending_promotions =
+            (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
         let result = fixture
             .leader_state
             .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
@@ -3445,7 +3624,8 @@ mod pending_promotion_tests {
     #[tokio::test]
     async fn test_leader_stepdown_during_promotion() {
         let mut fixture = TestFixture::new("test_leader_stepdown", false).await;
-        fixture.leader_state.pending_promotions = (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
+        fixture.leader_state.pending_promotions =
+            (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
 
         // Simulate leadership loss
         fixture.leader_state.update_current_term(2);
@@ -3558,7 +3738,8 @@ mod stale_learner_tests {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut ctx = test_utils::mock_raft_context("/tmp/{test_name}", graceful_rx, None);
         ctx.membership = membership.clone();
-        ctx.node_config = config.unwrap_or_else(|| Arc::new(node_config(&format!("/tmp/{test_name}",))));
+        ctx.node_config =
+            config.unwrap_or_else(|| Arc::new(node_config(&format!("/tmp/{test_name}",))));
         ctx
     }
 
@@ -3566,9 +3747,11 @@ mod stale_learner_tests {
     #[tokio::test]
     async fn test_stale_check_optimization() {
         // Create queue with 200 entries (will only check oldest 100 or 2%)
-        let nodes: Vec<(u32, Duration)> = (1..=200).map(|id| (id, Duration::from_secs(40))).collect();
+        let nodes: Vec<(u32, Duration)> =
+            (1..=200).map(|id| (id, Duration::from_secs(40))).collect();
 
-        let (mut leader, membership) = create_test_leader_state("test_stale_check_optimization", nodes);
+        let (mut leader, membership) =
+            create_test_leader_state("test_stale_check_optimization", nodes);
         let mut node_config = node_config("/tmp/test_stale_check_optimization");
         node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
         node_config.raft.membership.promotion.stale_check_interval = Duration::from_secs(60);
@@ -3588,10 +3771,11 @@ mod stale_learner_tests {
     /// Test no purge when not expired
     #[tokio::test]
     async fn test_no_purge_when_fresh() {
-        let (mut leader, mut membership) = create_test_leader_state(
-            "test_no_purge_when_fresh",
-            vec![(101, Duration::from_secs(15)), (102, Duration::from_secs(20))],
-        );
+        let (mut leader, mut membership) =
+            create_test_leader_state("test_no_purge_when_fresh", vec![
+                (101, Duration::from_secs(15)),
+                (102, Duration::from_secs(20)),
+            ]);
         // Should do nothing
         membership.expect_update_node_status().never();
 
@@ -3604,7 +3788,8 @@ mod stale_learner_tests {
     /// Test check scheduling logic
     #[tokio::test]
     async fn test_membership_maintenance_scheduling() {
-        let (mut leader, _) = create_test_leader_state("test_membership_maintenance_scheduling", vec![]);
+        let (mut leader, _) =
+            create_test_leader_state("test_membership_maintenance_scheduling", vec![]);
         let interval = Duration::from_secs(60);
         // First call
         leader.reset_next_membership_maintenance_check(interval);
@@ -3643,9 +3828,11 @@ mod stale_learner_tests {
     /// Test system remains responsive during large queues
     #[tokio::test]
     async fn test_performance_large_queue() {
-        let nodes: Vec<(u32, Duration)> = (1..=10_000).map(|id| (id, Duration::from_secs(40))).collect();
+        let nodes: Vec<(u32, Duration)> =
+            (1..=10_000).map(|id| (id, Duration::from_secs(40))).collect();
 
-        let (mut leader, membership) = create_test_leader_state("test_performance_large_queue", nodes);
+        let (mut leader, membership) =
+            create_test_leader_state("test_performance_large_queue", nodes);
         let ctx = mock_raft_context("test_performance_large_queue", Arc::new(membership), None);
 
         // Time the staleness check
@@ -3664,14 +3851,11 @@ mod stale_learner_tests {
     #[tokio::test]
     async fn test_promotion_timeout_threshold() {
         enable_logger();
-        let (mut leader, membership) = create_test_leader_state(
-            "test",
-            vec![
-                (101, Duration::from_secs(31)), // 1s over threshold
-                (102, Duration::from_secs(30)), // exactly at threshold
-                (103, Duration::from_secs(29)), // 1s under threshold
-            ],
-        );
+        let (mut leader, membership) = create_test_leader_state("test", vec![
+            (101, Duration::from_secs(31)), // 1s over threshold
+            (102, Duration::from_secs(30)), // exactly at threshold
+            (103, Duration::from_secs(29)), // 1s under threshold
+        ]);
         leader.next_membership_maintenance_check = Instant::now() - Duration::from_secs(1);
         let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
         node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
@@ -3690,18 +3874,17 @@ mod stale_learner_tests {
     #[tokio::test]
     async fn test_downgrade_affects_replication() {
         enable_logger();
-        let (mut leader, mut membership) = create_test_leader_state(
-            "test",
-            vec![
-                (101, Duration::from_secs(29)), // 1s under threshold
-                (102, Duration::from_secs(30)), // exactly at threshold
-                (103, Duration::from_secs(31)), // 1s over threshold
-            ],
+        let (mut leader, mut membership) = create_test_leader_state("test", vec![
+            (101, Duration::from_secs(29)), // 1s under threshold
+            (102, Duration::from_secs(30)), // exactly at threshold
+            (103, Duration::from_secs(31)), // 1s over threshold
+        ]);
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
+        let ctx = mock_raft_context(
+            "test_downgrade_affects_replication",
+            Arc::new(membership),
+            None,
         );
-        membership
-            .expect_get_node_status()
-            .returning(|_| Some(NodeStatus::Active));
-        let ctx = mock_raft_context("test_downgrade_affects_replication", Arc::new(membership), None);
 
         assert!(leader.handle_stale_learner(101, &ctx).await.is_ok());
 

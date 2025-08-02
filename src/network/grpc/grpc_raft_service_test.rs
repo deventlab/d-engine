@@ -86,10 +86,7 @@ async fn test_handle_service_timeout() {
         .is_err());
 
     // Metadata request
-    assert!(node
-        .get_cluster_metadata(Request::new(MetadataRequest {}))
-        .await
-        .is_err());
+    assert!(node.get_cluster_metadata(Request::new(MetadataRequest {})).await.is_err());
 
     // Client read request
     assert!(node
@@ -203,14 +200,12 @@ async fn test_handle_rpc_services_successfully() {
         });
     membership.expect_current_leader_id().returning(|| None);
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-    replication_handler
-        .expect_handle_append_entries()
-        .returning(move |_, _, _| {
-            Ok(AppendResponseWithUpdates {
-                response: AppendEntriesResponse::success(1, 1, Some(LogId { term: 1, index: 1 })),
-                commit_index_update: Some(1),
-            })
-        });
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(1, 1, Some(LogId { term: 1, index: 1 })),
+            commit_index_update: Some(1),
+        })
+    });
     replication_handler
         .expect_handle_raft_request_in_batch()
         .returning(|_, _, _, _| {
@@ -221,15 +216,12 @@ async fn test_handle_rpc_services_successfully() {
             })
         });
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler
-        .expect_handle_vote_request()
-        .times(1)
-        .returning(|_, _, _, _| {
-            Ok(StateUpdate {
-                new_voted_for: None,
-                term_update: None,
-            })
-        });
+    election_handler.expect_handle_vote_request().times(1).returning(|_, _, _, _| {
+        Ok(StateUpdate {
+            new_voted_for: None,
+            term_update: None,
+        })
+    });
     election_handler
         .expect_broadcast_vote_requests()
         .returning(|_, _, _, _, _| Ok(()));
@@ -297,10 +289,7 @@ async fn test_handle_rpc_services_successfully() {
             .await
             .is_ok());
 
-        assert!(node
-            .get_cluster_metadata(Request::new(MetadataRequest {}))
-            .await
-            .is_ok());
+        assert!(node.get_cluster_metadata(Request::new(MetadataRequest {})).await.is_ok());
 
         assert!(node
             .handle_client_read(Request::new(ClientReadRequest {

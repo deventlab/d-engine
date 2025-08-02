@@ -38,6 +38,13 @@
 //! - Failure scenario testing with real component interactions
 
 mod snapshot;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+#[allow(unused)]
+pub(crate) use snapshot::*;
+use tokio::sync::watch;
+
 use super::generate_insert_commands;
 use crate::alias::MOF;
 use crate::alias::ROF;
@@ -68,16 +75,10 @@ use crate::SledStateMachine;
 use crate::SledStorageEngine;
 use crate::StateMachine;
 use crate::TypeConfig;
-#[allow(unused)]
-pub(crate) use snapshot::*;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::watch;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub id: u32,
 
@@ -118,7 +119,9 @@ pub fn setup_raft_components(
     // let raft_log_db = Arc::new(raft_log_db);
     let state_machine_db = Arc::new(state_machine_db);
 
-    let storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("Init storage engine successfully."));
+    let storage_engine = Arc::new(
+        SledStorageEngine::new(id, raft_log_db).expect("Init storage engine successfully."),
+    );
 
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,

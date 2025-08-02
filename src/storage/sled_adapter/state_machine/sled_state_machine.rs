@@ -232,11 +232,17 @@ impl StateMachine for SledStateMachine {
                     match WriteCommand::decode(&data[..]) {
                         Ok(write_cmd) => match write_cmd.operation {
                             Some(Operation::Insert(Insert { key, value })) => {
-                                debug!("Applying INSERT command at index {}: {:?}", entry.index, key);
+                                debug!(
+                                    "Applying INSERT command at index {}: {:?}",
+                                    entry.index, key
+                                );
                                 batch.insert(key, value);
                             }
                             Some(Operation::Delete(Delete { key })) => {
-                                debug!("Applying DELETE command at index {}: {:?}", entry.index, key);
+                                debug!(
+                                    "Applying DELETE command at index {}: {:?}",
+                                    entry.index, key
+                                );
                                 batch.remove(key);
                             }
                             None => {
@@ -244,13 +250,19 @@ impl StateMachine for SledStateMachine {
                             }
                         },
                         Err(e) => {
-                            error!("Failed to decode WriteCommand at index {}: {:?}", entry.index, e);
+                            error!(
+                                "Failed to decode WriteCommand at index {}: {:?}",
+                                entry.index, e
+                            );
                             return Err(StorageError::SerializationError(e.to_string()).into());
                         }
                     }
                 }
                 Some(Payload::Config(_config_change)) => {
-                    debug!("Ignoring config change in state machine at index {}", entry.index);
+                    debug!(
+                        "Ignoring config change in state machine at index {}",
+                        entry.index
+                    );
                     // Update only the configuration state of the Raft layer, without writing to the
                     // state machine Example: raft.
                     // update_cluster_config(config_change);
@@ -296,8 +308,14 @@ impl StateMachine for SledStateMachine {
         debug!(%self.node_id, ?last_applied, "persist_last_applied");
         let db = self.db.load();
         let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
-        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX, &safe_kv(last_applied.index))?;
-        tree.insert(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM, &safe_kv(last_applied.term))?;
+        tree.insert(
+            STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
+            &safe_kv(last_applied.index),
+        )?;
+        tree.insert(
+            STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
+            &safe_kv(last_applied.term),
+        )?;
 
         tree.flush()?;
         Ok(())
@@ -319,7 +337,10 @@ impl StateMachine for SledStateMachine {
         let db = self.db.load();
         match db.flush() {
             Ok(bytes) => {
-                info!("Successfully flushed State Machine, bytes flushed: {}", bytes);
+                info!(
+                    "Successfully flushed State Machine, bytes flushed: {}",
+                    bytes
+                );
                 println!("Successfully flushed State Machine, bytes flushed: {bytes}");
             }
             Err(e) => {
@@ -340,7 +361,8 @@ impl StateMachine for SledStateMachine {
         let _guard = self.snapshot_lock.write().await;
 
         // 2. Create a new state machine database instance
-        let new_db = init_sled_state_machine_db(&new_snapshot_dir).map_err(StorageError::IoError)?;
+        let new_db =
+            init_sled_state_machine_db(&new_snapshot_dir).map_err(StorageError::IoError)?;
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -397,7 +419,10 @@ impl StateMachine for SledStateMachine {
         // Make sure last included is persisted into local database
         self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
         // Make sure last included is persisted into the new database
-        self.persist_last_snapshot_metadata_with_tree(new_snapshot_metadatat_tree, &last_snapshot_metadata)?;
+        self.persist_last_snapshot_metadata_with_tree(
+            new_snapshot_metadatat_tree,
+            &last_snapshot_metadata,
+        )?;
 
         Ok(checksum)
     }
@@ -413,8 +438,8 @@ impl StateMachine for SledStateMachine {
                 ?new_last_included,
                 "1. Acquire write lock to prevent concurrent snapshot generation/application"
             );
-            // 1. Acquire write lock to prevent concurrent snapshot generation/application This ensures atomic
-            //    snapshot application per Raft requirements
+            // 1. Acquire write lock to prevent concurrent snapshot generation/application This
+            //    ensures atomic snapshot application per Raft requirements
             let _guard = self.snapshot_lock.write().await;
 
             debug!("2. Validate snapshot version - only apply if newer than current state");
@@ -432,12 +457,13 @@ impl StateMachine for SledStateMachine {
                 ?compressed_path,
                 "3. Validate file format before processing (IMPROVEMENT ADDED)"
             );
-            // 3. Validate file format before processing (IMPROVEMENT ADDED) Verify the file is actually
-            //    compressed using magic numbers or extension
+            // 3. Validate file format before processing (IMPROVEMENT ADDED) Verify the file is
+            //    actually compressed using magic numbers or extension
             validate_compressed_format(&compressed_path)?;
 
             debug!("4. Create temp directory for decompression");
-            // 4. Create temp directory for decompression Using tempfile crate ensures secure cleanup
+            // 4. Create temp directory for decompression Using tempfile crate ensures secure
+            //    cleanup
             let temp_dir = tempfile::tempdir().map_err(StorageError::IoError)?;
             let temp_dir_path = temp_dir.path().to_path_buf();
 
@@ -446,13 +472,16 @@ impl StateMachine for SledStateMachine {
                 ?temp_dir_path,
                 "5. Decompress snapshot using proper chunking/validation"
             );
-            // 5. Decompress snapshot using proper chunking/validation Added compression format validation based
-            //    on
+            // 5. Decompress snapshot using proper chunking/validation Added compression format
+            //    validation based on
             self.decompress_snapshot(&compressed_path, &temp_dir_path).await?;
 
-            debug!(?temp_dir_path, "6. CRITICAL SECURITY STEP: Validate checksum");
-            // 6. CRITICAL SECURITY STEP: Validate checksum Prevents tampered or corrupted snapshots from being
-            //    applied
+            debug!(
+                ?temp_dir_path,
+                "6. CRITICAL SECURITY STEP: Validate checksum"
+            );
+            // 6. CRITICAL SECURITY STEP: Validate checksum Prevents tampered or corrupted snapshots
+            //    from being applied
             let computed_checksum = compute_checksum_from_folder_path(&temp_dir_path).await?;
 
             if metadata.checksum != computed_checksum {
@@ -461,29 +490,34 @@ impl StateMachine for SledStateMachine {
                     computed_checksum, metadata.checksum
                 );
 
-                metrics::counter!(
-                    "snapshot.checksum_failures",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("snapshot_index", new_last_included.index.to_string()),
-                    ]
-                )
+                metrics::counter!("snapshot.checksum_failures", &[
+                    ("node_id", self.node_id.to_string()),
+                    ("snapshot_index", new_last_included.index.to_string()),
+                ])
                 .increment(1);
 
                 return Err(SnapshotError::ChecksumMismatch.into());
             }
             debug!(?temp_dir_path, "7. Initialize new state machine database");
-            // 7. Initialize new state machine database Maintains ACID properties during state transition
-            let db = init_sled_state_machine_db(&temp_dir_path).map_err(|e| StorageError::PathError {
-                path: temp_dir_path,
-                source: e,
+            // 7. Initialize new state machine database Maintains ACID properties during state
+            //    transition
+            let db = init_sled_state_machine_db(&temp_dir_path).map_err(|e| {
+                StorageError::PathError {
+                    path: temp_dir_path,
+                    source: e,
+                }
             })?;
 
             debug!("8. Atomically replace current database");
-            // 8. Atomically replace current database Critical for maintaining consistency per Raft spec
+            // 8. Atomically replace current database Critical for maintaining consistency per Raft
+            //    spec
             self.db.store(Arc::new(db));
 
-            debug!(?new_last_included, ?metadata, "9. Update Raft metadata and indexes");
+            debug!(
+                ?new_last_included,
+                ?metadata,
+                "9. Update Raft metadata and indexes"
+            );
             // 9. Update Raft metadata and indexes Follows snapshot application procedure from
             self.update_last_applied(new_last_included);
             self.update_last_snapshot_metadata(metadata)?;
@@ -514,7 +548,8 @@ impl SledStateMachine {
         db: Arc<sled::Db>,
     ) -> Result<Self> {
         let state_machine_meta_tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
-        let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&state_machine_meta_tree)?;
+        let (last_applied_index, last_applied_term) =
+            Self::load_state_machine_metadata(&state_machine_meta_tree)?;
 
         let snapshot_meta_tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
 

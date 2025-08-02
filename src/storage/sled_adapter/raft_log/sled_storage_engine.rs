@@ -1,3 +1,15 @@
+use std::ops::RangeInclusive;
+
+use bytes::Bytes;
+use prost::Message;
+use sled::Batch;
+use sled::Db;
+use sled::IVec;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+
 use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::convert::safe_vk;
 use crate::proto::common::Entry;
@@ -10,16 +22,6 @@ use crate::ProstError;
 use crate::Result;
 use crate::StorageEngine;
 use crate::StorageError;
-use bytes::Bytes;
-use prost::Message;
-use sled::Batch;
-use sled::Db;
-use sled::IVec;
-use std::ops::RangeInclusive;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
 
 pub struct SledStorageEngine {
     #[allow(dead_code)]
@@ -85,9 +87,9 @@ impl StorageEngine for SledStorageEngine {
     ) -> Result<Option<Entry>> {
         let key = Self::index_to_key(index);
         match self.log_tree.get(key)? {
-            Some(bytes) => Entry::decode(&*bytes)
-                .map(Some)
-                .map_err(|e| ProstError::Decode(e).into()),
+            Some(bytes) => {
+                Entry::decode(&*bytes).map(Some).map_err(|e| ProstError::Decode(e).into())
+            }
             None => Ok(None),
         }
     }
@@ -182,7 +184,10 @@ impl StorageEngine for SledStorageEngine {
         match self.meta_tree.get(STATE_STORAGE_HARD_STATE_KEY)? {
             Some(ivec) => {
                 let bytes = Bytes::copy_from_slice(ivec.as_ref());
-                info!("found node state from DB with key: {}", STATE_STORAGE_HARD_STATE_KEY);
+                info!(
+                    "found node state from DB with key: {}",
+                    STATE_STORAGE_HARD_STATE_KEY
+                );
 
                 match bincode::deserialize::<HardState>(bytes.as_ref()) {
                     Ok(hard_state) => {
@@ -193,7 +198,10 @@ impl StorageEngine for SledStorageEngine {
                         Ok(Some(hard_state))
                     }
                     Err(e) => {
-                        error!("state:load_role_hard_state_from_db deserialize error. {}", e);
+                        error!(
+                            "state:load_role_hard_state_from_db deserialize error. {}",
+                            e
+                        );
                         Ok(None)
                     }
                 }
@@ -214,8 +222,10 @@ impl StorageEngine for SledStorageEngine {
     ) -> Result<()> {
         match bincode::serialize(&hard_state) {
             Ok(v) => {
-                self.meta_tree
-                    .insert(STATE_STORAGE_HARD_STATE_KEY, IVec::from(v.as_ref() as &[u8]))?;
+                self.meta_tree.insert(
+                    STATE_STORAGE_HARD_STATE_KEY,
+                    IVec::from(v.as_ref() as &[u8]),
+                )?;
 
                 info!("persistent_state_into_db successfully!");
                 println!("persistent_state_into_db successfully!");
@@ -244,9 +254,7 @@ impl StorageEngine for SledStorageEngine {
     fn db_size(&self) -> Result<u64> {
         use crate::StorageError;
 
-        self.db
-            .size_on_disk()
-            .map_err(|e| StorageError::DbError(e.to_string()).into())
+        self.db.size_on_disk().map_err(|e| StorageError::DbError(e.to_string()).into())
     }
 
     #[cfg(test)]
@@ -260,9 +268,7 @@ impl std::fmt::Debug for SledStorageEngine {
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("SledRaftLog")
-            .field("tree_len", &self.log_tree.len())
-            .finish()
+        f.debug_struct("SledRaftLog").field("tree_len", &self.log_tree.len()).finish()
     }
 }
 

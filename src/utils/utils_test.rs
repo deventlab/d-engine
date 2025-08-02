@@ -92,14 +92,10 @@ async fn test_task_with_exponential_backoff() {
         base_delay_ms: 1000,
         max_delay_ms: 3000,
     };
-    assert!(task_with_timeout_and_exponential_backoff(async_ok, policy)
-        .await
-        .is_ok());
+    assert!(task_with_timeout_and_exponential_backoff(async_ok, policy).await.is_ok());
 
     // Case 2: when err task return error
-    assert!(task_with_timeout_and_exponential_backoff(async_err, policy)
-        .await
-        .is_err());
+    assert!(task_with_timeout_and_exponential_backoff(async_err, policy).await.is_err());
 
     // Case 3: when ok task always failed on timeout error
     let policy = BackoffPolicy {
@@ -108,7 +104,5 @@ async fn test_task_with_exponential_backoff() {
         base_delay_ms: 1,
         max_delay_ms: 3,
     };
-    assert!(task_with_timeout_and_exponential_backoff(async_ok, policy)
-        .await
-        .is_err());
+    assert!(task_with_timeout_and_exponential_backoff(async_ok, policy).await.is_err());
 }

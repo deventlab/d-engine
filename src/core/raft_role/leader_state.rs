@@ -105,7 +105,10 @@ impl PendingPromotion {
         node_id: u32,
         ready_since: Instant,
     ) -> Self {
-        PendingPromotion { node_id, ready_since }
+        PendingPromotion {
+            node_id,
+            ready_since,
+        }
     }
 }
 
@@ -352,7 +355,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
-        let initial_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
+        let initial_delay =
+            Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
         let max_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.max_delay_ms);
         let global_timeout = ctx.node_config.raft.membership.verify_leadership_persistent_timeout;
 
@@ -360,21 +364,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let start_time = Instant::now();
 
         loop {
-            match self
-                .verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx)
-                .await
-            {
+            match self.verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx).await {
                 Ok(QuorumVerificationResult::Success) => return Ok(true),
                 Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
                 Ok(QuorumVerificationResult::RetryRequired) => {
                     // Check global timeout before retrying
                     if start_time.elapsed() > global_timeout {
-                        return Err(
-                            NetworkError::GlobalTimeout("Leadership verification timed out".to_string()).into(),
-                        );
+                        return Err(NetworkError::GlobalTimeout(
+                            "Leadership verification timed out".to_string(),
+                        )
+                        .into());
                     }
 
-                    current_delay = current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
+                    current_delay =
+                        current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
                     let jitter = Duration::from_millis(rand::random::<u64>() % 500);
                     sleep(current_delay + jitter).await;
                 }
@@ -414,26 +417,28 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ) -> Result<bool> {
         let retry_policy = ctx.node_config.retry.internal_quorum;
         let max_retries = retry_policy.max_retries;
-        let initial_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
+        let initial_delay =
+            Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
         let max_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.max_delay_ms);
 
         let mut current_delay = initial_delay;
         let mut attempts = 0;
 
         loop {
-            match self
-                .verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx)
-                .await
-            {
+            match self.verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx).await {
                 Ok(QuorumVerificationResult::Success) => return Ok(true),
                 Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
                 Ok(QuorumVerificationResult::RetryRequired) => {
                     debug!(%attempts, "verify_internal_quorum");
                     if attempts >= max_retries {
-                        return Err(NetworkError::TaskBackoffFailed("Max retries exceeded".to_string()).into());
+                        return Err(NetworkError::TaskBackoffFailed(
+                            "Max retries exceeded".to_string(),
+                        )
+                        .into());
                     }
 
-                    current_delay = current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
+                    current_delay =
+                        current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
                     let jitter = Duration::from_millis(rand::random::<u64>() % 500);
                     sleep(current_delay + jitter).await;
 
@@ -496,7 +501,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         .await?;
 
         // Wait for response with timeout
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         match timeout(timeout_duration, resp_rx).await {
             // Case 1: Response received successfully and verification passed
             Ok(Ok(Ok(response))) => {
@@ -660,7 +666,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // 2. Else:
             // - Reply with VoteGranted=false, currentTerm=currentTerm
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
+                debug!(
+                    "handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}",
+                    &vote_request
+                );
 
                 let my_term = self.current_term();
                 if my_term < vote_request.term {
@@ -669,9 +678,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.send_become_follower_event(None, &role_tx)?;
 
                     info!("Leader will not process Vote request, it should let Follower do it.");
-                    send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
+                    send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::ReceiveVoteRequest(vote_request, sender),
+                    )?;
                 } else {
-                    let last_log_id = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
+                    let last_log_id =
+                        ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
                     let response = VoteResponse {
                         term: my_term,
                         vote_granted: false,
@@ -705,7 +718,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 // Reject the fake Leader append entries request
                 if my_term >= cluste_conf_change_request.term {
-                    let response = ClusterConfUpdateResponse::higher_term(my_id, my_term, current_conf_version);
+                    let response = ClusterConfUpdateResponse::higher_term(
+                        my_id,
+                        my_term,
+                        current_conf_version,
+                    );
 
                     sender.send(Ok(response)).map_err(|e| {
                         let error_str = format!("{e:?}");
@@ -714,7 +731,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     })?;
                 } else {
                     // Step down as Follower as new Leader found
-                    info!("my({}) term < request one, now I will step down to Follower", my_id);
+                    info!(
+                        "my({}) term < request one, now I will step down to Follower",
+                        my_id
+                    );
                     //TODO: if there is a bug?  self.update_current_term(vote_request.term);
                     self.send_become_follower_event(Some(cluste_conf_change_request.id), &role_tx)?;
 
@@ -743,12 +763,21 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     })?;
                 } else {
                     // Step down as Follower as new Leader found
-                    info!("my({}) term < request one, now I will step down to Follower", my_id);
+                    info!(
+                        "my({}) term < request one, now I will step down to Follower",
+                        my_id
+                    );
                     //TODO: if there is a bug?  self.update_current_term(vote_request.term);
-                    self.send_become_follower_event(Some(append_entries_request.leader_id), &role_tx)?;
+                    self.send_become_follower_event(
+                        Some(append_entries_request.leader_id),
+                        &role_tx,
+                    )?;
 
                     info!("Leader will not process append_entries_request, it should let Follower do it.");
-                    send_replay_raft_event(&role_tx, RaftEvent::AppendEntries(append_entries_request, sender))?;
+                    send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::AppendEntries(append_entries_request, sender),
+                    )?;
                 }
             }
 
@@ -757,7 +786,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     .process_raft_request(
                         RaftRequestWithSignal {
                             id: nanoid!(),
-                            payloads: client_command_to_entry_payloads(client_write_request.commands),
+                            payloads: client_command_to_entry_payloads(
+                                client_write_request.commands,
+                            ),
                             sender,
                         },
                         ctx,
@@ -778,15 +809,16 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 );
 
                 let response: std::result::Result<ClientResponse, tonic::Status> = {
-                    let read_operation = || -> std::result::Result<ClientResponse, tonic::Status> {
-                        let results = ctx
-                            .handlers
-                            .state_machine_handler
-                            .read_from_state_machine(client_read_request.keys)
-                            .unwrap_or_default();
-                        debug!("handle_client_read results: {:?}", results);
-                        Ok(ClientResponse::read_results(results))
-                    };
+                    let read_operation =
+                        || -> std::result::Result<ClientResponse, tonic::Status> {
+                            let results = ctx
+                                .handlers
+                                .state_machine_handler
+                                .read_from_state_machine(client_read_request.keys)
+                                .unwrap_or_default();
+                            debug!("handle_client_read results: {:?}", results);
+                            Ok(ClientResponse::read_results(results))
+                        };
 
                     if client_read_request.linear {
                         if !self
@@ -815,7 +847,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     }
                 };
 
-                debug!("Leader::ClientReadRequest is going to response: {:?}", &response);
+                debug!(
+                    "Leader::ClientReadRequest is going to response: {:?}",
+                    &response
+                );
                 sender.send(response).map_err(|e| {
                     let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);
@@ -835,7 +870,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Leader",
                     required_role: "Follower or Learner",
-                    context: format!("Leader node {} receives RaftEvent::InstallSnapshotChunk", ctx.node_id),
+                    context: format!(
+                        "Leader node {} receives RaftEvent::InstallSnapshotChunk",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -854,7 +892,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Leader",
                     required_role: "None Leader",
-                    context: format!("Leader node {} receives RaftEvent::RaftLogCleanUp", ctx.node_id),
+                    context: format!(
+                        "Leader node {} receives RaftEvent::RaftLogCleanUp",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -866,15 +907,16 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     return Ok(());
                 }
 
-                self.snapshot_in_progress
-                    .store(true, std::sync::atomic::Ordering::Release);
+                self.snapshot_in_progress.store(true, std::sync::atomic::Ordering::Release);
                 let state_machine_handler = ctx.state_machine_handler().clone();
 
                 // Use spawn to perform snapshot creation in the background
                 tokio::spawn(async move {
                     let result = state_machine_handler.create_snapshot().await;
                     info!("SnapshotCreated event will be processed in another event thread");
-                    if let Err(e) = send_replay_raft_event(&role_tx, RaftEvent::SnapshotCreated(result)) {
+                    if let Err(e) =
+                        send_replay_raft_event(&role_tx, RaftEvent::SnapshotCreated(result))
+                    {
                         error!("Failed to send snapshot creation result: {}", e);
                     }
                 });
@@ -960,9 +1002,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 // self.last_purged_index = Some(scheduled);
                                 match purge_executor.execute_purge(scheduled).await {
                                     Ok(_) => {
-                                        if let Err(e) =
-                                            send_replay_raft_event(&role_tx, RaftEvent::LogPurgeCompleted(scheduled))
-                                        {
+                                        if let Err(e) = send_replay_raft_event(
+                                            &role_tx,
+                                            RaftEvent::LogPurgeCompleted(scheduled),
+                                        ) {
                                             error!(%e, "Failed to notify purge completion");
                                         }
                                     }
@@ -978,11 +1021,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::LogPurgeCompleted(purged_id) => {
                 // Ensure we don't regress the purge index
-                if self
-                    .last_purged_index
-                    .map_or(true, |current| purged_id.index > current.index)
-                {
-                    debug!(?purged_id, "Updating last purged index after successful execution");
+                if self.last_purged_index.map_or(true, |current| purged_id.index > current.index) {
+                    debug!(
+                        ?purged_id,
+                        "Updating last purged index after successful execution"
+                    );
                     self.last_purged_index = Some(purged_id);
                 } else {
                     warn!(
@@ -1041,7 +1084,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     let state_machine_handler = ctx.state_machine_handler().clone();
                     let config = ctx.node_config.raft.snapshot.clone();
                     // Load snapshot data stream
-                    let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
+                    let data_stream =
+                        state_machine_handler.load_snapshot_data(metadata.clone()).await?;
 
                     tokio::spawn(async move {
                         if let Err(e) = BackgroundSnapshotTransfer::<T>::run_pull_transfer(
@@ -1187,7 +1231,8 @@ impl<T: TypeConfig> LeaderState<T> {
         let _timer = ScopedTimer::new("Leader::process_batch");
 
         // 1. Prepare batch data
-        let entry_payloads: Vec<EntryPayload> = batch.iter().flat_map(|req| &req.payloads).cloned().collect();
+        let entry_payloads: Vec<EntryPayload> =
+            batch.iter().flat_map(|req| &req.payloads).cloned().collect();
         if !entry_payloads.is_empty() {
             trace!(?entry_payloads, "[Node-{} process_batch..", ctx.node_id);
         }
@@ -1200,7 +1245,12 @@ impl<T: TypeConfig> LeaderState<T> {
 
         let result = ctx
             .replication_handler()
-            .handle_raft_request_in_batch(entry_payloads, self.state_snapshot(), self.leader_state_snapshot(), ctx)
+            .handle_raft_request_in_batch(
+                entry_payloads,
+                self.state_snapshot(),
+                self.leader_state_snapshot(),
+                ctx,
+            )
             .await;
         debug!(?result, "replication_handler::handle_raft_request_in_batch");
 
@@ -1221,13 +1271,20 @@ impl<T: TypeConfig> LeaderState<T> {
                 };
 
                 // 3. Update commit index
-                if let Some(new_commit_index) = self.calculate_new_commit_index(ctx.raft_log(), &peer_updates) {
+                if let Some(new_commit_index) =
+                    self.calculate_new_commit_index(ctx.raft_log(), &peer_updates)
+                {
                     debug!(
                         "[Leader-{}] New commit been acknowledged: {}",
                         self.node_id(),
                         new_commit_index
                     );
-                    self.update_commit_index_with_signal(LEADER, self.current_term(), new_commit_index, role_tx)?;
+                    self.update_commit_index_with_signal(
+                        LEADER,
+                        self.current_term(),
+                        new_commit_index,
+                        role_tx,
+                    )?;
                 }
 
                 // 4. Notify all clients of success
@@ -1265,7 +1322,9 @@ impl<T: TypeConfig> LeaderState<T> {
             }
 
             // Case 3: High term found
-            Err(Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(higher_term)))) => {
+            Err(Error::Consensus(ConsensusError::Replication(ReplicationError::HigherTerm(
+                higher_term,
+            )))) => {
                 warn!("Higher term detected: {}", higher_term);
                 self.update_current_term(higher_term);
                 self.send_become_follower_event(None, role_tx)?;
@@ -1308,7 +1367,11 @@ impl<T: TypeConfig> LeaderState<T> {
             if let Err(e) = self.update_next_index(*peer_id, update.next_index) {
                 error!("Failed to update next index: {:?}", e);
             }
-            trace!("Updated next index for peer {}-{}", peer_id, update.next_index);
+            trace!(
+                "Updated next index for peer {}-{}",
+                peer_id,
+                update.next_index
+            );
             if let Some(match_index) = update.match_index {
                 if let Err(e) = self.update_match_index(*peer_id, match_index) {
                     error!("Failed to update match index: {:?}", e);
@@ -1390,8 +1453,8 @@ impl<T: TypeConfig> LeaderState<T> {
             // Create a PromoteReadyLearners event
             let event = RaftEvent::PromoteReadyLearners;
 
-            // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back to the main event
-            // queue
+            // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back to
+            // the main event queue
             if let Err(e) = role_tx.send(RoleEvent::ReprocessEvent(Box::new(event))) {
                 error!("Failed to send Promotion event via RoleEvent: {}", e);
             } else {
@@ -1427,10 +1490,16 @@ impl<T: TypeConfig> LeaderState<T> {
             new_active_count
         );
         let target_status = if ensure_safe_join(self.node_id(), new_active_count).is_ok() {
-            trace!("Going to update nodes-{:?} status to Active", ready_learners_ids);
+            trace!(
+                "Going to update nodes-{:?} status to Active",
+                ready_learners_ids
+            );
             NodeStatus::Active
         } else {
-            trace!("Not enough quorum to promote learners: {:?}", ready_learners_ids);
+            trace!(
+                "Not enough quorum to promote learners: {:?}",
+                ready_learners_ids
+            );
             return Ok(());
         };
 
@@ -1446,11 +1515,19 @@ impl<T: TypeConfig> LeaderState<T> {
         // 3. Submit single config change for all ready learners
         debug!("3. Submit single config change for all ready learners");
         match self
-            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true, ctx, role_tx)
+            .verify_leadership_limited_retry(
+                vec![EntryPayload::config(config_change)],
+                true,
+                ctx,
+                role_tx,
+            )
             .await
         {
             Ok(true) => {
-                info!("Batch promotion committed for nodes: {:?}", ready_learners_ids);
+                info!(
+                    "Batch promotion committed for nodes: {:?}",
+                    ready_learners_ids
+                );
             }
             Ok(false) => {
                 warn!("Failed to commit batch promotion");
@@ -1490,14 +1567,14 @@ impl<T: TypeConfig> LeaderState<T> {
     //         });
 
     //         // Submit batch activation
-    //         self.verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true, ctx, role_tx)
-    //             .await?;
+    //         self.verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true,
+    // ctx, role_tx)             .await?;
 
     //         // Update all pending active nodes to active
     //         for node in pending_nodes {
-    //             if let Err(e) = ctx.membership().update_node_status(node.id, NodeStatus::Active) {
-    //                 error!(?e, %node.id, "update_node_status(node_id, NodeStatus::Active) failed");
-    //             }
+    //             if let Err(e) = ctx.membership().update_node_status(node.id, NodeStatus::Active)
+    // {                 error!(?e, %node.id, "update_node_status(node_id, NodeStatus::Active)
+    // failed");             }
     //         }
     //     }
 
@@ -1515,9 +1592,11 @@ impl<T: TypeConfig> LeaderState<T> {
         let old_commit_index = self.commit_index();
         let current_term = self.current_term();
 
-        let matched_ids: Vec<u64> = peer_updates.keys().filter_map(|&id| self.match_index(id)).collect();
+        let matched_ids: Vec<u64> =
+            peer_updates.keys().filter_map(|&id| self.match_index(id)).collect();
 
-        let new_commit_index = raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
+        let new_commit_index =
+            raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
 
         if new_commit_index.is_some() && new_commit_index.unwrap() > old_commit_index {
             new_commit_index
@@ -1612,7 +1691,10 @@ impl<T: TypeConfig> LeaderState<T> {
         new_leader_id: Option<u32>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        info!(?new_leader_id, "Leader is going to step down as Follower...");
+        info!(
+            ?new_leader_id,
+            "Leader is going to step down as Follower..."
+        );
         role_tx.send(RoleEvent::BecomeFollower(new_leader_id)).map_err(|e| {
             let error_str = format!("{e:?}");
             error!("Failed to send: {}", error_str);
@@ -1668,10 +1750,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         last_included_in_snapshot.index < commit_index
             && monotonic_check
-            && self
-                .peer_purge_progress
-                .values()
-                .all(|&v| v >= last_included_in_snapshot.index)
+            && self.peer_purge_progress.values().all(|&v| v >= last_included_in_snapshot.index)
     }
 
     #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
@@ -1691,9 +1770,7 @@ impl<T: TypeConfig> LeaderState<T> {
         if membership.contains_node(node_id).await {
             let error_msg = format!("Node {node_id} already exists in cluster");
             warn!(%error_msg);
-            return self
-                .send_join_error(sender, MembershipError::NodeAlreadyExists(node_id))
-                .await;
+            return self.send_join_error(sender, MembershipError::NodeAlreadyExists(node_id)).await;
         }
 
         // // 2. Add the node as Learner with Joining status
@@ -1717,7 +1794,12 @@ impl<T: TypeConfig> LeaderState<T> {
         // 4. Submit config change, and wait for quorum confirmation
         debug!("4. Wait for quorum confirmation");
         match self
-            .verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true, ctx, role_tx)
+            .verify_leadership_limited_retry(
+                vec![EntryPayload::config(config_change)],
+                true,
+                ctx,
+                role_tx,
+            )
             .await
         {
             Ok(true) => {
@@ -1775,7 +1857,10 @@ impl<T: TypeConfig> LeaderState<T> {
             NetworkError::SingalSendFailed(format!("{e:?}"))
         })?;
 
-        info!("Node {} ({}) successfully added as learner", node_id, address);
+        info!(
+            "Node {} ({}) successfully added as learner",
+            node_id, address
+        );
         Ok(())
     }
 
@@ -1854,9 +1939,16 @@ impl<T: TypeConfig> LeaderState<T> {
                     .await
                     .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
 
-                let data_stream = state_machine_handler.load_snapshot_data(metadata.clone()).await?;
+                let data_stream =
+                    state_machine_handler.load_snapshot_data(metadata.clone()).await?;
 
-                BackgroundSnapshotTransfer::<T>::run_push_transfer(node_id, data_stream, bulk_channel, config).await
+                BackgroundSnapshotTransfer::<T>::run_push_transfer(
+                    node_id,
+                    data_stream,
+                    bulk_channel,
+                    config,
+                )
+                .await
             });
 
             // Non-blocking send result
@@ -1887,8 +1979,9 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Step 1: Remove stale entries (older than configured threshold)
         let now = Instant::now();
-        self.pending_promotions
-            .retain(|entry| now.duration_since(entry.ready_since) <= config.stale_learner_threshold);
+        self.pending_promotions.retain(|entry| {
+            now.duration_since(entry.ready_since) <= config.stale_learner_threshold
+        });
 
         if self.pending_promotions.is_empty() {
             return Ok(());
@@ -1899,7 +1992,8 @@ impl<T: TypeConfig> LeaderState<T> {
         let current_voters = membership.voters().await.len();
 
         // Step 3: Calculate the maximum batch size that preserves an odd total
-        let max_batch_size = calculate_safe_batch_size(current_voters, self.pending_promotions.len());
+        let max_batch_size =
+            calculate_safe_batch_size(current_voters, self.pending_promotions.len());
 
         if max_batch_size == 0 {
             // Nothing we can safely promote now
@@ -1944,7 +2038,9 @@ impl<T: TypeConfig> LeaderState<T> {
         if !self.pending_promotions.is_empty() {
             // Important: Re-send the event to trigger next cycle
             role_tx
-                .send(RoleEvent::ReprocessEvent(Box::new(RaftEvent::PromoteReadyLearners)))
+                .send(RoleEvent::ReprocessEvent(Box::new(
+                    RaftEvent::PromoteReadyLearners,
+                )))
                 .map_err(|e| {
                     let error_str = format!("{e:?}");
                     error!("Send PromoteReadyLearners event failed: {}", error_str);
@@ -1985,8 +2081,13 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // Submit batch activation
-        self.verify_leadership_limited_retry(vec![EntryPayload::config(change)], true, ctx, role_tx)
-            .await?;
+        self.verify_leadership_limited_retry(
+            vec![EntryPayload::config(change)],
+            true,
+            ctx,
+            role_tx,
+        )
+        .await?;
 
         Ok(())
     }
@@ -2005,8 +2106,11 @@ impl<T: TypeConfig> LeaderState<T> {
             error!("Zombie node purge failed: {}", e);
         }
 
-        // Regardless of whether a stale node is found, we set the next check according to a fixed period
-        self.reset_next_membership_maintenance_check(ctx.node_config().raft.membership.membership_maintenance_interval);
+        // Regardless of whether a stale node is found, we set the next check according to a fixed
+        // period
+        self.reset_next_membership_maintenance_check(
+            ctx.node_config().raft.membership.membership_maintenance_interval,
+        );
         Ok(())
     }
 
@@ -2021,7 +2125,9 @@ impl<T: TypeConfig> LeaderState<T> {
         let config = &ctx.node_config.raft.membership.promotion;
 
         // Optimization: Skip check 99.9% of the time using scheduled trial method
-        if self.pending_promotions.is_empty() || self.next_membership_maintenance_check > Instant::now() {
+        if self.pending_promotions.is_empty()
+            || self.next_membership_maintenance_check > Instant::now()
+        {
             trace!("Skipping stale learner check");
             return Ok(());
         }
@@ -2089,11 +2195,19 @@ impl<T: TypeConfig> LeaderState<T> {
                 node_ids: nodes_to_remove.clone(),
             });
 
-            info!("Proposing batch removal of zombie nodes: {:?}", nodes_to_remove);
+            info!(
+                "Proposing batch removal of zombie nodes: {:?}",
+                nodes_to_remove
+            );
 
             // Submit single config change for all nodes
             match self
-                .verify_leadership_limited_retry(vec![EntryPayload::config(change)], false, ctx, role_tx)
+                .verify_leadership_limited_retry(
+                    vec![EntryPayload::config(change)],
+                    false,
+                    ctx,
+                    role_tx,
+                )
                 .await
             {
                 Ok(true) => {
@@ -2128,9 +2242,7 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         // Step 1: Automated downgrade
-        ctx.membership()
-            .update_node_status(node_id, NodeStatus::StandBy)
-            .await?;
+        ctx.membership().update_node_status(node_id, NodeStatus::StandBy).await?;
 
         // Step 2: Trigger operator notification
         // ctx.ops_tx().send(OpsEvent::LearnerStalled(node_id));
@@ -2225,11 +2337,9 @@ pub(super) fn send_replay_raft_event(
     role_tx: &mpsc::UnboundedSender<RoleEvent>,
     raft_event: RaftEvent,
 ) -> Result<()> {
-    role_tx
-        .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
-        .map_err(|e| {
-            let error_str = format!("{e:?}");
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str).into()
-        })
+    role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
+        let error_str = format!("{e:?}");
+        error!("Failed to send: {}", error_str);
+        NetworkError::SingalSendFailed(error_str).into()
+    })
 }

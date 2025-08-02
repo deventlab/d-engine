@@ -1,15 +1,16 @@
 //! Core model in Raft: RaftLog Definition
 
+use std::ops::RangeInclusive;
+
+#[cfg(test)]
+use mockall::automock;
+use tonic::async_trait;
+
 use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::Result;
-use std::ops::RangeInclusive;
-use tonic::async_trait;
-
-#[cfg(test)]
-use mockall::automock;
 
 // /// Configurable persistence strategy for Raft logs
 // #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]

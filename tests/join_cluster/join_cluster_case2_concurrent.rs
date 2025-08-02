@@ -2,6 +2,16 @@
 //! receives a snapshot, and successfully installs it.
 //! The test completes when the node transitions its role to `Follower`.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine::client::ClientApiError;
+use d_engine::convert::safe_kv;
+use d_engine::proto::common::NodeStatus;
+use d_engine::storage::StateMachine;
+use tokio::time::sleep;
+
 use crate::client_manager::ClientManager;
 use crate::common;
 use crate::common::check_cluster_is_ready;
@@ -18,14 +28,6 @@ use crate::common::test_put_get;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::JOIN_CLUSTER_PORT_BASE;
-use d_engine::client::ClientApiError;
-use d_engine::convert::safe_kv;
-use d_engine::proto::common::NodeStatus;
-use d_engine::storage::StateMachine;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
 // Constants for test configuration
 const JOIN_CLUSTER_CASE2_DIR: &str = "join_cluster/case2";
 const SNAPSHOT_DIR: &str = "./snapshots/join_cluster/case2";
@@ -96,8 +98,9 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     ];
 
     // To maintain the last included index of the snapshot, because of the configure:
-    // retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 , Leader will also generate a noop entry. So leader has 11 total entries.
-    // then the last included index of the snapshot should be 10 = 11-1.
+    // retained_log_entries. e.g. if leader local raft log has 10 entries. but
+    // retained_log_entries=1 , Leader will also generate a noop entry. So leader has 11 total
+    // entries. then the last included index of the snapshot should be 10 = 11-1.
     let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
@@ -120,10 +123,12 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
         let mut node_config = node_config(&config);
         node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
         node_config.raft.snapshot.cleanup_retain_count = 2;
-        node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
+        node_config.raft.snapshot.snapshots_dir =
+            PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
         node_config.raft.snapshot.chunk_size = 100;
         //Dirty code: could leave it like this for now.
-        snapshot_last_included_id = Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
+        snapshot_last_included_id =
+            Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
         let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log).await?;
 
@@ -174,7 +179,8 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, 4));
     node_config.raft.snapshot.chunk_size = 100;
 
-    let (graceful_tx4, node_n4) = start_node(node_config, Some(sm4.clone()), Some(r4.clone())).await?;
+    let (graceful_tx4, node_n4) =
+        start_node(node_config, Some(sm4.clone()), Some(r4.clone())).await?;
 
     ctx.graceful_txs.push(graceful_tx4);
     ctx.node_handles.push(node_n4);
@@ -205,7 +211,8 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, 5));
     node_config.raft.snapshot.chunk_size = 100;
 
-    let (graceful_tx5, node_n5) = start_node(node_config.clone(), Some(sm5.clone()), Some(r5.clone())).await?;
+    let (graceful_tx5, node_n5) =
+        start_node(node_config.clone(), Some(sm5.clone()), Some(r5.clone())).await?;
 
     ctx.graceful_txs.push(graceful_tx5);
     ctx.node_handles.push(node_n5);

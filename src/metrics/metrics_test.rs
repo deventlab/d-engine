@@ -45,20 +45,14 @@ fn test_histogram_labels() {
     SLOW_RESPONSE_DURATION_METRIC.reset();
 
     // Simulate data records with different labels
-    SLOW_RESPONSE_DURATION_METRIC
-        .with_label_values(&["peer1"])
-        .observe(100.0);
-    SLOW_RESPONSE_DURATION_METRIC
-        .with_label_values(&["peer2"])
-        .observe(200.0);
+    SLOW_RESPONSE_DURATION_METRIC.with_label_values(&["peer1"]).observe(100.0);
+    SLOW_RESPONSE_DURATION_METRIC.with_label_values(&["peer2"]).observe(200.0);
 
     // Verify label distinguishability
-    let peer1_count = SLOW_RESPONSE_DURATION_METRIC
-        .with_label_values(&["peer1"])
-        .get_sample_count();
-    let peer2_count = SLOW_RESPONSE_DURATION_METRIC
-        .with_label_values(&["peer2"])
-        .get_sample_count();
+    let peer1_count =
+        SLOW_RESPONSE_DURATION_METRIC.with_label_values(&["peer1"]).get_sample_count();
+    let peer2_count =
+        SLOW_RESPONSE_DURATION_METRIC.with_label_values(&["peer2"]).get_sample_count();
 
     assert_eq!(peer1_count, 1);
     assert_eq!(peer2_count, 1);
@@ -75,11 +69,7 @@ async fn test_metrics_endpoint_format() {
         .and_then(metrics_handler);
 
     // Simulate request
-    let response = warp::test::request()
-        .method("GET")
-        .path("/metrics")
-        .reply(&metrics_route)
-        .await;
+    let response = warp::test::request().method("GET").path("/metrics").reply(&metrics_route).await;
 
     // Verify basic response properties
     assert_eq!(response.status(), 200);

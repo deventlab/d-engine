@@ -36,8 +36,7 @@ pub struct ElectionHandler<T: TypeConfig> {
 
 #[async_trait]
 impl<T> ElectionCore<T> for ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
@@ -82,10 +81,15 @@ where
                                 debug!("send_vote_requests_to_peers success!");
                                 succeed += 1;
                             } else {
-                                debug!("if_higher_term_found({}, {}, false)", term, vote_response.term,);
+                                debug!(
+                                    "if_higher_term_found({}, {}, false)",
+                                    term, vote_response.term,
+                                );
                                 if if_higher_term_found(term, vote_response.term, false) {
                                     warn!("Higher term found during election phase.");
-                                    return Err(ElectionError::HigherTerm(vote_response.term).into());
+                                    return Err(
+                                        ElectionError::HigherTerm(vote_response.term).into()
+                                    );
                                 }
 
                                 if is_target_log_more_recent(
@@ -191,7 +195,10 @@ where
         voted_for_option: Option<VotedFor>,
     ) -> bool {
         if current_term > request.term {
-            debug!("current_term({:?}) > request.term({:?})", current_term, request.term);
+            debug!(
+                "current_term({:?}) > request.term({:?})",
+                current_term, request.term
+            );
             return false;
         }
 
@@ -210,7 +217,9 @@ where
         }
 
         //step 2: check if I have voted for this term
-        if voted_for_option.is_some() && !self.if_node_could_grant_the_vote_request(request, voted_for_option) {
+        if voted_for_option.is_some()
+            && !self.if_node_could_grant_the_vote_request(request, voted_for_option)
+        {
             debug!(
                 "node_could_not_grant_the_vote_request: {:?}, voted_for_option={:?}",
                 request, &voted_for_option
@@ -222,8 +231,7 @@ where
     }
 }
 impl<T> ElectionHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(my_id: u32) -> Self {
         Self {
@@ -253,7 +261,10 @@ where
         voted_for_option: Option<VotedFor>,
     ) -> bool {
         if let Some(vf) = voted_for_option {
-            debug!("voted_id: {:?}, voted_term: {:?}", vf.voted_for_id, vf.voted_for_term);
+            debug!(
+                "voted_id: {:?}, voted_term: {:?}",
+                vf.voted_for_id, vf.voted_for_term
+            );
 
             if vf.voted_for_id == 0 {
                 return true;

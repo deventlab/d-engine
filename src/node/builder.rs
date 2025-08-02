@@ -17,7 +17,7 @@
 //!
 //! ## Example
 //! ```ignore
-//!
+//! 
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
@@ -31,6 +31,16 @@
 //! ## Notes
 //! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
+
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
 
 use super::RaftTypeConfig;
 use crate::alias::COF;
@@ -74,14 +84,6 @@ use crate::SledStateMachine;
 use crate::SledStorageEngine;
 use crate::StateMachine;
 use crate::SystemError;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::sync::Mutex;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
 
 pub enum NodeMode {
     Joiner,
@@ -255,23 +257,29 @@ impl NodeBuilder {
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
         let state_machine = self.state_machine.take().unwrap_or_else(|| {
-            let state_machine_db =
-                init_sled_state_machine_db(&db_root_dir).expect("init_sled_state_machine_db successfully.");
+            let state_machine_db = init_sled_state_machine_db(&db_root_dir)
+                .expect("init_sled_state_machine_db successfully.");
             Arc::new(
                 SledStateMachine::new(node_id, Arc::new(state_machine_db))
                     .expect("Init raft state machine successfully."),
             )
         });
         let storage_engine = self.storage_engine.take().unwrap_or_else(|| {
-            let storage_engine_db =
-                init_sled_storage_engine_db(&db_root_dir).expect("init_sled_storage_engine_db successfully.");
-            Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("Init storage engine successfully."))
+            let storage_engine_db = init_sled_storage_engine_db(&db_root_dir)
+                .expect("init_sled_storage_engine_db successfully.");
+            Arc::new(
+                SledStorageEngine::new(node_id, storage_engine_db)
+                    .expect("Init storage engine successfully."),
+            )
         });
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
         let raft_log = {
-            let (log, receiver) =
-                BufferedRaftLog::new(node_id, node_config.raft.persistence.clone(), storage_engine.clone());
+            let (log, receiver) = BufferedRaftLog::new(
+                node_id,
+                node_config.raft.persistence.clone(),
+                storage_engine.clone(),
+            );
 
             // Start processor and get Arc-wrapped instance
             log.start(receiver)
@@ -322,7 +330,10 @@ impl NodeBuilder {
         // 4. Inject dependencies to role state
         let last_applied_index = Some(state_machine.last_applied().index);
         let my_role = if node_config_arc.is_joining() {
-            RaftRole::Learner(Box::new(LearnerState::new(node_id, node_config_arc.clone())))
+            RaftRole::Learner(Box::new(LearnerState::new(
+                node_id,
+                node_config_arc.clone(),
+            )))
         } else {
             RaftRole::Follower(Box::new(FollowerState::new(
                 node_id,
@@ -333,7 +344,10 @@ impl NodeBuilder {
         };
         let my_role_i32 = my_role.as_i32();
         let my_current_term = my_role.current_term();
-        info!("Start node with role: {} and term: {}", my_role_i32, my_current_term);
+        info!(
+            "Start node with role: {} and term: {}",
+            my_role_i32, my_current_term
+        );
 
         // Construct raft core
         let mut raft_core = Raft::<RaftTypeConfig>::new(
@@ -485,7 +499,9 @@ impl NodeBuilder {
             let listen_address = self.node_config.cluster.listen_address;
             let node_config = self.node_config.clone();
             tokio::spawn(async move {
-                if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
+                if let Err(e) =
+                    grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
+                {
                     eprintln!("RPC server stops. {e:?}");
                     error!("RPC server stops. {:?}", e);
                 }
@@ -501,8 +517,9 @@ impl NodeBuilder {
     /// # Errors
     /// Returns Error::NodeFailedToStartError if build hasn't completed
     pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig>>> {
-        self.node
-            .ok_or_else(|| SystemError::NodeStartFailed("check node ready failed".to_string()).into())
+        self.node.ok_or_else(|| {
+            SystemError::NodeStartFailed("check node ready failed".to_string()).into()
+        })
     }
 
     /// Test constructor with custom database path

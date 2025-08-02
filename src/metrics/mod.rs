@@ -34,30 +34,40 @@ lazy_static! {
         &["msg_id"]
     )
     .expect("metric can not be created");
-    pub static ref FAILED_COMMIT_MESSAGES: IntCounterVec =
-        IntCounterVec::new(Opts::new("failed_commit_messages", "failed_commit_messages"), &["id"])
-            .expect("Should succeed to create metric");
+    pub static ref FAILED_COMMIT_MESSAGES: IntCounterVec = IntCounterVec::new(
+        Opts::new("failed_commit_messages", "failed_commit_messages"),
+        &["id"]
+    )
+    .expect("Should succeed to create metric");
     pub static ref CLUSTER_FATAL_ERROR: GaugeVec = GaugeVec::new(
         Opts::new("cluster_fatal_error_metric", "cluster_fatal_error_metric"),
         &["event_type"]
     )
     .expect("Should succeed to create metric");
     pub static ref UNSYNCED_MSG_METRIC: GaugeVec =
-        GaugeVec::new(Opts::new("unsynced_msg_metric", "unsynced_msg_metric"), &["peer_id"])
-            .expect("metric can not be created");
+        GaugeVec::new(Opts::new("unsynced_msg_metric", "unsynced_msg_metric"), &[
+            "peer_id"
+        ])
+        .expect("metric can not be created");
     pub static ref LOG_RECEIVE_AT_METRIC: GaugeVec =
-        GaugeVec::new(Opts::new("log_receive_at", "log_receive_at"), &["msg_id"]).expect("metric can not be created");
+        GaugeVec::new(Opts::new("log_receive_at", "log_receive_at"), &["msg_id"])
+            .expect("metric can not be created");
     pub static ref LOG_COMMIT_AT_METRIC: GaugeVec =
-        GaugeVec::new(Opts::new("log_commit_at", "log_commit_at"), &["msg_id"]).expect("metric can not be created");
+        GaugeVec::new(Opts::new("log_commit_at", "log_commit_at"), &["msg_id"])
+            .expect("metric can not be created");
     pub static ref COMMITTED_LOG_METRIC: IntCounterVec =
-        IntCounterVec::new(Opts::new("committed_log", "committed_log"), &["id", "msg_id"])
-            .expect("Should succeed to create metric");
+        IntCounterVec::new(Opts::new("committed_log", "committed_log"), &[
+            "id", "msg_id"
+        ])
+        .expect("Should succeed to create metric");
     pub static ref MESSAGE_SIZE_IN_BYTES_METRIC: HistogramVec = HistogramVec::new(
-        HistogramOpts::new("message_size", "message_size").buckets(exponential_buckets(10.0, 5.0, 10).unwrap()),
+        HistogramOpts::new("message_size", "message_size")
+            .buckets(exponential_buckets(10.0, 5.0, 10).unwrap()),
         &["msg_id"]
     )
     .expect("metric can not be created");
-    pub static ref CUSTOM_REGISTRY: Registry = Registry::new_custom(Some("d_engine".to_string()), None).unwrap();
+    pub static ref CUSTOM_REGISTRY: Registry =
+        Registry::new_custom(Some("d_engine".to_string()), None).unwrap();
 }
 
 pub(crate) fn register_custom_metrics(registry: &Registry) {
@@ -102,9 +112,10 @@ pub async fn start_server(
         .map(move || registry.clone()) // Clone the registry to the closure
         .and_then(metrics_handler);
 
-    let (_, server) = warp::serve(metrics_route).bind_with_graceful_shutdown(([0, 0, 0, 0], port), async move {
-        let _ = shutdown_signal.changed().await;
-    });
+    let (_, server) =
+        warp::serve(metrics_route).bind_with_graceful_shutdown(([0, 0, 0, 0], port), async move {
+            let _ = shutdown_signal.changed().await;
+        });
     server.await;
 }
 

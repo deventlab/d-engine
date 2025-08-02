@@ -38,8 +38,7 @@ pub(crate) struct BackgroundSnapshotTransfer<T> {
 
 #[allow(unused)]
 impl<T> BackgroundSnapshotTransfer<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     // Unified push transfer entry point
     pub(crate) async fn run_push_transfer(
@@ -79,7 +78,8 @@ where
         config: Arc<SnapshotConfig>,
     ) -> Result<()> {
         // 1. Create a transmission channel
-        let (mut request_tx, request_rx) = mpsc::channel::<Arc<SnapshotChunk>>(config.push_queue_size);
+        let (mut request_tx, request_rx) =
+            mpsc::channel::<Arc<SnapshotChunk>>(config.push_queue_size);
 
         // 2. Send the first data block
         request_tx
@@ -98,7 +98,12 @@ where
                 while let Some(chunk) = data_stream.next().await {
                     match chunk {
                         Ok(chunk) => {
-                            Self::send_chunk_with_retry(&mut request_tx, Arc::new(chunk), &bg_config).await?;
+                            Self::send_chunk_with_retry(
+                                &mut request_tx,
+                                Arc::new(chunk),
+                                &bg_config,
+                            )
+                            .await?;
                         }
                         Err(e) => return Err(e),
                     }
@@ -171,7 +176,8 @@ where
         debug!("Starting pull snapshot transfer");
 
         // Create processing pipeline
-        let transfer_fut = Self::process_transfer(ack_stream, data_stream, chunk_tx, config.clone());
+        let transfer_fut =
+            Self::process_transfer(ack_stream, data_stream, chunk_tx, config.clone());
 
         // Run with timeout
         tokio::select! {

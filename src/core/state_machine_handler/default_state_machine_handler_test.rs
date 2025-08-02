@@ -1,3 +1,25 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use mockall::predicate::eq;
+use mockall::Sequence;
+use tempfile::tempdir;
+use tempfile::TempDir;
+use tokio::fs::create_dir_all;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time;
+use tracing::debug;
+
 use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
 use super::StateMachineHandler;
@@ -34,26 +56,6 @@ use crate::Node;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
-use futures::StreamExt;
-use mockall::predicate::eq;
-use mockall::Sequence;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fs;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tempfile::tempdir;
-use tempfile::TempDir;
-use tokio::fs::create_dir_all;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time;
-use tracing::debug;
 
 // Case 1: normal update
 #[test]
@@ -201,7 +203,11 @@ mod apply_chunk_test {
 
     #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case1() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false, None);
+        let handler = create_test_handler(
+            "/tmp/test_apply_chunk_updates_last_applied_case1",
+            false,
+            None,
+        );
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -230,7 +236,11 @@ mod apply_chunk_test {
 
     #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case2() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case2", false, None);
+        let handler = create_test_handler(
+            "/tmp/test_apply_chunk_updates_last_applied_case2",
+            false,
+            None,
+        );
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -258,7 +268,8 @@ mod apply_chunk_test {
     }
     #[tokio::test]
     async fn test_apply_chunk_handles_empty_chunk() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
+        let handler =
+            create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
 
         // Initial last_applied value
         let chunk = vec![
@@ -289,7 +300,11 @@ mod apply_chunk_test {
     }
     #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_with_state_machine_io_error", true, None);
+        let handler = create_test_handler(
+            "/tmp/test_apply_chunk_with_state_machine_io_error",
+            true,
+            None,
+        );
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -388,7 +403,14 @@ fn create_test_handler(
     let mut config = snapshot_config(temp_dir.to_path_buf());
     config.chunk_size = chunk_size.unwrap_or(1024); // Default chunk size
 
-    DefaultStateMachineHandler::new(1, 0, 1, Arc::new(state_machine), config, MockSnapshotPolicy::new())
+    DefaultStateMachineHandler::new(
+        1,
+        0,
+        1,
+        Arc::new(state_machine),
+        config,
+        MockSnapshotPolicy::new(),
+    )
 }
 
 /// # Case 2: Successfully applies valid chunks
@@ -432,10 +454,7 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
     let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
     let file_name_in_tar = "test.txt";
-    tar_builder
-        .append_path_with_name(&data_file, file_name_in_tar)
-        .await
-        .unwrap();
+    tar_builder.append_path_with_name(&data_file, file_name_in_tar).await.unwrap();
     tar_builder.finish().await.unwrap();
     let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
     gzip_encoder.shutdown().await.unwrap();
@@ -567,7 +586,13 @@ async fn test_apply_snapshot_stream_from_leader_case5() {
 
     // Create stream that returns error after first chunk
     // But we specify the total chunks is 2
-    let chunks = vec![create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2)];
+    let chunks = vec![create_test_chunk(
+        0,
+        b"chunk0",
+        TEST_TERM,
+        TEST_LEADER_ID,
+        2,
+    )];
     let stream = crate_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
@@ -660,7 +685,11 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         let chunk = SnapshotChunk {
             leader_term: 1,
             leader_id: 1,
-            metadata: if seq == 0 { Some(metadata.clone()) } else { None },
+            metadata: if seq == 0 {
+                Some(metadata.clone())
+            } else {
+                None
+            },
             seq,
             total_chunks,
             data: chunk_data.clone(),
@@ -694,9 +723,9 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     assert!(handler_task.await.unwrap().is_ok());
 }
 mod create_snapshot_tests {
-    use crate::{NewCommitData, LEADER};
-
     use super::*;
+    use crate::NewCommitData;
+    use crate::LEADER;
     /// # Case 1: Basic creation flow
     #[tokio::test]
     async fn test_create_snapshot_case1() {
@@ -730,8 +759,14 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
 
-        let handler =
-            DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
 
         // Execute snapshot creation
         let result = handler.create_snapshot().await;
@@ -776,24 +811,22 @@ mod create_snapshot_tests {
             })
         });
         sm.expect_entry_term().returning(|_| Some(1));
-        sm.expect_generate_snapshot_data()
-            .times(1..=2)
-            .returning(move |path, _| {
-                // Track invocation count
-                let mut count = counter_clone.lock().unwrap();
-                *count += 1;
+        sm.expect_generate_snapshot_data().times(1..=2).returning(move |path, _| {
+            // Track invocation count
+            let mut count = counter_clone.lock().unwrap();
+            *count += 1;
 
-                // Only succeed on first attempt
-                if *count == 1 {
-                    debug!(?path, "generate_snapshot_data");
-                    fs::create_dir_all(path.clone()).unwrap();
-                    let db_path = path.join("state_machine");
-                    fs::create_dir(&db_path).unwrap();
-                    Ok([0; 32])
-                } else {
-                    Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
-                }
-            });
+            // Only succeed on first attempt
+            if *count == 1 {
+                debug!(?path, "generate_snapshot_data");
+                fs::create_dir_all(path.clone()).unwrap();
+                let db_path = path.join("state_machine");
+                fs::create_dir(&db_path).unwrap();
+                Ok([0; 32])
+            } else {
+                Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
+            }
+        });
 
         let mut snapshot_policy = MockSnapshotPolicy::new();
         snapshot_policy.expect_should_trigger().returning(|_| true);
@@ -822,14 +855,20 @@ mod create_snapshot_tests {
         });
 
         // Wait for both tasks with timeout
-        let results = tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(vec![t1, t2]))
-            .await
-            .expect("Test timed out");
+        let results = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::join_all(vec![t1, t2]),
+        )
+        .await
+        .expect("Test timed out");
         println!("{:?}", &results);
 
         // Verify only one successful creation
         let success_count = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
-        assert_eq!(success_count, 1, "Expected exactly one successful snapshot creation");
+        assert_eq!(
+            success_count, 1,
+            "Expected exactly one successful snapshot creation"
+        );
         assert_eq!(count_snapshots(&temp_path), 1);
 
         // Verify flag is reset regardless of task outcome
@@ -852,7 +891,10 @@ mod create_snapshot_tests {
         let mut count = 0;
         sm.expect_last_applied().returning(move || {
             count += 1;
-            LogId { term: 1, index: count }
+            LogId {
+                term: 1,
+                index: count,
+            }
         });
         sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().returning(|path, _| {
@@ -882,7 +924,8 @@ mod create_snapshot_tests {
         handler.create_snapshot().await.unwrap();
 
         // Verify cleanup results
-        let remaining: HashSet<u64> = get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
+        let remaining: HashSet<u64> =
+            get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
         assert_eq!(remaining, [4, 3].into_iter().collect());
 
         // Verify files are compressed
@@ -909,8 +952,14 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
 
-        let handler =
-            DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
 
         // Attempt snapshot creation
         let result = handler.create_snapshot().await;
@@ -1154,7 +1203,13 @@ async fn test_handle_purge_request_case1() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1186,7 +1241,13 @@ async fn test_handle_purge_request_case2() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1219,7 +1280,13 @@ async fn test_handle_purge_request_case3() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1256,7 +1323,13 @@ async fn test_handle_purge_request_case4() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1324,9 +1397,9 @@ async fn test_handle_purge_request_case6() {
     );
 
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_purge_logs_up_to()
-        .returning(|_| Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into()));
+    raft_log.expect_purge_logs_up_to().returning(|_| {
+        Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into())
+    });
 
     let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
@@ -1371,7 +1444,13 @@ async fn test_handle_purge_request_case7() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1483,19 +1562,16 @@ fn mock_node_with_rpc_service(
             });
     } else {
         // Make sure node is Follower
-        election_handler
-            .expect_broadcast_vote_requests()
-            .returning(|_, _, _, _, _| {
-                Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
-                    100,
-                ))))
-            });
+        election_handler.expect_broadcast_vote_requests().returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Election(
+                ElectionError::HigherTerm(100),
+            )))
+        });
     }
     // let state_machine_handler = Arc::new(state_machine_handler);
     let mut mock_state_machine_handler = MockStateMachineHandler::new();
-    mock_state_machine_handler
-        .expect_apply_snapshot_stream_from_leader()
-        .returning(move |_current_term, _stream_request, ack_tx, _| {
+    mock_state_machine_handler.expect_apply_snapshot_stream_from_leader().returning(
+        move |_current_term, _stream_request, ack_tx, _| {
             let ack_tx = ack_tx.clone();
             tokio::spawn(async move {
                 // Send final ack
@@ -1507,7 +1583,8 @@ fn mock_node_with_rpc_service(
                 ack_tx.send(final_ack).await.ok();
             });
             Ok(())
-        });
+        },
+    );
 
     MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)
@@ -1559,7 +1636,10 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     assert_eq!(chunk.seq, 0);
     assert_eq!(chunk.total_chunks, 1);
     assert_eq!(chunk.data, content);
-    assert_eq!(chunk.chunk_checksum, crc32fast::hash(content).to_be_bytes().to_vec());
+    assert_eq!(
+        chunk.chunk_checksum,
+        crc32fast::hash(content).to_be_bytes().to_vec()
+    );
     assert_eq!(chunk.metadata, Some(metadata));
 }
 
@@ -1750,8 +1830,14 @@ async fn test_snapshot_compression() {
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
 
-    let handler =
-        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
+        0,
+        1,
+        Arc::new(sm),
+        config,
+        MockSnapshotPolicy::new(),
+    );
 
     // Create snapshot
     let (_, snapshot_path) = handler.create_snapshot().await.unwrap();

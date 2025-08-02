@@ -168,10 +168,12 @@ impl ReplicationConfig {
             )));
         }
 
-        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms {
+        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms
+        {
             return Err(Error::Config(ConfigError::Message(format!(
                 "batch_delay {}ms should be less than append_interval {}ms",
-                self.rpc_append_entries_batch_process_delay_in_ms, self.rpc_append_entries_clock_in_ms
+                self.rpc_append_entries_batch_process_delay_in_ms,
+                self.rpc_append_entries_clock_in_ms
             ))));
         }
 
@@ -668,28 +670,32 @@ fn default_stale_check_interval() -> Duration {
 pub enum PersistenceStrategy {
     /// Disk-first persistence strategy.
     ///
-    /// - **Write path**: On append, the log entry is first written to disk. Only after a successful
-    ///   disk write is it copied into the in-memory cache.
+    /// - **Write path**: On append, the log entry is first written to disk. Only after a
+    ///   successful disk write is it copied into the in-memory cache.
     ///
-    /// - **Read path**: Reads are served from the in-memory cache. If not found, the system falls back
-    ///   to reading from disk, and the result is cached in memory.
+    /// - **Read path**: Reads are served from the in-memory cache. If not found, the system falls
+    ///   back to reading from disk, and the result is cached in memory.
     ///
     /// - **Startup behavior**: Entries are **not** fully loaded from disk into memory at startup.
     ///   Entries are only cached lazily on demand.
     ///
-    /// - Suitable for systems prioritizing strong durability, with memory used primarily for caching.
+    /// - Suitable for systems prioritizing strong durability, with memory used primarily for
+    ///   caching.
     DiskFirst,
 
     /// Memory-first persistence strategy.
     ///
-    /// - **Write path**: On append, the log entry is written to the in-memory buffer and immediately acknowledged.
-    ///   Disk persistence happens asynchronously in the background, governed by [`FlushPolicy`].
+    /// - **Write path**: On append, the log entry is written to the in-memory buffer and
+    ///   immediately acknowledged. Disk persistence happens asynchronously in the background,
+    ///   governed by [`FlushPolicy`].
     ///
-    /// - **Read path**: Reads are served from memory only. If an entry is not in memory, it is considered nonexistent.
+    /// - **Read path**: Reads are served from memory only. If an entry is not in memory, it is
+    ///   considered nonexistent.
     ///
     /// - **Startup behavior**: On startup, all log entries are loaded from disk into memory.
     ///
-    /// - Suitable for systems that favor performance and fast failover, and can tolerate data loss during crashes.
+    /// - Suitable for systems that favor performance and fast failover, and can tolerate data loss
+    ///   during crashes.
     MemFirst,
 }
 

@@ -46,13 +46,20 @@ impl SnapshotPolicy for LogSizePolicy {
         let now = timestamp_millis();
         let last = self.last_checked.load(Ordering::Acquire);
 
-        trace!("last_checked: {} < cooldown_ms: {} (?)", (now - last), self.cooldown_ms);
+        trace!(
+            "last_checked: {} < cooldown_ms: {} (?)",
+            (now - last),
+            self.cooldown_ms
+        );
         if now - last < self.cooldown_ms {
             return false;
         }
 
         // CAS lock to prevent concurrent checks
-        trace!("is_checking: {} (?)", self.is_checking.load(Ordering::Acquire));
+        trace!(
+            "is_checking: {} (?)",
+            self.is_checking.load(Ordering::Acquire)
+        );
         if self
             .is_checking
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)

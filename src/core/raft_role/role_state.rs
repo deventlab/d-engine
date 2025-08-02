@@ -350,9 +350,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
         // Important to confirm heartbeat from Leader immediatelly
         // Keep syncing leader_id
-        ctx.membership()
-            .mark_leader_id(append_entries_request.leader_id)
-            .await?;
+        ctx.membership().mark_leader_id(append_entries_request.leader_id).await?;
 
         if my_term < append_entries_request.term {
             self.update_current_term(append_entries_request.term);
@@ -378,7 +376,10 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                         commit,
                         &role_tx,
                     ) {
-                        error!("update_commit_index_with_signal,commit={}, error: {:?}", commit, e);
+                        error!(
+                            "update_commit_index_with_signal,commit={}, error: {:?}",
+                            commit, e
+                        );
                         return Err(e);
                     }
                 }
@@ -391,11 +392,16 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 })?;
             }
             Err(e) => {
-                // Conservatively fallback to a safe position, forcing the leader to retry or trigger a snapshot.
-                // Return a Conflict response (conflict index = current log length + 1)
+                // Conservatively fallback to a safe position, forcing the leader to retry or
+                // trigger a snapshot. Return a Conflict response (conflict index =
+                // current log length + 1)
                 error!("Replication failed. Conservatively fallback to a safe position, forcing the leader to retry");
-                let response =
-                    AppendEntriesResponse::conflict(self.node_id(), my_term, None, Some(raft_log_last_index + 1));
+                let response = AppendEntriesResponse::conflict(
+                    self.node_id(),
+                    my_term,
+                    None,
+                    Some(raft_log_last_index + 1),
+                );
                 debug!("AppendEntriesResponse: {:?}", response);
 
                 sender.send(Ok(response)).map_err(|e| {

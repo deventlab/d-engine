@@ -1,10 +1,13 @@
-use crate::proto::common::{Entry, LogId};
-use crate::{HardState, Result};
-use bytes::Bytes;
 use std::ops::RangeInclusive;
 
+use bytes::Bytes;
 #[cfg(test)]
 use mockall::automock;
+
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::HardState;
+use crate::Result;
 
 #[cfg_attr(test, automock)]
 pub trait StorageEngine: Send + Sync + 'static {

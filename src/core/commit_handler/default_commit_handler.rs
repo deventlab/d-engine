@@ -1,3 +1,15 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::CommitHandler;
 use crate::alias::MOF;
 use crate::alias::ROF;
@@ -13,16 +25,6 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
 
 // Dependencies container
 pub struct CommitHandlerDependencies<T: TypeConfig> {
@@ -35,8 +37,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
 
 #[derive(Debug)]
 pub struct DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     my_id: u32,
     my_role: i32,
@@ -57,8 +58,7 @@ where
 
 #[async_trait]
 impl<T> CommitHandler for DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn run(&mut self) -> Result<()> {
         info!("[Node-{}] Commit handler started", self.my_id);
@@ -66,10 +66,8 @@ where
         let mut batch_counter = 0;
         // let mut interval = tokio::time::interval(Duration::from_millis(10));
         let mut interval = self.dynamic_interval();
-        let mut new_commit_rx = self
-            .new_commit_rx
-            .take()
-            .expect("Expected a commit recv but found None");
+        let mut new_commit_rx =
+            self.new_commit_rx.take().expect("Expected a commit recv but found None");
         let mut shutdown_signal = self.shutdown_signal.clone();
 
         loop {
@@ -113,8 +111,7 @@ where
 }
 
 impl<T> DefaultCommitHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(
         my_id: u32,
@@ -170,9 +167,17 @@ where
             if !batch.is_empty() {
                 // Use take to transfer ownership while preserving the underlying memory allocation
                 // Note: when taking out the batch, the original order will be maintained
-                trace!("[Node-{} | Before] Flushing command batch: {:?}", self.my_id, batch);
+                trace!(
+                    "[Node-{} | Before] Flushing command batch: {:?}",
+                    self.my_id,
+                    batch
+                );
                 let entries = std::mem::take(batch);
-                trace!("[Node-{} | After] Flushing command batch: {:?}", self.my_id, batch);
+                trace!(
+                    "[Node-{} | After] Flushing command batch: {:?}",
+                    self.my_id,
+                    batch
+                );
                 self.state_machine_handler.apply_chunk(entries)?;
             }
             Ok(())

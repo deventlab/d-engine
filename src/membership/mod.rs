@@ -30,15 +30,18 @@ pub(crate) enum ConnectionType {
 }
 impl ConnectionType {
     pub(crate) fn all() -> Vec<ConnectionType> {
-        vec![ConnectionType::Control, ConnectionType::Data, ConnectionType::Bulk]
+        vec![
+            ConnectionType::Control,
+            ConnectionType::Data,
+            ConnectionType::Bulk,
+        ]
     }
 }
 
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// All nodes (including itself)
     #[allow(unused)]

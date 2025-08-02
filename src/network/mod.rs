@@ -110,8 +110,7 @@ pub struct ClusterUpdateResult {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Transport<T>: Send + Sync + 'static
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Propagates cluster configuration changes to voting members using Raft's joint consensus.
     ///
@@ -324,7 +323,9 @@ pub(crate) async fn grpc_task_with_timeout_and_exponential_backoff<F, T, U>(
 ) -> std::result::Result<tonic::Response<U>, Error>
 where
     F: FnMut() -> T,
-    T: std::future::Future<Output = std::result::Result<tonic::Response<U>, tonic::Status>> + Send + 'static,
+    T: std::future::Future<Output = std::result::Result<tonic::Response<U>, tonic::Status>>
+        + Send
+        + 'static,
 {
     // let max_retries = 5;
     let mut retries = 0;
@@ -333,7 +334,8 @@ where
     let max_delay = Duration::from_millis(policy.max_delay_ms);
     let max_retries = policy.max_retries;
 
-    let mut last_error = NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
+    let mut last_error =
+        NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
         debug!("[{task_name}] Attempt {} of {}", retries + 1, max_retries);
         match timeout(timeout_duration, task()).await {
@@ -344,7 +346,10 @@ where
                 last_error = match status.code() {
                     Code::Unavailable => {
                         warn!("[{task_name}] Service unavailable: {}", status.message());
-                        NetworkError::ServiceUnavailable(format!("Service unavailable: {}", status.message()))
+                        NetworkError::ServiceUnavailable(format!(
+                            "Service unavailable: {}",
+                            status.message()
+                        ))
                     }
                     _ => {
                         warn!("[{task_name}] RPC error: {}", status);

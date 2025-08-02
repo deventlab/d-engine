@@ -30,10 +30,14 @@ impl<'a> SnapshotGuard<'a> {
                 Ordering::AcqRel, // Ensure memory order
                 Ordering::Relaxed,
             )
-            .map_err(|e| SnapshotError::OperationFailed(format!("SnapshotGuard::compare_exchange, {e:?}")))?;
+            .map_err(|e| {
+                SnapshotError::OperationFailed(format!("SnapshotGuard::compare_exchange, {e:?}"))
+            })?;
 
         if already_in_progress {
-            return Err(SnapshotError::OperationFailed("Snapshot already in progress".to_string()).into());
+            return Err(
+                SnapshotError::OperationFailed("Snapshot already in progress".to_string()).into(),
+            );
         }
 
         Ok(Self { flag })

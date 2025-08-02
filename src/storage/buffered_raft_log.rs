@@ -1,3 +1,20 @@
+use std::ops::RangeInclusive;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+
+use autometrics::autometrics;
+use dashmap::DashMap;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::Mutex;
+use tokio::time::interval;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::trace;
+
 use super::RaftLog;
 use super::StorageEngine;
 use crate::alias::SOF;
@@ -5,24 +22,12 @@ use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::scoped_timer::ScopedTimer;
 use crate::FlushPolicy;
+use crate::NetworkError;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::Result;
+use crate::TypeConfig;
 use crate::API_SLO;
-use crate::{NetworkError, TypeConfig};
-use autometrics::autometrics;
-use dashmap::DashMap;
-use std::ops::RangeInclusive;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::oneshot;
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::interval;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::trace;
 
 /// Commands for the log processor
 #[derive(Debug)]
@@ -54,8 +59,7 @@ pub struct FlushState {
 /// - Deadlock prevention through proper error handling
 /// - Memory-efficient batch operations
 pub struct BufferedRaftLog<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[allow(dead_code)]
     node_id: u32,
@@ -82,8 +86,7 @@ where
 
 #[async_trait]
 impl<T> RaftLog for BufferedRaftLog<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     ///TODO: not considered the order of configured storage rule
     /// also should we remove Result<>?
@@ -120,7 +123,9 @@ where
             // For DiskFirst: storage has the most accurate last index
             PersistenceStrategy::DiskFirst => self.storage.last_index(),
             // For MemFirst: memory has the complete log
-            PersistenceStrategy::MemFirst => self.entries.iter().map(|e| *e.key()).max().unwrap_or(0),
+            PersistenceStrategy::MemFirst => {
+                self.entries.iter().map(|e| *e.key()).max().unwrap_or(0)
+            }
         }
     }
 
@@ -128,7 +133,9 @@ where
         // Disk fallback only for DiskFirst strategy
         let last_index = match self.strategy {
             PersistenceStrategy::DiskFirst => self.storage.last_index(),
-            PersistenceStrategy::MemFirst => self.entries.iter().map(|e| *e.key()).max().unwrap_or(0),
+            PersistenceStrategy::MemFirst => {
+                self.entries.iter().map(|e| *e.key()).max().unwrap_or(0)
+            }
         };
 
         if last_index > 0 {
@@ -263,9 +270,9 @@ where
                     self.entries.insert(entry.index, entry.clone());
                 }
                 let indexes: Vec<u64> = entries.iter().map(|e| e.index).collect();
-                self.command_sender
-                    .send(LogCommand::PersistEntries(indexes))
-                    .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send signal: {:?}", e)))?;
+                self.command_sender.send(LogCommand::PersistEntries(indexes)).map_err(|e| {
+                    NetworkError::SingalSendFailed(format!("Failed to send signal: {:?}", e))
+                })?;
             }
         }
 
@@ -403,9 +410,9 @@ where
     async fn flush(&self) -> Result<()> {
         // Trigger immediate flush of all pending entries
         let (tx, rx) = oneshot::channel();
-        self.command_sender
-            .send(LogCommand::Flush(tx))
-            .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send flush command: {:?}", e)))?;
+        self.command_sender.send(LogCommand::Flush(tx)).map_err(|e| {
+            NetworkError::SingalSendFailed(format!("Failed to send flush command: {:?}", e))
+        })?;
         let _result = rx
             .await
             .map_err(|_| NetworkError::SingalSendFailed("Flush ack channel closed".into()))?;
@@ -468,8 +475,7 @@ where
 }
 
 impl<T> BufferedRaftLog<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,
@@ -756,8 +762,7 @@ where
 }
 
 impl<T> Drop for BufferedRaftLog<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn drop(&mut self) {
         if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
@@ -769,8 +774,7 @@ where
 }
 
 impl<T> std::fmt::Debug for BufferedRaftLog<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn fmt(
         &self,

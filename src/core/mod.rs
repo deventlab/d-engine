@@ -94,7 +94,9 @@ impl EntryPayload {
 
     pub fn config(change: Change) -> Self {
         Self {
-            payload: Some(Payload::Config(MembershipChange { change: Some(change) })),
+            payload: Some(Payload::Config(MembershipChange {
+                change: Some(change),
+            })),
         }
     }
 }

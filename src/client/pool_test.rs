@@ -56,7 +56,9 @@ async fn test_load_cluster_metadata_success() {
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx,
-        None::<Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
     )
     .await
     .unwrap();
@@ -84,7 +86,8 @@ async fn test_create_channel_success() {
     };
 
     // Test with an invalid address to verify timeout behavior
-    let result = ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
+    let result =
+        ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
     assert!(result.is_err());
 }
 
@@ -94,7 +97,9 @@ async fn test_connection_pool_creation() {
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx,
-        None::<Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
     )
     .await
     .unwrap();
@@ -116,13 +121,17 @@ async fn test_get_all_channels() {
     let (_tx2, rx2) = oneshot::channel::<()>();
     let (_channel, port1) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx1,
-        None::<Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
     )
     .await
     .unwrap();
     let (_channel, port2) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx2,
-        None::<Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
     )
     .await
     .unwrap();

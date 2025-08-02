@@ -17,6 +17,16 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine::client::ClientApiError;
+use d_engine::convert::safe_kv;
+use d_engine::storage::StateMachine;
+use d_engine::storage::StorageEngine;
+use tokio::time::sleep;
+
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_node_config;
@@ -30,14 +40,6 @@ use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::SNAPSHOT_PORT_BASE;
-use d_engine::client::ClientApiError;
-use d_engine::convert::safe_kv;
-use d_engine::storage::StateMachine;
-use d_engine::storage::StorageEngine;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
 
 // Constants for test configuration
 const SNAPSHOT_DIR: &str = "./snapshots/snapshot/case1";
@@ -54,7 +56,11 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     crate::enable_logger();
     reset(SNAPSHOT_CASE1_DIR).await?;
 
-    let ports = [SNAPSHOT_PORT_BASE + 1, SNAPSHOT_PORT_BASE + 2, SNAPSHOT_PORT_BASE + 3];
+    let ports = [
+        SNAPSHOT_PORT_BASE + 1,
+        SNAPSHOT_PORT_BASE + 2,
+        SNAPSHOT_PORT_BASE + 3,
+    ];
 
     // Prepare state machines
     let sm1 = Arc::new(prepare_state_machine(
@@ -91,8 +97,8 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     };
 
     // To maintain the last included index of the snapshot, because of the configure:
-    // retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 ,
-    // then the last included index of the snapshot should be 9.
+    // retained_log_entries. e.g. if leader local raft log has 10 entries. but
+    // retained_log_entries=1 , then the last included index of the snapshot should be 9.
     let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
@@ -114,9 +120,11 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
         let mut node_config = node_config(&config);
 
-        node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
+        node_config.raft.snapshot.snapshots_dir =
+            PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
         //Dirty code: could leave it like this for now.
-        snapshot_last_included_id = Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
+        snapshot_last_included_id =
+            Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
         let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log).await?;
 

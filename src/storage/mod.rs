@@ -24,6 +24,7 @@ mod buffered_raft_log_test;
 mod storage_test;
 
 use std::path::Path;
+
 use tracing::debug;
 use tracing::warn;
 
@@ -78,7 +79,10 @@ pub fn init_sled_raft_log_db(
 pub fn init_sled_storage_engine_db(
     sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
 ) -> std::result::Result<sled::Db, std::io::Error> {
-    debug!("init_sled_storage_engine_db from path: {:?}", &sled_db_root_path);
+    debug!(
+        "init_sled_storage_engine_db from path: {:?}",
+        &sled_db_root_path
+    );
 
     let path = sled_db_root_path.as_ref();
     let raft_log_db_path = path.join("raft_log");
@@ -105,7 +109,10 @@ pub fn init_sled_storage_engine_db(
 pub fn init_sled_state_machine_db(
     sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
 ) -> std::result::Result<sled::Db, std::io::Error> {
-    debug!("init_sled_state_machine_db from path: {:?}", sled_db_root_path);
+    debug!(
+        "init_sled_state_machine_db from path: {:?}",
+        sled_db_root_path
+    );
 
     let path = sled_db_root_path.as_ref();
     let state_machine_db_path = path.join("state_machine");
@@ -130,7 +137,10 @@ pub fn init_sled_state_machine_db(
 pub fn init_sled_state_storage_db(
     sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
 ) -> std::result::Result<sled::Db, std::io::Error> {
-    debug!("init_sled_state_storage_db from path: {:?}", &sled_db_root_path);
+    debug!(
+        "init_sled_state_storage_db from path: {:?}",
+        &sled_db_root_path
+    );
 
     let path = sled_db_root_path.as_ref();
     let state_storage_db_path = path.join("state_storage");
@@ -156,7 +166,10 @@ pub fn init_sled_state_storage_db(
 pub fn init_sled_snapshot_storage_db(
     sled_db_root_path: impl AsRef<Path> + std::fmt::Debug
 ) -> std::result::Result<sled::Db, std::io::Error> {
-    debug!("init_sled_snapshot_storage_db from path: {:?}", &sled_db_root_path);
+    debug!(
+        "init_sled_snapshot_storage_db from path: {:?}",
+        &sled_db_root_path
+    );
 
     let path = sled_db_root_path.as_ref();
     let snapshot_storage_db_path = path.join("snapshot_storage");

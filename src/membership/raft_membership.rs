@@ -12,6 +12,22 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
+use std::fmt::Debug;
+use std::marker::PhantomData;
+
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use tokio::task;
+use tonic::async_trait;
+use tonic::transport::Channel;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
+
 use super::MembershipGuard;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
 use crate::net::address_str;
@@ -36,24 +52,9 @@ use crate::TypeConfig;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
-use autometrics::autometrics;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use tokio::task;
-use tonic::async_trait;
-use tonic::transport::Channel;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::warn;
 
 pub struct RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     membership: MembershipGuard,
@@ -68,16 +69,13 @@ impl<T: TypeConfig> Debug for RaftMembership<T> {
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("RaftMembership")
-            .field("node_id", &self.node_id)
-            .finish()
+        f.debug_struct("RaftMembership").field("node_id", &self.node_id).finish()
     }
 }
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     async fn members(&self) -> Vec<NodeMeta> {
         self.membership
@@ -93,7 +91,8 @@ where
                     .values()
                     .filter(|node| {
                         node.id != self.node_id
-                            && (node.status == NodeStatus::Active as i32 || node.status == NodeStatus::Syncing as i32)
+                            && (node.status == NodeStatus::Active as i32
+                                || node.status == NodeStatus::Syncing as i32)
                     })
                     .cloned()
                     .collect()
@@ -107,7 +106,9 @@ where
                 guard
                     .nodes
                     .values()
-                    .filter(|node| node.id != self.node_id && node.status == NodeStatus::Active as i32)
+                    .filter(|node| {
+                        node.id != self.node_id && node.status == NodeStatus::Active as i32
+                    })
                     .cloned()
                     .collect()
             })
@@ -187,7 +188,8 @@ where
             let addr: String = peer.address.clone();
 
             let settings = settings.clone();
-            let cluster_healthcheck_probe_service_name = raft.membership.cluster_healthcheck_probe_service_name.clone();
+            let cluster_healthcheck_probe_service_name =
+                raft.membership.cluster_healthcheck_probe_service_name.clone();
 
             let task_handle = task::spawn(async move {
                 match task_with_timeout_and_exponential_backoff(
@@ -312,7 +314,9 @@ where
                         node.role = new_role;
                         Ok(())
                     })
-                    .unwrap_or_else(|| Err(MembershipError::NoMetadataFoundForNode { node_id }.into()))
+                    .unwrap_or_else(|| {
+                        Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
+                    })
             })
             .await
     }
@@ -320,11 +324,7 @@ where
     async fn current_leader_id(&self) -> Option<u32> {
         self.membership
             .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .values()
-                    .find(|node| node.role == LEADER)
-                    .map(|node| node.id)
+                guard.nodes.values().find(|node| node.role == LEADER).map(|node| node.id)
             })
             .await
     }
@@ -415,7 +415,11 @@ where
                     })
                     .await?;
                     self.update_conf_version(req.version).await;
-                    return Ok(ClusterConfUpdateResponse::success(my_id, my_current_term, req.version));
+                    return Ok(ClusterConfUpdateResponse::success(
+                        my_id,
+                        my_current_term,
+                        req.version,
+                    ));
                 }
 
                 Some(Change::BatchRemove(br)) => {
@@ -432,7 +436,11 @@ where
                         })
                         .await?;
                     self.update_conf_version(req.version).await;
-                    return Ok(ClusterConfUpdateResponse::success(my_id, my_current_term, req.version));
+                    return Ok(ClusterConfUpdateResponse::success(
+                        my_id,
+                        my_current_term,
+                        req.version,
+                    ));
                 }
 
                 None => return Err(MembershipError::InvalidChangeRequest.into()),
@@ -464,9 +472,7 @@ where
     }
 
     async fn incr_conf_version(&self) {
-        self.membership
-            .blocking_write(|guard| guard.cluster_conf_version += 1)
-            .await;
+        self.membership.blocking_write(|guard| guard.cluster_conf_version += 1).await;
     }
 
     /// Node can only be added as a learner.
@@ -487,16 +493,16 @@ where
                     return Err(MembershipError::NodeAlreadyExists(node_id).into());
                     // return  Ok(());
                 }
-                guard.nodes.insert(
-                    node_id,
-                    NodeMeta {
-                        id: node_id,
-                        address,
-                        role: LEARNER,
-                        status: NodeStatus::Syncing as i32,
-                    },
+                guard.nodes.insert(node_id, NodeMeta {
+                    id: node_id,
+                    address,
+                    role: LEARNER,
+                    status: NodeStatus::Syncing as i32,
+                });
+                info!(
+                    "[node-{}] Adding a learner node successed: {}",
+                    self.node_id, node_id
                 );
-                info!("[node-{}] Adding a learner node successed: {}", self.node_id, node_id);
 
                 Ok(())
             })
@@ -557,18 +563,14 @@ where
         &self,
         node_id: u32,
     ) -> bool {
-        self.membership
-            .blocking_read(|guard| guard.nodes.contains_key(&node_id))
-            .await
+        self.membership.blocking_read(|guard| guard.nodes.contains_key(&node_id)).await
     }
 
     async fn retrieve_node_meta(
         &self,
         node_id: u32,
     ) -> Option<NodeMeta> {
-        self.membership
-            .blocking_read(|guard| guard.nodes.get(&node_id).cloned())
-            .await
+        self.membership.blocking_read(|guard| guard.nodes.get(&node_id).cloned()).await
     }
 
     async fn get_all_nodes(&self) -> Vec<NodeMeta> {
@@ -597,7 +599,10 @@ where
                         info!("Pre-warmed {:?} connection to node {}", conn_type, peer_id);
                         Ok::<_, ()>(channel)
                     } else {
-                        warn!("Failed to pre-warm {:?} connection to node {}", conn_type, peer_id);
+                        warn!(
+                            "Failed to pre-warm {:?} connection to node {}",
+                            conn_type, peer_id
+                        );
                         Err(())
                     }
                 };
@@ -691,13 +696,14 @@ where
                 self.membership
                     .blocking_write(|guard| -> Result<()> {
                         for node_id in &bp.node_ids {
-                            let node = guard
-                                .nodes
-                                .get_mut(node_id)
-                                .ok_or(MembershipError::NoMetadataFoundForNode { node_id: *node_id })?;
+                            let node = guard.nodes.get_mut(node_id).ok_or(
+                                MembershipError::NoMetadataFoundForNode { node_id: *node_id },
+                            )?;
 
                             node.role = FOLLOWER;
-                            node.status = NodeStatus::try_from(bp.new_status).unwrap_or(NodeStatus::Active) as i32;
+                            node.status = NodeStatus::try_from(bp.new_status)
+                                .unwrap_or(NodeStatus::Active)
+                                as i32;
                         }
                         Ok(())
                     })
@@ -758,8 +764,7 @@ where
 }
 
 impl<T> RaftMembership<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,
@@ -786,11 +791,9 @@ where
     ) -> Result<()> {
         self.membership
             .blocking_write(|guard| {
-                guard
-                    .nodes
-                    .get_mut(&node_id)
-                    .map(f)
-                    .unwrap_or_else(|| Err(MembershipError::NoMetadataFoundForNode { node_id }.into()))
+                guard.nodes.get_mut(&node_id).map(f).unwrap_or_else(|| {
+                    Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
+                })
             })
             .await
     }
@@ -850,12 +853,19 @@ pub fn ensure_safe_join(
         Ok(())
     } else {
         // metrics::counter!("cluster.unsafe_join_attempts", 1);
-        metrics::counter!("cluster.unsafe_join_attempts", &[("node_id", node_id.to_string())]).increment(1);
+        metrics::counter!("cluster.unsafe_join_attempts", &[(
+            "node_id",
+            node_id.to_string()
+        )])
+        .increment(1);
 
         warn!(
             "Unsafe join attempt: current_voters={} (total_voters={})",
             current_voters, total_voters
         );
-        Err(MembershipError::JoinClusterError("Cluster must maintain odd number of voters".into()).into())
+        Err(
+            MembershipError::JoinClusterError("Cluster must maintain odd number of voters".into())
+                .into(),
+        )
     }
 }

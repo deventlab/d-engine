@@ -8,7 +8,6 @@ use crate::LogSizePolicy;
 use crate::RaftMembership;
 use crate::ReplicationHandler;
 use crate::SledStateMachine;
-
 use crate::SledStorageEngine;
 use crate::TypeConfig;
 

@@ -51,8 +51,7 @@ use crate::TypeConfig;
 
 /// Raft node container
 pub struct Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) node_id: u32,
     pub(crate) raft_core: Arc<Mutex<Raft<T>>>,
@@ -70,8 +69,7 @@ where
 }
 
 impl<T> Debug for Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn fmt(
         &self,
@@ -81,8 +79,7 @@ where
     }
 }
 impl<T> Node<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     /// Starts and runs the Raft node's main execution loop.
     ///
@@ -109,7 +106,8 @@ where
     /// ```
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
-        // let peer_channels = Self::connect_with_peers(self.node_id, self.node_config.clone()).await?;
+        // let peer_channels = Self::connect_with_peers(self.node_id,
+        // self.node_config.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
         self.membership.check_cluster_is_ready().await?;

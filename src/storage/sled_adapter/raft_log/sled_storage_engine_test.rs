@@ -1,17 +1,21 @@
-use super::*;
-use crate::{
-    constants::STATE_STORAGE_HARD_STATE_KEY,
-    init_sled_storage_engine_db,
-    proto::{
-        common::{Entry, EntryPayload, LogId},
-        election::VotedFor,
-    },
-    storage::{StorageEngine, RAFT_LOG_NAMESPACE},
-    test_utils::enable_logger,
-    Error, HardState, ProstError, SystemError,
-};
 use std::ops::RangeInclusive;
+
 use tempfile::TempDir;
+
+use super::*;
+use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
+use crate::init_sled_storage_engine_db;
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::proto::common::LogId;
+use crate::proto::election::VotedFor;
+use crate::storage::StorageEngine;
+use crate::storage::RAFT_LOG_NAMESPACE;
+use crate::test_utils::enable_logger;
+use crate::Error;
+use crate::HardState;
+use crate::ProstError;
+use crate::SystemError;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
@@ -85,7 +89,12 @@ fn test_purge_logs() {
     storage.persist_entries(create_entries(1..=100)).unwrap();
 
     // Purge first 50 entries
-    storage.purge_logs(LogId { index: 50, term: 50 }).unwrap();
+    storage
+        .purge_logs(LogId {
+            index: 50,
+            term: 50,
+        })
+        .unwrap();
 
     assert_eq!(storage.last_index(), 100); // Last index should remain
     assert_eq!(storage.len(), 50);
@@ -177,8 +186,7 @@ fn test_corrupted_data_handling() {
     let tree_name = format!("raft_log_{}_{}", RAFT_LOG_NAMESPACE, node_id);
     let tree = db.open_tree(&tree_name).unwrap();
     // Insert invalid protobuf data
-    tree.insert(SledStorageEngine::index_to_key(1), b"invalid_data")
-        .unwrap();
+    tree.insert(SledStorageEngine::index_to_key(1), b"invalid_data").unwrap();
     let storage = SledStorageEngine::new(node_id, db).unwrap();
 
     // Should return decode error

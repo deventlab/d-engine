@@ -1,5 +1,6 @@
-use sled::IVec;
 use std::collections::HashMap;
+
+use sled::IVec;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct LocalLogBatch {

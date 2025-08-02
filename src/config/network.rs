@@ -128,7 +128,9 @@ impl ConnectionParams {
             ))));
         }
 
-        if self.request_timeout_in_ms != 0 && self.request_timeout_in_ms <= self.connect_timeout_in_ms {
+        if self.request_timeout_in_ms != 0
+            && self.request_timeout_in_ms <= self.connect_timeout_in_ms
+        {
             return Err(Error::Config(ConfigError::Message(format!(
                 "{} request timeout {}ms must exceed connect timeout {}ms",
                 conn_type, self.request_timeout_in_ms, self.connect_timeout_in_ms
@@ -139,7 +141,9 @@ impl ConnectionParams {
         if self.http2_keep_alive_timeout_in_secs >= self.http2_keep_alive_interval_in_secs {
             return Err(Error::Config(ConfigError::Message(format!(
                 "{} keepalive timeout {}s must be < interval {}s",
-                conn_type, self.http2_keep_alive_timeout_in_secs, self.http2_keep_alive_interval_in_secs
+                conn_type,
+                self.http2_keep_alive_timeout_in_secs,
+                self.http2_keep_alive_interval_in_secs
             ))));
         }
 
@@ -201,17 +205,17 @@ fn default_data_params() -> ConnectionParams {
 
 fn default_bulk_params() -> ConnectionParams {
     ConnectionParams {
-        connect_timeout_in_ms: 500000,          // Allow for slow bulk connections
-        request_timeout_in_ms: 5000000,         // Disable request timeout
-        concurrency_limit: 4,                   // Limit parallel bulk transfers
-        max_concurrent_streams: 2,              // Minimal stream concurrency
-        tcp_keepalive_in_secs: 3600,            // Long-lived connections
+        connect_timeout_in_ms: 500000,  // Allow for slow bulk connections
+        request_timeout_in_ms: 5000000, // Disable request timeout
+        concurrency_limit: 4,           // Limit parallel bulk transfers
+        max_concurrent_streams: 2,      // Minimal stream concurrency
+        tcp_keepalive_in_secs: 3600,    // Long-lived connections
         http2_keep_alive_interval_in_secs: 600, // 10 minute pings
-        http2_keep_alive_timeout_in_secs: 60,   // 1 minute timeout
-        max_frame_size: 16_777_215,             // Max allowed frame size
-        connection_window_size: 67_108_864,     // 64MB connection window
-        stream_window_size: 16_777_216,         // 16MB stream window
-        adaptive_window: false,                 // Stable throughput
+        http2_keep_alive_timeout_in_secs: 60, // 1 minute timeout
+        max_frame_size: 16_777_215,     // Max allowed frame size
+        connection_window_size: 67_108_864, // 64MB connection window
+        stream_window_size: 16_777_216, // 16MB stream window
+        adaptive_window: false,         // Stable throughput
     }
 }
 

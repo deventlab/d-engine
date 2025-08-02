@@ -44,9 +44,7 @@ pub(crate) fn record_down_cluster_error(event_id: u64) {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs_f64();
-    CLUSTER_FATAL_ERROR
-        .with_label_values(&[&event_id.to_string()])
-        .set(timestamp);
+    CLUSTER_FATAL_ERROR.with_label_values(&[&event_id.to_string()]).set(timestamp);
 }
 
 /// Format error logging

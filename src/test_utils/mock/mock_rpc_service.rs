@@ -42,33 +42,21 @@ impl MockNode {
         let (mut health_reporter, health_service) = health_reporter();
         if is_ready {
             health_reporter.set_serving::<RaftClientServiceServer<MockNode>>().await;
-            health_reporter
-                .set_serving::<RaftElectionServiceServer<MockNode>>()
-                .await;
-            health_reporter
-                .set_serving::<RaftReplicationServiceServer<MockNode>>()
-                .await;
-            health_reporter
-                .set_serving::<ClusterManagementServiceServer<MockNode>>()
-                .await;
+            health_reporter.set_serving::<RaftElectionServiceServer<MockNode>>().await;
+            health_reporter.set_serving::<RaftReplicationServiceServer<MockNode>>().await;
+            health_reporter.set_serving::<ClusterManagementServiceServer<MockNode>>().await;
             health_reporter.set_serving::<SnapshotServiceServer<MockNode>>().await;
             info!("set service is serving");
         } else {
-            health_reporter
-                .set_not_serving::<RaftClientServiceServer<MockNode>>()
-                .await;
-            health_reporter
-                .set_not_serving::<RaftElectionServiceServer<MockNode>>()
-                .await;
+            health_reporter.set_not_serving::<RaftClientServiceServer<MockNode>>().await;
+            health_reporter.set_not_serving::<RaftElectionServiceServer<MockNode>>().await;
             health_reporter
                 .set_not_serving::<RaftReplicationServiceServer<MockNode>>()
                 .await;
             health_reporter
                 .set_not_serving::<ClusterManagementServiceServer<MockNode>>()
                 .await;
-            health_reporter
-                .set_not_serving::<SnapshotServiceServer<MockNode>>()
-                .await;
+            health_reporter.set_not_serving::<SnapshotServiceServer<MockNode>>().await;
             info!("set service is not serving");
         }
 
@@ -111,9 +99,12 @@ impl MockNode {
                         .send_compressed(CompressionEncoding::Gzip),
                 )
                 // add as a dev-dependency the crate `tokio-stream` with feature `net` enabled
-                .serve_with_incoming_shutdown(tokio_stream::wrappers::TcpListenerStream::new(listener), async {
-                    rx.await.ok();
-                })
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(listener),
+                    async {
+                        rx.await.ok();
+                    },
+                )
                 // .serve_with_shutdown("127.0.0.1:50051".parse().unwrap(), )
                 .await
                 .unwrap();

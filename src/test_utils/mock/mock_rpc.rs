@@ -37,12 +37,14 @@ pub struct MockRpcService {
     // Expected responses for each method
     pub expected_vote_response: Option<Result<VoteResponse, tonic::Status>>,
     pub expected_append_entries_response: Option<Result<AppendEntriesResponse, tonic::Status>>,
-    pub expected_update_cluster_conf_response: Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
+    pub expected_update_cluster_conf_response:
+        Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
     pub expected_client_propose_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
 
     #[allow(clippy::type_complexity)]
-    pub expected_metadata_response: Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+    pub expected_metadata_response:
+        Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
 
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
     pub expected_stream_snapshot_response: Option<Result<SnapshotChunk, tonic::Status>>,
@@ -90,7 +92,9 @@ impl RaftReplicationService for MockRpcService {
         match &self.expected_append_entries_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock append entries response set",
+            )),
         }
     }
 }
@@ -104,7 +108,9 @@ impl ClusterManagementService for MockRpcService {
         match &self.expected_update_cluster_conf_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock update_cluster_conf response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock update_cluster_conf response set",
+            )),
         }
     }
     async fn get_cluster_metadata(
@@ -113,7 +119,9 @@ impl ClusterManagementService for MockRpcService {
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         match (&self.expected_metadata_response, self.server_port) {
             (Some(f), Some(port)) => f(port).map(tonic::Response::new).map_err(|e| e.clone()),
-            _ => Err(tonic::Status::unimplemented("Metadata response not configured")),
+            _ => Err(tonic::Status::unimplemented(
+                "Metadata response not configured",
+            )),
         }
     }
 
@@ -124,7 +132,9 @@ impl ClusterManagementService for MockRpcService {
         match &self.expected_join_cluster_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock get_cluster_metadata response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock get_cluster_metadata response set",
+            )),
         }
     }
 
@@ -135,7 +145,9 @@ impl ClusterManagementService for MockRpcService {
         match &self.expected_discover_leader_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock get_cluster_metadata response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock get_cluster_metadata response set",
+            )),
         }
     }
 }
@@ -149,7 +161,9 @@ impl RaftClientService for MockRpcService {
         match &self.expected_client_propose_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock handle_client_write response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock handle_client_write response set",
+            )),
         }
     }
 
@@ -160,7 +174,9 @@ impl RaftClientService for MockRpcService {
         match &self.expected_client_read_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock handle_client_read response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock handle_client_read response set",
+            )),
         }
     }
 }
@@ -175,11 +191,14 @@ impl SnapshotService for MockRpcService {
     ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
         match &self.expected_stream_snapshot_response {
             Some(Ok(response)) => {
-                let streaming: Self::StreamSnapshotStream = crate_test_snapshot_stream(vec![response.clone()]);
+                let streaming: Self::StreamSnapshotStream =
+                    crate_test_snapshot_stream(vec![response.clone()]);
                 Ok(tonic::Response::new(streaming))
             }
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock install_snapshot response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock install_snapshot response set",
+            )),
         }
     }
     async fn install_snapshot(
@@ -196,7 +215,11 @@ impl SnapshotService for MockRpcService {
         match &self.expected_snapshot_response {
             Some(Ok(response)) => return Ok(tonic::Response::new(*response)),
             Some(Err(status)) => return Err(status.clone()),
-            None => return Err(tonic::Status::unknown("No mock install_snapshot response set")),
+            None => {
+                return Err(tonic::Status::unknown(
+                    "No mock install_snapshot response set",
+                ))
+            }
         }
     }
 

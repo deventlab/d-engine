@@ -1,5 +1,5 @@
-use crate::common::ClientCommands;
-use crate::common::{self};
+use std::time::Duration;
+
 use d_engine::client::Client;
 use d_engine::client::ClientBuilder;
 use d_engine::convert::safe_kv;
@@ -9,11 +9,13 @@ use d_engine::proto::error::ErrorCode;
 use d_engine::ClientApiError;
 use d_engine::Result;
 use d_engine::LEADER;
-use std::time::Duration;
 use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+
+use crate::common::ClientCommands;
+use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
 const RETRY_DELAY_MS: u64 = 100;
@@ -70,13 +72,19 @@ impl ClientManager {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
                         }
-                        Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                        Err(e)
+                            if e.code().eq(&(ErrorCode::NotLeader as u32))
+                                && retries < MAX_RETRIES =>
+                        {
                             retries += 1;
                             self.refresh_client().await?;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
-                        Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                        Err(e)
+                            if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                                && retries < MAX_RETRIES =>
+                        {
                             retries += 1;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -92,13 +100,18 @@ impl ClientManager {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -131,13 +144,18 @@ impl ClientManager {
                             return Err(ErrorCode::KeyNotExist.into());
                         }
                     },
-                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -173,11 +191,8 @@ impl ClientManager {
     }
     pub async fn list_leader_id(&self) -> Result<u32> {
         let members = self.list_members().await?;
-        let mut ids: Vec<u32> = members
-            .iter()
-            .filter(|meta| meta.role == LEADER)
-            .map(|n| n.id)
-            .collect();
+        let mut ids: Vec<u32> =
+            members.iter().filter(|meta| meta.role == LEADER).map(|n| n.id).collect();
 
         Ok(ids.pop().unwrap_or(0))
     }

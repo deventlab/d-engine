@@ -38,11 +38,14 @@ impl SnapshotAssembler {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| {
-                    StorageError::IoError(std::io::Error::other(format!("SystemTime before UNIX EPOCH: {e}")))
+                    StorageError::IoError(std::io::Error::other(format!(
+                        "SystemTime before UNIX EPOCH: {e}"
+                    )))
                 })?
                 .as_nanos();
 
-            let backup_filename = format!("{}{}_{}", path_mgr.temp_prefix, "snapshot.part", timestamp);
+            let backup_filename =
+                format!("{}{}_{}", path_mgr.temp_prefix, "snapshot.part", timestamp);
             let backup_path = path_mgr.base_dir.join(backup_filename);
 
             trace!(?temp_file_path, ?backup_path, "Rename directory (move)");

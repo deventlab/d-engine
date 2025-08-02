@@ -1,8 +1,7 @@
 use dashmap::DashMap;
-use tonic::async_trait;
-
 #[cfg(test)]
 use mockall::automock;
+use tonic::async_trait;
 
 #[cfg_attr(test, automock)]
 #[async_trait]

@@ -1,3 +1,14 @@
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+use std::vec;
+
+use futures::future::join_all;
+use tempfile::tempdir;
+use tokio::time::sleep;
+use tokio::time::Instant;
+use tracing::debug;
+
 use super::*;
 use crate::alias::ROF;
 use crate::proto::common::Entry;
@@ -15,15 +26,6 @@ use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
-use futures::future::join_all;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use std::vec;
-use tempfile::tempdir;
-use tokio::time::sleep;
-use tokio::time::Instant;
-use tracing::debug;
 
 // Test utilities
 struct TestContext {
@@ -104,13 +106,10 @@ async fn insert(
 
 #[tokio::test]
 async fn test_get_range1() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let i1: u64 = 11;
     let i2: u64 = 12;
     let i3: u64 = 13;
@@ -131,13 +130,10 @@ async fn test_get_range1() {
 
 #[tokio::test]
 async fn test_get_range2() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     for i in 1..300 {
         insert(&context.raft_log, i).await;
@@ -176,13 +172,10 @@ async fn test_get_range2() {
 ///   follower_f      11    4
 #[tokio::test]
 async fn test_filter_out_conflicts_and_append_case1() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     context.raft_log.reset().await.expect("reset successfully!");
     test_utils::simulate_insert_command(&context.raft_log, vec![1], 1).await;
     test_utils::simulate_insert_command(&context.raft_log, vec![2, 3], 2).await;
@@ -215,13 +208,10 @@ async fn test_filter_out_conflicts_and_append_case1() {
 }
 #[tokio::test]
 async fn test_filter_out_conflicts_and_append() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     // let state = &context.s;
     context.raft_log.reset().await.expect("reset successfully!");
     test_utils::simulate_insert_command(&context.raft_log, vec![1], 1).await;
@@ -275,13 +265,10 @@ async fn test_filter_out_conflicts_and_append() {
 
 #[tokio::test]
 async fn test_get_last_raft_log() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("should succeed");
     let mut vec_1 = Vec::new();
@@ -302,13 +289,10 @@ async fn test_get_last_raft_log() {
 
 #[tokio::test]
 async fn test_sled_last() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     test_utils::simulate_insert_command(&context.raft_log, (1..=300).collect(), 1).await;
 
@@ -320,13 +304,10 @@ async fn test_sled_last() {
 }
 #[tokio::test]
 async fn test_sled_last_max() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     let max = u64::MAX; //max of u64
     test_utils::simulate_insert_command(&context.raft_log, ((max - 1)..max).collect(), 1).await;
@@ -340,13 +321,10 @@ async fn test_sled_last_max() {
 /// to test insert_one_client_command and get_entries_range two functions
 #[tokio::test]
 async fn test_insert_one_client_command() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -365,13 +343,10 @@ async fn test_insert_one_client_command() {
 
 #[tokio::test]
 async fn test_get_raft_log_entry_between() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -411,13 +386,10 @@ async fn test_get_raft_log_entry_between() {
 /// just sequence events.
 #[tokio::test]
 async fn test_insert_one_client_command_dup_case() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -445,13 +417,10 @@ async fn test_insert_one_client_command_dup_case() {
 /// 1. all client proposal should be recorded in RaftLog without lose
 #[tokio::test]
 async fn test_client_proposal_insert_delete() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -473,13 +442,10 @@ async fn test_client_proposal_insert_delete() {
 /// #[traced_test]
 #[tokio::test]
 async fn test_purge_logs_up_to() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
 
@@ -507,13 +473,10 @@ async fn test_purge_logs_up_to() {
 
 #[tokio::test]
 async fn test_purge_logs_up_to_concurrent_purge() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     context.raft_log.reset().await.expect("reset failed");
 
     // Insert test logs
@@ -532,7 +495,12 @@ async fn test_purge_logs_up_to_concurrent_purge() {
         .map(|cutoff| {
             let raft_log = context.raft_log.clone();
             std::thread::spawn(move || {
-                raft_log.purge_logs_up_to(LogId { index: cutoff, term: 1 }).unwrap();
+                raft_log
+                    .purge_logs_up_to(LogId {
+                        index: cutoff,
+                        term: 1,
+                    })
+                    .unwrap();
             })
         })
         .collect();
@@ -552,13 +520,10 @@ async fn test_purge_logs_up_to_concurrent_purge() {
 
 #[tokio::test]
 async fn test_get_first_raft_log_entry_id_after_delete_entries() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
     let mut entries = Vec::new();
@@ -608,10 +573,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
                     payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
-            cloned_raft_log
-                .insert_batch(entries.clone())
-                .await
-                .expect("should succeed");
+            cloned_raft_log.insert_batch(entries.clone()).await.expect("should succeed");
         });
         handles.push(handle);
     }
@@ -668,10 +630,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
                     payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
-            cloned_raft_log
-                .insert_batch(entries.clone())
-                .await
-                .expect("should succeed");
+            cloned_raft_log.insert_batch(entries.clone()).await.expect("should succeed");
         });
         handles.push(handle);
     }
@@ -709,10 +668,7 @@ async fn test_insert_batch_logs_case1() {
                     payload: Some(EntryPayload::command(generate_insert_commands(vec![i]))),
                 });
             }
-            cloned_raft_log
-                .insert_batch(entries.clone())
-                .await
-                .expect("should succeed");
+            cloned_raft_log.insert_batch(entries.clone()).await.expect("should succeed");
         });
         handles.push(handle);
     }
@@ -845,14 +801,11 @@ async fn test_insert_batch_logs_case2() {
     // }
 
     // 7. Validate final log state
-    validate_log_continuity(
-        &old_leader,
-        &[
-            (7, 1),  // Original term 1 entry
-            (8, 2),  // Overwritten entry
-            (10, 2), // New highest entry
-        ],
-    )
+    validate_log_continuity(&old_leader, &[
+        (7, 1),  // Original term 1 entry
+        (8, 2),  // Overwritten entry
+        (10, 2), // New highest entry
+    ])
     .await;
 }
 
@@ -877,13 +830,10 @@ async fn validate_log_continuity(
 
 #[tokio::test]
 async fn test_apply_and_then_get_last() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     context.raft_log.reset().await.expect("reset successfully!");
     test_utils::simulate_insert_command(&context.raft_log, vec![1, 2], 1).await;
@@ -900,13 +850,10 @@ async fn test_pre_allocate_raft_logs_next_index() {
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case0() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
     raft_log.reset().await.expect("reset successfully!");
 
@@ -927,13 +874,10 @@ async fn test_calculate_majority_matched_index_case0() {
 /// (§5.3, §5.4).
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case1() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset().await;
     //case 1: majority matched index is 2, commit_index: 4, current_term is 3,
@@ -943,18 +887,18 @@ async fn test_calculate_majority_matched_index_case1() {
 
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
     test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
-    assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2]));
+    assert_eq!(
+        None,
+        raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2])
+    );
 }
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case2() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
     let _ = c.raft_log.reset().await;
 
@@ -966,18 +910,18 @@ async fn test_calculate_majority_matched_index_case2() {
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
     test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
     test_utils::simulate_insert_command(&raft_log, vec![3], 3).await;
-    assert_eq!(Some(3), raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2]));
+    assert_eq!(
+        Some(3),
+        raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2])
+    );
 }
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case3() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
 
     //case 3: majority matched index is 3, commit_index: 2, current_term is 3,
@@ -987,18 +931,18 @@ async fn test_calculate_majority_matched_index_case3() {
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
     test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
 
-    assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2]));
+    assert_eq!(
+        None,
+        raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2])
+    );
 }
 
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case4() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
 
     let raft_log = c.raft_log.clone();
 
@@ -1010,7 +954,10 @@ async fn test_calculate_majority_matched_index_case4() {
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
     test_utils::simulate_insert_command(&raft_log, vec![2], 2).await;
 
-    assert_eq!(None, raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2]));
+    assert_eq!(
+        None,
+        raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2])
+    );
 }
 
 /// # Case 5: stress testing
@@ -1023,13 +970,10 @@ async fn test_calculate_majority_matched_index_case4() {
 /// 1. compare calculate_majority_matched_index as calculate_majority_matched_index2's performance
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case5() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
 
     let term = 1;
@@ -1055,13 +999,10 @@ async fn test_calculate_majority_matched_index_case5() {
 
 #[tokio::test]
 async fn test_raft_log_insert() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
 
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
@@ -1080,13 +1021,10 @@ async fn test_is_empty_case1() {
 /// #Case 2: local raft log is not empty
 #[tokio::test]
 async fn test_is_empty_case2() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
     test_utils::simulate_insert_command(&raft_log, vec![1], 1).await;
 
@@ -1107,13 +1045,10 @@ async fn test_get_last_entry_metadata_case1() {
 /// # Case2: There is last log in raft_log, should returns last log metadata
 #[tokio::test]
 async fn test_get_last_entry_metadata_case2() {
-    let c = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let c = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     let raft_log = c.raft_log.clone();
     test_utils::simulate_insert_command(&raft_log, vec![1], 11).await;
 
@@ -1157,13 +1092,10 @@ async fn test_raft_log_drop() {
 
 #[tokio::test]
 async fn test_first_index_for_term() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert test logs with various terms
@@ -1204,11 +1136,7 @@ async fn test_first_index_for_term() {
             payload: None,
         },
     ];
-    context
-        .raft_log
-        .insert_batch(entries)
-        .await
-        .expect("insert should succeed");
+    context.raft_log.insert_batch(entries).await.expect("insert should succeed");
 
     // Test various cases
     assert_eq!(context.raft_log.first_index_for_term(1), Some(1));
@@ -1229,11 +1157,7 @@ async fn test_first_index_for_term() {
             payload: None,
         },
     ];
-    context
-        .raft_log
-        .insert_batch(entries)
-        .await
-        .expect("insert should succeed");
+    context.raft_log.insert_batch(entries).await.expect("insert should succeed");
     assert_eq!(context.raft_log.first_index_for_term(4), Some(8));
     assert_eq!(context.raft_log.first_index_for_term(5), Some(9));
 
@@ -1244,13 +1168,10 @@ async fn test_first_index_for_term() {
 
 #[tokio::test]
 async fn test_last_index_for_term() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert test logs with various terms
@@ -1291,11 +1212,7 @@ async fn test_last_index_for_term() {
             payload: None,
         },
     ];
-    context
-        .raft_log
-        .insert_batch(entries)
-        .await
-        .expect("insert should succeed");
+    context.raft_log.insert_batch(entries).await.expect("insert should succeed");
 
     // Test various cases
     assert_eq!(context.raft_log.last_index_for_term(1), Some(2));
@@ -1316,11 +1233,7 @@ async fn test_last_index_for_term() {
             payload: None,
         },
     ];
-    context
-        .raft_log
-        .insert_batch(entries)
-        .await
-        .expect("insert should succeed");
+    context.raft_log.insert_batch(entries).await.expect("insert should succeed");
     assert_eq!(context.raft_log.last_index_for_term(5), Some(9));
 
     // Test with empty log
@@ -1330,13 +1243,10 @@ async fn test_last_index_for_term() {
 
 #[tokio::test]
 async fn test_term_index_functions_with_purged_logs() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert initial logs
@@ -1347,11 +1257,7 @@ async fn test_term_index_functions_with_purged_logs() {
             payload: None,
         })
         .collect();
-    context
-        .raft_log
-        .insert_batch(entries)
-        .await
-        .expect("insert should succeed");
+    context.raft_log.insert_batch(entries).await.expect("insert should succeed");
 
     // Purge first 5 logs
     context
@@ -1400,10 +1306,7 @@ async fn test_term_index_functions_with_concurrent_writes() {
                     term,
                     payload: None,
                 };
-                cloned_raft_log
-                    .insert_batch(vec![entry])
-                    .await
-                    .expect("insert should succeed");
+                cloned_raft_log.insert_batch(vec![entry]).await.expect("insert should succeed");
             }
         });
         handles.push(handle);
@@ -1419,20 +1322,20 @@ async fn test_term_index_functions_with_concurrent_writes() {
 
     // Verify term indices
     for term in 1..=10 {
-        assert_eq!(raft_log.first_index_for_term(term), Some((term - 1) * 100 + 1));
+        assert_eq!(
+            raft_log.first_index_for_term(term),
+            Some((term - 1) * 100 + 1)
+        );
         assert_eq!(raft_log.last_index_for_term(term), Some(term * 100));
     }
 }
 
 #[tokio::test]
 async fn test_term_index_performance_large_dataset() {
-    let context = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
-        },
-    );
+    let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+        threshold: 1,
+        interval_ms: 1,
+    });
     context.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 100,000 logs with terms cycling every 100 logs
@@ -1445,11 +1348,7 @@ async fn test_term_index_performance_large_dataset() {
             payload: None,
         });
     }
-    context
-        .raft_log
-        .insert_batch(entries)
-        .await
-        .expect("insert should succeed");
+    context.raft_log.insert_batch(entries).await.expect("insert should succeed");
 
     // Measure performance for first_index_for_term
     let start = std::time::Instant::now();
@@ -1467,12 +1366,12 @@ async fn test_term_index_performance_large_dataset() {
 }
 #[cfg(test)]
 mod id_allocation_tests {
+    use std::collections::HashSet;
+    use std::ops::RangeInclusive;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
     use super::*;
-    use std::{
-        collections::HashSet,
-        ops::RangeInclusive,
-        sync::{atomic::Ordering, Arc},
-    };
 
     // In-memory test setup
     fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig>> {
@@ -1837,13 +1736,10 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
         ctx.append_entries(1, 5, 1).await;
 
         // Verify in memory but not yet durable
@@ -1853,13 +1749,10 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_async_persistence() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
         ctx.append_entries(1, 100, 1).await;
 
         // Trigger flush
@@ -1872,13 +1765,10 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_power_loss_data_loss() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
         ctx.append_entries(1, 100, 1).await;
 
         // Simulate power loss before flush
@@ -1890,13 +1780,10 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_high_concurrency_memory_only() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
         let mut handles = vec![];
 
         for i in 0..10 {
@@ -1930,13 +1817,10 @@ mod batched_tests {
 
     #[tokio::test]
     async fn test_batch_flush_trigger() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 10,
-                interval_ms: 100,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 10,
+            interval_ms: 100,
+        });
 
         // Add 9 entries - should not trigger flush
         ctx.append_entries(1, 9, 1).await;
@@ -1952,13 +1836,10 @@ mod batched_tests {
 
     #[tokio::test]
     async fn test_timed_flush_trigger() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 100,
-                interval_ms: 50,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 100,
+            interval_ms: 50,
+        });
         ctx.append_entries(1, 50, 1).await;
 
         // Wait for timer to trigger
@@ -2052,13 +1933,10 @@ mod common_tests {
 
     #[tokio::test]
     async fn test_term_index_calculation() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
 
         // Add entries with different terms
         ctx.append_entries(1, 50, 1).await;
@@ -2073,13 +1951,10 @@ mod common_tests {
 
     #[tokio::test]
     async fn test_drop_behavior() {
-        let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 10,
-                interval_ms: 100,
-            },
-        );
+        let ctx = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 10,
+            interval_ms: 100,
+        });
         ctx.append_entries(1, 5, 1).await;
 
         // Explicitly drop context
@@ -2107,7 +1982,8 @@ mod filter_out_conflicts_and_append_performance_tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster() {
+    async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster()
+    {
         enable_logger();
 
         // Test configuration
@@ -2134,7 +2010,8 @@ mod filter_out_conflicts_and_append_performance_tests {
             storage.expect_persist_entries().returning(|_| Ok(()));
             storage.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
+            let (log, receiver) =
+                BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
             let log = log.start(receiver);
 
             // Populate with test data (1000 entries)
@@ -2207,7 +2084,8 @@ mod filter_out_conflicts_and_append_performance_tests {
             storage.expect_persist_entries().returning(|_| Ok(()));
             storage.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
+            let (log, receiver) =
+                BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
             let log = log.start(receiver);
 
             // Populate with test data (1000 entries)
@@ -2256,10 +2134,12 @@ mod filter_out_conflicts_and_append_performance_tests {
 }
 
 mod performance_tests {
-    use super::*;
     use std::sync::Arc;
+
     use tokio::sync::Barrier;
     use tokio::time::Duration;
+
+    use super::*;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2287,13 +2167,10 @@ mod performance_tests {
         const MAX_RESET_DURATION_MS: u64 = 50;
 
         let test_cases = vec![
-            (
-                PersistenceStrategy::MemFirst,
-                FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms: 1000,
-                },
-            ),
+            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+                threshold: 1000,
+                interval_ms: 1000,
+            }),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2386,15 +2263,11 @@ mod performance_tests {
             // Measure performance during active flush
             let start = Instant::now();
             log_arc
-                .filter_out_conflicts_and_append(
-                    500,
-                    1,
-                    vec![Entry {
-                        index: 501,
-                        term: 1,
-                        payload: Some(EntryPayload::command(vec![1; 256])),
-                    }],
-                )
+                .filter_out_conflicts_and_append(500, 1, vec![Entry {
+                    index: 501,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![1; 256])),
+                }])
                 .await
                 .unwrap();
 
@@ -2415,13 +2288,10 @@ mod performance_tests {
         const MAX_DURATION_MS: u64 = 5; // Should be very fast
 
         let test_cases = vec![
-            (
-                PersistenceStrategy::MemFirst,
-                FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms: 1000,
-                },
-            ),
+            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+                threshold: 1000,
+                interval_ms: 1000,
+            }),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2439,7 +2309,8 @@ mod performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
+            let (log, receiver) =
+                BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
             let log_arc = Arc::new(log.start(receiver));
 
             // Measure reset performance in fresh cluster
@@ -2503,8 +2374,8 @@ mod performance_tests {
     //         log_arc.command_sender.send(cmd).unwrap();
 
     //         // Verify command is processed quickly
-    //         match timeout(Duration::from_millis(MAX_COMMAND_DURATION_MS), receiver.recv()).await {
-    //             Ok(Some(_)) => {
+    //         match timeout(Duration::from_millis(MAX_COMMAND_DURATION_MS), receiver.recv()).await
+    // {             Ok(Some(_)) => {
     //                 let duration = start.elapsed();
     //                 assert!(
     //                     duration.as_millis() < MAX_COMMAND_DURATION_MS as u128,
@@ -2519,11 +2390,16 @@ mod performance_tests {
 }
 
 mod batch_processor_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::{mpsc, oneshot, Notify};
+
+    use tokio::sync::mpsc;
+    use tokio::sync::oneshot;
+    use tokio::sync::Notify;
+
+    use super::*;
 
     struct TestLog {
         // Used to observe if reset was called
@@ -2651,18 +2527,17 @@ mod batch_processor_tests {
 
 mod save_load_hard_state_tests {
     use super::*;
-    use crate::{constants::STATE_STORAGE_HARD_STATE_KEY, proto::election::VotedFor, HardState};
+    use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
+    use crate::proto::election::VotedFor;
+    use crate::HardState;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]
     async fn test_hard_state_uses_meta_tree_not_log_tree() {
-        let context = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
 
         // Create test hard state
         let test_hard_state = HardState {
@@ -2704,7 +2579,10 @@ mod save_load_hard_state_tests {
             .log_tree
             .get(STATE_STORAGE_HARD_STATE_KEY)
             .expect("log_tree.get should succeed");
-        assert!(log_value.is_none(), "Hard state key should not exist in log tree");
+        assert!(
+            log_value.is_none(),
+            "Hard state key should not exist in log tree"
+        );
 
         // 3. Load through buffered raft log
         let loaded = context
@@ -2810,13 +2688,10 @@ mod save_load_hard_state_tests {
     /// Test that reset operation doesn't clear hard state (only log tree)
     #[tokio::test]
     async fn test_reset_preserves_hard_state() {
-        let context = TestContext::new(
-            PersistenceStrategy::MemFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
-            },
-        );
+        let context = TestContext::new(PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        });
 
         // Save initial hard state
         let hs = HardState {
@@ -2832,11 +2707,7 @@ mod save_load_hard_state_tests {
         context.raft_log.reset().await.expect("reset should succeed");
 
         // Verify hard state still exists
-        let loaded = context
-            .raft_log
-            .load_hard_state()
-            .expect("load should succeed")
-            .unwrap();
+        let loaded = context.raft_log.load_hard_state().expect("load should succeed").unwrap();
         assert_eq!(loaded.current_term, 3);
         assert_eq!(
             loaded.voted_for,

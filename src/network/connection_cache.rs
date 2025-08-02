@@ -1,9 +1,16 @@
-use crate::{ConnectionType, NetworkConfig};
-use crate::{NetworkError, Result};
+use std::time::Duration;
+use std::time::Instant;
+
 use dashmap::DashMap;
-use std::time::{Duration, Instant};
-use tonic::transport::{Channel, Endpoint};
-use tracing::{debug, trace};
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+use tracing::debug;
+use tracing::trace;
+
+use crate::ConnectionType;
+use crate::NetworkConfig;
+use crate::NetworkError;
+use crate::Result;
 
 /// Cached gRPC channel with metadata
 #[derive(Clone)]
@@ -56,14 +63,11 @@ impl ConnectionCache {
         let channel = self.create_channel(current_address.clone(), conn_type).await?;
 
         trace!(?key, "Cache updated: address: {}", current_address.clone());
-        self.cache.insert(
-            key,
-            CachedChannel {
-                channel: channel.clone(),
-                address: current_address,
-                last_used: Instant::now(),
-            },
-        );
+        self.cache.insert(key, CachedChannel {
+            channel: channel.clone(),
+            address: current_address,
+            last_used: Instant::now(),
+        });
 
         Ok(channel)
     }
@@ -84,7 +88,9 @@ impl ConnectionCache {
             .connect_timeout(Duration::from_millis(params.connect_timeout_in_ms))
             .timeout(Duration::from_millis(params.request_timeout_in_ms))
             .tcp_keepalive(Some(Duration::from_secs(params.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(params.http2_keep_alive_interval_in_secs))
+            .http2_keep_alive_interval(Duration::from_secs(
+                params.http2_keep_alive_interval_in_secs,
+            ))
             .keep_alive_timeout(Duration::from_secs(params.http2_keep_alive_timeout_in_secs))
             .initial_connection_window_size(params.connection_window_size)
             .initial_stream_window_size(params.stream_window_size)

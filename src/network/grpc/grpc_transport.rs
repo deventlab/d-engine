@@ -1,6 +1,24 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
+use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use autometrics::autometrics;
+use futures::stream::FuturesUnordered;
+use futures::FutureExt;
+use futures::StreamExt;
+use tokio::sync::mpsc;
+use tokio::task;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
+
 use crate::alias::MOF;
 use crate::grpc_task_with_timeout_and_exponential_backoff;
 use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
@@ -32,27 +50,10 @@ use crate::Transport;
 use crate::TypeConfig;
 use crate::VoteResult;
 use crate::API_SLO;
-use autometrics::autometrics;
-use futures::stream::FuturesUnordered;
-use futures::FutureExt;
-use futures::StreamExt;
-use std::collections::HashSet;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::task;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::async_trait;
-use tonic::codec::CompressionEncoding;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
 
 #[derive(Debug)]
 pub struct GrpcTransport<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) my_id: u32,
 
@@ -63,8 +64,7 @@ where
 
 #[async_trait]
 impl<T> Transport<T> for GrpcTransport<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     #[autometrics(objective = API_SLO)]
     async fn send_cluster_update(
@@ -96,7 +96,8 @@ where
             peer_ids.insert(peer_id);
 
             // Real-time connection fetch for control operations
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await {
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
+            {
                 Some(chan) => chan,
                 None => {
                     error!("Failed to get control channel for peer {}", peer_id);
@@ -117,7 +118,13 @@ where
             let policy = retry.membership;
             let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("update_cluster_conf", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "update_cluster_conf",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
                         debug!(
                             "[send_cluster_update | {my_id}->{peer_id}] sync_cluster_conf response: {:?}",
@@ -128,7 +135,10 @@ where
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_cluster_update | {my_id}->{peer_id}] Received RPC error: {}", e);
+                        warn!(
+                            "[send_cluster_update | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -147,7 +157,10 @@ where
             }
         }
 
-        Ok(ClusterUpdateResult { peer_ids, responses })
+        Ok(ClusterUpdateResult {
+            peer_ids,
+            responses,
+        })
     }
 
     #[tracing::instrument(skip_all,fields(
@@ -210,15 +223,27 @@ where
             let policy = retry.append_entries;
             let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("append_entries", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "append_entries",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
-                        debug!("[send_append_requests| {my_id}->{peer_id}] response: {:?}", response);
+                        debug!(
+                            "[send_append_requests| {my_id}->{peer_id}] response: {:?}",
+                            response
+                        );
                         let res = response.into_inner();
 
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}", e);
+                        warn!(
+                            "[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -239,7 +264,10 @@ where
             }
         }
 
-        Ok(AppendResult { peer_ids, responses })
+        Ok(AppendResult {
+            peer_ids,
+            responses,
+        })
     }
 
     #[autometrics(objective = API_SLO)]
@@ -272,7 +300,8 @@ where
             peer_ids.insert(peer_id);
 
             // Real-time connection fetch for control operations
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await {
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
+            {
                 Some(chan) => chan,
                 None => {
                     error!("Failed to get control channel for peer {}", peer_id);
@@ -292,7 +321,13 @@ where
             let my_id = self.my_id;
             let addr = peer.address;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("request_vote", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "request_vote",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
                         debug!(
                             "[send_vote_requests | {my_id}->{peer_id}] resquest [peer({:?})] vote response: {:?}",
@@ -302,7 +337,10 @@ where
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_vote_requests | {my_id}->{peer_id}] Received RPC error: {}", e);
+                        warn!(
+                            "[send_vote_requests | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -320,7 +358,10 @@ where
                 }
             }
         }
-        Ok(VoteResult { peer_ids, responses })
+        Ok(VoteResult {
+            peer_ids,
+            responses,
+        })
     }
 
     async fn send_purge_requests(
@@ -375,7 +416,9 @@ where
             let addr = peer.address;
             let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("purge_log", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff("purge_log", closure, policy)
+                    .await
+                {
                     Ok(response) => {
                         debug!(
                             "[send_purge_requests | {my_id}->{peer_id}]resquest [peer({:?})] vote response: {:?}",
@@ -385,7 +428,10 @@ where
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_purge_requests | {my_id}->{peer_id}]Received RPC error: {}", e);
+                        warn!(
+                            "[send_purge_requests | {my_id}->{peer_id}]Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -433,7 +479,8 @@ where
         };
 
         let my_id = self.my_id;
-        let response = grpc_task_with_timeout_and_exponential_backoff("join_cluster", closure, retry).await?;
+        let response =
+            grpc_task_with_timeout_and_exponential_backoff("join_cluster", closure, retry).await?;
         debug!(
             "[join_cluster | {my_id}->{leader_id}]Join cluster response: {:?}",
             response
@@ -453,14 +500,16 @@ where
         let member_ids: Vec<_> = membership.voters().await.iter().map(|m| m.id).collect();
 
         let tasks = member_ids.into_iter().map(|member_id| {
-            Self::process_member(membership.clone(), member_id, request.clone(), rpc_enable_compression)
+            Self::process_member(
+                membership.clone(),
+                member_id,
+                request.clone(),
+                rpc_enable_compression,
+            )
         });
 
         let my_id = self.my_id;
-        let results = futures::stream::iter(tasks)
-            .buffer_unordered(10)
-            .collect::<Vec<_>>()
-            .await;
+        let results = futures::stream::iter(tasks).buffer_unordered(10).collect::<Vec<_>>().await;
         debug!("[discover_leader | {my_id} ] Discover leader results.");
         Ok(results.into_iter().flatten().collect())
     }
@@ -499,8 +548,7 @@ where
 }
 
 impl<T> GrpcTransport<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub(crate) fn new(node_id: u32) -> Self {
         Self {

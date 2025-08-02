@@ -9,22 +9,31 @@
 //! - Node 2 has: log-1(1), log-2(1), log-3(1), log-4(1)
 //! - Node 3 has: log-1(1), log-2(1), log-3(1), log-4(2), log-4(5), ..., log-9(2), log-10(2)
 //!
-//! 2. Node 3 becomes leader and attempts to confirm leadership by sending a `noop`
-//!    (an empty AppendEntries message).
+//! 2. Node 3 becomes leader and attempts to confirm leadership by sending a `noop` (an empty
+//!    AppendEntries message).
 //!
 //! 3. Due to conflicting logs, the initial noop is rejected by the followers.
 //!
-//! 4. Node 3 keeps retrying the noop request until a timeout, stepping back through the log
-//!    to find a matching index and term.
+//! 4. Node 3 keeps retrying the noop request until a timeout, stepping back through the log to find
+//!    a matching index and term.
 //!
-//! 5. As a result of these retries and failed attempts to replicate,
-//!    a snapshot may be triggered to truncate the log and simplify recovery.
-//!    Eventually, `last_included_index >= 11` due to log compaction or truncation.
+//! 5. As a result of these retries and failed attempts to replicate, a snapshot may be triggered to
+//!    truncate the log and simplify recovery. Eventually, `last_included_index >= 11` due to log
+//!    compaction or truncation.
 //!
 //! This scenario demonstrates how Raft handles:
 //! - Log conflicts after leader election
 //! - Snapshot installation for late-joining nodes
 //! - Persistent retries to confirm leadership
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine::client::ClientApiError;
+use d_engine::convert::safe_kv;
+use d_engine::storage::StateMachine;
+use tokio::time::sleep;
 
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
@@ -38,13 +47,6 @@ use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::JOIN_CLUSTER_PORT_BASE;
-use d_engine::client::ClientApiError;
-use d_engine::convert::safe_kv;
-use d_engine::storage::StateMachine;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
 // Constants for test configuration
 const JOIN_CLUSTER_CASE1_DIR: &str = "join_cluster/case1";
 const SNAPSHOT_DIR: &str = "./snapshots/join_cluster/case1";
@@ -109,8 +111,8 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     ];
 
     // To maintain the last included index of the snapshot, because of the configure:
-    // retained_log_entries. e.g. if leader local raft log has 10 entries. but retained_log_entries=1 ,
-    // then the last included index of the snapshot should be 9.
+    // retained_log_entries. e.g. if leader local raft log has 10 entries. but
+    // retained_log_entries=1 , then the last included index of the snapshot should be 9.
     let mut snapshot_last_included_id: Option<u64> = None;
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
@@ -133,10 +135,12 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         let mut node_config = node_config(&config);
         node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
         node_config.raft.snapshot.cleanup_retain_count = 2;
-        node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
+        node_config.raft.snapshot.snapshots_dir =
+            PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
         node_config.raft.snapshot.chunk_size = 100;
         //Dirty code: could leave it like this for now.
-        snapshot_last_included_id = Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
+        snapshot_last_included_id =
+            Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
         let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log).await?;
 
@@ -187,7 +191,8 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, 4));
     node_config.raft.snapshot.chunk_size = 100;
 
-    let (graceful_tx4, node_n4) = start_node(node_config, Some(sm4.clone()), Some(r4.clone())).await?;
+    let (graceful_tx4, node_n4) =
+        start_node(node_config, Some(sm4.clone()), Some(r4.clone())).await?;
 
     ctx.graceful_txs.push(graceful_tx4);
     ctx.node_handles.push(node_n4);

@@ -60,7 +60,10 @@ fn with_override_config_should_merge_file_settings() {
         assert!(result.is_ok());
         let config = result.unwrap();
 
-        assert_eq!(config.cluster.db_root_dir.as_os_str().to_str(), Some("/tmp/xx/db"));
+        assert_eq!(
+            config.cluster.db_root_dir.as_os_str().to_str(),
+            Some("/tmp/xx/db")
+        );
         assert_eq!(config.raft.election.election_timeout_min, 1000);
         assert_eq!(config.raft.election.election_timeout_max, 3000);
     });
@@ -125,9 +128,12 @@ fn invalid_config_file_should_return_descriptive_error() {
     )
     .unwrap();
 
-    with_vars(vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))], || {
-        assert!(RaftNodeConfig::new().is_err());
-    });
+    with_vars(
+        vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))],
+        || {
+            assert!(RaftNodeConfig::new().is_err());
+        },
+    );
 }
 
 #[test]
@@ -145,11 +151,14 @@ fn config_should_handle_nested_structures_correctly() {
     )
     .unwrap();
 
-    with_vars(vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))], || {
-        let config = RaftNodeConfig::new().unwrap();
-        assert_eq!(config.retry.election.max_retries, 10);
-        assert_eq!(config.retry.append_entries.max_retries, 250);
-    });
+    with_vars(
+        vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))],
+        || {
+            let config = RaftNodeConfig::new().unwrap();
+            assert_eq!(config.retry.election.max_retries, 10);
+            assert_eq!(config.retry.append_entries.max_retries, 250);
+        },
+    );
 }
 
 #[test]
@@ -167,9 +176,12 @@ fn type_mismatch_in_config_should_fail_gracefully() {
     )
     .unwrap();
 
-    with_vars(vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))], || {
-        assert!(RaftNodeConfig::new().is_err());
-    });
+    with_vars(
+        vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))],
+        || {
+            assert!(RaftNodeConfig::new().is_err());
+        },
+    );
 }
 
 /// Tests for node join status detection
@@ -240,7 +252,10 @@ mod join_status_tests {
             },
         ];
 
-        assert!(!config.is_joining(), "Node 300 not in cluster should return false");
+        assert!(
+            !config.is_joining(),
+            "Node 300 not in cluster should return false"
+        );
     }
 
     /// # Case 4: Empty initial cluster
@@ -285,7 +300,10 @@ mod join_status_tests {
             ..Default::default()
         }];
 
-        assert!(!config.is_joining(), "Draining status should not be joining");
+        assert!(
+            !config.is_joining(),
+            "Draining status should not be joining"
+        );
     }
 
     /// # Case 7: Invalid status value

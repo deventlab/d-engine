@@ -1,3 +1,36 @@
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_compression::tokio::write::GzipEncoder;
+use async_stream::try_stream;
+use autometrics::autometrics;
+use futures::stream::BoxStream;
+use tokio::fs;
+use tokio::fs::remove_dir_all;
+use tokio::fs::remove_file;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
+use tokio::time::timeout;
+use tokio::time::Instant;
+use tokio_stream::StreamExt;
+use tonic::async_trait;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+
 use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
@@ -28,37 +61,6 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::API_SLO;
-use async_compression::tokio::write::GzipEncoder;
-use async_stream::try_stream;
-use autometrics::autometrics;
-use futures::stream::BoxStream;
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::fs;
-use tokio::fs::remove_dir_all;
-use tokio::fs::remove_file;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
-use tokio::time::timeout;
-use tokio::time::Instant;
-use tokio_stream::StreamExt;
-use tonic::async_trait;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -73,8 +75,7 @@ pub struct SnapshotTransferMeta {
 
 #[derive(Debug)]
 pub struct DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     node_id: u32,
     // last_applied, as an application progress indicator, may fall under the responsibility of the
@@ -105,8 +106,7 @@ pub(crate) struct CleanupSnapshotMeta {
 
 #[async_trait]
 impl<T> StateMachineHandler<T> for DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     fn last_applied(&self) -> u64 {
         self.last_applied.load(Ordering::Acquire)
@@ -131,10 +131,12 @@ where
     ) {
         let mut current = self.pending_commit.load(Ordering::Acquire);
         while new_commit > current {
-            match self
-                .pending_commit
-                .compare_exchange_weak(current, new_commit, Ordering::Release, Ordering::Relaxed)
-            {
+            match self.pending_commit.compare_exchange_weak(
+                current,
+                new_commit,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(e) => current = e,
             }
@@ -197,9 +199,14 @@ where
         let _timer = ScopedTimer::new("receive_snapshot_stream_from_leader");
 
         info!(?ack_tx, %current_term, "receive_snapshot_stream_from_leader");
-        let (final_metadata, snapshot_path) = self.process_snapshot_stream(stream, ack_tx.clone(), config).await?;
+        let (final_metadata, snapshot_path) =
+            self.process_snapshot_stream(stream, ack_tx.clone(), config).await?;
 
-        debug!(?final_metadata, ?snapshot_path, "before apply_snapshot_from_file");
+        debug!(
+            ?final_metadata,
+            ?snapshot_path,
+            "before apply_snapshot_from_file"
+        );
 
         self.state_machine
             .apply_snapshot_from_file(&final_metadata, snapshot_path)
@@ -282,38 +289,34 @@ where
         debug!("create_snapshot 4: Compressing snapshot directory");
         let final_path = self.path_mgr.final_snapshot_path(&last_included);
         // let compressed_path = final_path.with_extension("tar.gz");
-        let compressed_file = File::create(&final_path)
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}")))?;
+        let compressed_file = File::create(&final_path).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}"))
+        })?;
         let gzip_encoder = GzipEncoder::new(compressed_file);
         let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
 
         // Add all files in temp_path to the archive
-        tar_builder
-            .append_dir_all(".", &temp_path)
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}")))?;
+        tar_builder.append_dir_all(".", &temp_path).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}"))
+        })?;
 
         // Finish writing and flush all data
-        tar_builder
-            .finish()
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}")))?;
+        tar_builder.finish().await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}"))
+        })?;
 
         // Get inner GzipEncoder and shutdown to ensure all data is written
-        let mut gzip_encoder = tar_builder
-            .into_inner()
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}")))?;
-        gzip_encoder
-            .shutdown()
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}")))?;
+        let mut gzip_encoder = tar_builder.into_inner().await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}"))
+        })?;
+        gzip_encoder.shutdown().await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}"))
+        })?;
 
         // 6. Remove the original uncompressed directory
-        remove_dir_all(&temp_path)
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to remove temp directory: {e}")))?;
+        remove_dir_all(&temp_path).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to remove temp directory: {e}"))
+        })?;
 
         // 7: cleanup old versions
         debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 5: cleanup old versions");
@@ -347,10 +350,11 @@ where
         // Phase 1: Collect and parse snapshots
         let mut snapshots = Vec::new();
 
-        let mut entries = fs::read_dir(snapshot_dir).await.map_err(|e| StorageError::PathError {
-            path: snapshot_dir.to_path_buf(),
-            source: e,
-        })?;
+        let mut entries =
+            fs::read_dir(snapshot_dir).await.map_err(|e| StorageError::PathError {
+                path: snapshot_dir.to_path_buf(),
+                source: e,
+            })?;
 
         while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
             let path = entry.path();
@@ -358,8 +362,9 @@ where
 
             if path.extension().is_some_and(|ext| ext == "gz") {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                    let parsed = parse_snapshot_dirname(file_name)
-                        .or_else(|| file_name.strip_suffix(".tar.gz").and_then(parse_snapshot_dirname));
+                    let parsed = parse_snapshot_dirname(file_name).or_else(|| {
+                        file_name.strip_suffix(".tar.gz").and_then(parse_snapshot_dirname)
+                    });
 
                     let (index, term) = if let Some(pair) = parsed {
                         pair
@@ -367,7 +372,12 @@ where
                         continue;
                     };
 
-                    info!("Index: {:>10} | Term: {:>10} | Path: {}", index, term, path.display());
+                    info!(
+                        "Index: {:>10} | Term: {:>10} | Path: {}",
+                        index,
+                        term,
+                        path.display()
+                    );
                     snapshots.push(CleanupSnapshotMeta { index, term, path });
                 }
             }
@@ -435,7 +445,8 @@ where
                 return Ok(false);
             }
         } else {
-            // There is no corresponding snapshot locally, snapshot synchronization needs to be triggered
+            // There is no corresponding snapshot locally, snapshot synchronization needs to be
+            // triggered
             return Ok(false);
         }
 
@@ -492,7 +503,8 @@ where
                 });
             }
         } else {
-            // There is no corresponding snapshot locally, snapshot synchronization needs to be triggered
+            // There is no corresponding snapshot locally, snapshot synchronization needs to be
+            // triggered
             return Ok(PurgeLogResponse {
                 node_id: self.node_id,
                 term: current_term,
@@ -543,7 +555,8 @@ where
         let file = tokio::fs::File::open(&transfer_meta.file_path)
             .await
             .map_err(StorageError::IoError)?;
-        let mmap = unsafe { memmap2::MmapOptions::new().map(&file).map_err(StorageError::IoError)? };
+        let mmap =
+            unsafe { memmap2::MmapOptions::new().map(&file).map_err(StorageError::IoError)? };
         let mmap = Arc::new(mmap);
 
         let node_id = self.node_id;
@@ -594,7 +607,10 @@ where
 
         // Calculate chunk boundaries
         let start = (seq as u64) * transfer_meta.chunk_size as u64;
-        let end = std::cmp::min(start + transfer_meta.chunk_size as u64, transfer_meta.file_size);
+        let end = std::cmp::min(
+            start + transfer_meta.chunk_size as u64,
+            transfer_meta.file_size,
+        );
         let chunk_size = (end - start) as usize;
 
         // Read directly without mapping the whole file
@@ -613,7 +629,11 @@ where
         Ok(SnapshotChunk {
             leader_term: transfer_meta.metadata.last_included.map(|id| id.term).unwrap_or(0),
             leader_id: self.node_id,
-            metadata: if seq == 0 { Some(transfer_meta.metadata) } else { None },
+            metadata: if seq == 0 {
+                Some(transfer_meta.metadata)
+            } else {
+                None
+            },
             seq,
             total_chunks: transfer_meta.total_chunks,
             data: buffer,
@@ -623,8 +643,7 @@ where
 }
 
 impl<T> DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
+where T: TypeConfig
 {
     pub fn new(
         node_id: u32,
@@ -659,9 +678,8 @@ where
         metadata: SnapshotMetadata,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
         let _timer = ScopedTimer::new("create_snapshot_chunk_stream");
-        let path_metadata = tokio::fs::metadata(&snapshot_file)
-            .await
-            .map_err(StorageError::IoError)?;
+        let path_metadata =
+            tokio::fs::metadata(&snapshot_file).await.map_err(StorageError::IoError)?;
 
         if !path_metadata.is_file() {
             return Err(SnapshotError::OperationFailed(format!(
@@ -752,8 +770,12 @@ where
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
-                    return Err(SnapshotError::OperationFailed(format!("Stream error: {e:?}")).into());
+                        .map_err(|e| {
+                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                        })?;
+                    return Err(
+                        SnapshotError::OperationFailed(format!("Stream error: {e:?}")).into(),
+                    );
                 }
                 Ok(None) => {
                     debug!("no more chunks available...");
@@ -769,7 +791,9 @@ where
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
+                        .map_err(|e| {
+                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                        })?;
                     let elapsed = last_received.elapsed();
                     return Err(SnapshotError::OperationFailed(format!(
                         "No chunk received for {} seconds",
@@ -790,8 +814,13 @@ where
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
-                    return Err(SnapshotError::OperationFailed("Leader changed during transfer".to_string()).into());
+                        .map_err(|e| {
+                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                        })?;
+                    return Err(SnapshotError::OperationFailed(
+                        "Leader changed during transfer".to_string(),
+                    )
+                    .into());
                 }
             } else {
                 term_check = Some((chunk.leader_term, chunk.leader_id));
@@ -808,10 +837,13 @@ where
                             next_requested: 0,
                         })
                         .await
-                        .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
-                    return Err(
-                        SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string()).into(),
-                    );
+                        .map_err(|e| {
+                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                        })?;
+                    return Err(SnapshotError::OperationFailed(
+                        "Missing metadata in snapshot stream".to_string(),
+                    )
+                    .into());
                 }
             }
 
@@ -825,8 +857,13 @@ where
                         next_requested: chunk.seq, // Request same chunk again
                     })
                     .await
-                    .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
-                return Err(SnapshotError::OperationFailed("Checksum validation failed".to_string()).into());
+                    .map_err(|e| {
+                        SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                    })?;
+                return Err(SnapshotError::OperationFailed(
+                    "Checksum validation failed".to_string(),
+                )
+                .into());
             }
 
             // Write to temporary file
@@ -873,8 +910,9 @@ where
 
         debug!(?captured_metadata);
 
-        let final_metadata = captured_metadata
-            .ok_or_else(|| SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string()))?;
+        let final_metadata = captured_metadata.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string())
+        })?;
 
         let snapshot_path = assembler.finalize(&final_metadata).await?;
         Ok((final_metadata, snapshot_path))
@@ -885,9 +923,9 @@ where
         &self,
         metadata: SnapshotMetadata,
     ) -> Result<SnapshotTransferMeta> {
-        let last_included = metadata
-            .last_included
-            .ok_or_else(|| SnapshotError::OperationFailed("No last_included in metadata".to_string()))?;
+        let last_included = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("No last_included in metadata".to_string())
+        })?;
 
         let file_path = self.path_mgr.final_snapshot_path(&last_included);
         let file_meta = tokio::fs::metadata(&file_path).await.map_err(StorageError::IoError)?;

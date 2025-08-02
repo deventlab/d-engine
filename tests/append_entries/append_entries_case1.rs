@@ -12,6 +12,13 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine::storage::StateMachine;
+use d_engine::ClientApiError;
+use tracing::debug;
+
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
@@ -27,11 +34,6 @@ use crate::common::test_put_get;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::APPEND_ENNTRIES_PORT_BASE;
-use d_engine::storage::StateMachine;
-use d_engine::ClientApiError;
-use std::sync::Arc;
-use std::time::Duration;
-use tracing::debug;
 
 const TEST_CASE_DIR: &str = "append_entries/case1";
 const DB_ROOT_DIR: &str = "./db/append_entries/case1";
@@ -80,7 +82,9 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     println!("{:?}", ports);
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
-            node_config(&create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await),
+            node_config(
+                &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
+            ),
             if i == 0 { Some(sm1.clone()) } else { None },
             Some(raft_logs[i].clone()),
         )

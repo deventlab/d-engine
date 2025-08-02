@@ -1,4 +1,9 @@
-use crate::client_manager::ClientManager;
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use config::Config;
 use d_engine::alias::SMOF;
 use d_engine::alias::SOF;
@@ -29,11 +34,6 @@ use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
 use d_engine::HardState;
 use prost::Message;
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
@@ -43,6 +43,8 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
+
+use crate::client_manager::ClientManager;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -69,8 +71,9 @@ pub struct TestContext {
 impl TestContext {
     pub async fn shutdown(self) -> Result<(), ClientApiError> {
         for tx in self.graceful_txs {
-            tx.send(())
-                .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+            tx.send(()).map_err(|_| {
+                ClientApiError::general_client_error("failed to shutdown".to_string())
+            })?;
         }
 
         for handle in self.node_handles {
@@ -93,7 +96,9 @@ pub async fn create_node_config(
         .enumerate()
         .map(|(i, &p)| {
             let id = i as u64 + 1;
-            format!("{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}")
+            format!(
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}"
+            )
         })
         .collect::<Vec<_>>()
         .join(",\n            ");
@@ -115,7 +120,10 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     let mut config = RaftNodeConfig::default();
 
     let settings = Config::builder()
-        .add_source(config::File::from_str(cluster_toml, config::FileFormat::Toml))
+        .add_source(config::File::from_str(
+            cluster_toml,
+            config::FileFormat::Toml,
+        ))
         .build()
         .unwrap();
 
@@ -163,7 +171,9 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
 }
 
 #[allow(dead_code)]
-pub async fn start_cluster(nodes_config: Vec<RaftNodeConfig>) -> std::result::Result<(), ClientApiError> {
+pub async fn start_cluster(
+    nodes_config: Vec<RaftNodeConfig>
+) -> std::result::Result<(), ClientApiError> {
     // Start all nodes
     let mut controllers = vec![];
     for config in nodes_config {
@@ -255,8 +265,8 @@ pub fn prepare_raft_log(
     _last_applied_index: u64,
 ) -> Arc<SledStorageEngine> {
     let raft_log_db_path = format!("{db_path}/raft_log",);
-    let storage_engine_db =
-        init_sled_storage_engine_db(&raft_log_db_path).expect("init_sled_storage_engine_db successfully.");
+    let storage_engine_db = init_sled_storage_engine_db(&raft_log_db_path)
+        .expect("init_sled_storage_engine_db successfully.");
     Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("success"))
 }
 
@@ -402,7 +412,8 @@ pub async fn check_cluster_is_ready(
     match result {
         Ok(_) => Ok(()),
         Err(_) => {
-            let err_msg = format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
+            let err_msg =
+                format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg))
         }
     }

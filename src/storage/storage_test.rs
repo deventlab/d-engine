@@ -76,10 +76,7 @@ fn test_init_storages_case1() {
         );
         assert_eq!(
             Some(safe_kv(17).to_vec()),
-            state_machine_db
-                .get(state_key)
-                .expect("should succeed")
-                .map(|v| v.to_vec())
+            state_machine_db.get(state_key).expect("should succeed").map(|v| v.to_vec())
         );
 
         let v = state_storage_db.get(safe_kv(11)).unwrap().unwrap();

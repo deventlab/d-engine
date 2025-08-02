@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use tokio::sync::Mutex;
+use tracing::info;
+
 use crate::proto::cluster::NodeMeta;
 use crate::MembershipError;
 use crate::Result;
-use arc_swap::ArcSwap;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::info;
 
 pub struct MembershipGuard {
     // Atomic state pointer for lock-free reads
