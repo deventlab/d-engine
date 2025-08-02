@@ -54,7 +54,8 @@ use crate::LEADER;
 use crate::LEARNER;
 
 pub struct RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     node_id: u32,
     membership: MembershipGuard,
@@ -75,7 +76,8 @@ impl<T: TypeConfig> Debug for RaftMembership<T> {
 
 #[async_trait]
 impl<T> Membership<T> for RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     async fn members(&self) -> Vec<NodeMeta> {
         self.membership
@@ -493,12 +495,15 @@ where T: TypeConfig
                     return Err(MembershipError::NodeAlreadyExists(node_id).into());
                     // return  Ok(());
                 }
-                guard.nodes.insert(node_id, NodeMeta {
-                    id: node_id,
-                    address,
-                    role: LEARNER,
-                    status: NodeStatus::Syncing as i32,
-                });
+                guard.nodes.insert(
+                    node_id,
+                    NodeMeta {
+                        id: node_id,
+                        address,
+                        role: LEARNER,
+                        status: NodeStatus::Syncing as i32,
+                    },
+                );
                 info!(
                     "[node-{}] Adding a learner node successed: {}",
                     self.node_id, node_id
@@ -764,7 +769,8 @@ where T: TypeConfig
 }
 
 impl<T> RaftMembership<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn new(
         node_id: u32,
@@ -853,10 +859,10 @@ pub fn ensure_safe_join(
         Ok(())
     } else {
         // metrics::counter!("cluster.unsafe_join_attempts", 1);
-        metrics::counter!("cluster.unsafe_join_attempts", &[(
-            "node_id",
-            node_id.to_string()
-        )])
+        metrics::counter!(
+            "cluster.unsafe_join_attempts",
+            &[("node_id", node_id.to_string())]
+        )
         .increment(1);
 
         warn!(

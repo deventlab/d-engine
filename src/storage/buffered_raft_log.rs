@@ -59,7 +59,8 @@ pub struct FlushState {
 /// - Deadlock prevention through proper error handling
 /// - Memory-efficient batch operations
 pub struct BufferedRaftLog<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     #[allow(dead_code)]
     node_id: u32,
@@ -86,7 +87,8 @@ where T: TypeConfig
 
 #[async_trait]
 impl<T> RaftLog for BufferedRaftLog<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     ///TODO: not considered the order of configured storage rule
     /// also should we remove Result<>?
@@ -475,7 +477,8 @@ where T: TypeConfig
 }
 
 impl<T> BufferedRaftLog<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     pub fn new(
         node_id: u32,
@@ -762,7 +765,8 @@ where T: TypeConfig
 }
 
 impl<T> Drop for BufferedRaftLog<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn drop(&mut self) {
         if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
@@ -774,7 +778,8 @@ where T: TypeConfig
 }
 
 impl<T> std::fmt::Debug for BufferedRaftLog<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     fn fmt(
         &self,

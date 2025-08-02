@@ -38,7 +38,8 @@ pub(crate) struct BackgroundSnapshotTransfer<T> {
 
 #[allow(unused)]
 impl<T> BackgroundSnapshotTransfer<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     // Unified push transfer entry point
     pub(crate) async fn run_push_transfer(

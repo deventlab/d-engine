@@ -52,7 +52,8 @@ use crate::API_SLO;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Handles RequestVote RPC calls from candidate nodes during leader elections
     /// # Raft Protocol Logic
@@ -85,7 +86,8 @@ where T: TypeConfig
 }
 #[tonic::async_trait]
 impl<T> RaftReplicationService for Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Processes AppendEntries RPC calls from cluster leader
     /// # Raft Protocol Logic
@@ -120,7 +122,8 @@ where T: TypeConfig
 
 #[tonic::async_trait]
 impl<T> SnapshotService for Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
 
@@ -202,7 +205,8 @@ where T: TypeConfig
 
 #[tonic::async_trait]
 impl<T> ClusterManagementService for Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Handles cluster membership changes (joint consensus)
     /// # Raft Protocol Logic
@@ -312,7 +316,8 @@ where T: TypeConfig
 }
 #[tonic::async_trait]
 impl<T> RaftClientService for Node<T>
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic

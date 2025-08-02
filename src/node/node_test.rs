@@ -59,16 +59,22 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(5),
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: Some(5),
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });

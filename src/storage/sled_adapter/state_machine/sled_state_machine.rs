@@ -490,10 +490,13 @@ impl StateMachine for SledStateMachine {
                     computed_checksum, metadata.checksum
                 );
 
-                metrics::counter!("snapshot.checksum_failures", &[
-                    ("node_id", self.node_id.to_string()),
-                    ("snapshot_index", new_last_included.index.to_string()),
-                ])
+                metrics::counter!(
+                    "snapshot.checksum_failures",
+                    &[
+                        ("node_id", self.node_id.to_string()),
+                        ("snapshot_index", new_last_included.index.to_string()),
+                    ]
+                )
                 .increment(1);
 
                 return Err(SnapshotError::ChecksumMismatch.into());

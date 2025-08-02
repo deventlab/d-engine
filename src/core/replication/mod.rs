@@ -63,7 +63,8 @@ pub struct AppendResponseWithUpdates {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
     /// As Leader, send replications to peers (combines regular heartbeats and client proposals).
     ///

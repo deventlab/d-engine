@@ -408,6 +408,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     /// - `Ok(true)`: Quorum verification succeeded within retry limits
     /// - `Ok(false)`: Leadership definitively lost during verification
     /// - `Err(_)`: Maximum retries exceeded or critical failure occurred
+    #[autometrics(objective = API_SLO)]
     async fn verify_leadership_limited_retry(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -479,6 +480,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///
     /// 7. Critical failure (e.g., system or logic error):
     ///    - Return: original error
+    #[autometrics(objective = API_SLO)]
     async fn verify_internal_quorum(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -803,6 +805,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
+                let _timer = ScopedTimer::new("leader_linear_read");
                 debug!(
                     "Leader::ClientReadRequest client_read_request:{:?}",
                     &client_read_request
@@ -1228,8 +1231,6 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        let _timer = ScopedTimer::new("Leader::process_batch");
-
         // 1. Prepare batch data
         let entry_payloads: Vec<EntryPayload> =
             batch.iter().flat_map(|req| &req.payloads).cloned().collect();

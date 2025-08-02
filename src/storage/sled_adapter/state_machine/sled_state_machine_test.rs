@@ -61,10 +61,10 @@ async fn test_apply_committed_raft_logs_in_batch() {
         entries.push(log);
     }
     context.state_machine.apply_chunk(entries).expect("should succeed");
-    assert_eq!(context.state_machine.last_applied(), LogId {
-        index: 3,
-        term: 1
-    });
+    assert_eq!(
+        context.state_machine.last_applied(),
+        LogId { index: 3, term: 1 }
+    );
 }
 
 fn init(path: &str) -> Arc<sled::Db> {
@@ -352,10 +352,13 @@ async fn test_generate_snapshot_data_case4() {
 
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
-    sm.generate_snapshot_data(temp_path.clone(), LogId {
-        index: 150,
-        term: 1,
-    })
+    sm.generate_snapshot_data(
+        temp_path.clone(),
+        LogId {
+            index: 150,
+            term: 1,
+        },
+    )
     .await
     .unwrap();
 
