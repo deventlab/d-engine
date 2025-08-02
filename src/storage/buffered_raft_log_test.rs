@@ -2648,3 +2648,211 @@ mod batch_processor_tests {
         processor.await.unwrap();
     }
 }
+
+mod save_load_hard_state_tests {
+    use super::*;
+    use crate::{constants::STATE_STORAGE_HARD_STATE_KEY, proto::election::VotedFor, HardState};
+
+    /// Test that hard state operations use the meta tree and not the log tree
+    #[tokio::test]
+    async fn test_hard_state_uses_meta_tree_not_log_tree() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+
+        // Create test hard state
+        let test_hard_state = HardState {
+            current_term: 5,
+            voted_for: Some(VotedFor {
+                voted_for_id: 10,
+                voted_for_term: 7,
+            }),
+        };
+
+        // Save through buffered raft log
+        context
+            .raft_log
+            .save_hard_state(test_hard_state)
+            .expect("save_hard_state should succeed");
+
+        // Verify storage engine state
+        // 1. Meta tree should contain the hard state
+        let meta_value = context
+            .storage
+            .meta_tree
+            .get(STATE_STORAGE_HARD_STATE_KEY)
+            .expect("meta_tree.get should succeed")
+            .expect("hard state should exist in meta tree");
+
+        let decoded_meta: HardState = bincode::deserialize(&meta_value).unwrap();
+        assert_eq!(decoded_meta.current_term, 5);
+        assert_eq!(
+            decoded_meta.voted_for,
+            Some(VotedFor {
+                voted_for_id: 10,
+                voted_for_term: 7,
+            })
+        );
+
+        // 2. Log tree should NOT contain the hard state key
+        let log_value = context
+            .storage
+            .log_tree
+            .get(STATE_STORAGE_HARD_STATE_KEY)
+            .expect("log_tree.get should succeed");
+        assert!(log_value.is_none(), "Hard state key should not exist in log tree");
+
+        // 3. Load through buffered raft log
+        let loaded = context
+            .raft_log
+            .load_hard_state()
+            .expect("load_hard_state should succeed")
+            .expect("hard state should exist");
+        assert_eq!(loaded.current_term, 5);
+        assert_eq!(
+            loaded.voted_for,
+            Some(VotedFor {
+                voted_for_id: 10,
+                voted_for_term: 7,
+            })
+        );
+    }
+
+    /// Test that hard state survives restarts and uses the correct tree
+    #[tokio::test]
+    async fn test_hard_state_persistence_across_restart() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_id = 1;
+        let db_path = temp_dir.path();
+
+        // Phase 1: Initial save
+        {
+            let (db, _, _, _) = reset_dbs(db_path.to_str().unwrap());
+            let storage = Arc::new(SledStorageEngine::new(node_id, db).unwrap());
+            let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
+                node_id,
+                PersistenceConfig {
+                    strategy: PersistenceStrategy::MemFirst,
+                    flush_policy: FlushPolicy::Immediate,
+                    max_buffered_entries: 1000,
+                },
+                storage,
+            );
+            let raft_log = raft_log.start(receiver);
+
+            let hard_state = HardState {
+                current_term: 8,
+                voted_for: Some(VotedFor {
+                    voted_for_id: 3,
+                    voted_for_term: 8,
+                }),
+            };
+            raft_log.save_hard_state(hard_state).expect("save should succeed");
+
+            // Explicitly flush to ensure data is persisted
+            raft_log.storage.flush().expect("flush should succeed");
+        }
+
+        // Phase 2: Restart
+        {
+            let (db, _, _, _) = reuse_dbs(db_path.to_str().unwrap());
+            let storage = Arc::new(SledStorageEngine::new(node_id, db).unwrap());
+            let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
+                node_id,
+                PersistenceConfig {
+                    strategy: PersistenceStrategy::MemFirst,
+                    flush_policy: FlushPolicy::Immediate,
+                    max_buffered_entries: 1000,
+                },
+                storage,
+            );
+            let raft_log = raft_log.start(receiver);
+
+            // Verify hard state loaded correctly
+            let loaded = raft_log
+                .load_hard_state()
+                .expect("load should succeed")
+                .expect("state should exist");
+            assert_eq!(loaded.current_term, 8);
+            assert_eq!(
+                loaded.voted_for,
+                Some(VotedFor {
+                    voted_for_id: 3,
+                    voted_for_term: 8,
+                })
+            );
+
+            // Verify storage trees
+            // 1. Meta tree should contain the value
+            let meta_value = raft_log
+                .storage
+                .meta_tree
+                .get(STATE_STORAGE_HARD_STATE_KEY)
+                .expect("meta get should succeed")
+                .expect("value should exist");
+            let decoded: HardState = bincode::deserialize(&meta_value).unwrap();
+            assert_eq!(decoded.current_term, 8);
+
+            // 2. Log tree should NOT contain the value
+            let log_value = raft_log
+                .storage
+                .log_tree
+                .get(STATE_STORAGE_HARD_STATE_KEY)
+                .expect("log get should succeed");
+            assert!(log_value.is_none(), "Hard state should not be in log tree");
+        }
+    }
+
+    /// Test that reset operation doesn't clear hard state (only log tree)
+    #[tokio::test]
+    async fn test_reset_preserves_hard_state() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+
+        // Save initial hard state
+        let hs = HardState {
+            current_term: 3,
+            voted_for: Some(VotedFor {
+                voted_for_id: 5,
+                voted_for_term: 7,
+            }),
+        };
+        context.raft_log.save_hard_state(hs).expect("save should succeed");
+
+        // Perform reset (should only clear logs)
+        context.raft_log.reset().await.expect("reset should succeed");
+
+        // Verify hard state still exists
+        let loaded = context
+            .raft_log
+            .load_hard_state()
+            .expect("load should succeed")
+            .unwrap();
+        assert_eq!(loaded.current_term, 3);
+        assert_eq!(
+            loaded.voted_for,
+            Some(VotedFor {
+                voted_for_id: 5,
+                voted_for_term: 7,
+            })
+        );
+
+        // Verify meta tree still has the data
+        let meta_value = context
+            .storage
+            .meta_tree
+            .get(STATE_STORAGE_HARD_STATE_KEY)
+            .expect("meta get should succeed")
+            .expect("value should exist");
+        assert!(!meta_value.is_empty());
+    }
+}

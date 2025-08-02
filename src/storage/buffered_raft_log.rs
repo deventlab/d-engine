@@ -60,24 +60,24 @@ where
     #[allow(dead_code)]
     node_id: u32,
 
-    storage: Arc<SOF<T>>,
+    pub(crate) storage: Arc<SOF<T>>,
     strategy: PersistenceStrategy,
     flush_policy: FlushPolicy,
 
     // --- In-memory state ---
     // Pending entries
-    pub entries: DashMap<u64, Entry>,
+    pub(crate) entries: DashMap<u64, Entry>,
     // Tracks the highest index that has been persisted to disk
-    pub durable_index: AtomicU64,
+    pub(crate) durable_index: AtomicU64,
     // The next index to be allocated
-    pub next_id: AtomicU64,
+    pub(crate) next_id: AtomicU64,
 
     // --- Flush coordination ---
     // Channel to trigger flushes
-    pub command_sender: mpsc::UnboundedSender<LogCommand>,
+    pub(crate) command_sender: mpsc::UnboundedSender<LogCommand>,
     // Track flush state
-    pub flush_state: Mutex<FlushState>,
-    pub waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
+    pub(crate) flush_state: Mutex<FlushState>,
+    pub(crate) waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
 }
 
 #[async_trait]

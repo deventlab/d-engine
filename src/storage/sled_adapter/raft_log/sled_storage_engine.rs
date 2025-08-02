@@ -1,6 +1,5 @@
 use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::convert::safe_vk;
-use crate::convert::skv;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::storage::RAFT_LOG_NAMESPACE;
@@ -26,9 +25,9 @@ pub struct SledStorageEngine {
     #[allow(dead_code)]
     db: sled::Db,
 
-    pub(super) log_tree: sled::Tree,
+    pub(crate) log_tree: sled::Tree,
 
-    pub(super) meta_tree: sled::Tree,
+    pub(crate) meta_tree: sled::Tree,
 }
 
 impl StorageEngine for SledStorageEngine {
@@ -174,7 +173,7 @@ impl StorageEngine for SledStorageEngine {
         Ok(())
     }
 
-    fn load_hard_state(&self) -> Result<Option<crate::HardState>> {
+    fn load_hard_state(&self) -> Result<Option<HardState>> {
         info!(
             "pending load_role_hard_state_from_db with key: {}",
             STATE_STORAGE_HARD_STATE_KEY
@@ -215,10 +214,8 @@ impl StorageEngine for SledStorageEngine {
     ) -> Result<()> {
         match bincode::serialize(&hard_state) {
             Ok(v) => {
-                self.meta_tree.insert(
-                    skv(STATE_STORAGE_HARD_STATE_KEY.to_string()),
-                    IVec::from(v.as_ref() as &[u8]),
-                )?;
+                self.meta_tree
+                    .insert(STATE_STORAGE_HARD_STATE_KEY, IVec::from(v.as_ref() as &[u8]))?;
 
                 info!("persistent_state_into_db successfully!");
                 println!("persistent_state_into_db successfully!");

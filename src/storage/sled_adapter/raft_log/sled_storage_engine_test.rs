@@ -1,10 +1,14 @@
 use super::*;
 use crate::{
+    constants::STATE_STORAGE_HARD_STATE_KEY,
     init_sled_storage_engine_db,
-    proto::common::{Entry, EntryPayload, LogId},
+    proto::{
+        common::{Entry, EntryPayload, LogId},
+        election::VotedFor,
+    },
     storage::{StorageEngine, RAFT_LOG_NAMESPACE},
     test_utils::enable_logger,
-    Error, ProstError, SystemError,
+    Error, HardState, ProstError, SystemError,
 };
 use std::ops::RangeInclusive;
 use tempfile::TempDir;
@@ -184,4 +188,115 @@ fn test_corrupted_data_handling() {
         Err(Error::System(SystemError::Prost(ProstError::Decode(_)))) => {} // Expected
         other => panic!("Unexpected result: {:?}", other),
     }
+}
+
+#[test]
+fn test_hard_state_persistence() {
+    enable_logger();
+
+    let (storage, dir) = setup_storage(1);
+    let hard_state = HardState {
+        current_term: 5,
+        voted_for: Some(VotedFor {
+            voted_for_id: 10,
+            voted_for_term: 4,
+        }),
+    };
+
+    // Save and verify in-memory
+    storage.save_hard_state(hard_state).unwrap();
+    let loaded = storage.load_hard_state().unwrap().unwrap();
+    assert_eq!(loaded.current_term, 5);
+
+    // Test durability after restart
+    drop(storage); // Release DB lock
+    let db = init_sled_storage_engine_db(dir.path()).unwrap();
+    let storage2 = SledStorageEngine::new(1, db).unwrap();
+    let reloaded = storage2.load_hard_state().unwrap().unwrap();
+    assert_eq!(reloaded.current_term, 5);
+}
+
+#[test]
+fn test_reset_preserves_meta() {
+    let (storage, _dir) = setup_storage(1);
+    let hard_state = HardState {
+        current_term: 3,
+        voted_for: Some(VotedFor {
+            voted_for_id: 5,
+            voted_for_term: 4,
+        }),
+    };
+    storage.save_hard_state(hard_state).unwrap();
+
+    // Reset should clear logs but keep meta
+    storage.reset().unwrap();
+
+    let loaded = storage.load_hard_state().unwrap();
+    assert!(loaded.is_some());
+    assert_eq!(loaded.unwrap().current_term, 3);
+}
+
+#[test]
+fn test_flush_persists_all_data() {
+    let (storage, dir) = setup_storage(1);
+
+    // Write to both trees
+    storage.persist_entries(create_entries(1..=5)).unwrap();
+    storage
+        .save_hard_state(HardState {
+            current_term: 2,
+            voted_for: Some(VotedFor {
+                voted_for_id: 1,
+                voted_for_term: 2,
+            }),
+        })
+        .unwrap();
+
+    // Manually flush and reopen
+    storage.flush().unwrap();
+    drop(storage);
+
+    let db = init_sled_storage_engine_db(dir.path()).unwrap();
+    let storage2 = SledStorageEngine::new(1, db).unwrap();
+
+    // Verify both trees
+    assert_eq!(storage2.last_index(), 5);
+    assert_eq!(storage2.load_hard_state().unwrap().unwrap().current_term, 2);
+}
+
+#[test]
+fn test_corrupted_meta_data() {
+    let (storage, _dir) = setup_storage(1);
+
+    // Insert invalid data directly
+    storage
+        .meta_tree
+        .insert(STATE_STORAGE_HARD_STATE_KEY, b"invalid_bincode_data")
+        .unwrap();
+
+    assert!(storage.load_hard_state().unwrap().is_none());
+}
+
+#[test]
+fn test_drop_impl_flushes() {
+    let dir = tempfile::tempdir().unwrap();
+    let hs = HardState {
+        current_term: 7,
+        voted_for: Some(VotedFor {
+            voted_for_id: 2,
+            voted_for_term: 7,
+        }),
+    };
+
+    {
+        let db = init_sled_storage_engine_db(dir.path()).unwrap();
+        let storage = SledStorageEngine::new(1, db).unwrap();
+        storage.save_hard_state(hs).unwrap();
+        // No explicit flush - rely on Drop
+    } // Storage dropped here
+
+    // Reopen and verify
+    let db = init_sled_storage_engine_db(dir.path()).unwrap();
+    let storage2 = SledStorageEngine::new(1, db).unwrap();
+    assert_eq!(storage2.load_hard_state().unwrap().unwrap().current_term, 7);
 }
