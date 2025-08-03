@@ -167,8 +167,12 @@ impl Default for RetryPolicies {
             // Scenario                      Recommended Settings
             // ------------------------------------------------------------
             // Local Data Center (Low Latency)     -> max_retries=3, timeout_ms=500,
-            // max_delay_ms=2000 Cross-Region Network (High Latency) -> max_retries=10,
-            // timeout_ms=5000, max_delay_ms=10000 Edge Network (Unstable)
+            // max_delay_ms=2000
+            //
+            // Cross-Region Network (High Latency) -> max_retries=10,
+            // timeout_ms=5000, max_delay_ms=10000
+            //
+            // Edge Network (Unstable)
             // -> max_retries=10, timeout_ms=3000, max_delay_ms=30000
             //
             // Current config:
