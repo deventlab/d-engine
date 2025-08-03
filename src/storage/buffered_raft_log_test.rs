@@ -85,13 +85,6 @@ impl TestContext {
     }
 }
 
-// impl Drop for TestContext {
-//     fn drop(&mut self) {
-//         println!("Test teardown ...");
-//         // self.s.db.drop_tree("logs").expect("drop successfully!");
-//         let _ = std::fs::remove_dir_all("/tmp/test_db");
-//     }
-// }
 async fn insert(
     raft_log: &Arc<ROF<RaftTypeConfig>>,
     key: u64,
@@ -2852,5 +2845,290 @@ mod save_load_hard_state_tests {
             .expect("meta get should succeed")
             .expect("value should exist");
         assert!(!meta_value.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_last_entry_id_performance() {
+    // Set up test context
+    let test_context = TestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1_000_000,
+            interval_ms: 360_000,
+        },
+    );
+
+    // Create a large number of entries
+    const ENTRY_COUNT: usize = 1_000_000;
+    let entries: Vec<_> = (0..ENTRY_COUNT)
+        .map(|index| Entry {
+            index: index as u64,
+            term: index as u64,
+            payload: Some(EntryPayload::command(b"test_data".to_vec())),
+        })
+        .collect();
+
+    // Insert entries into the log
+    let insert_start = Instant::now();
+    test_context.raft_log.append_entries(entries).await.unwrap();
+    let insert_duration = insert_start.elapsed();
+    println!("Insert duration: {:?}", insert_duration);
+
+    // Measure last_entry_id performance
+    let mut durations = Vec::with_capacity(10);
+    let mut last_id = 0;
+    for _ in 1..1_000 {
+        let start = Instant::now();
+        last_id = test_context.raft_log.last_entry_id();
+        let duration = start.elapsed();
+        durations.push(duration);
+    }
+
+    // Calculate average duration
+    let avg_duration = durations.iter().sum::<Duration>() / durations.len() as u32;
+    println!("Average last_entry_id duration: {:?}", avg_duration);
+    assert!(avg_duration < Duration::from_millis(1));
+    // Assert that the last entry ID is correct
+    assert_eq!(last_id, ENTRY_COUNT as u64 - 1);
+}
+
+#[cfg(test)]
+mod remove_range_tests {
+    use super::*;
+    use crate::test_utils;
+
+    #[tokio::test]
+    async fn test_remove_middle_range() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        // Insert 100 entries
+        test_utils::simulate_insert_command(&context.raft_log, (1..=100).collect(), 1).await;
+        assert_eq!(context.raft_log.len(), 100);
+        assert_eq!(context.raft_log.first_entry_id(), 1);
+        assert_eq!(context.raft_log.last_entry_id(), 100);
+
+        // Remove middle range
+        context.raft_log.remove_range(40..=60);
+
+        // Verify removal
+        assert_eq!(context.raft_log.len(), 79);
+        assert_eq!(context.raft_log.first_entry_id(), 1); // Min unchanged
+        assert_eq!(context.raft_log.last_entry_id(), 100); // Max unchanged
+
+        // Verify specific entries
+        assert!(context.raft_log.entry(39).unwrap().is_some());
+        assert!(context.raft_log.entry(40).unwrap().is_none());
+        assert!(context.raft_log.entry(60).unwrap().is_none());
+        assert!(context.raft_log.entry(61).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_remove_from_start() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        // Insert 100 entries
+        test_utils::simulate_insert_command(&context.raft_log, (1..=100).collect(), 1).await;
+
+        // Remove first 50 entries
+        context.raft_log.remove_range(1..=50);
+
+        // Verify state
+        assert_eq!(context.raft_log.len(), 50);
+        assert_eq!(context.raft_log.first_entry_id(), 51); // Min updated
+        assert_eq!(context.raft_log.last_entry_id(), 100); // Max unchanged
+
+        // Boundary checks
+        assert!(context.raft_log.entry(50).unwrap().is_none());
+        assert!(context.raft_log.entry(51).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_remove_to_end() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        // Insert 100 entries
+        test_utils::simulate_insert_command(&context.raft_log, (1..=100).collect(), 1).await;
+
+        // Remove from 90 to end
+        context.raft_log.remove_range(90..=u64::MAX);
+
+        // Verify state
+        assert_eq!(context.raft_log.len(), 89);
+        assert_eq!(context.raft_log.first_entry_id(), 1); // Min unchanged
+        assert_eq!(context.raft_log.last_entry_id(), 89); // Max updated
+
+        // Boundary checks
+        assert!(context.raft_log.entry(89).unwrap().is_some());
+        assert!(context.raft_log.entry(90).unwrap().is_none());
+        assert!(context.raft_log.entry(100).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_remove_empty_range() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        test_utils::simulate_insert_command(&context.raft_log, vec![1, 2, 3], 1).await;
+
+        // Remove nothing
+        context.raft_log.remove_range(5..=10);
+
+        assert_eq!(context.raft_log.len(), 3);
+        assert_eq!(context.raft_log.first_entry_id(), 1);
+        assert_eq!(context.raft_log.last_entry_id(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_remove_entire_log() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        // Insert 100 entries
+        test_utils::simulate_insert_command(&context.raft_log, (1..=100).collect(), 1).await;
+
+        // Remove entire log
+        context.raft_log.remove_range(1..=u64::MAX);
+
+        // Verify state
+        assert_eq!(context.raft_log.len(), 0);
+        assert_eq!(context.raft_log.first_entry_id(), 0);
+        assert_eq!(context.raft_log.last_entry_id(), 0);
+        assert!(context.raft_log.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_range_with_concurrent_reads() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        // Insert 1000 entries
+        test_utils::simulate_insert_command(&context.raft_log, (1..=1000).collect(), 1).await;
+
+        // Spawn concurrent readers
+        let readers: Vec<_> = (0..10)
+            .map(|_| {
+                let log = context.raft_log.clone();
+                tokio::spawn(async move {
+                    for i in 1..=1000 {
+                        // This shouldn't panic even during removal
+                        let _ = log.entry(i);
+                    }
+                })
+            })
+            .collect();
+
+        // Remove a large range while reads are happening
+        context.raft_log.remove_range(300..=700);
+
+        // Wait for readers to finish
+        for handle in readers {
+            handle.await.expect("reader task failed");
+        }
+
+        // Verify final state
+        assert_eq!(context.raft_log.len(), 599); // 299 before + 300 after
+        assert!(context.raft_log.entry(299).unwrap().is_some());
+        assert!(context.raft_log.entry(300).unwrap().is_none());
+        assert!(context.raft_log.entry(700).unwrap().is_none());
+        assert!(context.raft_log.entry(701).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_remove_range_performance() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        // Insert 100,000 entries
+        let entries: Vec<u64> = (1..=100_000).collect();
+        test_utils::simulate_insert_command(&context.raft_log, entries, 1).await;
+
+        // Measure removal of 50,000 entries
+        let start = std::time::Instant::now();
+        context.raft_log.remove_range(25_001..=75_000);
+        let duration = start.elapsed();
+
+        println!("Removed 50,000 entries in {:?}", duration);
+        assert!(duration < std::time::Duration::from_millis(100));
+
+        // Verify state
+        assert_eq!(context.raft_log.len(), 50_000);
+        assert_eq!(
+            context.raft_log.entry(25_000).unwrap().unwrap().index,
+            25_000
+        );
+        assert!(context.raft_log.entry(25_001).unwrap().is_none());
+        assert!(context.raft_log.entry(75_000).unwrap().is_none());
+        assert_eq!(
+            context.raft_log.entry(75_001).unwrap().unwrap().index,
+            75_001
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_single_entry() {
+        let context = TestContext::new(
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 1,
+            },
+        );
+        context.raft_log.reset().await.expect("reset successfully!");
+
+        test_utils::simulate_insert_command(&context.raft_log, vec![1, 2, 3], 1).await;
+
+        // Remove middle entry
+        context.raft_log.remove_range(2..=2);
+
+        assert_eq!(context.raft_log.len(), 2);
+        assert_eq!(context.raft_log.first_entry_id(), 1);
+        assert_eq!(context.raft_log.last_entry_id(), 3);
+        assert!(context.raft_log.entry(2).unwrap().is_none());
     }
 }

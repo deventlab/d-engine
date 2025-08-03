@@ -88,6 +88,9 @@ zstd-sys = { version = "=1.6.2", features = [
 ], default-features = false }
 ring = { version = "=0.17.14", features = ["std"] }
 
+# TODO: to replace dashmap
+crossbeam-skiplist = "0.1"
+
 [dev-dependencies]
 mockall = "0.12.1"
 env_logger = "0.11.6"
@@ -98,6 +101,7 @@ hyper = "1.6.0"
 temp-env = "0.3.6"
 nix = { version = "0.30.1", features = ["fs"] }
 tracing-test = "0.2"
+
 
 [build-dependencies]
 tonic-build = "0.12"
