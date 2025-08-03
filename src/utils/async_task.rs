@@ -25,7 +25,8 @@ where
     let max_delay = Duration::from_millis(policy.max_delay_ms);
     let max_retries = policy.max_retries;
 
-    let mut last_error = NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
+    let mut last_error =
+        NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
         match timeout(timeout_duration, task()).await {
             Ok(Ok(r)) => {
@@ -33,7 +34,8 @@ where
             }
             Ok(Err(error)) => {
                 warn!(?error, "failed with error.");
-                last_error = NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
+                last_error =
+                    NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
             }
             Err(error) => {
                 warn!(?timeout_duration, ?error, "Task timed out");
@@ -70,7 +72,10 @@ pub(crate) async fn spawn_task<F, Fut>(
     let name = name.to_string();
     let handle = tokio::spawn(async move {
         if let Err(e) = task_fn().await {
-            error!("spawned task: {name} stopped or encountered an error: {:?}", e);
+            error!(
+                "spawned task: {name} stopped or encountered an error: {:?}",
+                e
+            );
         }
     });
 

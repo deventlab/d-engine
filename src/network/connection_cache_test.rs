@@ -1,12 +1,16 @@
-use tokio::sync::oneshot;
-
-use crate::net::address_str;
-use crate::test_utils::{self, enable_logger, MockRpcService};
-use crate::{ConnectionParams, ConnectionType, NetworkConfig};
-
-use super::*;
 use std::time::Duration;
 use std::time::Instant;
+
+use tokio::sync::oneshot;
+
+use super::*;
+use crate::net::address_str;
+use crate::test_utils::enable_logger;
+use crate::test_utils::MockRpcService;
+use crate::test_utils::{self};
+use crate::ConnectionParams;
+use crate::ConnectionType;
+use crate::NetworkConfig;
 
 // Helper to create test config
 fn test_config() -> NetworkConfig {
@@ -22,9 +26,8 @@ async fn mock_address() -> (String, oneshot::Sender<()>) {
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = true;
     let mock_service = MockRpcService::default();
-    let (_port, addr) = test_utils::MockNode::mock_listener(mock_service, rx, is_ready)
-        .await
-        .unwrap();
+    let (_port, addr) =
+        test_utils::MockNode::mock_listener(mock_service, rx, is_ready).await.unwrap();
 
     (address_str(&addr.to_string()), tx)
 }
@@ -38,16 +41,10 @@ async fn test_cache_hit_same_address() {
     let (address, _tx) = mock_address().await;
 
     // First call - cache miss
-    let _channel1 = cache
-        .get_channel(node_id, conn_type.clone(), address.clone())
-        .await
-        .unwrap();
+    let _channel1 = cache.get_channel(node_id, conn_type.clone(), address.clone()).await.unwrap();
 
     // Second call - cache hit
-    let _channel2 = cache
-        .get_channel(node_id, conn_type.clone(), address.clone())
-        .await
-        .unwrap();
+    let _channel2 = cache.get_channel(node_id, conn_type.clone(), address.clone()).await.unwrap();
 
     // Should reuse the same channel
     assert_eq!(cache.cache.len(), 1);
@@ -65,17 +62,11 @@ async fn test_cache_miss_address_change() {
 
     // First address
     let (address1, _tx) = mock_address().await;
-    cache
-        .get_channel(node_id, conn_type.clone(), address1.clone())
-        .await
-        .unwrap();
+    cache.get_channel(node_id, conn_type.clone(), address1.clone()).await.unwrap();
 
     // Different address
     let (address2, _tx) = mock_address().await;
-    cache
-        .get_channel(node_id, conn_type.clone(), address2.clone())
-        .await
-        .unwrap();
+    cache.get_channel(node_id, conn_type.clone(), address2.clone()).await.unwrap();
 
     // Should create new channel
     let entry = cache.cache.get(&(node_id, conn_type)).unwrap();
@@ -90,10 +81,7 @@ async fn test_cache_miss_connection_type() {
     let (address, _tx) = mock_address().await;
 
     // Data connection
-    cache
-        .get_channel(node_id, ConnectionType::Data, address.clone())
-        .await
-        .unwrap();
+    cache.get_channel(node_id, ConnectionType::Data, address.clone()).await.unwrap();
 
     // Control connection
     cache
@@ -119,18 +107,12 @@ async fn test_remove_node() {
     let (address, _tx) = mock_address().await;
 
     // Create connections for two nodes
-    cache
-        .get_channel(node1, ConnectionType::Data, address.clone())
-        .await
-        .unwrap();
+    cache.get_channel(node1, ConnectionType::Data, address.clone()).await.unwrap();
     cache
         .get_channel(node1, ConnectionType::Control, address.clone())
         .await
         .unwrap();
-    cache
-        .get_channel(node2, ConnectionType::Data, address.clone())
-        .await
-        .unwrap();
+    cache.get_channel(node2, ConnectionType::Data, address.clone()).await.unwrap();
 
     assert_eq!(cache.cache.len(), 3);
 
@@ -153,10 +135,7 @@ async fn test_last_used_update() {
     let start = Instant::now();
 
     // First call
-    cache
-        .get_channel(node_id, conn_type.clone(), address.clone())
-        .await
-        .unwrap();
+    cache.get_channel(node_id, conn_type.clone(), address.clone()).await.unwrap();
 
     // Get initial timestamp
     let initial_ts = {
@@ -188,9 +167,7 @@ async fn test_error_handling() {
     let conn_type = ConnectionType::Data;
 
     // Invalid address (missing scheme)
-    let result = cache
-        .get_channel(node_id, conn_type, "invalid-address".to_string())
-        .await;
+    let result = cache.get_channel(node_id, conn_type, "invalid-address".to_string()).await;
 
     assert!(result.is_err());
     assert!(cache.cache.is_empty());

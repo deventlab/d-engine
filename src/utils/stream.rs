@@ -48,7 +48,9 @@ fn encode_varint(
 
 impl<T> GrpcStreamDecoder<T> {
     pub(crate) fn new() -> Self {
-        GrpcStreamDecoder { _marker: PhantomData }
+        GrpcStreamDecoder {
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -94,9 +96,9 @@ where
 
                 // Encode the T to bytes
                 let mut buf = Vec::new();
-                chunk
-                    .encode(&mut buf)
-                    .map_err(|e| Status::new(Code::Internal, format!("Snapshot encoding failed: {e}")))?;
+                chunk.encode(&mut buf).map_err(|e| {
+                    Status::new(Code::Internal, format!("Snapshot encoding failed: {e}"))
+                })?;
 
                 // Create gRPC frame with header
                 let mut frame = BytesMut::with_capacity(5 + buf.len());
@@ -115,7 +117,9 @@ where
 
     // Create streaming with appropriate codec
     Streaming::new_request(
-        GrpcStreamDecoder::<T> { _marker: PhantomData },
+        GrpcStreamDecoder::<T> {
+            _marker: PhantomData,
+        },
         body.boxed_unsync(),
         None,
         Some(max_message_size),

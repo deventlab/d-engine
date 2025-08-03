@@ -49,9 +49,7 @@ use super::generate_insert_commands;
 use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMOF;
-use crate::alias::SSOF;
 use crate::alias::TROF;
-use crate::convert::safe_kv;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
@@ -60,20 +58,22 @@ use crate::proto::common::EntryPayload;
 use crate::proto::common::NodeStatus;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockTypeConfig;
+use crate::BufferedRaftLog;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::FlushPolicy;
 use crate::LogSizePolicy;
+use crate::PersistenceConfig;
+use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
-use crate::SledRaftLog;
 use crate::SledStateMachine;
-use crate::SledStateStorage;
+use crate::SledStorageEngine;
 use crate::StateMachine;
-use crate::StateStorage;
 use crate::TypeConfig;
 
 #[allow(dead_code)]
@@ -86,7 +86,6 @@ where
     // Storages
     pub raft_log: Arc<ROF<T>>,
     pub state_machine: Arc<SMOF<T>>,
-    pub state_storage: Box<SSOF<T>>,
 
     // Network
     pub transport: Arc<TROF<T>>,
@@ -112,20 +111,31 @@ pub fn setup_raft_components(
     println!("Test setup_raft_components ...");
     enable_logger();
     //start from fresh
-    let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) = if restart {
+    let (raft_log_db, state_machine_db, _state_storage_db, _snapshot_storage_db) = if restart {
         reuse_dbs(db_path)
     } else {
         reset_dbs(db_path)
     };
     let id = 1;
-    let raft_log_db = Arc::new(raft_log_db);
+    // let raft_log_db = Arc::new(raft_log_db);
     let state_machine_db = Arc::new(state_machine_db);
-    let state_storage_db = Arc::new(state_storage_db);
 
-    let sled_raft_log = SledRaftLog::new(id, raft_log_db, 0);
+    let storage_engine = Arc::new(
+        SledStorageEngine::new(id, raft_log_db).expect("Init storage engine successfully."),
+    );
+
+    let (buffered_raft_log, receiver) = BufferedRaftLog::new(
+        id,
+        PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
+            max_buffered_entries: 10000,
+        },
+        storage_engine.clone(),
+    );
+    let buffered_raft_log = buffered_raft_log.start(receiver);
     let sled_state_machine = SledStateMachine::new(id, state_machine_db.clone()).expect("success");
     let last_applied_pair = sled_state_machine.last_applied();
-    let sled_state_storage = SledStateStorage::new(state_storage_db);
 
     let grpc_transport = GrpcTransport::new(id);
 
@@ -176,9 +186,8 @@ pub fn setup_raft_components(
 
     TestContext::<RaftTypeConfig> {
         id,
-        raft_log: Arc::new(sled_raft_log),
+        raft_log: buffered_raft_log,
         state_machine,
-        state_storage: Box::new(sled_state_storage),
         transport: Arc::new(grpc_transport),
         membership: Arc::new(RaftMembership::new(
             id,
@@ -215,7 +224,7 @@ pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
     init_sled_storages(db_path.to_string()).expect("init storage failed.")
 }
 
-pub(crate) fn insert_raft_log(
+pub(crate) async fn insert_raft_log(
     raft_log: &ROF<RaftTypeConfig>,
     ids: Vec<u64>,
     term: u64,
@@ -229,18 +238,8 @@ pub(crate) fn insert_raft_log(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
+    if let Err(e) = raft_log.insert_batch(entries).await {
         panic!("error:{e:?}");
-    }
-}
-pub(crate) fn insert_state_storage(
-    state_storage: &SSOF<RaftTypeConfig>,
-    ids: Vec<u64>,
-) {
-    for i in ids {
-        if let Err(e) = state_storage.insert(safe_kv(i).to_vec(), safe_kv(i).to_vec()) {
-            panic!("error:{e:?}");
-        }
     }
 }
 

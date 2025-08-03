@@ -5,6 +5,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use prost::Message;
 use tokio::sync::watch;
+use tracing::debug;
 
 use super::ReplicationCore;
 use super::ReplicationData;
@@ -25,6 +26,7 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::replication::ConflictResult;
 use crate::proto::replication::SuccessResult;
+use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
@@ -55,9 +57,13 @@ use crate::LEARNER;
 ///
 /// ## Validate criterias
 /// 1. only new_entries returned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case1() {
-    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case1", None, false);
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case1() {
+    let context = setup_raft_components(
+        "/tmp/test_retrieve_to_be_synced_logs_for_peers_case1",
+        None,
+        false,
+    );
     let my_id = 1;
     let peer3_id = 3;
     let new_entries = vec![Entry {
@@ -67,7 +73,8 @@ fn test_retrieve_to_be_synced_logs_for_peers_case1() {
     }];
     let leader_last_index_before_inserting_new_entries = 10;
     let max_entries = 100;
-    let peer_next_indices = HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
+    let peer_next_indices =
+        HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
@@ -90,13 +97,17 @@ fn test_retrieve_to_be_synced_logs_for_peers_case1() {
 ///
 /// ## Validate criterias
 /// 1. both log-1 and new_entries are returned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case2() {
-    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case2", None, false);
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case2() {
+    let context = setup_raft_components(
+        "/tmp/test_retrieve_to_be_synced_logs_for_peers_case2",
+        None,
+        false,
+    );
 
     // Simulate one entry in local raft log
     let raft_log = context.raft_log;
-    simulate_insert_command(&raft_log, vec![1], 1);
+    simulate_insert_command(&raft_log, vec![1], 1).await;
 
     let my_id = 1;
     let peer3_id = 3;
@@ -107,7 +118,8 @@ fn test_retrieve_to_be_synced_logs_for_peers_case2() {
     }];
     let leader_last_index_before_inserting_new_entries = 1;
     let max_entries = 100;
-    let peer_next_indices = HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
+    let peer_next_indices =
+        HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
@@ -117,7 +129,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case2() {
         &peer_next_indices,
         &raft_log,
     );
-    let last_log_entry = raft_log.last().unwrap();
+    let last_log_entry = raft_log.last_entry().unwrap();
     let mut merged_entries = vec![last_log_entry];
     merged_entries.extend(new_entries);
     assert!(r.get(&peer3_id).is_some_and(|entries| *entries == merged_entries));
@@ -132,20 +144,25 @@ fn test_retrieve_to_be_synced_logs_for_peers_case2() {
 ///
 /// ## Validate criterias
 /// 1. only log-1 is returned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case3() {
-    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case3", None, false);
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case3() {
+    let context = setup_raft_components(
+        "/tmp/test_retrieve_to_be_synced_logs_for_peers_case3",
+        None,
+        false,
+    );
 
     // Simulate one entry in local raft log
     let raft_log = context.raft_log;
-    simulate_insert_command(&raft_log, vec![1], 1);
+    simulate_insert_command(&raft_log, vec![1], 1).await;
 
     let my_id = 1;
     let peer3_id = 3;
     let new_entries = vec![];
     let leader_last_index_before_inserting_new_entries = 1;
     let max_entries = 100;
-    let peer_next_indices = HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
+    let peer_next_indices =
+        HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
@@ -155,7 +172,7 @@ fn test_retrieve_to_be_synced_logs_for_peers_case3() {
         &peer_next_indices,
         &raft_log,
     );
-    let last_log_entry = raft_log.last().unwrap();
+    let last_log_entry = raft_log.last_entry().unwrap();
     assert!(r.get(&peer3_id).is_some_and(|entries| *entries == vec![last_log_entry]));
 }
 
@@ -170,9 +187,13 @@ fn test_retrieve_to_be_synced_logs_for_peers_case3() {
 ///
 /// ## Validate criterias
 /// 1. both log-1,log-2 and new_entries are returned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
-    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case4_1", None, false);
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
+    let context = setup_raft_components(
+        "/tmp/test_retrieve_to_be_synced_logs_for_peers_case4_1",
+        None,
+        false,
+    );
 
     let my_id = 1;
     let peer3_id = 3;
@@ -185,7 +206,8 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
         &raft_log,
         (1..=leader_last_index_before_inserting_new_entries).collect(),
         1,
-    );
+    )
+    .await;
 
     let new_entries = vec![Entry {
         index: 3,
@@ -202,8 +224,9 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
         &peer_next_indices,
         &raft_log,
     );
-    let mut lagency_entries =
-        raft_log.get_entries_between(peer3_next_id..=(peer3_next_id + max_legacy_entries_per_peer - 1));
+    let mut lagency_entries = raft_log
+        .get_entries_range(peer3_next_id..=(peer3_next_id + max_legacy_entries_per_peer - 1))
+        .expect("Successfully retrieved entries");
     lagency_entries.extend(new_entries);
     assert!(r.get(&peer3_id).is_some_and(|entries| *entries == lagency_entries));
 }
@@ -219,9 +242,13 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
 ///
 /// ## Validate criterias
 /// 1. only new_entries are returned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
-    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case4_2", None, false);
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
+    let context = setup_raft_components(
+        "/tmp/test_retrieve_to_be_synced_logs_for_peers_case4_2",
+        None,
+        false,
+    );
 
     let my_id = 1;
     let peer3_id = 3;
@@ -234,7 +261,8 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
         &raft_log,
         (1..=leader_last_index_before_inserting_new_entries).collect(),
         1,
-    );
+    )
+    .await;
 
     let new_entries = vec![Entry {
         index: 3,
@@ -259,9 +287,13 @@ fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
 ///
 /// ## Validate criterias
 /// 1. No leader ones should be retruned
-#[test]
-fn test_retrieve_to_be_synced_logs_for_peers_case5() {
-    let context = setup_raft_components("/tmp/test_retrieve_to_be_synced_logs_for_peers_case5", None, false);
+#[tokio::test]
+async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
+    let context = setup_raft_components(
+        "/tmp/test_retrieve_to_be_synced_logs_for_peers_case5",
+        None,
+        false,
+    );
     let my_id = 1;
     let peer3_id = 3;
     let new_entries = vec![Entry {
@@ -271,7 +303,10 @@ fn test_retrieve_to_be_synced_logs_for_peers_case5() {
     }];
     let leader_last_index_before_inserting_new_entries = 10;
     let max_entries = 100;
-    let peer_next_indices = HashMap::from([(my_id, 1), (peer3_id, leader_last_index_before_inserting_new_entries)]);
+    let peer_next_indices = HashMap::from([
+        (my_id, 1),
+        (peer3_id, leader_last_index_before_inserting_new_entries),
+    ]);
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
@@ -292,15 +327,15 @@ fn test_retrieve_to_be_synced_logs_for_peers_case5() {
 /// ## Validation criterias:
 /// 1. fun returns Ok(vec![])
 /// 2. no update on local raft log
-#[test]
-fn test_generate_new_entries_case1() {
+#[tokio::test]
+async fn test_generate_new_entries_case1() {
     let context = setup_raft_components("/tmp/test_generate_new_entries_case1", None, false);
     let my_id = 1;
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     let commands = vec![];
     let current_term = 1;
-    let r = handler.generate_new_entries(commands, current_term, &context.raft_log);
+    let r = handler.generate_new_entries(commands, current_term, &context.raft_log).await;
     assert_eq!(r.unwrap(), vec![]);
     assert_eq!(context.raft_log.last_entry_id(), last_id);
 }
@@ -310,12 +345,14 @@ fn test_generate_new_entries_case1() {
 /// ## Validation criterias:
 /// 1. fun returns Ok(vec![log-1])
 /// 2. update on local raft log with one extra entry
-#[test]
-fn test_generate_new_entries_case2() {
+#[tokio::test]
+async fn test_generate_new_entries_case2() {
+    enable_logger();
     let context = setup_raft_components("/tmp/test_generate_new_entries_case2", None, false);
     let my_id = 1;
     let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
+    debug!("last_id: {}", last_id);
     let commands = vec![WriteCommand::delete(safe_kv(1))];
     let current_term = 1;
     assert_eq!(
@@ -325,6 +362,7 @@ fn test_generate_new_entries_case2() {
                 current_term,
                 &context.raft_log
             )
+            .await
             .unwrap()
             .len(),
         1
@@ -384,7 +422,10 @@ async fn test_build_append_request_case() {
         leader_last_index_before: 3,
         current_term: 1,
         commit_index: 1,
-        peer_next_indices: HashMap::from([(peer2_id, peer2_next_index), (peer3_id, peer3_next_index)]),
+        peer_next_indices: HashMap::from([
+            (peer2_id, peer2_next_index),
+            (peer3_id, peer3_next_index),
+        ]),
     };
 
     let (_id, to_be_replicated_request) =
@@ -428,7 +469,8 @@ fn test_valid_request() {
         leader_id: 2,
     };
 
-    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    let response =
+        handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     assert!(response.is_success());
 
     if let append_entries_response::Result::Success(SuccessResult {
@@ -445,8 +487,7 @@ fn test_stale_term() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 2;
-    raft_log.expect_has_log_at().returning(|_, _| true);
-    raft_log.expect_last().returning(|| None);
+    raft_log.expect_last_entry().returning(|| None);
 
     let request = AppendEntriesRequest {
         term: my_term - 1,
@@ -489,7 +530,8 @@ fn test_mismatched_prev_term_case1() {
         leader_id: 2,
     };
 
-    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    let response =
+        handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     assert!(response.is_conflict());
     if let append_entries_response::Result::Conflict(ConflictResult {
         conflict_term,
@@ -528,7 +570,8 @@ fn test_mismatched_prev_term_case2() {
         leader_id: 2,
     };
 
-    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    let response =
+        handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     assert!(response.is_conflict());
     if let append_entries_response::Result::Conflict(ConflictResult {
         conflict_term,
@@ -544,9 +587,7 @@ fn test_mismatched_prev_term_case2() {
 fn test_virtual_log_handling() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_last_log_id()
-        .returning(|| Some(LogId { term: 1, index: 5 }));
+    raft_log.expect_last_log_id().returning(|| Some(LogId { term: 1, index: 5 }));
 
     let my_term = 2;
     let request = AppendEntriesRequest {
@@ -567,9 +608,7 @@ fn test_virtual_log_with_non_empty_log() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 2;
-    raft_log
-        .expect_last_log_id()
-        .returning(|| Some(LogId { term: 1, index: 5 }));
+    raft_log.expect_last_log_id().returning(|| Some(LogId { term: 1, index: 5 }));
 
     let request = AppendEntriesRequest {
         term: my_term,
@@ -584,7 +623,8 @@ fn test_virtual_log_with_non_empty_log() {
         leader_id: 2,
     };
 
-    let response = handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    let response =
+        handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
     // Should accept the request and handle the actual conflict later
     assert!(response.is_success());
 }
@@ -644,7 +684,10 @@ fn test_handle_conflict_response_case3() {
     let update = handler
         .handle_conflict_response(2, conflict_result, &raft_log, current_next_index)
         .unwrap();
-    assert_eq!(update.next_index, current_next_index.saturating_sub(1).max(1));
+    assert_eq!(
+        update.next_index,
+        current_next_index.saturating_sub(1).max(1)
+    );
     assert_eq!(update.match_index, None);
 }
 
@@ -658,9 +701,7 @@ fn test_handle_conflict_response_case4() {
     };
     let raft_log = Arc::new(MockRaftLog::new());
 
-    let update = handler
-        .handle_conflict_response(2, conflict_result, &raft_log, 0)
-        .unwrap();
+    let update = handler.handle_conflict_response(2, conflict_result, &raft_log, 0).unwrap();
 
     // next_index is forced to be >= 1
     assert_eq!(update.next_index, 1);
@@ -692,9 +733,7 @@ fn test_handle_success_response_case2() {
     let success_result = SuccessResult {
         last_match: Some(LogId { term: 3, index: 10 }),
     };
-    let update = handler
-        .handle_success_response(2, responder_term, success_result, 3)
-        .unwrap();
+    let update = handler.handle_success_response(2, responder_term, success_result, 3).unwrap();
     assert_eq!(update.match_index, Some(10));
     assert_eq!(update.next_index, 11);
 }
@@ -707,9 +746,7 @@ fn test_handle_success_response_case3() {
     let success_result = SuccessResult {
         last_match: Some(LogId { term: 3, index: 10 }),
     };
-    let update = handler
-        .handle_success_response(2, responder_term, success_result, 5)
-        .unwrap();
+    let update = handler.handle_success_response(2, responder_term, success_result, 5).unwrap();
     assert_eq!(update.match_index, Some(10)); // Update normally, do not trigger step down
 }
 
@@ -719,9 +756,7 @@ fn test_handle_success_response_case4() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let responder_term = 3;
     let success_result = SuccessResult { last_match: None };
-    let update = handler
-        .handle_success_response(2, responder_term, success_result, 3)
-        .unwrap();
+    let update = handler.handle_success_response(2, responder_term, success_result, 3).unwrap();
     assert_eq!(update.match_index, Some(0)); // Synchronize from index 0
     assert_eq!(update.next_index, 1);
 }
@@ -734,9 +769,7 @@ fn test_handle_success_response_case5() {
     let success_result = SuccessResult {
         last_match: Some(LogId { term: 3, index: 0 }), // Legal scenario (initial state)
     };
-    let update = handler
-        .handle_success_response(2, responder_term, success_result, 3)
-        .unwrap();
+    let update = handler.handle_success_response(2, responder_term, success_result, 3).unwrap();
     assert_eq!(update.next_index, 1); // Ensure next_index is at least 1
 }
 
@@ -793,7 +826,10 @@ fn test_client_command_to_entry_payloads_case1() {
 fn test_test_client_command_to_entry_payloads_case2_empty_input() {
     // Test with empty command vector
     let payloads = client_command_to_entry_payloads(vec![]);
-    assert!(payloads.is_empty(), "Should return empty vector for empty input");
+    assert!(
+        payloads.is_empty(),
+        "Should return empty vector for empty input"
+    );
 }
 
 #[cfg(test)]
@@ -811,7 +847,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case1() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case1", graceful_rx, None);
+        let context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case1",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -845,7 +885,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case2_1_one_voter() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case2_1", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case2_1",
+            graceful_rx,
+            None,
+        );
 
         let my_id = 1;
         let peer2_id = 2;
@@ -885,9 +929,9 @@ mod handle_raft_request_in_batch_test {
         context.membership = Arc::new(membership);
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().returning(|| 1);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
 
         let mut transport = MockTransport::new();
         transport.expect_send_append_requests().return_once(move |_, _, _| {
@@ -923,7 +967,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case2_empty_peer_error() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case2_2", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case2_2",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -944,9 +992,9 @@ mod handle_raft_request_in_batch_test {
         // Prepare AppendResults
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().returning(|| 1);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
 
         let mut transport = MockTransport::new();
         transport.expect_send_append_requests().returning(move |_, _, _| {
@@ -983,7 +1031,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case3() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case3", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case3",
+            graceful_rx,
+            None,
+        );
 
         let my_id = 1;
         let peer2_id = 2;
@@ -1017,8 +1069,8 @@ mod handle_raft_request_in_batch_test {
 
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(3_u64);
-        raft_log.expect_prev_log_term().return_const(1_u64);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
+        raft_log.expect_entry_term().return_const(Some(1_u64));
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
@@ -1049,7 +1101,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case4() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case4", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case4",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -1073,7 +1129,10 @@ mod handle_raft_request_in_batch_test {
         transport.expect_send_append_requests().return_once(move |_, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
-                responses: vec![Ok(AppendEntriesResponse::higher_term(peer2_id, higher_term))],
+                responses: vec![Ok(AppendEntriesResponse::higher_term(
+                    peer2_id,
+                    higher_term,
+                ))],
             })
         });
 
@@ -1111,7 +1170,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case5() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case5", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case5",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -1123,9 +1186,9 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         // New commands submitted by the client generate logs with index=6~7
@@ -1199,10 +1262,8 @@ mod handle_raft_request_in_batch_test {
         let captured_requests = rx.recv().unwrap();
 
         // Verify Peer2's request
-        let peer2_request = captured_requests
-            .iter()
-            .find(|(peer_id, _)| *peer_id == peer2_id)
-            .unwrap();
+        let peer2_request =
+            captured_requests.iter().find(|(peer_id, _)| *peer_id == peer2_id).unwrap();
         let peer2_entries = &peer2_request.1.entries;
         assert_eq!(peer2_entries.len(), 2);
     }
@@ -1231,7 +1292,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case6() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case6", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case6",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -1270,10 +1335,9 @@ mod handle_raft_request_in_batch_test {
             .returning(move |_| Some(last_index_for_term));
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_last_entry_id().return_const(10_u64);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 11);
-        raft_log.expect_get_entries_between().returning(|range| {
+        raft_log.expect_get_entries_range().returning(|range| {
             // Simulate log entries for conflict resolution
-            match range.start() {
+            Ok(match range.start() {
                 5..=10 => vec![
                     mk_log(5, 5),
                     mk_log(5, 6),
@@ -1284,45 +1348,49 @@ mod handle_raft_request_in_batch_test {
                 ],
                 4 => vec![mk_log(4, 4), mk_log(4, 5)],
                 _ => vec![],
-            }
+            })
         });
         raft_log.expect_insert_batch().returning(|_| Ok(()));
-        raft_log.expect_prev_log_term().returning(|prev_index, _| {
-            match prev_index {
-                10 => 6, // log 10 term
-                9 => 6,
-                8 => 6,
-                7 => 5,
-                6 => 5,
-                5 => 4,
-                4 => 4,
-                _ => 0,
-            }
+        raft_log.expect_entry_term().returning(|prev_index| match prev_index {
+            10 => Some(6),
+            9 => Some(6),
+            8 => Some(6),
+            7 => Some(5),
+            6 => Some(5),
+            5 => Some(4),
+            4 => Some(4),
+            _ => Some(0),
         });
 
         // Configure mock transport responses
         let mut transport = MockTransport::new();
-        transport
-            .expect_send_append_requests()
-            .return_once(move |requests, _, _| {
-                Ok(AppendResult {
-                    peer_ids: requests.iter().map(|(id, _)| *id).collect(),
-                    responses: vec![
-                        // follower_a (id=2) - success
-                        Ok(AppendEntriesResponse::success(2, 6, Some(LogId { term: 6, index: 10 }))),
-                        // follower_b (id=3) - conflict at index 5 (term 4)
-                        Ok(AppendEntriesResponse::conflict(3, 6, Some(4), Some(5))),
-                        // follower_c (id=4) - success (already up-to-date)
-                        Ok(AppendEntriesResponse::success(4, 6, Some(LogId { term: 6, index: 10 }))),
-                        // follower_d (id=5) - higher term (7)
-                        Ok(AppendEntriesResponse::higher_term(5, 7)),
-                        // follower_e (id=6) - conflict at index 6 (term 4)
-                        Ok(AppendEntriesResponse::conflict(6, 6, Some(4), Some(6))),
-                        // follower_f (id=7) - conflict at index 4 (term 2)
-                        Ok(AppendEntriesResponse::conflict(7, 6, Some(2), Some(4))),
-                    ],
-                })
-            });
+        transport.expect_send_append_requests().return_once(move |requests, _, _| {
+            Ok(AppendResult {
+                peer_ids: requests.iter().map(|(id, _)| *id).collect(),
+                responses: vec![
+                    // follower_a (id=2) - success
+                    Ok(AppendEntriesResponse::success(
+                        2,
+                        6,
+                        Some(LogId { term: 6, index: 10 }),
+                    )),
+                    // follower_b (id=3) - conflict at index 5 (term 4)
+                    Ok(AppendEntriesResponse::conflict(3, 6, Some(4), Some(5))),
+                    // follower_c (id=4) - success (already up-to-date)
+                    Ok(AppendEntriesResponse::success(
+                        4,
+                        6,
+                        Some(LogId { term: 6, index: 10 }),
+                    )),
+                    // follower_d (id=5) - higher term (7)
+                    Ok(AppendEntriesResponse::higher_term(5, 7)),
+                    // follower_e (id=6) - conflict at index 6 (term 4)
+                    Ok(AppendEntriesResponse::conflict(6, 6, Some(4), Some(6))),
+                    // follower_f (id=7) - conflict at index 4 (term 2)
+                    Ok(AppendEntriesResponse::conflict(7, 6, Some(2), Some(4))),
+                ],
+            })
+        });
 
         // Setup replication members
         let futures: Vec<_> = (2..=7)
@@ -1437,7 +1505,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case7() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case7", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case7",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let peer3_id = 3;
@@ -1452,9 +1524,9 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         // New commands submitted by the client generate logs with index=6~7
@@ -1567,7 +1639,11 @@ mod handle_raft_request_in_batch_test {
             !result.commit_quorum_achieved,
             "Should not achieve quorum with 1/2 followers responding"
         );
-        assert_eq!(result.peer_updates.len(), 1, "Should only update successful peer");
+        assert_eq!(
+            result.peer_updates.len(),
+            1,
+            "Should only update successful peer"
+        );
         assert!(
             result.peer_updates.contains_key(&peer2_id),
             "Should contain successful peer"
@@ -1594,7 +1670,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case8() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case8", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case8",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let peer3_id = 3;
@@ -1607,9 +1687,9 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         // New commands submitted by the client generate logs with index=6~7
@@ -1715,7 +1795,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case9() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case9", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case9",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let peer3_id = 3;
@@ -1732,9 +1816,9 @@ mod handle_raft_request_in_batch_test {
             .returning(move |_| Some(last_index_for_term));
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         // New commands submitted by the client generate logs with index=6~7
@@ -1772,7 +1856,12 @@ mod handle_raft_request_in_batch_test {
                         1,
                         Some(LogId { term: 6, index: 10 }),
                     )),
-                    Ok(AppendEntriesResponse::conflict(peer3_id, 6, Some(4), Some(5))),
+                    Ok(AppendEntriesResponse::conflict(
+                        peer3_id,
+                        6,
+                        Some(4),
+                        Some(5),
+                    )),
                 ],
             })
         });
@@ -1828,7 +1917,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case10() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case10", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case10",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let peer3_id = 3;
@@ -1839,10 +1932,10 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
+
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         // Force log generation error
         raft_log.expect_last_entry_id().return_const(0_u64);
         raft_log
@@ -1884,7 +1977,12 @@ mod handle_raft_request_in_batch_test {
                         1,
                         Some(LogId { term: 6, index: 10 }),
                     )),
-                    Ok(AppendEntriesResponse::conflict(peer3_id, 6, Some(4), Some(5))),
+                    Ok(AppendEntriesResponse::conflict(
+                        peer3_id,
+                        6,
+                        Some(4),
+                        Some(5),
+                    )),
                 ],
             })
         });
@@ -1941,7 +2039,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case11() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case11", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case11",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let peer3_id = 3;
@@ -1952,9 +2054,9 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         //Leader's current term and initial log
         let mut raft_log = MockRaftLog::new();
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
@@ -1991,7 +2093,12 @@ mod handle_raft_request_in_batch_test {
                         1,
                         Some(LogId { term: 6, index: 10 }),
                     )),
-                    Ok(AppendEntriesResponse::conflict(peer3_id, 6, Some(4), Some(5))),
+                    Ok(AppendEntriesResponse::conflict(
+                        peer3_id,
+                        6,
+                        Some(4),
+                        Some(5),
+                    )),
                 ],
             })
         });
@@ -2033,7 +2140,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case12() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_handle_raft_request_in_batch_case12", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_handle_raft_request_in_batch_case12",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let peer2_id = 2;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -2045,9 +2156,9 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         // New commands submitted by the client generate logs with index=6~7
@@ -2169,9 +2280,8 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
@@ -2275,9 +2385,8 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
@@ -2372,10 +2481,9 @@ mod handle_raft_request_in_batch_test {
         // Mock raft log and transport
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
@@ -2492,7 +2600,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_learner_progress_with_mixed_nodes() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_learner_progress_with_mixed_nodes", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_learner_progress_with_mixed_nodes",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let voter_id = 2;
         let joining_id = 3;
@@ -2537,9 +2649,8 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(10_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 11);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
@@ -2604,7 +2715,11 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_quorum_calculation_mixed_nodes() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context("/tmp/test_quorum_calculation_mixed_nodes", graceful_rx, None);
+        let mut context = mock_raft_context(
+            "/tmp/test_quorum_calculation_mixed_nodes",
+            graceful_rx,
+            None,
+        );
         let my_id = 1;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
@@ -2642,9 +2757,8 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().return_const(5_u64);
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
-        raft_log.expect_pre_allocate_raft_logs_next_index().returning(|| 6);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
@@ -2709,9 +2823,8 @@ mod handle_raft_request_in_batch_test {
         // Set learner catch-up threshold
         node_config.raft.learner_catchup_threshold = 5;
 
-        let mut context = MockBuilder::new(graceful_rx)
-            .wiht_node_config(node_config)
-            .build_context();
+        let mut context =
+            MockBuilder::new(graceful_rx).wiht_node_config(node_config).build_context();
         let my_id = 1;
         let learner_id = 2;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -2734,15 +2847,13 @@ mod handle_raft_request_in_batch_test {
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_last_entry_id().return_const(leader_commit_index);
-        raft_log
-            .expect_pre_allocate_raft_logs_next_index()
-            .returning(move || leader_commit_index + 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         // Simulate learner's match_index is just below the threshold
-        let learner_match_index = leader_commit_index - context.node_config.raft.learner_catchup_threshold + 1;
+        let learner_match_index =
+            leader_commit_index - context.node_config.raft.learner_catchup_threshold + 1;
 
         let mut transport = MockTransport::new();
         transport.expect_send_append_requests().return_once(move |_, _, _| {
@@ -2823,7 +2934,12 @@ mod handle_raft_request_in_batch_test {
         transport.expect_send_append_requests().return_once(move |_, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner_id].into_iter().collect(),
-                responses: vec![Ok(AppendEntriesResponse::conflict(learner_id, 1, Some(4), Some(5)))],
+                responses: vec![Ok(AppendEntriesResponse::conflict(
+                    learner_id,
+                    1,
+                    Some(4),
+                    Some(5),
+                ))],
             })
         });
 
@@ -2835,11 +2951,8 @@ mod handle_raft_request_in_batch_test {
             .returning(move |_| Some(last_index_for_term));
         raft_log.expect_pre_allocate_id_range().returning(|_| 1..=2);
         raft_log.expect_last_entry_id().return_const(1_u64);
-        raft_log
-            .expect_pre_allocate_raft_logs_next_index()
-            .returning(move || 1 + 1);
-        raft_log.expect_get_entries_between().returning(|_| vec![]);
-        raft_log.expect_prev_log_term().returning(|_, _| 0);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
         raft_log.expect_insert_batch().returning(|_| Ok(()));
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);

@@ -37,6 +37,11 @@ pub struct RaftConfig {
     #[serde(default)]
     pub snapshot: SnapshotConfig,
 
+    /// Configuration settings for log persistence behavior
+    /// Controls how and when log entries are persisted to stable storage
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
+
     /// Maximum allowed log entry gap between leader and learner nodes
     /// Learners with larger gaps than this value will trigger catch-up replication
     /// Default value is set via default_learner_catchup_threshold() function
@@ -74,6 +79,7 @@ impl Default for RaftConfig {
             membership: MembershipConfig::default(),
             commit_handler: CommitHandlerConfig::default(),
             snapshot: SnapshotConfig::default(),
+            persistence: PersistenceConfig::default(),
             learner_catchup_threshold: default_learner_catchup_threshold(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
@@ -162,10 +168,12 @@ impl ReplicationConfig {
             )));
         }
 
-        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms {
+        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms
+        {
             return Err(Error::Config(ConfigError::Message(format!(
                 "batch_delay {}ms should be less than append_interval {}ms",
-                self.rpc_append_entries_batch_process_delay_in_ms, self.rpc_append_entries_clock_in_ms
+                self.rpc_append_entries_batch_process_delay_in_ms,
+                self.rpc_append_entries_clock_in_ms
             ))));
         }
 
@@ -525,9 +533,9 @@ fn default_max_log_entries_before_snapshot() -> u64 {
 /// Default cooldown duration between snapshot checks.
 ///
 /// Prevents constant evaluation of snapshot conditions in tight loops.
-/// Currently set to 60 days (5,184,000 seconds).
+/// Currently set to 1 hour (3600 seconds).
 fn default_snapshot_cool_down_since_last_check() -> Duration {
-    Duration::from_secs(5_184_000)
+    Duration::from_secs(3600)
 }
 
 /// Default number of historical snapshots to retain
@@ -653,4 +661,115 @@ fn default_stale_learner_threshold() -> Duration {
 // 30 seconds
 fn default_stale_check_interval() -> Duration {
     Duration::from_secs(30)
+}
+/// Defines how Raft log entries are persisted and retrieved.
+///
+/// All strategies use a configurable [`FlushPolicy`] to control when memory contents
+/// are flushed to disk. This affects write latency and durability guarantees.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum PersistenceStrategy {
+    /// Disk-first persistence strategy.
+    ///
+    /// - **Write path**: On append, the log entry is first written to disk. Only after a
+    ///   successful disk write is it copied into the in-memory cache.
+    ///
+    /// - **Read path**: Reads are served from the in-memory cache. If not found, the system falls
+    ///   back to reading from disk, and the result is cached in memory.
+    ///
+    /// - **Startup behavior**: Entries are **not** fully loaded from disk into memory at startup.
+    ///   Entries are only cached lazily on demand.
+    ///
+    /// - Suitable for systems prioritizing strong durability, with memory used primarily for
+    ///   caching.
+    DiskFirst,
+
+    /// Memory-first persistence strategy.
+    ///
+    /// - **Write path**: On append, the log entry is written to the in-memory buffer and
+    ///   immediately acknowledged. Disk persistence happens asynchronously in the background,
+    ///   governed by [`FlushPolicy`].
+    ///
+    /// - **Read path**: Reads are served from memory only. If an entry is not in memory, it is
+    ///   considered nonexistent.
+    ///
+    /// - **Startup behavior**: On startup, all log entries are loaded from disk into memory.
+    ///
+    /// - Suitable for systems that favor performance and fast failover, and can tolerate data loss
+    ///   during crashes.
+    MemFirst,
+}
+
+/// Controls when in-memory logs should be flushed to disk.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum FlushPolicy {
+    /// Flush each log write immediately to disk.
+    ///
+    /// - Guarantees the highest durability.
+    /// - Each append operation causes a disk write.
+    Immediate,
+
+    /// Flush entries to disk when either of two conditions is met:
+    /// - The number of unflushed entries reaches the given threshold.
+    /// - The elapsed time since the last flush exceeds the configured interval.
+    ///
+    /// - Balances performance and durability.
+    /// - Recent unflushed entries may be lost in the event of a crash or power failure.
+    Batch { threshold: usize, interval_ms: u64 },
+}
+
+/// Configuration parameters for log persistence behavior
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PersistenceConfig {
+    /// Strategy for persisting Raft logs
+    ///
+    /// This controls the trade-off between durability guarantees and performance
+    /// characteristics. The choice impacts both write throughput and recovery
+    /// behavior after node failures.
+    #[serde(default = "default_persistence_strategy")]
+    pub strategy: PersistenceStrategy,
+
+    /// Flush policy for asynchronous strategies
+    ///
+    /// This controls when log entries are flushed to disk. The choice impacts
+    /// write performance and durability guarantees.
+    #[serde(default = "default_flush_policy")]
+    pub flush_policy: FlushPolicy,
+
+    /// Maximum number of in-memory log entries to buffer when using async strategies
+    ///
+    /// This acts as a safety valve to prevent memory exhaustion during periods of
+    /// high write throughput or when disk persistence is slow.
+    #[serde(default = "default_max_buffered_entries")]
+    pub max_buffered_entries: usize,
+}
+
+/// Default persistence strategy (optimized for balanced workloads)
+fn default_persistence_strategy() -> PersistenceStrategy {
+    PersistenceStrategy::MemFirst
+}
+
+/// Default flush policy for asynchronous strategies
+///
+/// This controls when log entries are flushed to disk. The choice impacts
+/// write performance and durability guarantees.
+fn default_flush_policy() -> FlushPolicy {
+    FlushPolicy::Batch {
+        threshold: 1024,
+        interval_ms: 100,
+    }
+}
+
+/// Default maximum buffered log entries
+fn default_max_buffered_entries() -> usize {
+    10_000
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        Self {
+            strategy: default_persistence_strategy(),
+            flush_policy: default_flush_policy(),
+            max_buffered_entries: default_max_buffered_entries(),
+        }
+    }
 }

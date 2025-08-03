@@ -52,12 +52,10 @@ use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
-use crate::NetworkError;
 use crate::Node;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
-use crate::SystemError;
 
 // Case 1: normal update
 #[test]
@@ -205,7 +203,11 @@ mod apply_chunk_test {
 
     #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case1() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case1", false, None);
+        let handler = create_test_handler(
+            "/tmp/test_apply_chunk_updates_last_applied_case1",
+            false,
+            None,
+        );
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -234,7 +236,11 @@ mod apply_chunk_test {
 
     #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case2() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_updates_last_applied_case2", false, None);
+        let handler = create_test_handler(
+            "/tmp/test_apply_chunk_updates_last_applied_case2",
+            false,
+            None,
+        );
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -262,7 +268,8 @@ mod apply_chunk_test {
     }
     #[tokio::test]
     async fn test_apply_chunk_handles_empty_chunk() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
+        let handler =
+            create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
 
         // Initial last_applied value
         let chunk = vec![
@@ -293,7 +300,11 @@ mod apply_chunk_test {
     }
     #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
-        let handler = create_test_handler("/tmp/test_apply_chunk_with_state_machine_io_error", true, None);
+        let handler = create_test_handler(
+            "/tmp/test_apply_chunk_with_state_machine_io_error",
+            true,
+            None,
+        );
 
         // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
@@ -392,7 +403,14 @@ fn create_test_handler(
     let mut config = snapshot_config(temp_dir.to_path_buf());
     config.chunk_size = chunk_size.unwrap_or(1024); // Default chunk size
 
-    DefaultStateMachineHandler::new(1, 0, 1, Arc::new(state_machine), config, MockSnapshotPolicy::new())
+    DefaultStateMachineHandler::new(
+        1,
+        0,
+        1,
+        Arc::new(state_machine),
+        config,
+        MockSnapshotPolicy::new(),
+    )
 }
 
 /// # Case 2: Successfully applies valid chunks
@@ -436,10 +454,7 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
     let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
     let file_name_in_tar = "test.txt";
-    tar_builder
-        .append_path_with_name(&data_file, file_name_in_tar)
-        .await
-        .unwrap();
+    tar_builder.append_path_with_name(&data_file, file_name_in_tar).await.unwrap();
     tar_builder.finish().await.unwrap();
     let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
     gzip_encoder.shutdown().await.unwrap();
@@ -571,7 +586,13 @@ async fn test_apply_snapshot_stream_from_leader_case5() {
 
     // Create stream that returns error after first chunk
     // But we specify the total chunks is 2
-    let chunks = vec![create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2)];
+    let chunks = vec![create_test_chunk(
+        0,
+        b"chunk0",
+        TEST_TERM,
+        TEST_LEADER_ID,
+        2,
+    )];
     let stream = crate_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
@@ -664,7 +685,11 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         let chunk = SnapshotChunk {
             leader_term: 1,
             leader_id: 1,
-            metadata: if seq == 0 { Some(metadata.clone()) } else { None },
+            metadata: if seq == 0 {
+                Some(metadata.clone())
+            } else {
+                None
+            },
             seq,
             total_chunks,
             data: chunk_data.clone(),
@@ -697,82 +722,96 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     // Ensure handler completes successfully
     assert!(handler_task.await.unwrap().is_ok());
 }
-/// # Case 1: Basic creation flow
-#[tokio::test]
-async fn test_create_snapshot_case1() {
-    enable_logger();
+mod create_snapshot_tests {
+    use super::*;
+    use crate::NewCommitData;
+    use crate::LEADER;
+    /// # Case 1: Basic creation flow
+    #[tokio::test]
+    async fn test_create_snapshot_case1() {
+        enable_logger();
 
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_create_snapshot_case1");
-    let mut sm = MockStateMachine::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_create_snapshot_case1");
+        let mut sm = MockStateMachine::new();
 
-    // Mock state machine behavior
-    let mut seq = Sequence::new();
-    sm.expect_last_applied()
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|| LogId { index: 5, term: 1 });
-    sm.expect_entry_term().returning(|_| Some(1));
-    sm.expect_generate_snapshot_data()
-        .times(1)
-        .withf(|path, last_included| {
-            debug!(?path, ?last_included);
-            // Create the directory structure correctly
-            fs::create_dir_all(path.clone()).unwrap();
-            //Simulate sled to create a subdirectory
-            let db_path = path.join("state_machine");
-            fs::create_dir(&db_path).unwrap();
+        // Mock state machine behavior
+        let mut seq = Sequence::new();
+        sm.expect_last_applied()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| LogId { index: 5, term: 1 });
+        sm.expect_entry_term().returning(|_| Some(1));
+        sm.expect_generate_snapshot_data()
+            .times(1)
+            .withf(|path, last_included| {
+                debug!(?path, ?last_included);
+                // Create the directory structure correctly
+                fs::create_dir_all(path.clone()).unwrap();
+                //Simulate sled to create a subdirectory
+                let db_path = path.join("state_machine");
+                fs::create_dir(&db_path).unwrap();
 
-            path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
-        })
-        .returning(|_, _| Ok([0; 32]));
+                path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
+            })
+            .returning(|_, _| Ok([0; 32]));
 
-    let mut config = snapshot_config(temp_path.to_path_buf());
-    config.retained_log_entries = 0;
+        let mut config = snapshot_config(temp_path.to_path_buf());
+        config.retained_log_entries = 0;
 
-    let handler =
-        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
 
-    // Execute snapshot creation
-    let result = handler.create_snapshot().await;
+        // Execute snapshot creation
+        let result = handler.create_snapshot().await;
 
-    debug!(?result);
+        debug!(?result);
 
-    assert!(result.is_ok());
+        assert!(result.is_ok());
 
-    // Verify file system changes
-    let (metadata, final_path) = result.unwrap();
-    debug!(?final_path);
-    assert!(final_path.is_file());
-    assert!(final_path.extension().unwrap() == "gz");
-    assert!(final_path
-        .to_str()
-        .unwrap()
-        .contains(&format!("{SNAPSHOT_DIR_PREFIX}5-1.tar.gz",)));
+        // Verify file system changes
+        let (metadata, final_path) = result.unwrap();
+        debug!(?final_path);
+        assert!(final_path.is_file());
+        assert!(final_path.extension().unwrap() == "gz");
+        assert!(final_path
+            .to_str()
+            .unwrap()
+            .contains(&format!("{SNAPSHOT_DIR_PREFIX}5-1.tar.gz",)));
 
-    assert_eq!(metadata.last_included, Some(LogId { term: 1, index: 5 }));
-}
+        assert_eq!(metadata.last_included, Some(LogId { term: 1, index: 5 }));
+    }
 
-/// # Case 2: Test concurrent protection
-#[tokio::test]
-async fn test_create_snapshot_case2() {
-    enable_logger();
+    /// # Case 2: Test concurrent protection
+    #[tokio::test]
+    async fn test_create_snapshot_case2() {
+        enable_logger();
 
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_create_snapshot_case2");
-    let mut sm = MockStateMachine::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_create_snapshot_case2");
+        let mut sm = MockStateMachine::new();
 
-    // Use Mutex for safe shared state
-    let attempt_counter = Arc::new(std::sync::Mutex::new(0));
-    let counter_clone = attempt_counter.clone();
+        // Use Mutex for safe shared state
+        let attempt_counter = Arc::new(std::sync::Mutex::new(0));
+        let counter_clone = attempt_counter.clone();
 
-    // Setup slow snapshot generation
-    let (tx, _rx) = tokio::sync::oneshot::channel();
-    sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-    sm.expect_entry_term().returning(|_| Some(1));
-    sm.expect_generate_snapshot_data()
-        .times(1..=2)
-        .returning(move |path, _| {
+        // Setup slow snapshot generation
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
+        sm.expect_snapshot_metadata().returning(move || {
+            Some(SnapshotMetadata {
+                last_included: Some(LogId { index: 1, term: 1 }),
+                checksum: [1; 8].to_vec(),
+            })
+        });
+        sm.expect_entry_term().returning(|_| Some(1));
+        sm.expect_generate_snapshot_data().times(1..=2).returning(move |path, _| {
             // Track invocation count
             let mut count = counter_clone.lock().unwrap();
             *count += 1;
@@ -789,118 +828,216 @@ async fn test_create_snapshot_case2() {
             }
         });
 
-    let mut config = snapshot_config(temp_path.to_path_buf());
-    config.retained_log_entries = 0;
+        let mut snapshot_policy = MockSnapshotPolicy::new();
+        snapshot_policy.expect_should_trigger().returning(|_| true);
 
-    let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        0,
-        1,
-        Arc::new(sm),
-        config,
-        MockSnapshotPolicy::new(),
-    ));
-    tx.send(()).unwrap(); // Unblock the first task
+        let mut config = snapshot_config(temp_path.to_path_buf());
+        config.retained_log_entries = 0;
 
-    // Spawn concurrent snapshot creations
-    let h1 = handler.clone();
-    let t1 = tokio::spawn(async move { h1.create_snapshot().await });
+        let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            snapshot_policy,
+        ));
+        tx.send(()).unwrap(); // Unblock the first task
 
-    let h2 = handler.clone();
-    let t2 = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        h2.create_snapshot().await
-    });
+        // Spawn concurrent snapshot creations
+        let h1 = handler.clone();
+        let t1 = tokio::spawn(async move { h1.create_snapshot().await });
 
-    // Wait for both tasks with timeout
-    let results = tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(vec![t1, t2]))
+        let h2 = handler.clone();
+        let t2 = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            h2.create_snapshot().await
+        });
+
+        // Wait for both tasks with timeout
+        let results = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::join_all(vec![t1, t2]),
+        )
         .await
         .expect("Test timed out");
-    println!("{:?}", &results);
+        println!("{:?}", &results);
 
-    // Verify only one successful creation
-    let success_count = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
-    assert_eq!(success_count, 1, "Expected exactly one successful snapshot creation");
-    assert_eq!(count_snapshots(&temp_path), 1);
-}
+        // Verify only one successful creation
+        let success_count = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
+        assert_eq!(
+            success_count, 1,
+            "Expected exactly one successful snapshot creation"
+        );
+        assert_eq!(count_snapshots(&temp_path), 1);
 
-/// # Case 3: Test cleanup old versions
-#[tokio::test]
-async fn test_create_snapshot_case3() {
-    enable_logger();
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_create_snapshot_case3");
-
-    let mut sm = MockStateMachine::new();
-    let mut count = 0;
-    sm.expect_last_applied().returning(move || {
-        count += 1;
-        LogId { term: 1, index: count }
-    });
-    sm.expect_entry_term().returning(|_| Some(1));
-    sm.expect_generate_snapshot_data().returning(|path, _| {
-        debug!(?path, "expect_generate_snapshot_data");
-        let _new_db = init_sled_state_machine_db(path).expect("");
-
-        Ok([0; 32])
-    });
-    let snapshot_dir = temp_path.to_path_buf();
-
-    let mut config = snapshot_config(snapshot_dir.clone());
-    config.retained_log_entries = 0;
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
-        1,
-        3, // Current version
-        1,
-        Arc::new(sm),
-        config,
-        MockSnapshotPolicy::new(),
-    );
-
-    // Create new snapshot (version 4)
-    handler.create_snapshot().await.unwrap();
-    handler.create_snapshot().await.unwrap();
-    handler.create_snapshot().await.unwrap();
-    handler.create_snapshot().await.unwrap();
-
-    // Verify cleanup results
-    let remaining: HashSet<u64> = get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
-    assert_eq!(remaining, [4, 3].into_iter().collect());
-
-    // Verify files are compressed
-    for version in &[3, 4] {
-        let path = snapshot_dir.join(format!("{SNAPSHOT_DIR_PREFIX}{version}-1.tar.gz",));
-        assert!(path.is_file(), "Snapshot file not found: {path:?}",);
+        // Verify flag is reset regardless of task outcome
+        let ctx = NewCommitData {
+            role: LEADER,
+            current_term: 1,
+            new_commit_index: 100,
+        };
+        assert!(handler.should_snapshot(ctx));
     }
-}
 
-/// # Case 4: Test failure handling
-#[tokio::test]
-async fn test_create_snapshot_case4() {
-    enable_logger();
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_create_snapshot_case4");
-    let mut sm = MockStateMachine::new();
+    /// # Case 3: Test cleanup old versions
+    #[tokio::test]
+    async fn test_create_snapshot_case3() {
+        enable_logger();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_create_snapshot_case3");
 
-    // Setup failing snapshot generation
-    sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-    sm.expect_entry_term().returning(|_| Some(1));
-    sm.expect_generate_snapshot_data()
-        .returning(|_, _| Err(SnapshotError::OperationFailed("test failure".into()).into()));
+        let mut sm = MockStateMachine::new();
+        let mut count = 0;
+        sm.expect_last_applied().returning(move || {
+            count += 1;
+            LogId {
+                term: 1,
+                index: count,
+            }
+        });
+        sm.expect_entry_term().returning(|_| Some(1));
+        sm.expect_generate_snapshot_data().returning(|path, _| {
+            debug!(?path, "expect_generate_snapshot_data");
+            let _new_db = init_sled_state_machine_db(path).expect("");
 
-    let mut config = snapshot_config(temp_path.to_path_buf());
-    config.retained_log_entries = 0;
+            Ok([0; 32])
+        });
+        let snapshot_dir = temp_path.to_path_buf();
 
-    let handler =
-        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+        let mut config = snapshot_config(snapshot_dir.clone());
+        config.retained_log_entries = 0;
 
-    // Attempt snapshot creation
-    let result = handler.create_snapshot().await;
-    assert!(result.is_err());
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            3, // Current version
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
 
-    // Verify no files created
-    assert_eq!(count_snapshots(&temp_path), 0);
+        // Create new snapshot (version 4)
+        handler.create_snapshot().await.unwrap();
+        handler.create_snapshot().await.unwrap();
+        handler.create_snapshot().await.unwrap();
+        handler.create_snapshot().await.unwrap();
+
+        // Verify cleanup results
+        let remaining: HashSet<u64> =
+            get_snapshot_versions(snapshot_dir.as_path()).into_iter().collect();
+        assert_eq!(remaining, [4, 3].into_iter().collect());
+
+        // Verify files are compressed
+        for version in &[3, 4] {
+            let path = snapshot_dir.join(format!("{SNAPSHOT_DIR_PREFIX}{version}-1.tar.gz",));
+            assert!(path.is_file(), "Snapshot file not found: {path:?}",);
+        }
+    }
+
+    /// # Case 4: Test failure handling
+    #[tokio::test]
+    async fn test_create_snapshot_case4() {
+        enable_logger();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_create_snapshot_case4");
+        let mut sm = MockStateMachine::new();
+
+        // Setup failing snapshot generation
+        sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
+        sm.expect_entry_term().returning(|_| Some(1));
+        sm.expect_generate_snapshot_data()
+            .returning(|_, _| Err(SnapshotError::OperationFailed("test failure".into()).into()));
+
+        let mut config = snapshot_config(temp_path.to_path_buf());
+        config.retained_log_entries = 0;
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
+
+        // Attempt snapshot creation
+        let result = handler.create_snapshot().await;
+        assert!(result.is_err());
+
+        // Verify no files created
+        assert_eq!(count_snapshots(&temp_path), 0);
+    }
+
+    /// # Case 5: Test snapshot_in_progress flag is reset on success
+    #[tokio::test]
+    async fn test_create_snapshot_resets_flag_on_success() {
+        enable_logger();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_flag_reset_success");
+        let mut sm = MockStateMachine::new();
+
+        sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
+        sm.expect_entry_term().returning(|_| Some(1));
+        sm.expect_generate_snapshot_data().returning(|path, _| {
+            fs::create_dir_all(path).unwrap();
+            Ok([0; 32])
+        });
+
+        let config = snapshot_config(temp_path);
+        let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        ));
+
+        // Verify initial state
+        assert!(!handler.snapshot_in_progress());
+
+        let handler_clone = handler.clone();
+        let result = handler_clone.create_snapshot().await;
+        assert!(result.is_ok());
+
+        // Critical assertion: Flag must be reset after success
+        assert!(!handler.snapshot_in_progress());
+    }
+
+    /// # Case 6: Test snapshot_in_progress flag is reset on error
+    #[tokio::test]
+    async fn test_create_snapshot_resets_flag_on_error() {
+        enable_logger();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_flag_reset_error");
+        let mut sm = MockStateMachine::new();
+
+        sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
+        sm.expect_entry_term().returning(|_| Some(1));
+        sm.expect_generate_snapshot_data()
+            .returning(|_, _| Err(SnapshotError::OperationFailed("test error".into()).into()));
+
+        let config = snapshot_config(temp_path);
+        let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            1,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        ));
+
+        // Verify initial state
+        assert!(!handler.snapshot_in_progress());
+
+        let handler_clone = handler.clone();
+        let result = handler_clone.create_snapshot().await;
+        assert!(result.is_err());
+
+        // Critical assertion: Flag must be reset even after failure
+        assert!(!handler.snapshot_in_progress());
+    }
 }
 
 // Helper functions
@@ -1066,7 +1203,13 @@ async fn test_handle_purge_request_case1() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1098,7 +1241,13 @@ async fn test_handle_purge_request_case2() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1131,7 +1280,13 @@ async fn test_handle_purge_request_case3() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1168,7 +1323,13 @@ async fn test_handle_purge_request_case4() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1236,9 +1397,9 @@ async fn test_handle_purge_request_case6() {
     );
 
     let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_purge_logs_up_to()
-        .returning(|_| Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into()));
+    raft_log.expect_purge_logs_up_to().returning(|_| {
+        Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into())
+    });
 
     let last_included = Some(LogId { index: 5, term: 1 });
     let req = PurgeLogRequest {
@@ -1283,7 +1444,13 @@ async fn test_handle_purge_request_case7() {
     };
 
     let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(MockRaftLog::new()))
+        .handle_purge_request(
+            5,
+            Some(1),
+            last_included,
+            &req,
+            &Arc::new(MockRaftLog::new()),
+        )
         .await
         .unwrap();
 
@@ -1395,27 +1562,16 @@ fn mock_node_with_rpc_service(
             });
     } else {
         // Make sure node is Follower
-        election_handler
-            .expect_broadcast_vote_requests()
-            .returning(|_, _, _, _, _| {
-                Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
-                    100,
-                ))))
-            });
-        election_handler
-            .expect_handle_vote_request()
-            .times(1)
-            .returning(|_, _, _, _| {
-                Err(Error::System(SystemError::Network(NetworkError::SingalSendFailed(
-                    "".to_string(),
-                ))))
-            });
+        election_handler.expect_broadcast_vote_requests().returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Election(
+                ElectionError::HigherTerm(100),
+            )))
+        });
     }
     // let state_machine_handler = Arc::new(state_machine_handler);
     let mut mock_state_machine_handler = MockStateMachineHandler::new();
-    mock_state_machine_handler
-        .expect_apply_snapshot_stream_from_leader()
-        .returning(move |_current_term, _stream_request, ack_tx, _| {
+    mock_state_machine_handler.expect_apply_snapshot_stream_from_leader().returning(
+        move |_current_term, _stream_request, ack_tx, _| {
             let ack_tx = ack_tx.clone();
             tokio::spawn(async move {
                 // Send final ack
@@ -1427,7 +1583,8 @@ fn mock_node_with_rpc_service(
                 ack_tx.send(final_ack).await.ok();
             });
             Ok(())
-        });
+        },
+    );
 
     MockBuilder::new(shutdown_signal)
         .wiht_node_config(node_config)
@@ -1479,7 +1636,10 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     assert_eq!(chunk.seq, 0);
     assert_eq!(chunk.total_chunks, 1);
     assert_eq!(chunk.data, content);
-    assert_eq!(chunk.chunk_checksum, crc32fast::hash(content).to_be_bytes().to_vec());
+    assert_eq!(
+        chunk.chunk_checksum,
+        crc32fast::hash(content).to_be_bytes().to_vec()
+    );
     assert_eq!(chunk.metadata, Some(metadata));
 }
 
@@ -1670,8 +1830,14 @@ async fn test_snapshot_compression() {
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
 
-    let handler =
-        DefaultStateMachineHandler::<MockTypeConfig>::new(1, 0, 1, Arc::new(sm), config, MockSnapshotPolicy::new());
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
+        0,
+        1,
+        Arc::new(sm),
+        config,
+        MockSnapshotPolicy::new(),
+    );
 
     // Create snapshot
     let (_, snapshot_path) = handler.create_snapshot().await.unwrap();

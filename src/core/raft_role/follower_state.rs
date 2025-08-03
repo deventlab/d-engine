@@ -1,3 +1,18 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::async_trait;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
+use tracing::warn;
+
 use super::candidate_state::CandidateState;
 use super::leader_state::LeaderState;
 use super::learner_state::LearnerState;
@@ -32,19 +47,6 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::async_trait;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
 
 /// Follower node's state in Raft consensus.
 ///
@@ -195,15 +197,26 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
                 let candidate_id = vote_request.candidate_id;
 
-                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+                let LogId {
+                    index: last_log_index,
+                    term: last_log_term,
+                } = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
                 match ctx
                     .election_handler()
-                    .handle_vote_request(vote_request, my_term, self.voted_for().unwrap(), ctx.raft_log())
+                    .handle_vote_request(
+                        vote_request,
+                        my_term,
+                        self.voted_for().unwrap(),
+                        ctx.raft_log(),
+                    )
                     .await
                 {
                     Ok(state_update) => {
-                        debug!("handle_vote_request success with state_update: {:?}", &state_update);
+                        debug!(
+                            "handle_vote_request success with state_update: {:?}",
+                            &state_update
+                        );
 
                         // 1. Update term FIRST if needed
                         if let Some(new_term) = state_update.term_update {
@@ -224,7 +237,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             last_log_index,
                             last_log_term,
                         };
-                        debug!("Response candidate_{:?} with response: {:?}", candidate_id, response);
+                        debug!(
+                            "Response candidate_{:?} with response: {:?}",
+                            candidate_id, response
+                        );
 
                         sender.send(Ok(response)).map_err(|e| {
                             let error_str = format!("{e:?}");
@@ -285,7 +301,11 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     Ok(res) => res,
                     Err(e) => {
                         error!(?e, "update_cluster_conf_from_leader");
-                        ClusterConfUpdateResponse::internal_error(my_id, my_term, current_conf_version)
+                        ClusterConfUpdateResponse::internal_error(
+                            my_id,
+                            my_term,
+                            current_conf_version,
+                        )
                     }
                 };
 
@@ -312,13 +332,13 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
-                sender
-                    .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
-                    .map_err(|e| {
+                sender.send(Ok(ClientResponse::client_error(ErrorCode::NotLeader))).map_err(
+                    |e| {
                         let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    },
+                )?;
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
                 // If the request is linear request, ...
@@ -376,7 +396,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 if let Err(e) = ctx
                     .handlers
                     .state_machine_handler
-                    .apply_snapshot_stream_from_leader(my_term, stream, ack_tx, &ctx.node_config.raft.snapshot)
+                    .apply_snapshot_stream_from_leader(
+                        my_term,
+                        stream,
+                        ack_tx,
+                        &ctx.node_config.raft.snapshot,
+                    )
                     .await
                 {
                     error!(?e, "Follower handle  RaftEvent::InstallSnapshotChunk");
@@ -407,15 +432,22 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         let node_id = self.shared_state.node_id;
 
                         if is_valid {
-                            if let Some(last_purged_in_request) = purchase_log_request.last_included {
+                            if let Some(last_purged_in_request) = purchase_log_request.last_included
+                            {
                                 // ----------------------
                                 // Phase 2: Validate Leader purge log request
                                 // ----------------------
-                                if self.can_purge_logs(self.last_purged_index, last_purged_in_request) {
+                                if self
+                                    .can_purge_logs(self.last_purged_index, last_purged_in_request)
+                                {
                                     // ----------------------
                                     // Phase 3: Execute scheduled purge task
                                     // ----------------------
-                                    match ctx.purge_executor().execute_purge(last_purged_in_request).await {
+                                    match ctx
+                                        .purge_executor()
+                                        .execute_purge(last_purged_in_request)
+                                        .await
+                                    {
                                         Ok(_) => {
                                             success = true;
                                             self.last_purged_index = Some(last_purged_in_request);
@@ -474,7 +506,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
-                    context: format!("Follower node {} attempted to create snapshot.", ctx.node_id),
+                    context: format!(
+                        "Follower node {} attempted to create snapshot.",
+                        ctx.node_id
+                    ),
                 }
                 .into())
             }
@@ -483,7 +518,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
-                    context: format!("Follower node {} attempted to handle created snapshot.", ctx.node_id),
+                    context: format!(
+                        "Follower node {} attempted to handle created snapshot.",
+                        ctx.node_id
+                    ),
                 }
                 .into())
             }
@@ -502,7 +540,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
-                    context: format!("Follower node {} receives RaftEvent::JoinCluster", ctx.node_id),
+                    context: format!(
+                        "Follower node {} receives RaftEvent::JoinCluster",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -541,7 +582,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
-                    context: format!("Follower node {} receives RaftEvent::TriggerSnapshotPush", ctx.node_id),
+                    context: format!(
+                        "Follower node {} receives RaftEvent::TriggerSnapshotPush",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -550,7 +594,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
-                    context: format!("Follower node {} receives RaftEvent::PromoteReadyLearners", ctx.node_id),
+                    context: format!(
+                        "Follower node {} receives RaftEvent::PromoteReadyLearners",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -567,7 +614,10 @@ impl<T: TypeConfig> FollowerState<T> {
         hard_state_from_db: Option<HardState>,
         last_applied_index_option: Option<u64>,
     ) -> Self {
-        trace!(node_config.raft.election.election_timeout_min, "FollowerState::new");
+        trace!(
+            node_config.raft.election.election_timeout_min,
+            "FollowerState::new"
+        );
 
         Self {
             shared_state: SharedState::new(node_id, hard_state_from_db, last_applied_index_option),

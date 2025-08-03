@@ -1,4 +1,5 @@
 use crate::grpc::grpc_transport::GrpcTransport;
+use crate::BufferedRaftLog;
 use crate::DefaultCommitHandler;
 use crate::DefaultPurgeExecutor;
 use crate::DefaultStateMachineHandler;
@@ -6,22 +7,21 @@ use crate::ElectionHandler;
 use crate::LogSizePolicy;
 use crate::RaftMembership;
 use crate::ReplicationHandler;
-use crate::SledRaftLog;
 use crate::SledStateMachine;
-use crate::SledStateStorage;
+use crate::SledStorageEngine;
 use crate::TypeConfig;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RaftTypeConfig;
 
 impl TypeConfig for RaftTypeConfig {
-    type R = SledRaftLog;
+    type R = BufferedRaftLog<Self>;
+
+    type S = SledStorageEngine;
 
     type TR = GrpcTransport<Self>;
 
     type SM = SledStateMachine;
-
-    type SS = SledStateStorage;
 
     type M = RaftMembership<Self>;
 

@@ -59,8 +59,8 @@ pub struct CandidateState<T: TypeConfig> {
     /// Last physically purged log index (inclusive)
     ///
     /// Note:
-    /// Even though candidates don’t purge logs, they must keep last_purged_index from the follower.
-    /// Otherwise, the system may lose purge info and get into an inconsistent state.
+    /// Even though candidates don’t purge logs, they must keep last_purged_index from the
+    /// follower. Otherwise, the system may lose purge info and get into an inconsistent state.
     pub(super) last_purged_index: Option<LogId>,
 
     // -- Election Timing --
@@ -217,7 +217,9 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     );
                 }
             }
-            Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term)))) => {
+            Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
+                higher_term,
+            )))) => {
                 // Immediately update the Term and become a Follower.
                 self.update_current_term(higher_term);
                 self.send_become_follower_event(role_tx)?;
@@ -238,8 +240,15 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         let my_term = self.current_term();
         match raft_event {
             RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
-                debug!("handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}", &vote_request);
-                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+                debug!(
+                    "handle_raft_event::RaftEvent::ReceiveVoteRequest: {:?}",
+                    &vote_request
+                );
+
+                let LogId {
+                    index: last_log_index,
+                    term: last_log_term,
+                } = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
                 if ctx.election_handler().check_vote_request_is_legal(
                     &vote_request,
@@ -253,7 +262,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     self.send_become_follower_event(&role_tx)?;
 
                     info!("Candiate will not process ReceiveVoteRequest, it should let Follower do it.");
-                    self.send_replay_raft_event(&role_tx, RaftEvent::ReceiveVoteRequest(vote_request, sender))?;
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::ReceiveVoteRequest(vote_request, sender),
+                    )?;
                 } else {
                     let response = VoteResponse {
                         term: my_term,
@@ -304,7 +316,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     Ok(res) => res,
                     Err(e) => {
                         error!(?e, "update_cluster_conf_from_leader");
-                        ClusterConfUpdateResponse::internal_error(my_id, my_term, current_conf_version)
+                        ClusterConfUpdateResponse::internal_error(
+                            my_id,
+                            my_term,
+                            current_conf_version,
+                        )
                     }
                 };
 
@@ -348,9 +364,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     return Ok(());
                 } else {
                     // Keep syncing leader_id
-                    ctx.membership_ref()
-                        .mark_leader_id(append_entries_request.leader_id)
-                        .await?;
+                    ctx.membership_ref().mark_leader_id(append_entries_request.leader_id).await?;
 
                     if append_entries_request.term > my_term {
                         self.update_current_term(append_entries_request.term);
@@ -359,19 +373,22 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     self.send_become_follower_event(&role_tx)?;
 
                     info!("Candiate will not process AppendEntries request, it should let Follower do it.");
-                    self.send_replay_raft_event(&role_tx, RaftEvent::AppendEntries(append_entries_request, sender))?;
+                    self.send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::AppendEntries(append_entries_request, sender),
+                    )?;
                 }
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
-                sender
-                    .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
-                    .map_err(|e| {
+                sender.send(Ok(ClientResponse::client_error(ErrorCode::NotLeader))).map_err(
+                    |e| {
                         let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    },
+                )?;
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
                 // If the request is linear request, ...
@@ -429,20 +446,21 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
                 warn!(%self.shared_state.node_id, "Candidate should not receive RaftEvent::RaftLogCleanUp request from Leader");
-                sender
-                    .send(Err(Status::permission_denied("Not Follower")))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                sender.send(Err(Status::permission_denied("Not Follower"))).map_err(|e| {
+                    let error_str = format!("{e:?}");
+                    error!("Failed to send: {}", error_str);
+                    NetworkError::SingalSendFailed(error_str)
+                })?;
             }
 
             RaftEvent::CreateSnapshotEvent => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",
                     required_role: "Leader",
-                    context: format!("Candidate node {} attempted to create snapshot.", ctx.node_id),
+                    context: format!(
+                        "Candidate node {} attempted to create snapshot.",
+                        ctx.node_id
+                    ),
                 }
                 .into())
             }
@@ -451,7 +469,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",
                     required_role: "Leader",
-                    context: format!("Candidate node {} attempted to handle created snapshot.", ctx.node_id),
+                    context: format!(
+                        "Candidate node {} attempted to handle created snapshot.",
+                        ctx.node_id
+                    ),
                 }
                 .into())
             }
@@ -482,7 +503,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",
                     required_role: "Leader",
-                    context: format!("Candidate node {} receives RaftEvent::JoinCluster", ctx.node_id),
+                    context: format!(
+                        "Candidate node {} receives RaftEvent::JoinCluster",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -521,7 +545,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",
                     required_role: "Leader",
-                    context: format!("Candidate node {} receives RaftEvent::TriggerSnapshotPush", ctx.node_id),
+                    context: format!(
+                        "Candidate node {} receives RaftEvent::TriggerSnapshotPush",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -593,13 +620,11 @@ impl<T: TypeConfig> CandidateState<T> {
         raft_event: RaftEvent,
     ) -> Result<()> {
         debug!("send_replay_raft_event, raft_event:{:?}", &raft_event);
-        role_tx
-            .send(RoleEvent::ReprocessEvent(Box::new(raft_event)))
-            .map_err(|e| {
-                let error_str = format!("{e:?}");
-                error!("Failed to send: {}", error_str);
-                NetworkError::SingalSendFailed(error_str).into()
-            })
+        role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
+            let error_str = format!("{e:?}");
+            error!("Failed to send: {}", error_str);
+            NetworkError::SingalSendFailed(error_str).into()
+        })
     }
 
     #[cfg(test)]

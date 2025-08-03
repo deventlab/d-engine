@@ -29,8 +29,8 @@ use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
 
-#[test]
-fn test_start_stop() {
+#[tokio::test]
+async fn test_start_stop() {
     let root_path = "/tmp/test_start_stop";
     let context = setup_raft_components(root_path, None, false);
 
@@ -45,8 +45,8 @@ fn test_start_stop() {
     assert!(context.state_machine.is_running());
 }
 
-#[test]
-fn test_apply_committed_raft_logs_in_batch() {
+#[tokio::test]
+async fn test_apply_committed_raft_logs_in_batch() {
     let root_path = "/tmp/test_apply_committed_raft_logs_in_batch";
     let context = setup_raft_components(root_path, None, false);
 
@@ -61,7 +61,10 @@ fn test_apply_committed_raft_logs_in_batch() {
         entries.push(log);
     }
     context.state_machine.apply_chunk(entries).expect("should succeed");
-    assert_eq!(context.state_machine.last_applied(), LogId { index: 3, term: 1 });
+    assert_eq!(
+        context.state_machine.last_applied(),
+        LogId { index: 3, term: 1 }
+    );
 }
 
 fn init(path: &str) -> Arc<sled::Db> {
@@ -93,7 +96,10 @@ fn test_state_machine_flush() {
         let state_machine_db = init(p);
         let state_machine = SledStateMachine::new(1, state_machine_db).expect("success");
         assert_eq!(state_machine.len(), 2);
-        assert_eq!(state_machine.get(&safe_kv(2)).unwrap(), Some(safe_kv(2).to_vec()));
+        assert_eq!(
+            state_machine.get(&safe_kv(2)).unwrap(),
+            Some(safe_kv(2).to_vec())
+        );
     }
 }
 
@@ -124,8 +130,8 @@ async fn test_basic_kv_operations() {
     assert_eq!(sm.get(&test_value).unwrap(), None);
 }
 
-#[test]
-fn test_last_entry_detection() {
+#[tokio::test]
+async fn test_last_entry_detection() {
     let root_path = "/tmp/test_last_entry_detection";
     let context = setup_raft_components(root_path, None, false);
     let sm = context.state_machine.clone();
@@ -161,8 +167,8 @@ async fn test_batch_error_handling() {
     assert!(sm.apply_batch(batch).is_ok());
 }
 
-#[test]
-fn test_iter_functionality() {
+#[tokio::test]
+async fn test_iter_functionality() {
     let root_path = "/tmp/test_iter_functionality";
     let context = setup_raft_components(root_path, None, false);
     let sm = context.state_machine.clone();
@@ -346,9 +352,15 @@ async fn test_generate_snapshot_data_case4() {
 
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
-    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 150, term: 1 })
-        .await
-        .unwrap();
+    sm.generate_snapshot_data(
+        temp_path.clone(),
+        LogId {
+            index: 150,
+            term: 1,
+        },
+    )
+    .await
+    .unwrap();
 
     // Verify all entries exist
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -539,7 +551,8 @@ mod apply_snapshot_from_file_tests {
     /// # Case 5: Invalid snapshot handling
     #[tokio::test]
     async fn test_apply_snapshot_from_file_case5() {
-        let context = setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", None, false);
+        let context =
+            setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", None, false);
         let sm = context.state_machine.clone();
 
         let result = sm
@@ -565,9 +578,8 @@ mod apply_snapshot_from_file_tests {
     #[tokio::test]
     async fn test_apply_snapshot_from_file_case6_checksum_failure() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let case_path = temp_dir
-            .path()
-            .join("test_apply_snapshot_from_file_case6_checksum_failure");
+        let case_path =
+            temp_dir.path().join("test_apply_snapshot_from_file_case6_checksum_failure");
         let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
         let sm = context.state_machine.clone();
 
@@ -622,9 +634,7 @@ mod apply_snapshot_from_file_tests {
     #[tokio::test]
     async fn test_apply_snapshot_from_file_case8_invalid_format() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let case_path = temp_dir
-            .path()
-            .join("test_apply_snapshot_from_file_case8_invalid_format");
+        let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case8_invalid_format");
         let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
         let sm = context.state_machine.clone();
 

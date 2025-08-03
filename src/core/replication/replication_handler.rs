@@ -77,7 +77,10 @@ where
         let replication_targets = membership.replication_peers().await;
         if replication_targets.is_empty() {
             warn!("no peer found for leader({})", self.my_id);
-            return Err(ReplicationError::NoPeerFound { leader_id: self.my_id }.into());
+            return Err(ReplicationError::NoPeerFound {
+                leader_id: self.my_id,
+            }
+            .into());
         }
 
         // Separate Voters and Learners
@@ -101,7 +104,9 @@ where
         let raft_log = ctx.raft_log();
         let leader_last_index_before = raft_log.last_entry_id();
 
-        let new_entries = self.generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)?;
+        let new_entries = self
+            .generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)
+            .await?;
 
         // ----------------------
         // Phase 3: Prepare Replication Data
@@ -116,10 +121,7 @@ where
         let entries_per_peer = self.prepare_peer_entries(
             &new_entries,
             &replication_data,
-            ctx.node_config
-                .raft
-                .replication
-                .append_entries_max_entries_per_replication,
+            ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
             raft_log,
         );
 
@@ -128,7 +130,9 @@ where
         // ----------------------
         let requests = replication_targets
             .iter()
-            .map(|m| self.build_append_request(raft_log, m.id, &entries_per_peer, &replication_data))
+            .map(|m| {
+                self.build_append_request(raft_log, m.id, &entries_per_peer, &replication_data)
+            })
             .collect();
 
         // ----------------------
@@ -170,13 +174,16 @@ where
 
                                     // Record Learner progress
                                     if learners.iter().any(|n| n.id == append_response.node_id) {
-                                        learner_progress.insert(append_response.node_id, update.match_index);
+                                        learner_progress
+                                            .insert(append_response.node_id, update.match_index);
                                     }
 
                                     peer_updates.insert(append_response.node_id, update);
                                 }
 
-                                Some(append_entries_response::Result::Conflict(conflict_result)) => {
+                                Some(append_entries_response::Result::Conflict(
+                                    conflict_result,
+                                )) => {
                                     let current_next_index = replication_data
                                         .peer_next_indices
                                         .get(&append_response.node_id)
@@ -196,7 +203,9 @@ where
                                 Some(append_entries_response::Result::HigherTerm(higher_term)) => {
                                     // Only handle higher term if it's greater than current term
                                     if higher_term > leader_current_term {
-                                        return Err(ReplicationError::HigherTerm(higher_term).into());
+                                        return Err(
+                                            ReplicationError::HigherTerm(higher_term).into()
+                                        );
                                     }
                                 }
 
@@ -239,7 +248,10 @@ where
     ) -> Result<PeerUpdate> {
         let _timer = ScopedTimer::new("handle_success_response");
 
-        debug!(?success_result, "Received success response from peer {}", peer_id);
+        debug!(
+            ?success_result,
+            "Received success response from peer {}", peer_id
+        );
 
         let match_log = success_result.last_match.unwrap_or(LogId { term: 0, index: 0 });
 
@@ -270,7 +282,10 @@ where
         debug!("Handling conflict from peer {}", peer_id);
 
         // Calculate next_index based on conflict information
-        let next_index = match (conflict_result.conflict_term, conflict_result.conflict_index) {
+        let next_index = match (
+            conflict_result.conflict_term,
+            conflict_result.conflict_index,
+        ) {
             (Some(term), Some(index)) => {
                 if let Some(last_index_for_term) = raft_log.last_index_for_term(term) {
                     last_index_for_term + 1
@@ -317,14 +332,21 @@ where
             debug!("peer: {} next: {}", id, peer_next_id);
             let mut entries = Vec::new();
             if leader_last_index_before_inserting_new_entries >= peer_next_id {
-                let until_index =
-                    if (leader_last_index_before_inserting_new_entries - peer_next_id) >= max_legacy_entries_per_peer {
-                        peer_next_id + max_legacy_entries_per_peer - 1
-                    } else {
-                        leader_last_index_before_inserting_new_entries
-                    };
+                let until_index = if (leader_last_index_before_inserting_new_entries - peer_next_id)
+                    >= max_legacy_entries_per_peer
+                {
+                    peer_next_id + max_legacy_entries_per_peer - 1
+                } else {
+                    leader_last_index_before_inserting_new_entries
+                };
 
-                let legacy_entries = raft_log.get_entries_between(peer_next_id..=until_index);
+                let legacy_entries = match raft_log.get_entries_range(peer_next_id..=until_index) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        error!("Failed to get legacy entries for peer {}: {:?}", id, e);
+                        Vec::new()
+                    }
+                };
 
                 if !legacy_entries.is_empty() {
                     trace!("legacy_entries: {:?}", &legacy_entries);
@@ -352,7 +374,10 @@ where
     ) -> Result<AppendResponseWithUpdates> {
         let _timer = ScopedTimer::new("handle_append_entries");
 
-        debug!("[F-{:?}] >> receive leader append request {:?}", self.my_id, request);
+        debug!(
+            "[F-{:?}] >> receive leader append request {:?}",
+            self.my_id, request
+        );
         let current_term = state_snapshot.current_term;
         let mut last_log_id_option = raft_log.last_log_id();
 
@@ -377,11 +402,13 @@ where
         let success = true;
 
         if !request.entries.is_empty() {
-            last_log_id_option = raft_log.filter_out_conflicts_and_append(
-                request.prev_log_index,
-                request.prev_log_term,
-                request.entries.clone(),
-            )?;
+            last_log_id_option = raft_log
+                .filter_out_conflicts_and_append(
+                    request.prev_log_index,
+                    request.prev_log_term,
+                    request.entries.clone(),
+                )
+                .await?;
         }
 
         if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
@@ -469,7 +496,12 @@ where
                 } else {
                     last_log_id + 1
                 };
-                AppendEntriesResponse::conflict(self.my_id, my_term, Some(conflict_term), Some(conflict_index))
+                AppendEntriesResponse::conflict(
+                    self.my_id,
+                    my_term,
+                    Some(conflict_term),
+                    Some(conflict_index),
+                )
             }
             None => {
                 // prev_log_index not exist, return next expected index
@@ -501,12 +533,14 @@ where
 
     /// Generate a new log entry
     ///     including insert them into local raft log
-    pub(super) fn generate_new_entries(
+    pub(super) async fn generate_new_entries(
         &self,
         entry_payloads: Vec<EntryPayload>,
         current_term: u64,
         raft_log: &Arc<ROF<T>>,
     ) -> Result<Vec<Entry>> {
+        let _timer = ScopedTimer::new("generate_new_entries");
+
         // Handle empty case early
         if entry_payloads.is_empty() {
             return Ok(Vec::new());
@@ -514,6 +548,8 @@ where
 
         // Pre-allocate ID range in one atomic operation
         let id_range = raft_log.pre_allocate_id_range(entry_payloads.len() as u64);
+        assert!(!id_range.is_empty());
+
         let mut next_index = *id_range.start();
 
         let mut entries = Vec::with_capacity(entry_payloads.len());
@@ -538,7 +574,12 @@ where
         }
 
         if !entries.is_empty() {
-            raft_log.insert_batch(entries.clone())?;
+            trace!(
+                "RaftLog insert_batch: {}..={}",
+                entries[0].index,
+                entries.last().unwrap().index
+            );
+            raft_log.insert_batch(entries.clone()).await?;
         }
 
         Ok(entries)
@@ -569,12 +610,14 @@ where
         entries_per_peer: &DashMap<u32, Vec<Entry>>,
         data: &ReplicationData,
     ) -> (u32, AppendEntriesRequest) {
+        let _timer = ScopedTimer::new("build_append_request");
         // Calculate prev_log metadata
-        let (prev_log_index, prev_log_term) = data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
-            let prev_index = next_id.saturating_sub(1);
-            let term = raft_log.prev_log_term(peer_id, prev_index);
-            (prev_index, term)
-        });
+        let (prev_log_index, prev_log_term) =
+            data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
+                let prev_index = next_id.saturating_sub(1);
+                let term = raft_log.entry_term(prev_index).unwrap_or(0);
+                (prev_index, term)
+            });
 
         // Get the items to be sent
         let entries = entries_per_peer.get(&peer_id).map(|e| e.clone()).unwrap_or_default();
@@ -608,9 +651,7 @@ where
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("ReplicationHandler")
-            .field("my_id", &self.my_id)
-            .finish()
+        f.debug_struct("ReplicationHandler").field("my_id", &self.my_id).finish()
     }
 }
 

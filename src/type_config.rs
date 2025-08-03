@@ -9,7 +9,7 @@ use crate::ReplicationCore;
 use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::StateMachineHandler;
-use crate::StateStorage;
+use crate::StorageEngine;
 use crate::Transport;
 
 pub trait TypeConfig:
@@ -17,11 +17,11 @@ pub trait TypeConfig:
 {
     type R: RaftLog + Debug;
 
+    type S: StorageEngine + Debug;
+
     type TR: Transport<Self> + Debug;
 
     type SM: StateMachine + Debug;
-
-    type SS: StateStorage;
 
     type M: Membership<Self> + Debug;
 
@@ -43,11 +43,11 @@ pub mod alias {
 
     pub type ROF<T> = <T as TypeConfig>::R;
 
+    pub type SOF<T> = <T as TypeConfig>::S;
+
     pub type TROF<T> = <T as TypeConfig>::TR;
 
     pub type SMOF<T> = <T as TypeConfig>::SM;
-
-    pub type SSOF<T> = <T as TypeConfig>::SS;
 
     pub type MOF<T> = <T as TypeConfig>::M;
 

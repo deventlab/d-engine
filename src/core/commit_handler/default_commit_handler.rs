@@ -16,6 +16,7 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
+use crate::scoped_timer::ScopedTimer;
 use crate::Membership;
 use crate::NewCommitData;
 use crate::RaftEvent;
@@ -67,10 +68,8 @@ where
         let mut batch_counter = 0;
         // let mut interval = tokio::time::interval(Duration::from_millis(10));
         let mut interval = self.dynamic_interval();
-        let mut new_commit_rx = self
-            .new_commit_rx
-            .take()
-            .expect("Expected a commit recv but found None");
+        let mut new_commit_rx =
+            self.new_commit_rx.take().expect("Expected a commit recv but found None");
         let mut shutdown_signal = self.shutdown_signal.clone();
 
         loop {
@@ -150,16 +149,18 @@ where
     /// # Note:Sequential Integrity
     /// Consider this sequence in a single batch: [ConfigRemove(A), ConfigAdd(B), EntryNormal(X)]
     pub(crate) async fn process_batch(&self) -> Result<()> {
+        let _timer = ScopedTimer::new("CommitHandler::process_batch");
+
         let pending_range = self.state_machine_handler.pending_range();
         trace!("[Node-{}] Pending range: {:?}", self.my_id, pending_range);
 
         let Some(range) = pending_range else {
             return Ok(());
         };
-        let entries = self.raft_log.get_entries_between(range);
+        let entries = self.raft_log.get_entries_range(range)?;
 
         debug!(
-            "[Node-{}] Merge consecutive normal commands length = {}",
+            "[Node-{}] commit handler process batch, length = {}",
             self.my_id,
             entries.len()
         );
@@ -169,9 +170,17 @@ where
             if !batch.is_empty() {
                 // Use take to transfer ownership while preserving the underlying memory allocation
                 // Note: when taking out the batch, the original order will be maintained
-                trace!("[Node-{} | Before] Flushing command batch: {:?}", self.my_id, batch);
+                trace!(
+                    "[Node-{} | Before] Flushing command batch: {:?}",
+                    self.my_id,
+                    batch
+                );
                 let entries = std::mem::take(batch);
-                trace!("[Node-{} | After] Flushing command batch: {:?}", self.my_id, batch);
+                trace!(
+                    "[Node-{} | After] Flushing command batch: {:?}",
+                    self.my_id,
+                    batch
+                );
                 self.state_machine_handler.apply_chunk(entries)?;
             }
             Ok(())
@@ -244,6 +253,7 @@ where
         &self,
         entry: Entry,
     ) -> Result<()> {
+        let _timer = ScopedTimer::new("apply_config_change");
         debug!("Received config change:{:?}", &entry);
 
         if let Some(payload) = entry.payload {

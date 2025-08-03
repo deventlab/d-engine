@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tracing::debug;
+use tracing::trace;
 
 use super::SnapshotContext;
 use super::SnapshotPolicy;
@@ -27,10 +28,16 @@ impl SnapshotPolicy for LogSizePolicy {
         &self,
         ctx: &SnapshotContext,
     ) -> bool {
+        trace!("Checking log size policy");
         if !is_leader(ctx.role) {
             return false; // Only the Leader actively triggers
         }
 
+        trace!(
+            "current_term: {} < last_included_term: {} (?)",
+            ctx.current_term,
+            ctx.last_included.term
+        );
         if ctx.current_term < ctx.last_included.term {
             return false;
         }
@@ -39,11 +46,20 @@ impl SnapshotPolicy for LogSizePolicy {
         let now = timestamp_millis();
         let last = self.last_checked.load(Ordering::Acquire);
 
+        trace!(
+            "last_checked: {} < cooldown_ms: {} (?)",
+            (now - last),
+            self.cooldown_ms
+        );
         if now - last < self.cooldown_ms {
             return false;
         }
 
         // CAS lock to prevent concurrent checks
+        trace!(
+            "is_checking: {} (?)",
+            self.is_checking.load(Ordering::Acquire)
+        );
         if self
             .is_checking
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -86,7 +102,9 @@ impl LogSizePolicy {
         &self,
         ctx: &SnapshotContext,
     ) -> u64 {
-        ctx.last_applied.index.saturating_sub(ctx.last_included.index)
+        let lag = ctx.last_applied.index.saturating_sub(ctx.last_included.index);
+        trace!("calculate_lag: {}", lag);
+        lag
     }
 
     #[allow(unused)]

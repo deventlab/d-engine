@@ -15,6 +15,7 @@ use crate::alias::TROF;
 use crate::cluster::is_majority;
 use crate::if_higher_term_found;
 use crate::is_target_log_more_recent;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteRequest;
 use crate::proto::election::VotedFor;
 use crate::ElectionError;
@@ -60,7 +61,10 @@ where
             debug!("going to send_vote_requests to: {:?}", &members);
         }
 
-        let (last_log_index, last_log_term) = raft_log.get_last_entry_metadata();
+        let LogId {
+            index: last_log_index,
+            term: last_log_term,
+        } = raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 });
         let request = VoteRequest {
             term,
             candidate_id: self.my_id,
@@ -78,10 +82,15 @@ where
                                 debug!("send_vote_requests_to_peers success!");
                                 succeed += 1;
                             } else {
-                                debug!("if_higher_term_found({}, {}, false)", term, vote_response.term,);
+                                debug!(
+                                    "if_higher_term_found({}, {}, false)",
+                                    term, vote_response.term,
+                                );
                                 if if_higher_term_found(term, vote_response.term, false) {
                                     warn!("Higher term found during election phase.");
-                                    return Err(ElectionError::HigherTerm(vote_response.term).into());
+                                    return Err(
+                                        ElectionError::HigherTerm(vote_response.term).into()
+                                    );
                                 }
 
                                 if is_target_log_more_recent(
@@ -139,9 +148,15 @@ where
         debug!("VoteRequest::Received: {:?}", request);
         let mut new_voted_for = None;
         let mut term_update = None;
-        let (last_index, last_term) = raft_log.get_last_entry_metadata();
+        let last_logid = raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
-        if self.check_vote_request_is_legal(&request, current_term, last_index, last_term, voted_for_option) {
+        if self.check_vote_request_is_legal(
+            &request,
+            current_term,
+            last_logid.index,
+            last_logid.term,
+            voted_for_option,
+        ) {
             debug!("switch to follower");
             let term = request.term;
 
@@ -181,7 +196,10 @@ where
         voted_for_option: Option<VotedFor>,
     ) -> bool {
         if current_term > request.term {
-            debug!("current_term({:?}) > request.term({:?})", current_term, request.term);
+            debug!(
+                "current_term({:?}) > request.term({:?})",
+                current_term, request.term
+            );
             return false;
         }
 
@@ -200,7 +218,9 @@ where
         }
 
         //step 2: check if I have voted for this term
-        if voted_for_option.is_some() && !self.if_node_could_grant_the_vote_request(request, voted_for_option) {
+        if voted_for_option.is_some()
+            && !self.if_node_could_grant_the_vote_request(request, voted_for_option)
+        {
             debug!(
                 "node_could_not_grant_the_vote_request: {:?}, voted_for_option={:?}",
                 request, &voted_for_option
@@ -243,7 +263,10 @@ where
         voted_for_option: Option<VotedFor>,
     ) -> bool {
         if let Some(vf) = voted_for_option {
-            debug!("voted_id: {:?}, voted_term: {:?}", vf.voted_for_id, vf.voted_for_term);
+            debug!(
+                "voted_id: {:?}, voted_term: {:?}",
+                vf.voted_for_id, vf.voted_for_term
+            );
 
             if vf.voted_for_id == 0 {
                 return true;

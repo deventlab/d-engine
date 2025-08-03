@@ -19,15 +19,17 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
+use crate::CommitHandlerConfig;
+use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
 use crate::NewCommitData;
+use crate::RaftConfig;
 use crate::RaftEvent;
+use crate::RaftNodeConfig;
 use crate::Result;
 use crate::LEADER;
-use crate::{CommitHandlerConfig, RaftNodeConfig};
-use crate::{Error, RaftConfig};
 
 const TEST_TERM: u64 = 1;
 
@@ -124,9 +126,7 @@ where
 
     // Mock raft log
     let mut mock_log = MockRaftLog::new();
-    mock_log
-        .expect_get_entries_between()
-        .returning(move |_| entries.clone());
+    mock_log.expect_get_entries_range().returning(move |_| Ok(entries.clone()));
 
     // Mock membership
     let mut mock_membership = MockMembership::new();
@@ -281,12 +281,12 @@ fn setup(
     // Mock Raft Log
     let mut mock_raft_log = MockRaftLog::new();
     mock_raft_log.expect_purge_logs_up_to().returning(|_| Ok(()));
-    mock_raft_log.expect_get_entries_between().returning(|_| {
-        vec![Entry {
+    mock_raft_log.expect_get_entries_range().returning(|_| {
+        Ok(vec![Entry {
             index: 1,
             term: 1,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        }]
+        }])
     });
     let mock_membership = MockMembership::new();
 
@@ -807,12 +807,12 @@ mod process_batch_test {
     //             }
     //         });
     //     mock_smh.expect_should_snapshot()
-    //         .returning(move |data| snapshot_condition.map_or(false, |idx| data.new_commit_index >=
-    // idx));
+    //         .returning(move |data| snapshot_condition.map_or(false, |idx| data.new_commit_index
+    // >= idx));
 
     //     // Mock raft log
     //     let mut mock_log = MockRaftLog::new();
-    //     mock_log.expect_get_entries_between()
+    //     mock_log.expect_get_entries_range()
     //         .return_once(move |_| entries.clone());
 
     //     // Mock membership

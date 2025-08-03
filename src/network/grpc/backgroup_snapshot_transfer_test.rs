@@ -42,7 +42,11 @@ fn create_snapshot_chunk(
         seq,
         total_chunks: 1,
         chunk_checksum: vec![],
-        metadata: if seq == 0 { Some(Default::default()) } else { None },
+        metadata: if seq == 0 {
+            Some(Default::default())
+        } else {
+            None
+        },
         data: vec![0; size],
     }
 }
@@ -71,8 +75,13 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            channel,
+            config,
+        )
+        .await;
 
         debug!(?result);
 
@@ -85,19 +94,30 @@ mod run_push_transfer_test {
         let config = default_snapshot_config();
         let stream = create_snapshot_stream(2, 512);
         let error_stream = stream::once(async {
-            Err(StorageError::IoError(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Test error")).into())
+            Err(StorageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Test error",
+            ))
+            .into())
         });
         let combined_stream = stream.chain(error_stream).boxed();
 
         // Start mock server
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (channel, _port) =
-            MockNode::simulate_snapshot_mock_server(Err(Status::unavailable("Service is not ready")), shutdown_rx)
-                .await
-                .unwrap();
+        let (channel, _port) = MockNode::simulate_snapshot_mock_server(
+            Err(Status::unavailable("Service is not ready")),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, combined_stream, channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            combined_stream,
+            channel,
+            config,
+        )
+        .await;
 
         assert!(result.is_err());
     }
@@ -127,8 +147,13 @@ mod run_push_transfer_test {
         .unwrap();
 
         let start = Instant::now();
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            channel,
+            config,
+        )
+        .await;
 
         debug!(?result);
         assert!(result.is_ok());
@@ -166,12 +191,17 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1, stream, channel, config,
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::InvalidFirstChunk))
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(
+                SnapshotError::InvalidFirstChunk
+            ))
         ));
     }
 
@@ -198,12 +228,17 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1, stream, channel, config,
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::InvalidFirstChunk))
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(
+                SnapshotError::InvalidFirstChunk
+            ))
         ));
     }
 
@@ -229,12 +264,17 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1, stream, channel, config,
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::EmptySnapshot))
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(
+                SnapshotError::EmptySnapshot
+            ))
         ));
     }
 
@@ -247,13 +287,20 @@ mod run_push_transfer_test {
 
         // Start mock server that returns gRPC error
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (channel, _port) =
-            MockNode::simulate_snapshot_mock_server(Err(Status::internal("Internal server error")), shutdown_rx)
-                .await
-                .unwrap();
+        let (channel, _port) = MockNode::simulate_snapshot_mock_server(
+            Err(Status::internal("Internal server error")),
+            shutdown_rx,
+        )
+        .await
+        .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            channel,
+            config,
+        )
+        .await;
 
         assert!(result.is_err());
         debug!(?result);
@@ -291,7 +338,10 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, stream, channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1, stream, channel, config,
+        )
+        .await;
 
         debug!(?result);
 
@@ -325,14 +375,21 @@ mod run_push_transfer_test {
         .await
         .unwrap();
 
-        let result =
-            BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(1, Box::pin(stream), channel, config).await;
+        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
+            1,
+            Box::pin(stream),
+            channel,
+            config,
+        )
+        .await;
 
         debug!(?result);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::Error::Consensus(crate::ConsensusError::Snapshot(SnapshotError::RemoteRejection))
+            crate::Error::Consensus(crate::ConsensusError::Snapshot(
+                SnapshotError::RemoteRejection
+            ))
         ));
     }
 }

@@ -21,7 +21,6 @@ use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
-use crate::MockStateStorage;
 use crate::MockTransport;
 use crate::Node;
 use crate::Raft;
@@ -29,20 +28,19 @@ use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftCoreHandlers;
 use crate::RaftEvent;
+use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStorageHandles;
 use crate::RoleEvent;
 use crate::SignalParams;
 use crate::StateMachine;
-use crate::StateStorage;
 
 pub struct MockBuilder {
     pub id: Option<u32>,
     pub role: Option<RaftRole<MockTypeConfig>>,
     pub raft_log: Option<MockRaftLog>,
     pub state_machine: Option<Arc<MockStateMachine>>,
-    pub state_storage: Option<MockStateStorage>,
     pub transport: Option<MockTransport<MockTypeConfig>>,
     pub membership: Option<Arc<MockMembership<MockTypeConfig>>>,
     pub purge_executor: Option<MockPurgeExecutor>,
@@ -67,7 +65,6 @@ impl MockBuilder {
             role: None,
             raft_log: None,
             state_machine: None,
-            state_storage: None,
             transport: None,
             membership: None,
             purge_executor: None,
@@ -89,7 +86,6 @@ impl MockBuilder {
         let (
             raft_log,
             state_machine,
-            state_storage,
             transport,
             election_handler,
             replication_handler,
@@ -100,7 +96,6 @@ impl MockBuilder {
         ) = (
             Arc::new(self.raft_log.unwrap_or_else(mock_raft_log)),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            Arc::new(self.state_storage.unwrap_or_else(mock_state_storage)),
             Arc::new(self.transport.unwrap_or_else(mock_transport)),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
@@ -108,14 +103,14 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
-            self.node_config
-                .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
+            self.node_config.unwrap_or_else(|| {
+                RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
+            }),
         );
 
         let storage = RaftStorageHandles {
             raft_log,
             state_machine,
-            state_storage,
         };
         let handlers = RaftCoreHandlers {
             election_handler,
@@ -133,7 +128,6 @@ impl MockBuilder {
             id,
             raft_log,
             state_machine,
-            state_storage,
             transport,
             election_handler,
             replication_handler,
@@ -149,7 +143,6 @@ impl MockBuilder {
             self.id.unwrap_or(1),
             self.raft_log.unwrap_or_else(mock_raft_log),
             self.state_machine.unwrap_or_else(|| Arc::new(mock_state_machine())),
-            self.state_storage.unwrap_or_else(mock_state_storage),
             self.transport.unwrap_or_else(mock_transport),
             self.election_handler.unwrap_or_else(mock_election_core),
             self.replication_handler.unwrap_or_else(mock_replication_handler),
@@ -157,8 +150,9 @@ impl MockBuilder {
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
-            self.node_config
-                .unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")),
+            self.node_config.unwrap_or_else(|| {
+                RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
+            }),
             self.role_tx.unwrap_or(role_tx),
             self.role_rx.unwrap_or(role_rx),
             self.event_tx.unwrap_or(event_tx),
@@ -188,7 +182,7 @@ impl MockBuilder {
         let role = self.role.unwrap_or(RaftRole::Follower(Box::new(FollowerState::new(
             id,
             arc_node_config.clone(),
-            state_storage.load_hard_state(),
+            raft_log.load_hard_state().expect("Failed to load hard state"),
             Some(state_machine.last_applied().index),
         ))));
 
@@ -198,7 +192,6 @@ impl MockBuilder {
             RaftStorageHandles::<MockTypeConfig> {
                 raft_log: Arc::new(raft_log),
                 state_machine,
-                state_storage: Arc::new(state_storage),
             },
             transport,
             RaftCoreHandlers::<MockTypeConfig> {
@@ -240,8 +233,9 @@ impl MockBuilder {
 
         let raft = self.build_raft();
         let event_tx = raft.event_tx.clone();
-        let node_config =
-            node_config_option.unwrap_or_else(|| RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig"));
+        let node_config = node_config_option.unwrap_or_else(|| {
+            RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
+        });
         let membership = raft.ctx.membership.clone();
         trace!(
             node_config.raft.election.election_timeout_min,
@@ -259,7 +253,9 @@ impl MockBuilder {
         let listen_address = node_config.cluster.listen_address;
         let node_config = node_config.clone();
         tokio::spawn(async move {
-            if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
+            if let Err(e) =
+                grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
+            {
                 eprintln!("RPC server stops. {e:?}");
                 error!("RPC server stops. {e:?}");
             }
@@ -293,14 +289,6 @@ impl MockBuilder {
         sm: MockStateMachine,
     ) -> Self {
         self.state_machine = Some(Arc::new(sm));
-        self
-    }
-
-    pub fn with_state_storage(
-        mut self,
-        state_storage: MockStateStorage,
-    ) -> Self {
-        self.state_storage = Some(state_storage);
         self
     }
 
@@ -356,7 +344,8 @@ impl MockBuilder {
         mut self,
         db_root_dir: impl AsRef<Path>,
     ) -> Self {
-        let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+        let mut node_config =
+            RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
         node_config.cluster.db_root_dir = db_root_dir.as_ref().to_path_buf();
         self.node_config = Some(node_config);
         self
@@ -374,24 +363,18 @@ impl MockBuilder {
 pub fn mock_raft_log() -> MockRaftLog {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 0);
-    raft_log.expect_get_last_entry_metadata().returning(|| (0, 0));
+    raft_log.expect_last_log_id().returning(|| None);
     raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_log
 }
 pub fn mock_state_machine() -> MockStateMachine {
     let mut state_machine = MockStateMachine::new();
-    state_machine
-        .expect_last_applied()
-        .returning(|| LogId { index: 0, term: 0 });
+    state_machine.expect_last_applied().returning(|| LogId { index: 0, term: 0 });
     state_machine.expect_flush().returning(|| Ok(()));
     state_machine.expect_save_hard_state().returning(|| Ok(()));
     state_machine
-}
-pub fn mock_state_storage() -> MockStateStorage {
-    let mut state_storage = MockStateStorage::new();
-    state_storage.expect_load_hard_state().returning(|| None);
-    state_storage.expect_save_hard_state().returning(|_| Ok(()));
-    state_storage
 }
 
 pub fn mock_transport() -> MockTransport<MockTypeConfig> {
@@ -413,9 +396,7 @@ pub fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> {
 pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .returning(|_| None);
+    state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler
 }
 

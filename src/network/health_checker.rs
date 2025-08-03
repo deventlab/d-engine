@@ -39,11 +39,21 @@ impl HealthChecker {
         let address = address_str(addr);
         let channel = Channel::from_shared(address.clone())
             .map_err(|_| NetworkError::InvalidURI(addr.into()))?
-            .connect_timeout(Duration::from_millis(settings.control.connect_timeout_in_ms))
-            .timeout(Duration::from_millis(settings.control.request_timeout_in_ms))
-            .tcp_keepalive(Some(Duration::from_secs(settings.control.tcp_keepalive_in_secs)))
-            .http2_keep_alive_interval(Duration::from_secs(settings.control.http2_keep_alive_interval_in_secs))
-            .keep_alive_timeout(Duration::from_secs(settings.control.http2_keep_alive_timeout_in_secs))
+            .connect_timeout(Duration::from_millis(
+                settings.control.connect_timeout_in_ms,
+            ))
+            .timeout(Duration::from_millis(
+                settings.control.request_timeout_in_ms,
+            ))
+            .tcp_keepalive(Some(Duration::from_secs(
+                settings.control.tcp_keepalive_in_secs,
+            )))
+            .http2_keep_alive_interval(Duration::from_secs(
+                settings.control.http2_keep_alive_interval_in_secs,
+            ))
+            .keep_alive_timeout(Duration::from_secs(
+                settings.control.http2_keep_alive_timeout_in_secs,
+            ))
             .connect()
             .await
             .map_err(|err| {
@@ -84,7 +94,10 @@ impl HealthCheckerApis for HealthChecker {
         if response.status == ServingStatus::Serving as i32 {
             return Ok(());
         } else {
-            return Err(NetworkError::ServiceUnavailable("RPC service is not ready yet".to_string()).into());
+            return Err(NetworkError::ServiceUnavailable(
+                "RPC service is not ready yet".to_string(),
+            )
+            .into());
         }
     }
 }

@@ -124,7 +124,9 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
                     cx.waker().wake_by_ref();
                     Poll::Pending
                 }
-                Err(broadcast::error::TryRecvError::Closed) => Poll::Ready(Err(broadcast::error::RecvError::Closed)),
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    Poll::Ready(Err(broadcast::error::RecvError::Closed))
+                }
                 Err(broadcast::error::TryRecvError::Lagged(n)) => {
                     Poll::Ready(Err(broadcast::error::RecvError::Lagged(n)))
                 }
@@ -205,7 +207,8 @@ pub(crate) struct StreamResponseSender {
     inner: oneshot::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
 
     #[cfg(test)]
-    test_inner: Option<broadcast::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>>,
+    test_inner:
+        Option<broadcast::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>>,
 }
 
 impl StreamResponseSender {

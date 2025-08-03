@@ -12,9 +12,7 @@ pub(crate) fn timestamp_millis() -> u64 {
 
 #[inline]
 fn get_duration_since_epoch() -> Duration {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
+    SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards")
 }
 
 /// Returns millis

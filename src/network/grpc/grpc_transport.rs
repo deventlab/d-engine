@@ -35,6 +35,7 @@ use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotAck;
 use crate::proto::storage::SnapshotChunk;
+use crate::scoped_timer::ScopedTimer;
 use crate::AppendResult;
 use crate::BackoffPolicy;
 use crate::ClusterUpdateResult;
@@ -97,7 +98,8 @@ where
             peer_ids.insert(peer_id);
 
             // Real-time connection fetch for control operations
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await {
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
+            {
                 Some(chan) => chan,
                 None => {
                     error!("Failed to get control channel for peer {}", peer_id);
@@ -118,7 +120,13 @@ where
             let policy = retry.membership;
             let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("update_cluster_conf", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "update_cluster_conf",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
                         debug!(
                             "[send_cluster_update | {my_id}->{peer_id}] sync_cluster_conf response: {:?}",
@@ -129,7 +137,10 @@ where
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_cluster_update | {my_id}->{peer_id}] Received RPC error: {}", e);
+                        warn!(
+                            "[send_cluster_update | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -148,7 +159,10 @@ where
             }
         }
 
-        Ok(ClusterUpdateResult { peer_ids, responses })
+        Ok(ClusterUpdateResult {
+            peer_ids,
+            responses,
+        })
     }
 
     #[tracing::instrument(skip_all,fields(
@@ -161,6 +175,8 @@ where
         retry: &RetryPolicies,
         membership: Arc<MOF<T>>,
     ) -> Result<AppendResult> {
+        let _timer = ScopedTimer::new("send_append_requests");
+
         debug!("Sending append entries requests");
         if requests.is_empty() {
             warn!("No append requests to process");
@@ -209,15 +225,27 @@ where
             let policy = retry.append_entries;
             let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("append_entries", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "append_entries",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
-                        debug!("[send_append_requests| {my_id}->{peer_id}] response: {:?}", response);
+                        debug!(
+                            "[send_append_requests| {my_id}->{peer_id}] response: {:?}",
+                            response
+                        );
                         let res = response.into_inner();
 
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}", e);
+                        warn!(
+                            "[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -238,7 +266,10 @@ where
             }
         }
 
-        Ok(AppendResult { peer_ids, responses })
+        Ok(AppendResult {
+            peer_ids,
+            responses,
+        })
     }
 
     #[autometrics(objective = API_SLO)]
@@ -271,7 +302,8 @@ where
             peer_ids.insert(peer_id);
 
             // Real-time connection fetch for control operations
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await {
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
+            {
                 Some(chan) => chan,
                 None => {
                     error!("Failed to get control channel for peer {}", peer_id);
@@ -291,7 +323,13 @@ where
             let my_id = self.my_id;
             let addr = peer.address;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("request_vote", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "request_vote",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
                         debug!(
                             "[send_vote_requests | {my_id}->{peer_id}] resquest [peer({:?})] vote response: {:?}",
@@ -301,7 +339,10 @@ where
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_vote_requests | {my_id}->{peer_id}] Received RPC error: {}", e);
+                        warn!(
+                            "[send_vote_requests | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -319,7 +360,10 @@ where
                 }
             }
         }
-        Ok(VoteResult { peer_ids, responses })
+        Ok(VoteResult {
+            peer_ids,
+            responses,
+        })
     }
 
     async fn send_purge_requests(
@@ -374,7 +418,9 @@ where
             let addr = peer.address;
             let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("purge_log", closure, policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff("purge_log", closure, policy)
+                    .await
+                {
                     Ok(response) => {
                         debug!(
                             "[send_purge_requests | {my_id}->{peer_id}]resquest [peer({:?})] vote response: {:?}",
@@ -384,7 +430,10 @@ where
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("[send_purge_requests | {my_id}->{peer_id}]Received RPC error: {}", e);
+                        warn!(
+                            "[send_purge_requests | {my_id}->{peer_id}]Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -432,7 +481,8 @@ where
         };
 
         let my_id = self.my_id;
-        let response = grpc_task_with_timeout_and_exponential_backoff("join_cluster", closure, retry).await?;
+        let response =
+            grpc_task_with_timeout_and_exponential_backoff("join_cluster", closure, retry).await?;
         debug!(
             "[join_cluster | {my_id}->{leader_id}]Join cluster response: {:?}",
             response
@@ -452,14 +502,16 @@ where
         let member_ids: Vec<_> = membership.voters().await.iter().map(|m| m.id).collect();
 
         let tasks = member_ids.into_iter().map(|member_id| {
-            Self::process_member(membership.clone(), member_id, request.clone(), rpc_enable_compression)
+            Self::process_member(
+                membership.clone(),
+                member_id,
+                request.clone(),
+                rpc_enable_compression,
+            )
         });
 
         let my_id = self.my_id;
-        let results = futures::stream::iter(tasks)
-            .buffer_unordered(10)
-            .collect::<Vec<_>>()
-            .await;
+        let results = futures::stream::iter(tasks).buffer_unordered(10).collect::<Vec<_>>().await;
         debug!("[discover_leader | {my_id} ] Discover leader results.");
         Ok(results.into_iter().flatten().collect())
     }

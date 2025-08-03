@@ -78,7 +78,7 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 }
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
-pub(crate) fn simulate_insert_command(
+pub(crate) async fn simulate_insert_command(
     raft_log: &Arc<ROF<RaftTypeConfig>>,
     ids: Vec<u64>,
     term: u64,
@@ -92,12 +92,13 @@ pub(crate) fn simulate_insert_command(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
+    if let Err(e) = raft_log.insert_batch(entries).await {
         panic!("error: {e:?}");
     }
 }
 
-pub(crate) fn simulate_delete_command(
+#[allow(dead_code)]
+pub(crate) async fn simulate_delete_command(
     raft_log: &Arc<ROF<RaftTypeConfig>>,
     id_range: RangeInclusive<u64>,
     term: u64,
@@ -111,7 +112,7 @@ pub(crate) fn simulate_delete_command(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
+    if let Err(e) = raft_log.insert_batch(entries).await {
         panic!("error: {e:?}");
     }
 }

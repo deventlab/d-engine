@@ -1,18 +1,30 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::watch;
+use tracing::debug;
 use tracing_test::traced_test;
 
-use crate::{
-    learner_state::LearnerState,
-    proto::{
-        cluster::{JoinResponse, NodeMeta},
-        common::NodeStatus,
-    },
-    test_utils::{mock_membership, mock_node, MockBuilder, MockTypeConfig},
-    AppendResults, Error, MockMembership, MockRaftLog, MockReplicationCore, MockTransport, PeerUpdate, RaftNodeConfig,
-    RaftRole, FOLLOWER, LEARNER,
-};
+use crate::learner_state::LearnerState;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::common::NodeStatus;
+use crate::test_utils::mock_membership;
+use crate::test_utils::mock_node;
+use crate::test_utils::MockBuilder;
+use crate::test_utils::MockTypeConfig;
+use crate::AppendResults;
+use crate::Error;
+use crate::MockMembership;
+use crate::MockRaftLog;
+use crate::MockReplicationCore;
+use crate::MockTransport;
+use crate::PeerUpdate;
+use crate::RaftNodeConfig;
+use crate::RaftRole;
+use crate::FOLLOWER;
+use crate::LEARNER;
 
 #[tokio::test]
 async fn test_readiness_state_transition() {
@@ -67,11 +79,11 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
             })
         });
 
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(|_, _, _| Some(5));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);
     raft_log.expect_flush().return_once(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
     (raft_log, replication_handler)
 }
@@ -142,7 +154,10 @@ async fn run_success_without_joining() {
         logs_contain("Set node is ready to run Raft protocol"),
         "Readiness should be set"
     );
-    assert!(!logs_contain("Node is joining"), "Join cluster should NOT be executed");
+    assert!(
+        !logs_contain("Node is joining"),
+        "Join cluster should NOT be executed"
+    );
     assert!(logs_contain("Node is running"), "Node should be running");
 }
 
@@ -238,7 +253,10 @@ async fn run_success_with_joining() {
         logs_contain("Set node is ready to run Raft protocol"),
         "Readiness should be set"
     );
-    assert!(logs_contain("Node is joining"), "Join cluster should NOT be executed");
+    assert!(
+        logs_contain("Node is joining"),
+        "Join cluster should NOT be executed"
+    );
     assert!(logs_contain("Node is running"), "Node should be running");
 }
 
@@ -288,9 +306,7 @@ async fn run_fails_on_health_check() {
     let shutdown_tx = _shutdown_tx.clone();
 
     // Spawn node execution in background
-    let handle = tokio::spawn(async move {
-        node_clone.run().await.expect("Node run should succeed");
-    });
+    let handle = tokio::spawn(async move { node_clone.run().await });
 
     tokio::time::advance(Duration::from_millis(2)).await;
     // Give some time for execution to start
@@ -300,7 +316,9 @@ async fn run_fails_on_health_check() {
     shutdown_tx.send(()).expect("Should send shutdown");
 
     // Wait for completion
-    assert!(handle.await.is_err());
+    let result = handle.await.unwrap();
+    debug!(?result, "Node execution result");
+    assert!(result.is_err());
 
     // Verify node state
     assert!(!node.server_is_ready(), "Node should not be marked ready");
@@ -310,6 +328,9 @@ async fn run_fails_on_health_check() {
         !logs_contain("Set node is ready to run Raft protocol"),
         "Readiness should be set"
     );
-    assert!(!logs_contain("Node is joining"), "Join cluster should NOT be executed");
+    assert!(
+        !logs_contain("Node is joining"),
+        "Join cluster should NOT be executed"
+    );
     assert!(!logs_contain("Node is running"), "Node should be running");
 }

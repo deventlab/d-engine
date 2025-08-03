@@ -86,9 +86,7 @@ async fn test_send_cluster_update_case1() {
 
     let membership = mock_membership(vec![], HashMap::new());
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    let result = client
-        .send_cluster_update(request, &node_config.retry, membership)
-        .await;
+    let result = client.send_cluster_update(request, &node_config.retry, membership).await;
     let err = result.unwrap_err();
     assert!(matches!(
         err,
@@ -121,20 +119,19 @@ async fn test_send_cluster_update_case2() {
         version: 1,
         nodes: vec![],
     };
-    let (channel, _port) =
-        MockNode::simulate_mock_service_with_cluster_conf_reps(rx, Some(Box::new(move |_port| Ok(response.clone()))))
-            .await
-            .expect("should succeed");
+    let (channel, _port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(move |_port| Ok(response.clone()))),
+    )
+    .await
+    .expect("should succeed");
 
     let mut channels = HashMap::new();
     channels.insert((my_id, ConnectionType::Control), channel.clone());
 
     let membership = mock_membership(vec![(my_id, FOLLOWER)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client
-        .send_cluster_update(request, &node_config.retry, membership)
-        .await
-    {
+    match client.send_cluster_update(request, &node_config.retry, membership).await {
         Ok(res) => {
             assert!(res.responses.is_empty());
             assert!(res.peer_ids.is_empty())
@@ -176,10 +173,7 @@ async fn test_send_cluster_update_case3() {
     let membership = mock_membership(vec![(peer1_id, FOLLOWER), (peer2_id, CANDIDATE)], channels);
 
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client
-        .send_cluster_update(request, &node_config.retry, membership)
-        .await
-    {
+    match client.send_cluster_update(request, &node_config.retry, membership).await {
         Ok(res) => {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
@@ -216,7 +210,9 @@ async fn test_send_cluster_update_case4() {
     let (_tx, rx) = oneshot::channel::<()>();
     let (channel, _port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx,
-        Some(Box::new(move |_port| Err(Status::unavailable("message".to_string())))),
+        Some(Box::new(move |_port| {
+            Err(Status::unavailable("message".to_string()))
+        })),
     )
     .await
     .expect("should succeed");
@@ -227,10 +223,7 @@ async fn test_send_cluster_update_case4() {
     let membership = mock_membership(vec![(peer1_id, FOLLOWER), (peer2_id, CANDIDATE)], channels);
 
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client
-        .send_cluster_update(request, &node_config.retry, membership)
-        .await
-    {
+    match client.send_cluster_update(request, &node_config.retry, membership).await {
         Ok(res) => {
             assert!(res.responses.len() == 2);
             assert!(res.peer_ids.len() == 2)
@@ -247,10 +240,7 @@ async fn test_send_append_requests_case1() {
     let my_id = 1;
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     let membership = mock_membership(vec![], HashMap::new());
-    match client
-        .send_append_requests(vec![], &RetryPolicies::default(), membership)
-        .await
-    {
+    match client.send_append_requests(vec![], &RetryPolicies::default(), membership).await {
         Ok(_) => panic!(),
         Err(e) => assert!(matches!(
             e,
@@ -347,16 +337,22 @@ async fn test_send_append_requests_case3_1() {
             index: peer_2_match_index,
         }),
     );
-    let peer_3_response =
-        AppendEntriesResponse::conflict(peer_3_id, peer_3_term, Some(peer_3_term), Some(peer_3_match_index));
+    let peer_3_response = AppendEntriesResponse::conflict(
+        peer_3_id,
+        peer_3_term,
+        Some(peer_3_term),
+        Some(peer_3_match_index),
+    );
     let (_tx2, rx2) = oneshot::channel::<()>();
-    let (channel2, _port2) = MockNode::simulate_append_entries_mock_server(Ok(peer_2_response), rx2)
-        .await
-        .expect("should succeed");
+    let (channel2, _port2) =
+        MockNode::simulate_append_entries_mock_server(Ok(peer_2_response), rx2)
+            .await
+            .expect("should succeed");
     let (_tx3, rx3) = oneshot::channel::<()>();
-    let (channel3, _port3) = MockNode::simulate_append_entries_mock_server(Ok(peer_3_response), rx3)
-        .await
-        .expect("should succeed");
+    let (channel3, _port3) =
+        MockNode::simulate_append_entries_mock_server(Ok(peer_3_response), rx3)
+            .await
+            .expect("should succeed");
 
     let peer_req = AppendEntriesRequest {
         term: leader_current_term,
@@ -422,9 +418,10 @@ async fn test_send_append_requests_case3_2() {
     );
     let peer_3_response = Err(Status::unavailable("Service is not ready"));
     let (_tx2, rx2) = oneshot::channel::<()>();
-    let (channel2, _port2) = MockNode::simulate_append_entries_mock_server(Ok(peer_2_response), rx2)
-        .await
-        .expect("should succeed");
+    let (channel2, _port2) =
+        MockNode::simulate_append_entries_mock_server(Ok(peer_2_response), rx2)
+            .await
+            .expect("should succeed");
     let (_tx3, rx3) = oneshot::channel::<()>();
     let (channel3, _port3) = MockNode::simulate_append_entries_mock_server(peer_3_response, rx3)
         .await
@@ -677,10 +674,7 @@ async fn test_send_vote_requests_case4_2() {
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(vec![(peer1_id, FOLLOWER), (peer2_id, CANDIDATE)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    assert!(client
-        .send_vote_requests(request, &node_config.retry, membership)
-        .await
-        .is_ok());
+    assert!(client.send_vote_requests(request, &node_config.retry, membership).await.is_ok());
 }
 
 // # Case 4.3: vote response returns higher last_log_index
@@ -727,10 +721,7 @@ async fn test_send_vote_requests_case4_3() {
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(vec![(peer1_id, FOLLOWER), (peer2_id, CANDIDATE)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    assert!(client
-        .send_vote_requests(request, &node_config.retry, membership)
-        .await
-        .is_ok());
+    assert!(client.send_vote_requests(request, &node_config.retry, membership).await.is_ok());
 }
 // # Case 5: two peers passed
 //
@@ -849,9 +840,8 @@ async fn test_purge_requests_case2_self_reference() {
         last_purged: Some(LogId { term: 1, index: 5 }),
     };
 
-    let (channel, _port) = MockNode::simulate_purge_mock_server(purge_response, shutdown_rx)
-        .await
-        .unwrap();
+    let (channel, _port) =
+        MockNode::simulate_purge_mock_server(purge_response, shutdown_rx).await.unwrap();
 
     let mut channels = HashMap::new();
     channels.insert((my_id, ConnectionType::Data), channel.clone());
@@ -897,9 +887,8 @@ async fn test_purge_requests_case3_duplicate_peers() {
         last_purged: Some(LogId { term: 1, index: 5 }),
     };
 
-    let (channel, _port) = MockNode::simulate_purge_mock_server(purge_response, shutdown_rx)
-        .await
-        .unwrap();
+    let (channel, _port) =
+        MockNode::simulate_purge_mock_server(purge_response, shutdown_rx).await.unwrap();
 
     let mut channels = HashMap::new();
     channels.insert((2, ConnectionType::Data), channel.clone());
@@ -978,11 +967,8 @@ async fn test_purge_requests_case4_mixed_responses() {
     match result {
         Ok(res) => {
             assert_eq!(res.len(), 2, "Should collect all responses");
-            let successes = res
-                .iter()
-                .filter_map(|r| r.as_ref().ok())
-                .filter(|resp| resp.success)
-                .count();
+            let successes =
+                res.iter().filter_map(|r| r.as_ref().ok()).filter(|resp| resp.success).count();
             assert_eq!(successes, 1, "Should handle partial success");
         }
         Err(e) => panic!("Unexpected error: {e:?}"),
@@ -1033,7 +1019,10 @@ async fn test_purge_requests_case5_full_success() {
     match result {
         Ok(res) => {
             assert_eq!(res.len(), 2, "Should process all peers");
-            assert!(res.iter().all(|r| r.is_ok()), "All responses should succeed");
+            assert!(
+                res.iter().all(|r| r.is_ok()),
+                "All responses should succeed"
+            );
         }
         Err(e) => panic!("Unexpected error: {e:?}"),
     }
@@ -1049,15 +1038,23 @@ fn create_failing_stream(fail_at: usize) -> BoxStream<'static, Result<SnapshotCh
     }
 
     let stream = crate_test_snapshot_stream(chunks);
-    Box::pin(stream::unfold((stream, 0), move |(mut stream, count)| async move {
-        if count == fail_at {
-            Some((Err(Error::Fatal("Injected failure".to_string())), (stream, count + 1)))
-        } else {
-            match stream.next().await {
-                Some(Ok(chunk)) => Some((Ok(chunk), (stream, count + 1))),
-                Some(Err(e)) => Some((Err(Error::Fatal(format!("{e:?}",))), (stream, count + 1))),
-                None => None,
+    Box::pin(stream::unfold(
+        (stream, 0),
+        move |(mut stream, count)| async move {
+            if count == fail_at {
+                Some((
+                    Err(Error::Fatal("Injected failure".to_string())),
+                    (stream, count + 1),
+                ))
+            } else {
+                match stream.next().await {
+                    Some(Ok(chunk)) => Some((Ok(chunk), (stream, count + 1))),
+                    Some(Err(e)) => {
+                        Some((Err(Error::Fatal(format!("{e:?}",))), (stream, count + 1)))
+                    }
+                    None => None,
+                }
             }
-        }
-    }))
+        },
+    ))
 }

@@ -232,7 +232,9 @@ impl AppendEntriesResponse {
         Self {
             node_id,
             term,
-            result: Some(append_entries_response::Result::Success(SuccessResult { last_match })),
+            result: Some(append_entries_response::Result::Success(SuccessResult {
+                last_match,
+            })),
         }
     }
 
@@ -267,16 +269,25 @@ impl AppendEntriesResponse {
 
     /// Check if it is a success response
     pub fn is_success(&self) -> bool {
-        matches!(&self.result, Some(append_entries_response::Result::Success(_)))
+        matches!(
+            &self.result,
+            Some(append_entries_response::Result::Success(_))
+        )
     }
 
     /// Check if it is a conflict response
     pub fn is_conflict(&self) -> bool {
-        matches!(&self.result, Some(append_entries_response::Result::Conflict(_conflict)))
+        matches!(
+            &self.result,
+            Some(append_entries_response::Result::Conflict(_conflict))
+        )
     }
 
     /// Check if it is a response of a higher Term
     pub fn is_higher_term(&self) -> bool {
-        matches!(&self.result, Some(append_entries_response::Result::HigherTerm(_)))
+        matches!(
+            &self.result,
+            Some(append_entries_response::Result::HigherTerm(_))
+        )
     }
 }

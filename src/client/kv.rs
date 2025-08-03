@@ -1,8 +1,9 @@
+use std::sync::Arc;
+
 use arc_swap::ArcSwap;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
-use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
@@ -187,7 +188,9 @@ impl KvClient {
         }
     }
 
-    async fn make_leader_client(&self) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
+    async fn make_leader_client(
+        &self
+    ) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         let channel = client_inner.pool.get_leader();
@@ -201,7 +204,9 @@ impl KvClient {
         Ok(client)
     }
 
-    async fn make_client(&self) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
+    async fn make_client(
+        &self
+    ) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         // Balance from read clients

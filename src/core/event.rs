@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+use tonic::Status;
+
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientWriteRequest;
@@ -23,8 +27,6 @@ use crate::proto::storage::SnapshotResponse;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::StreamResponseSender;
-use std::path::PathBuf;
-use tonic::Status;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NewCommitData {
@@ -173,7 +175,9 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
         RaftEvent::SnapshotCreated(_result) => TestEvent::SnapshotCreated,
         RaftEvent::LogPurgeCompleted(id) => TestEvent::LogPurgeCompleted(*id),
-        RaftEvent::TriggerSnapshotPush { peer_id } => TestEvent::TriggerSnapshotPush { peer_id: *peer_id },
+        RaftEvent::TriggerSnapshotPush { peer_id } => {
+            TestEvent::TriggerSnapshotPush { peer_id: *peer_id }
+        }
         RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
     }
 }

@@ -72,13 +72,19 @@ impl ClientManager {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
                         }
-                        Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                        Err(e)
+                            if e.code().eq(&(ErrorCode::NotLeader as u32))
+                                && retries < MAX_RETRIES =>
+                        {
                             retries += 1;
                             self.refresh_client().await?;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
-                        Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                        Err(e)
+                            if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                                && retries < MAX_RETRIES =>
+                        {
                             retries += 1;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -94,13 +100,18 @@ impl ClientManager {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -133,13 +144,18 @@ impl ClientManager {
                             return Err(ErrorCode::KeyNotExist.into());
                         }
                     },
-                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -175,11 +191,8 @@ impl ClientManager {
     }
     pub async fn list_leader_id(&self) -> Result<u32> {
         let members = self.list_members().await?;
-        let mut ids: Vec<u32> = members
-            .iter()
-            .filter(|meta| meta.role == LEADER)
-            .map(|n| n.id)
-            .collect();
+        let mut ids: Vec<u32> =
+            members.iter().filter(|meta| meta.role == LEADER).map(|n| n.id).collect();
 
         Ok(ids.pop().unwrap_or(0))
     }

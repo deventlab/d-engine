@@ -1,3 +1,10 @@
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+
 use super::candidate_state::CandidateState;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
@@ -35,11 +42,6 @@ use crate::MockStateMachineHandler;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
@@ -112,9 +114,9 @@ async fn test_tick_case2() {
         .expect_broadcast_vote_requests()
         .times(1)
         .returning(|_, _, _, _, _| {
-            Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
-                100,
-            ))))
+            Err(Error::Consensus(ConsensusError::Election(
+                ElectionError::HigherTerm(100),
+            )))
         });
     context.handlers.election_handler = election_handler;
 
@@ -126,7 +128,10 @@ async fn test_tick_case2() {
     assert!(state.tick(&role_tx, &event_tx, &context).await.is_ok());
 
     assert_eq!(state.current_term(), 100);
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::BecomeFollower(_)));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::BecomeFollower(_)
+    ));
 }
 
 fn setup_handle_raft_event_case1_params(
@@ -212,8 +217,14 @@ async fn test_handle_raft_event_case1_2() {
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Step to Follower
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))));
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(None))
+    ));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
 
     // Term should be updated
     assert_eq!(state.current_term(), updated_term);
@@ -228,13 +239,12 @@ async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = MockMembership::new();
-    membership
-        .expect_retrieve_cluster_membership_config()
-        .times(1)
-        .returning(|| ClusterMembership {
+    membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
+        ClusterMembership {
             version: 1,
             nodes: vec![],
-        });
+        }
+    });
     context.membership = Arc::new(membership);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -368,9 +378,15 @@ async fn test_handle_raft_event_case4_1() {
 
     // Validation criterias
     // 3. I should  receive BecomeFollower event
-    assert!(matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))));
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::BecomeFollower(None))
+    ));
     // 4. I should replay the raft_event to let Follower continue handle it
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
 
     // Validation criterias
     // 2. I should update term
@@ -615,8 +631,14 @@ fn test_send_replay_raft_event() {
         )
         .is_ok());
 
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::BecomeFollower(None)));
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::BecomeFollower(None)
+    ));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::ReprocessEvent(_)
+    ));
 }
 
 // filepath: [candidate_state_test.rs](http://_vscodecontentref_/3)
@@ -635,9 +657,7 @@ async fn test_handle_raft_event_case7() {
     let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 
     // Step 4: Verify the response
     assert!(result.is_err(), "Expected handle_raft_event to return Ok");
@@ -672,9 +692,7 @@ async fn test_handle_raft_event_case8() {
     let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 
     // Step 4: Verify the response
     assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
@@ -706,12 +724,13 @@ async fn test_handle_raft_event_case10() {
     let raft_event = RaftEvent::JoinCluster(request, resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 
     // Step 4: Verify the response
-    assert!(result.is_err(), "Expected handle_raft_event to return error");
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return error"
+    );
 
     // Step 5: Check the response sent through the channel
     let response = resp_rx.recv().await.expect("Response should be received");
@@ -739,9 +758,7 @@ async fn test_handle_raft_event_case11() {
     let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 
     // Step 4: Verify the response
     assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
@@ -764,7 +781,11 @@ mod role_violation_tests {
     async fn test_role_violation_events() {
         // Step 1: Setup the test environment
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let context = mock_raft_context("/tmp/test_candidate_role_violation_events", graceful_rx, None);
+        let context = mock_raft_context(
+            "/tmp/test_candidate_role_violation_events",
+            graceful_rx,
+            None,
+        );
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
         // Step 2: Prepare the CreateSnapshotEvent
@@ -772,34 +793,34 @@ mod role_violation_tests {
         let raft_event = RaftEvent::CreateSnapshotEvent;
 
         // [Test CreateSnapshotEvent]
-        let e = state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .unwrap_err();
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
 
         // Verify the error response
-        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
 
         // [Test SnapshotCreated]
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let raft_event = RaftEvent::SnapshotCreated(Err(Error::Fatal("test".to_string())));
-        let e = state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .unwrap_err();
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
 
         // Verify the error response
-        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
 
         // [Test LogPurgeCompleted]
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
-        let e = state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .unwrap_err();
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
 
         // Verify the error response
-        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
     }
 }

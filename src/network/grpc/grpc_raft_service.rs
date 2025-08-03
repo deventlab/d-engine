@@ -67,7 +67,10 @@ where
         request: tonic::Request<VoteRequest>,
     ) -> std::result::Result<Response<VoteResponse>, Status> {
         if !self.server_is_ready() {
-            warn!("[rpc|request_vote] My raft setup(Node:{}) is not ready!", self.node_id);
+            warn!(
+                "[rpc|request_vote] My raft setup(Node:{}) is not ready!",
+                self.node_id
+            );
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -76,7 +79,8 @@ where
             .send(RaftEvent::ReceiveVoteRequest(request.into_inner(), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
-        let timeout_duration = Duration::from_millis(self.node_config.raft.election.election_timeout_min);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.election.election_timeout_min);
         handle_rpc_timeout(resp_rx, timeout_duration, "request_vote").await
     }
 }
@@ -109,7 +113,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.retry.append_entries.timeout_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.retry.append_entries.timeout_ms);
 
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
     }
@@ -134,7 +139,10 @@ where
         let (resp_tx, resp_rx) = StreamResponseSender::new();
 
         self.event_tx
-            .send(RaftEvent::StreamSnapshot(Box::new(request.into_inner()), resp_tx))
+            .send(RaftEvent::StreamSnapshot(
+                Box::new(request.into_inner()),
+                resp_tx,
+            ))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -160,7 +168,10 @@ where
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
         self.event_tx
-            .send(RaftEvent::InstallSnapshotChunk(Box::new(request.into_inner()), resp_tx))
+            .send(RaftEvent::InstallSnapshotChunk(
+                Box::new(request.into_inner()),
+                resp_tx,
+            ))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -186,7 +197,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "purge_log").await
     }
 }
@@ -237,7 +249,10 @@ where
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         debug!("receive get_cluster_metadata");
         if !self.server_is_ready() {
-            warn!("[rpc|get_cluster_metadata] Node-{} is not ready!", self.node_id);
+            warn!(
+                "[rpc|get_cluster_metadata] Node-{} is not ready!",
+                self.node_id
+            );
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -247,7 +262,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "get_cluster_metadata").await
     }
 
@@ -270,7 +286,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "join_cluster").await
     }
 
@@ -292,7 +309,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "discover_leader").await
     }
 }
@@ -319,7 +337,8 @@ where
 
         let remote_addr = request.remote_addr();
         let event_tx = self.event_tx.clone();
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
 
         let request_future = async move {
             let req: ClientWriteRequest = request.into_inner();
@@ -341,7 +360,9 @@ where
             warn!("Request from {:?} cancelled by client", remote_addr);
             // If this future is executed it means the request future was dropped,
             // so it doesn't actually matter what is returned here
-            Err::<Response<ClientResponse>, Status>(Status::cancelled("Request cancelled by client"))
+            Err::<Response<ClientResponse>, Status>(Status::cancelled(
+                "Request cancelled by client",
+            ))
         };
 
         with_cancellation_handler(request_future, cancellation_future).await
@@ -369,7 +390,8 @@ where
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
     }
 }
@@ -384,8 +406,10 @@ pub(crate) async fn with_cancellation_handler<FRequest, FCancellation>(
     cancellation_future: FCancellation,
 ) -> std::result::Result<Response<ClientResponse>, Status>
 where
-    FRequest: Future<Output = std::result::Result<Response<ClientResponse>, Status>> + Send + 'static,
-    FCancellation: Future<Output = std::result::Result<Response<ClientResponse>, Status>> + Send + 'static,
+    FRequest:
+        Future<Output = std::result::Result<Response<ClientResponse>, Status>> + Send + 'static,
+    FCancellation:
+        Future<Output = std::result::Result<Response<ClientResponse>, Status>> + Send + 'static,
 {
     let token = CancellationToken::new();
     // Will call token.cancel() when the future is dropped, such as when the client
@@ -436,7 +460,10 @@ where
             Err(Status::deadline_exceeded("RPC channel closed"))
         }
         Err(_) => {
-            warn!("[{}] Response timeout after {:?}", rpc_name, timeout_duration);
+            warn!(
+                "[{}] Response timeout after {:?}",
+                rpc_name, timeout_duration
+            );
             Err(Status::deadline_exceeded("RPC timeout exceeded"))
         }
     }

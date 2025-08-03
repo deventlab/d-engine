@@ -189,21 +189,19 @@ async fn test_handle_raft_event_case4_1() {
 
     // Mock replication handler
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_handle_append_entries()
-        .returning(move |_, _, _| {
-            Ok(AppendResponseWithUpdates {
-                response: AppendEntriesResponse::success(
-                    1,
-                    new_leader_term,
-                    Some(LogId {
-                        term: new_leader_term,
-                        index: 1,
-                    }),
-                ),
-                commit_index_update: Some(expect_new_commit),
-            })
-        });
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(
+                1,
+                new_leader_term,
+                Some(LogId {
+                    term: new_leader_term,
+                    index: 1,
+                }),
+            ),
+            commit_index_update: Some(expect_new_commit),
+        })
+    });
 
     let mut membership = MockMembership::new();
 
@@ -511,12 +509,13 @@ async fn test_handle_raft_event_case10() {
     let raft_event = RaftEvent::JoinCluster(request, resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 
     // Step 4: Verify the response
-    assert!(result.is_err(), "Expected handle_raft_event to return error");
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return error"
+    );
 
     // Step 5: Check the response sent through the channel
     let response = resp_rx.recv().await.expect("Response should be received");
@@ -544,9 +543,7 @@ async fn test_handle_raft_event_case11() {
     let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
 
     // Step 3: Call handle_raft_event
-    let result = state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
-        .await;
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 
     // Step 4: Verify the response
     assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
@@ -589,7 +586,10 @@ async fn test_broadcast_discovery_case1_success() {
 async fn test_broadcast_discovery_case2_retry_exhaustion() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut ctx = mock_context("test_broadcast_discovery_case2_retry_exhaustion", graceful_rx);
+    let mut ctx = mock_context(
+        "test_broadcast_discovery_case2_retry_exhaustion",
+        graceful_rx,
+    );
 
     let mut transport = MockTransport::new();
     // Always return empty responses
@@ -655,7 +655,10 @@ async fn test_select_valid_leader_case1_priority() {
 async fn test_select_valid_leader_case2_invalid_responses() {
     enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let ctx = mock_context("test_select_valid_leader_case2_invalid_responses", graceful_rx);
+    let ctx = mock_context(
+        "test_select_valid_leader_case2_invalid_responses",
+        graceful_rx,
+    );
     let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
     let responses = vec![
@@ -801,9 +804,9 @@ async fn test_join_cluster_case4_join_rpc_failure() {
 
     // Mock transport to fail join RPC
     let mut transport = MockTransport::new();
-    transport
-        .expect_join_cluster()
-        .returning(|_, _, _, _| Err(NetworkError::ServiceUnavailable("Service unavailable".to_string()).into()));
+    transport.expect_join_cluster().returning(|_, _, _, _| {
+        Err(NetworkError::ServiceUnavailable("Service unavailable".to_string()).into())
+    });
 
     ctx.transport = Arc::new(transport);
 
@@ -849,7 +852,9 @@ async fn test_join_cluster_case5_invalid_join_response() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        Error::Consensus(ConsensusError::Membership(MembershipError::JoinClusterFailed(_)))
+        Error::Consensus(ConsensusError::Membership(
+            MembershipError::JoinClusterFailed(_)
+        ))
     ));
 }
 
@@ -946,9 +951,9 @@ async fn test_join_cluster_case8_mark_leader_failure() {
     // Mock membership to return known leader
     let mut membership = MockMembership::new();
     membership.expect_current_leader_id().returning(|| Some(5));
-    membership
-        .expect_mark_leader_id()
-        .returning(|_| Err(MembershipError::MarkLeaderIdFailed("test mark leader failure".to_string()).into()));
+    membership.expect_mark_leader_id().returning(|_| {
+        Err(MembershipError::MarkLeaderIdFailed("test mark leader failure".to_string()).into())
+    });
     ctx.membership = Arc::new(membership);
 
     // Mock transport to return success
@@ -972,7 +977,9 @@ async fn test_join_cluster_case8_mark_leader_failure() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        Error::Consensus(ConsensusError::Membership(MembershipError::MarkLeaderIdFailed(_)))
+        Error::Consensus(ConsensusError::Membership(
+            MembershipError::MarkLeaderIdFailed(_)
+        ))
     ));
 }
 
@@ -985,7 +992,8 @@ mod role_violation_tests {
     async fn test_role_violation_events() {
         // Step 1: Setup the test environment
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let context = mock_raft_context("/tmp/test_learner_role_violation_events", graceful_rx, None);
+        let context =
+            mock_raft_context("/tmp/test_learner_role_violation_events", graceful_rx, None);
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
         // Step 2: Prepare the CreateSnapshotEvent
@@ -993,34 +1001,34 @@ mod role_violation_tests {
         let raft_event = RaftEvent::CreateSnapshotEvent;
 
         // [Test CreateSnapshotEvent]
-        let e = state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .unwrap_err();
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
 
         // Verify the error response
-        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
 
         // [Test SnapshotCreated]
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let raft_event = RaftEvent::SnapshotCreated(Err(Error::Fatal("test".to_string())));
-        let e = state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .unwrap_err();
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
 
         // Verify the error response
-        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
 
         // [Test LogPurgeCompleted]
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
-        let e = state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .unwrap_err();
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
 
         // Verify the error response
-        assert!(matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })));
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
     }
 }

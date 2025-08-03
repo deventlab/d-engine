@@ -38,6 +38,10 @@ max_entries_per_chunk = 100
 [raft.snapshot]
 enable = true
 max_log_entries_before_snapshot = 1000
+
+# in secs
+snapshot_cool_down_since_last_check = { secs = 3600 }
+
 cleanup_retain_count = 2
 snapshots_dir = "./snapshots/"
 # 1KB
@@ -52,3 +56,25 @@ cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"
 
 [raft.auto_join]
 rpc_enable_compression = true
+
+
+[raft.persistence]
+# Persistence strategy:
+#   - "DiskFirst": Strongest durability. Each log entry is written to disk before memory.
+#   - "MemFirst": Highest performance. Entries go to memory first, disk asynchronously.
+strategy = "DiskFirst"
+
+# Flush policy controls when memory logs are flushed to disk:
+#   - "Immediate": Flush every entry immediately to disk (sync write).
+#   - 'Batch { threshold, interval_ms }': Flush when either count or time is exceeded.
+#
+# Example:
+# flush_policy = "Immediate"
+# OR
+# flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
+flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
+
+# Upcoming feature(v0.1.4)
+# Maximum number of log entries to buffer in memory
+# when using async persistence strategies (MemFirst/Batched)
+max_buffered_entries = 10000

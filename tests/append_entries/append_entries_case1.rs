@@ -23,12 +23,11 @@ use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
-use crate::common::init_state_storage;
+use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
 use crate::common::prepare_raft_log;
 use crate::common::prepare_state_machine;
-use crate::common::prepare_state_storage;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
@@ -60,24 +59,18 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     let sm1 = Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1")));
     let raft_logs = [
-        Arc::new(prepare_raft_log(1, &format!("{DB_ROOT_DIR}/cs/1"), 0)),
-        Arc::new(prepare_raft_log(2, &format!("{DB_ROOT_DIR}/cs/2"), 0)),
-        Arc::new(prepare_raft_log(3, &format!("{DB_ROOT_DIR}/cs/3"), 0)),
+        prepare_raft_log(1, &format!("{DB_ROOT_DIR}/cs/1"), 0),
+        prepare_raft_log(2, &format!("{DB_ROOT_DIR}/cs/2"), 0),
+        prepare_raft_log(3, &format!("{DB_ROOT_DIR}/cs/3"), 0),
     ];
 
-    manipulate_log(&raft_logs[0], vec![1, 2, 3], 1);
-    manipulate_log(&raft_logs[1], vec![1, 2, 3, 4], 1);
-    manipulate_log(&raft_logs[2], (1..=3).collect(), 1);
-    manipulate_log(&raft_logs[2], (4..=10).collect(), 2);
-
-    // Prepare state storage
-    let state_storages = (1..=3)
-        .map(|i| {
-            let ss = Arc::new(prepare_state_storage(&format!("{DB_ROOT_DIR}/cs/{i}")));
-            init_state_storage(&ss, if i == 3 { 2 } else { 1 }, None);
-            ss
-        })
-        .collect::<Vec<_>>();
+    manipulate_log(&raft_logs[0], vec![1, 2, 3], 1).await;
+    init_hard_state(&raft_logs[0], 1, None);
+    manipulate_log(&raft_logs[1], vec![1, 2, 3, 4], 1).await;
+    init_hard_state(&raft_logs[1], 1, None);
+    manipulate_log(&raft_logs[2], (1..=3).collect(), 1).await;
+    init_hard_state(&raft_logs[2], 2, None);
+    manipulate_log(&raft_logs[2], (4..=10).collect(), 2).await;
 
     // 2. Start the cluster
     println!("2. Start the cluster");
@@ -89,10 +82,11 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     println!("{:?}", ports);
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
-            node_config(&create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await),
+            node_config(
+                &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
+            ),
             if i == 0 { Some(sm1.clone()) } else { None },
             Some(raft_logs[i].clone()),
-            Some(state_storages[i].clone()),
         )
         .await?;
 

@@ -26,6 +26,7 @@ use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::LeaderDiscoveryRequest;
 use crate::proto::cluster::LeaderDiscoveryResponse;
+use crate::proto::common::LogId;
 use crate::proto::election::VoteResponse;
 use crate::proto::election::VotedFor;
 use crate::proto::error::ErrorCode;
@@ -179,12 +180,13 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
 
                 // 2. Response sender with vote_granted=false
-                let (last_log_index, last_log_term) = ctx.raft_log().get_last_entry_metadata();
+                let last_log_id =
+                    ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
                 let response = VoteResponse {
                     term: my_term,
                     vote_granted: false,
-                    last_log_index,
-                    last_log_term,
+                    last_log_index: last_log_id.index,
+                    last_log_term: last_log_id.term,
                 };
                 debug!(
                     "Response candidate_{:?} with response: {:?}",
@@ -235,7 +237,11 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     Ok(res) => res,
                     Err(e) => {
                         error!(?e, "update_cluster_conf_from_leader");
-                        ClusterConfUpdateResponse::internal_error(my_id, my_term, current_conf_version)
+                        ClusterConfUpdateResponse::internal_error(
+                            my_id,
+                            my_term,
+                            current_conf_version,
+                        )
                     }
                 };
 
@@ -263,13 +269,13 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
                 //TODO: direct to leader
                 // self.redirect_to_leader(client_propose_request).await;
-                sender
-                    .send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)))
-                    .map_err(|e| {
+                sender.send(Ok(ClientResponse::client_error(ErrorCode::NotLeader))).map_err(
+                    |e| {
                         let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    },
+                )?;
             }
 
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
@@ -308,7 +314,12 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 if let Err(e) = ctx
                     .handlers
                     .state_machine_handler
-                    .apply_snapshot_stream_from_leader(my_term, stream, ack_tx, &ctx.node_config.raft.snapshot)
+                    .apply_snapshot_stream_from_leader(
+                        my_term,
+                        stream,
+                        ack_tx,
+                        &ctx.node_config.raft.snapshot,
+                    )
                     .await
                 {
                     error!(?e, "Learner handle  RaftEvent::InstallSnapshotChunk");
@@ -320,13 +331,11 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
                 warn!(%self.shared_state.node_id, "Learner should not receive RaftEvent::RaftLogCleanUp request from Leader");
-                sender
-                    .send(Err(Status::permission_denied("Not Follower")))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                sender.send(Err(Status::permission_denied("Not Follower"))).map_err(|e| {
+                    let error_str = format!("{e:?}");
+                    error!("Failed to send: {}", error_str);
+                    NetworkError::SingalSendFailed(error_str)
+                })?;
             }
 
             RaftEvent::CreateSnapshotEvent => {
@@ -342,7 +351,10 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Learner",
                     required_role: "Leader",
-                    context: format!("Learner node {} attempted to handle created snapshot.", ctx.node_id),
+                    context: format!(
+                        "Learner node {} attempted to handle created snapshot.",
+                        ctx.node_id
+                    ),
                 }
                 .into())
             }
@@ -373,7 +385,10 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Learner",
                     required_role: "Leader",
-                    context: format!("Learner node {} receives RaftEvent::JoinCluster", ctx.node_id),
+                    context: format!(
+                        "Learner node {} receives RaftEvent::JoinCluster",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -410,7 +425,10 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Learner",
                     required_role: "Leader",
-                    context: format!("Learner node {} receives RaftEvent::TriggerSnapshotPush", ctx.node_id),
+                    context: format!(
+                        "Learner node {} receives RaftEvent::TriggerSnapshotPush",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -419,7 +437,10 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Learner",
                     required_role: "Leader",
-                    context: format!("Learner node {} receives RaftEvent::PromoteReadyLearners", ctx.node_id),
+                    context: format!(
+                        "Learner node {} receives RaftEvent::PromoteReadyLearners",
+                        ctx.node_id
+                    ),
                 }
                 .into());
             }
@@ -474,11 +495,8 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         &self,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        let leader_id = ctx
-            .membership()
-            .current_leader_id()
-            .await
-            .ok_or(MembershipError::NoLeader)?;
+        let leader_id =
+            ctx.membership().current_leader_id().await.ok_or(MembershipError::NoLeader)?;
 
         // Create ACK channel (learner sends ACKs to leader)
         let (ack_tx, ack_rx) = mpsc::channel(32);
@@ -554,8 +572,11 @@ impl<T: TypeConfig> LearnerState<T> {
             // Execute discovery attempt with timeout
             let discovery_result = tokio::time::timeout(
                 Duration::from_millis(retry_policy.timeout_ms),
-                ctx.transport
-                    .discover_leader(request.clone(), rpc_enable_compression, membership.clone()),
+                ctx.transport.discover_leader(
+                    request.clone(),
+                    rpc_enable_compression,
+                    membership.clone(),
+                ),
             )
             .await;
 
@@ -569,7 +590,10 @@ impl<T: TypeConfig> LearnerState<T> {
                     }
                 }
                 Err(_) => {
-                    warn!("Discovery request timed out after {}ms", retry_policy.timeout_ms);
+                    warn!(
+                        "Discovery request timed out after {}ms",
+                        retry_policy.timeout_ms
+                    );
                 }
             }
 
@@ -577,7 +601,10 @@ impl<T: TypeConfig> LearnerState<T> {
             retry_count += 1;
             if retry_policy.max_retries > 0 && retry_count >= retry_policy.max_retries {
                 error!("Discovery failed after {} retries", retry_count);
-                return Err(NetworkError::RetryTimeoutError(Duration::from_millis(retry_policy.timeout_ms)).into());
+                return Err(NetworkError::RetryTimeoutError(Duration::from_millis(
+                    retry_policy.timeout_ms,
+                ))
+                .into());
             }
 
             // Calculate next backoff delay
@@ -604,17 +631,16 @@ impl<T: TypeConfig> LearnerState<T> {
         responses: Vec<LeaderDiscoveryResponse>,
     ) -> Option<u32> {
         // Filter invalid responses
-        let mut valid_responses: Vec<_> = responses
-            .into_iter()
-            .filter(|r| r.leader_id != 0 && r.term > 0)
-            .collect();
+        let mut valid_responses: Vec<_> =
+            responses.into_iter().filter(|r| r.leader_id != 0 && r.term > 0).collect();
 
         if valid_responses.is_empty() {
             return None;
         }
 
         // Sort by term in descending order, node_id in descending order
-        valid_responses.sort_by(|a, b| b.term.cmp(&a.term).then_with(|| b.leader_id.cmp(&a.leader_id)));
+        valid_responses
+            .sort_by(|a, b| b.term.cmp(&a.term).then_with(|| b.leader_id.cmp(&a.leader_id)));
 
         trace!(?valid_responses);
 

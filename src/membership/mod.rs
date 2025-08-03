@@ -30,7 +30,11 @@ pub(crate) enum ConnectionType {
 }
 impl ConnectionType {
     pub(crate) fn all() -> Vec<ConnectionType> {
-        vec![ConnectionType::Control, ConnectionType::Data, ConnectionType::Bulk]
+        vec![
+            ConnectionType::Control,
+            ConnectionType::Data,
+            ConnectionType::Bulk,
+        ]
     }
 }
 

@@ -117,8 +117,14 @@ fn dynamic_threshold_adjustment() {
 fn handles_term_regression() {
     let policy = LogSizePolicy::new(100, Duration::ZERO);
     let ctx = SnapshotContext {
-        last_applied: LogId { index: 200, term: 2 },
-        last_included: LogId { index: 100, term: 3 }, // Higher than current term
+        last_applied: LogId {
+            index: 200,
+            term: 2,
+        },
+        last_included: LogId {
+            index: 100,
+            term: 3,
+        }, // Higher than current term
         current_term: 2,
         role: LEADER,
     };
@@ -143,8 +149,11 @@ fn high_frequency_performance() {
 
     let duration = start.elapsed();
     assert!(
-        duration < Duration::from_millis(100),
+        duration.as_millis() < 100,
         "Performance regression detected: {duration:?}",
     );
-    assert!(1 == trigger_count, "Unexpected trigger count: {trigger_count}",);
+    assert!(
+        1 == trigger_count,
+        "Unexpected trigger count: {trigger_count}",
+    );
 }

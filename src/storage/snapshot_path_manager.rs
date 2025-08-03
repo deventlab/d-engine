@@ -68,8 +68,10 @@ impl SnapshotPathManager {
         &self,
         log_id: &LogId,
     ) -> PathBuf {
-        self.base_dir
-            .join(format!("{}{}-{}", self.temp_prefix, log_id.index, log_id.term))
+        self.base_dir.join(format!(
+            "{}{}-{}",
+            self.temp_prefix, log_id.index, log_id.term
+        ))
     }
 
     /// Generates a versioned temporary path (for atomic writes)
@@ -110,7 +112,9 @@ impl SnapshotPathManager {
             if let Some(stripped) = filename.strip_prefix(pattern) {
                 let parts: Vec<&str> = stripped.split('-').collect();
                 if parts.len() >= 2 {
-                    if let (Ok(index), Ok(term)) = (parts[0].parse(), parts[1].split('.').next()?.parse()) {
+                    if let (Ok(index), Ok(term)) =
+                        (parts[0].parse(), parts[1].split('.').next()?.parse())
+                    {
                         return Some((index, term));
                     }
                 }

@@ -65,9 +65,7 @@ impl Debug for RaftNodeConfig {
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("RaftNodeConfig")
-            .field("cluster", &self.cluster)
-            .finish()
+        f.debug_struct("RaftNodeConfig").field("cluster", &self.cluster).finish()
     }
 }
 impl RaftNodeConfig {

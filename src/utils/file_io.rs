@@ -210,11 +210,14 @@ pub fn convert_vec_checksum(checksum: Vec<u8>) -> Result<[u8; 32]> {
     match checksum.len() {
         // Exact size match - use efficient conversion
         32 => checksum.try_into().map_err(|_| {
-            ConvertError::ConversionFailure("Conversion failed despite correct length".to_string()).into()
+            ConvertError::ConversionFailure("Conversion failed despite correct length".to_string())
+                .into()
         }),
 
         // Handle empty vector as special case
-        0 => Err(ConvertError::ConversionFailure("Empty checksum vector provided".to_string()).into()),
+        0 => Err(
+            ConvertError::ConversionFailure("Empty checksum vector provided".to_string()).into(),
+        ),
 
         // All other length mismatches
         len => Err(ConvertError::ConversionFailure(format!(
@@ -238,12 +241,10 @@ pub(crate) async fn move_directory(
     }
 
     // Attempt to rename/move the directory
-    fs::rename(&temp_dir, &final_dir)
-        .await
-        .map_err(|e| StorageError::PathError {
-            path: temp_dir.to_path_buf(),
-            source: e,
-        })?;
+    fs::rename(&temp_dir, &final_dir).await.map_err(|e| StorageError::PathError {
+        path: temp_dir.to_path_buf(),
+        source: e,
+    })?;
 
     Ok(())
 }

@@ -1,5 +1,6 @@
-use sled::IVec;
 use std::collections::HashMap;
+
+use sled::IVec;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct LocalLogBatch {
@@ -8,6 +9,7 @@ pub(crate) struct LocalLogBatch {
 
 impl LocalLogBatch {
     /// Set a key to a new value
+    #[allow(dead_code)]
     pub(crate) fn insert<K, V>(
         &mut self,
         key: K,
@@ -20,6 +22,7 @@ impl LocalLogBatch {
     }
 
     /// Remove a key
+    #[allow(dead_code)]
     pub(crate) fn remove<K>(
         &mut self,
         key: K,
@@ -28,7 +31,7 @@ impl LocalLogBatch {
     {
         self.writes.insert(key.into(), None);
     }
-
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.writes.len() < 1
     }

@@ -88,9 +88,9 @@ async fn update_node_not_found() {
 
     assert!(matches!(
         result.unwrap_err(),
-        Error::Consensus(ConsensusError::Membership(MembershipError::NoMetadataFoundForNode {
-            node_id: 99
-        }))
+        Error::Consensus(ConsensusError::Membership(
+            MembershipError::NoMetadataFoundForNode { node_id: 99 }
+        ))
     ));
 }
 
@@ -109,7 +109,9 @@ async fn concurrent_read_access() {
 
     for _ in 0..10 {
         let guard_clone = Arc::clone(&guard);
-        handles.push(tokio::spawn(async move { guard_clone.contains_node(1).await }));
+        handles.push(tokio::spawn(
+            async move { guard_clone.contains_node(1).await },
+        ));
     }
 
     let results = futures::future::join_all(handles).await;

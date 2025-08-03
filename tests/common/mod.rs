@@ -5,12 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::Config;
-use d_engine::alias::ROF;
 use d_engine::alias::SMOF;
-use d_engine::alias::SSOF;
+use d_engine::alias::SOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
+use d_engine::config::FlushPolicy;
+use d_engine::config::PersistenceConfig;
+use d_engine::config::PersistenceStrategy;
 use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
@@ -23,12 +25,12 @@ use d_engine::proto::client::WriteCommand;
 use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
+use d_engine::storage::init_sled_storage_engine_db;
 use d_engine::storage::RaftLog;
-use d_engine::storage::SledRaftLog;
 use d_engine::storage::SledStateMachine;
-use d_engine::storage::SledStateStorage;
+use d_engine::storage::SledStorageEngine;
 use d_engine::storage::StateMachine;
-use d_engine::storage::StateStorage;
+use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
 use d_engine::HardState;
 use prost::Message;
@@ -41,7 +43,6 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
-use tracing::trace;
 
 use crate::client_manager::ClientManager;
 
@@ -70,8 +71,9 @@ pub struct TestContext {
 impl TestContext {
     pub async fn shutdown(self) -> Result<(), ClientApiError> {
         for tx in self.graceful_txs {
-            tx.send(())
-                .map_err(|_| ClientApiError::general_client_error("failed to shutdown".to_string()))?;
+            tx.send(()).map_err(|_| {
+                ClientApiError::general_client_error("failed to shutdown".to_string())
+            })?;
         }
 
         for handle in self.node_handles {
@@ -94,7 +96,9 @@ pub async fn create_node_config(
         .enumerate()
         .map(|(i, &p)| {
             let id = i as u64 + 1;
-            format!("{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}")
+            format!(
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}"
+            )
         })
         .collect::<Vec<_>>()
         .join(",\n            ");
@@ -116,7 +120,10 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     let mut config = RaftNodeConfig::default();
 
     let settings = Config::builder()
-        .add_source(config::File::from_str(cluster_toml, config::FileFormat::Toml))
+        .add_source(config::File::from_str(
+            cluster_toml,
+            config::FileFormat::Toml,
+        ))
         .build()
         .unwrap();
 
@@ -142,6 +149,11 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             retained_log_entries: 1,
             ..Default::default()
         },
+        persistence: PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -159,11 +171,13 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
 }
 
 #[allow(dead_code)]
-pub async fn start_cluster(nodes_config: Vec<RaftNodeConfig>) -> std::result::Result<(), ClientApiError> {
+pub async fn start_cluster(
+    nodes_config: Vec<RaftNodeConfig>
+) -> std::result::Result<(), ClientApiError> {
     // Start all nodes
     let mut controllers = vec![];
     for config in nodes_config {
-        let (tx, handle) = start_node(config, None, None, None).await?;
+        let (tx, handle) = start_node(config, None, None).await?;
         controllers.push((tx, handle));
     }
 
@@ -180,8 +194,7 @@ pub async fn start_cluster(nodes_config: Vec<RaftNodeConfig>) -> std::result::Re
 pub async fn start_node(
     config: RaftNodeConfig,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
-    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
 ) -> std::result::Result<
     (
         watch::Sender<()>,
@@ -191,7 +204,7 @@ pub async fn start_node(
 > {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let node = build_node(config, graceful_rx, state_machine, raft_log, state_storage).await?;
+    let node = build_node(config, graceful_rx, state_machine, storage_engine).await?;
 
     let node_clone = node.clone();
     let node_id = node.node_config.cluster.node_id;
@@ -204,21 +217,17 @@ async fn build_node(
     config: RaftNodeConfig,
     graceful_rx: watch::Receiver<()>,
     state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<Arc<ROF<RaftTypeConfig>>>,
-    state_storage: Option<Arc<SSOF<RaftTypeConfig>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
 ) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
     // Prepare raft log entries
     let mut builder = NodeBuilder::init(config, graceful_rx);
-    if let Some(r) = raft_log {
+    if let Some(s) = storage_engine {
         // let sled_raft_log = prepare_raft_log(&config_path, last_applied_index);
         // manipulate_log(&sled_raft_log, ids, term);
-        builder = builder.raft_log(r);
+        builder = builder.storage_engine(s);
     }
     if let Some(sm) = state_machine {
         builder = builder.state_machine(sm);
-    }
-    if let Some(ss) = state_storage {
-        builder = builder.state_storage(ss);
     }
     // Build and start the node
     let node = builder
@@ -253,17 +262,14 @@ pub fn get_root_path() -> PathBuf {
 pub fn prepare_raft_log(
     node_id: u32,
     db_path: &str,
-    last_applied_index: u64,
-) -> SledRaftLog {
+    _last_applied_index: u64,
+) -> Arc<SledStorageEngine> {
     let raft_log_db_path = format!("{db_path}/raft_log",);
-    let raft_log_db = sled::Config::default()
-        .path(raft_log_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledRaftLog::new(node_id, Arc::new(raft_log_db), last_applied_index)
+    let storage_engine_db = init_sled_storage_engine_db(&raft_log_db_path)
+        .expect("init_sled_storage_engine_db successfully.");
+    Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("success"))
 }
+
 pub fn prepare_state_machine(
     node_id: u32,
     db_path: &str,
@@ -277,36 +283,25 @@ pub fn prepare_state_machine(
         .unwrap();
     SledStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
 }
-pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
-    let state_storage_db_path = format!("{db_path}/state_storage",);
-    let state_storage_db = sled::Config::default()
-        .path(state_storage_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledStateStorage::new(Arc::new(state_storage_db))
-}
 
-pub fn manipulate_log(
-    raft_log: &Arc<impl RaftLog>,
+pub async fn manipulate_log(
+    storage_engine: &Arc<SOF<RaftTypeConfig>>,
     log_ids: Vec<u64>,
     term: u64,
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        let index = raft_log.pre_allocate_raft_logs_next_index();
-
-        trace!("pre_allocate_raft_logs_next_index: {}", index);
+        println!("pre_allocate_raft_logs_next_index: {}", id);
 
         let log = Entry {
-            index,
+            index: id,
             term,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }
-    assert!(raft_log.insert_batch(entries).is_ok());
+    assert!(storage_engine.persist_entries(entries).is_ok());
+    assert!(storage_engine.flush().is_ok());
 }
 
 #[allow(dead_code)]
@@ -315,16 +310,16 @@ pub fn manipulate_state_machine(
     state_machine: &Arc<impl StateMachine>,
     id_range: RangeInclusive<u64>,
 ) {
-    let entries = raft_log.get_entries_between(id_range);
+    let entries = raft_log.get_entries_range(id_range).expect("Failed to get entries");
     assert!(state_machine.apply_chunk(entries).is_ok());
 }
 
-pub fn init_state_storage(
-    state_storage: &Arc<impl StateStorage>,
+pub fn init_hard_state(
+    storage_engine: &Arc<impl StorageEngine>,
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
-    assert!(state_storage
+    assert!(storage_engine
         .save_hard_state(HardState {
             current_term,
             voted_for,
@@ -417,7 +412,8 @@ pub async fn check_cluster_is_ready(
     match result {
         Ok(_) => Ok(()),
         Err(_) => {
-            let err_msg = format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
+            let err_msg =
+                format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg))
         }
     }

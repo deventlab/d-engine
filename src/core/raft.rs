@@ -26,7 +26,6 @@ use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::StateStorage;
 use crate::TypeConfig;
 
 pub struct Raft<T>
@@ -82,7 +81,14 @@ where
         signal_params: SignalParams,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
-        let ctx = Self::build_context(node_id, storage, transport, membership, handlers, node_config.clone());
+        let ctx = Self::build_context(
+            node_id,
+            storage,
+            transport,
+            membership,
+            handlers,
+            node_config.clone(),
+        );
 
         Raft {
             node_id,
@@ -133,7 +139,10 @@ where
     pub async fn run(&mut self) -> Result<()> {
         // Add snapshot handler before main loop
         if self.ctx.node_config.is_joining() {
-            info!("Node({}) is joining and needs to fetch initial snapshot.", self.node_id);
+            info!(
+                "Node({}) is joining and needs to fetch initial snapshot.",
+                self.node_id
+            );
             if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {
                 warn!(
                     "Initial snapshot failed: {:?}.
@@ -246,13 +255,20 @@ where
 
                 let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true).await;
 
-                self.role
-                    .init_peers_next_index_and_match_index(self.ctx.raft_log().last_entry_id(), peer_ids)?;
+                self.role.init_peers_next_index_and_match_index(
+                    self.ctx.raft_log().last_entry_id(),
+                    peer_ids,
+                )?;
 
                 //async action
                 if !self
                     .role
-                    .verify_leadership_persistent(vec![EntryPayload::noop()], true, &self.ctx, &self.role_tx)
+                    .verify_leadership_persistent(
+                        vec![EntryPayload::noop()],
+                        true,
+                        &self.ctx,
+                        &self.role_tx,
+                    )
                     .await
                     .unwrap_or(false)
                 {
@@ -275,7 +291,10 @@ where
                 self.notify_role_transition();
             }
             RoleEvent::NotifyNewCommitIndex(new_commit_data) => {
-                debug!(?new_commit_data, "[{}] RoleEvent::NotifyNewCommitIndex.", self.node_id,);
+                debug!(
+                    ?new_commit_data,
+                    "[{}] RoleEvent::NotifyNewCommitIndex.", self.node_id,
+                );
                 self.notify_new_commit(new_commit_data);
             }
 
@@ -364,10 +383,8 @@ where
     fn drop(&mut self) {
         info!("Raft been dropped.");
 
-        if let Err(e) = self
-            .ctx
-            .state_storage()
-            .save_hard_state(self.role.state().shared_state().hard_state)
+        if let Err(e) =
+            self.ctx.raft_log().save_hard_state(self.role.state().shared_state().hard_state)
         {
             error!(?e, "State storage persist node hard state failed.");
         }

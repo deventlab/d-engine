@@ -47,7 +47,10 @@ async fn test_composite_policy_time_trigger() {
 
     // Wait for interval to pass
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(policy.should_trigger(&ctx), "Should trigger after time interval");
+    assert!(
+        policy.should_trigger(&ctx),
+        "Should trigger after time interval"
+    );
 
     // Reset after snapshot
     policy.mark_snapshot_created();
@@ -97,7 +100,10 @@ async fn test_composite_policy_follower_never_triggers() {
     // Wait and update logs - still shouldn't trigger
     tokio::time::sleep(Duration::from_millis(20)).await;
     ctx.last_applied.index = 200;
-    assert!(!policy.should_trigger(&ctx), "Should not trigger for follower role");
+    assert!(
+        !policy.should_trigger(&ctx),
+        "Should not trigger for follower role"
+    );
 }
 
 #[tokio::test]
@@ -147,5 +153,8 @@ async fn test_log_index_update_mechanism() {
 
     // Above threshold (lag=6) should trigger
     let ctx_above = leader_ctx(6);
-    assert!(policy.should_trigger(&ctx_above), "Should trigger above threshold");
+    assert!(
+        policy.should_trigger(&ctx_above),
+        "Should trigger above threshold"
+    );
 }

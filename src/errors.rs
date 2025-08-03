@@ -590,16 +590,22 @@ impl From<SerializationError> for Error {
     }
 }
 
-// These allow direct conversion from prost errors to SystemError
-impl From<prost::EncodeError> for SystemError {
-    fn from(error: prost::EncodeError) -> Self {
-        SystemError::Prost(ProstError::Encode(error))
-    }
-}
+// // These allow direct conversion from prost errors to SystemError
+// impl From<prost::EncodeError> for SystemError {
+//     fn from(error: prost::EncodeError) -> Self {
+//         SystemError::Prost(ProstError::Encode(error))
+//     }
+// }
 
-impl From<prost::DecodeError> for SystemError {
-    fn from(error: prost::DecodeError) -> Self {
-        SystemError::Prost(ProstError::Decode(error))
+// impl From<prost::DecodeError> for SystemError {
+//     fn from(error: prost::DecodeError) -> Self {
+//         SystemError::Prost(ProstError::Decode(error))
+//     }
+// }
+
+impl From<ProstError> for Error {
+    fn from(error: ProstError) -> Self {
+        Error::System(SystemError::Prost(error))
     }
 }
 

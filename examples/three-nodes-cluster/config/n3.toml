@@ -23,26 +23,38 @@ batch_size = 5000
 [raft.replication]
 rpc_append_entries_in_batch_threshold = 5000
 
+[raft.persistence]
+strategy = "MemFirst"
+# strategy = "DiskFirst"
+flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+# flush_policy = "Immediate"
+
+
 [raft.snapshot]
-enable = true
+enable = false
+max_log_entries_before_snapshot = 5000
+snapshot_cool_down_since_last_check = { secs = 1 }
+snapshots_dir = "./snapshots/"
+retained_log_entries = 3
 
+# == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]
-concurrency_limit = 8192                #// Moderate concurrency
-max_concurrent_streams = 8192           #// Stream limit for control operations
-tcp_keepalive_in_secs = 3600            #// 5 minute TCP keepalive
-http2_keep_alive_interval_in_secs = 300 #// Frequent pings
-http2_keep_alive_timeout_in_secs = 20   #// Short timeout
-max_frame_size = 16_777_215
-connection_window_size = 2_097_152      #// 2MB connection window
+concurrency_limit = 20                 # Lower control plane concurrency is recommended
+max_concurrent_streams = 128
+tcp_keepalive_in_secs = 60             # Closer to native behavior
+http2_keep_alive_interval_in_secs = 10
+http2_keep_alive_timeout_in_secs = 5
+max_frame_size = 16_777_215            # Default value is acceptable
+connection_window_size = 2_097_152     # 2MB is sufficient (to prevent memory overflow)
 
-
+# == Network Data Plane (append_entries, etc.) ==
 [network.data]
-connect_timeout_in_ms = 20              #// Balance speed and reliability
-request_timeout_in_ms = 200             #// Accommodate log batches
-concurrency_limit = 8192                #// High concurrency for parallel logs
-max_concurrent_streams = 500            #// More streams for pipelining
-tcp_keepalive_in_secs = 3600            #// 10 minute TCP keepalive
-http2_keep_alive_interval_in_secs = 300 #// Moderate ping interval
-http2_keep_alive_timeout_in_secs = 30   #// Longer grace period
+connect_timeout_in_ms = 100            # Slow is fine, ensure the connection is established
+request_timeout_in_ms = 300            # Log synchronization may take a long time.
+concurrency_limit = 30                 # High concurrency supports data replication.
+max_concurrent_streams = 256           # Sufficient; higher values may be counterproductive.
+tcp_keepalive_in_secs = 60
+http2_keep_alive_interval_in_secs = 10
+http2_keep_alive_timeout_in_secs = 5
 max_frame_size = 16_777_215
-connection_window_size = 6_291_456      #// 6MB connection window
+connection_window_size = 4_194_304     # Increase the buffer size to support batch data.

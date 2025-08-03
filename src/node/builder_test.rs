@@ -6,18 +6,19 @@ use tokio::sync::watch;
 
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
-use crate::test_utils::insert_state_storage;
 use crate::test_utils::node_config;
 use crate::test_utils::reset_dbs;
+use crate::BufferedRaftLog;
 use crate::Error;
+use crate::FlushPolicy;
 use crate::NodeBuilder;
-use crate::RaftLog;
+use crate::PersistenceConfig;
+use crate::PersistenceStrategy;
 use crate::RaftNodeConfig;
-use crate::SledRaftLog;
 use crate::SledStateMachine;
-use crate::SledStateStorage;
+use crate::SledStorageEngine;
 use crate::StateMachine;
-use crate::StateStorage;
+use crate::StorageEngine;
 use crate::SystemError;
 
 /// These components should not be initialized during builder setup; developers should have the
@@ -25,65 +26,74 @@ use crate::SystemError;
 #[test]
 fn test_new_initializes_default_components_with_none() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
+    let builder =
+        NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
 
-    assert!(builder.raft_log.is_none());
+    assert!(builder.storage_engine.is_none());
     assert!(builder.state_machine.is_none());
-    assert!(builder.state_storage.is_none());
-    assert!(builder.raft_log.is_none());
+    assert!(builder.transport.is_none());
     assert!(builder.membership.is_none());
-    assert!(builder.state_machine_handler.is_none());
     assert!(builder.commit_handler.is_none());
+    assert!(builder.state_machine_handler.is_none());
+    assert!(builder.snapshot_policy.is_none());
     assert!(builder.node.is_none());
+    assert!(builder.purge_executor.is_none());
 }
 
-#[test]
-fn test_set_raft_log_replaces_default() {
+#[tokio::test]
+async fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let db_path = "/tmp/test_set_raft_log_replaces_default";
 
-    let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) = reset_dbs(db_path);
+    let (raft_log_db, state_machine_db, _state_storage_db, _snapshot_storage_db) =
+        reset_dbs(db_path);
 
     let id = 1;
-    let raft_log_db = Arc::new(raft_log_db);
+    let raft_log_db = raft_log_db;
     let state_machine_db = Arc::new(state_machine_db);
-    let state_storage_db = Arc::new(state_storage_db);
 
-    let sled_raft_log = Arc::new(SledRaftLog::new(id, raft_log_db, 0));
+    let sled_storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("success"));
+    let (buffered_raft_log, receiver) = BufferedRaftLog::new(
+        id,
+        PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
+            max_buffered_entries: 1000,
+        },
+        sled_storage_engine.clone(),
+    );
+    let buffered_raft_log = buffered_raft_log.start(receiver);
+
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];
-    insert_raft_log(&sled_raft_log, expected_raft_log_ids.clone(), 1);
+    insert_raft_log(&buffered_raft_log, expected_raft_log_ids.clone(), 1).await;
 
-    let sled_state_machine = Arc::new(SledStateMachine::new(id, state_machine_db.clone()).expect("success"));
+    let sled_state_machine =
+        Arc::new(SledStateMachine::new(id, state_machine_db.clone()).expect("success"));
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
 
-    let sled_state_storage = Arc::new(SledStateStorage::new(state_storage_db));
-    let expected_state_storage_ids = vec![1, 2, 3, 4, 5];
-    insert_state_storage(&sled_state_storage, expected_state_storage_ids.clone());
-
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::new_from_db_path(db_path, shutdown_rx)
-        .raft_log(sled_raft_log)
-        .state_storage(sled_state_storage)
+        .storage_engine(sled_storage_engine)
         .state_machine(sled_state_machine);
 
     // Verify that raft_log is replaced with customization one
-    assert_eq!(builder.raft_log.as_ref().unwrap().len(), expected_raft_log_ids.len());
+    assert_eq!(
+        builder.storage_engine.as_ref().unwrap().len(),
+        expected_raft_log_ids.len()
+    );
     assert_eq!(
         builder.state_machine.as_ref().unwrap().len(),
         expected_state_machine_ids.len()
-    );
-    assert_eq!(
-        builder.state_storage.as_ref().unwrap().len(),
-        expected_state_storage_ids.len()
     );
 }
 
 #[tokio::test]
 async fn test_build_creates_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new_from_db_path("/tmp/test_build_creates_node", shutdown_rx).build();
+    let builder =
+        NodeBuilder::new_from_db_path("/tmp/test_build_creates_node", shutdown_rx).build();
 
     // Verify that the node instance is generated
     assert!(builder.node.is_some());
@@ -95,14 +105,18 @@ fn test_ready_fails_without_build() {
     let builder = NodeBuilder::new_from_db_path("/tmp/test_ready_fails_without_build", shutdown_rx);
 
     let result = builder.ready();
-    assert!(matches!(result, Err(Error::System(SystemError::NodeStartFailed(_)))));
+    assert!(matches!(
+        result,
+        Err(Error::System(SystemError::NodeStartFailed(_)))
+    ));
 }
 
 #[tokio::test]
 #[should_panic(expected = "failed to start RPC server")]
 async fn test_start_rpc_panics_without_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new_from_db_path("/tmp/test_start_rpc_panics_without_node", shutdown_rx);
+    let builder =
+        NodeBuilder::new_from_db_path("/tmp/test_start_rpc_panics_without_node", shutdown_rx);
 
     // If start the RPC service directly without calling build(), the service should
     // panic.
@@ -153,7 +167,10 @@ fn test_config_override_success() {
         );
 
         // Verify that other fields remain default
-        assert_eq!(updated_config.cluster.node_id, 1, "Node ID should remain default");
+        assert_eq!(
+            updated_config.cluster.node_id, 1,
+            "Node ID should remain default"
+        );
     });
 }
 

@@ -109,7 +109,8 @@ where
     /// ```
     pub async fn run(&self) -> Result<()> {
         // 1. Connect with other peers
-        // let peer_channels = Self::connect_with_peers(self.node_id, self.node_config.clone()).await?;
+        // let peer_channels = Self::connect_with_peers(self.node_id,
+        // self.node_config.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
         self.membership.check_cluster_is_ready().await?;

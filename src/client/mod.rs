@@ -208,7 +208,8 @@ impl ClientResponse {
     /// - `true` if the response indicates a successful write operation
     /// - `false` if the response indicates a failed write operation or is not a write response
     pub fn is_write_success(&self) -> bool {
-        self.error == ErrorCode::Success as i32 && matches!(self.success_result, Some(SuccessResult::WriteAck(true)))
+        self.error == ErrorCode::Success as i32
+            && matches!(self.success_result, Some(SuccessResult::WriteAck(true)))
     }
 
     /// Build success response for read operations
@@ -252,7 +253,9 @@ impl ClientResponse {
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    pub fn into_read_results(&self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
+    pub fn into_read_results(
+        &self
+    ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         self.validate_error()?;
         match &self.success_result {
             Some(SuccessResult::ReadData(data)) => data
@@ -286,9 +289,7 @@ impl ClientResponse {
 
     /// Check if this response indicates the leader's term is outdated
     pub fn is_term_outdated(&self) -> bool {
-        ErrorCode::try_from(self.error)
-            .map(|e| e.is_term_outdated())
-            .unwrap_or(false)
+        ErrorCode::try_from(self.error).map(|e| e.is_term_outdated()).unwrap_or(false)
     }
 
     /// Check if this response indicates a quorum timeout or failure to receive majority responses
@@ -300,16 +301,12 @@ impl ClientResponse {
 
     /// Check if this response indicates a failure to receive majority responses
     pub fn is_propose_failure(&self) -> bool {
-        ErrorCode::try_from(self.error)
-            .map(|e| e.is_propose_failure())
-            .unwrap_or(false)
+        ErrorCode::try_from(self.error).map(|e| e.is_propose_failure()).unwrap_or(false)
     }
 
     /// Check if this response indicates a a retry required
     pub fn is_retry_required(&self) -> bool {
-        ErrorCode::try_from(self.error)
-            .map(|e| e.is_retry_required())
-            .unwrap_or(false)
+        ErrorCode::try_from(self.error).map(|e| e.is_retry_required()).unwrap_or(false)
     }
 }
 

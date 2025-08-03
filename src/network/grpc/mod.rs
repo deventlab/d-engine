@@ -71,15 +71,9 @@ where
 
     // Set the initial health status to SERVING
     health_reporter.set_serving::<RaftClientServiceServer<Node<T>>>().await;
-    health_reporter
-        .set_serving::<RaftElectionServiceServer<Node<T>>>()
-        .await;
-    health_reporter
-        .set_serving::<RaftReplicationServiceServer<Node<T>>>()
-        .await;
-    health_reporter
-        .set_serving::<ClusterManagementServiceServer<Node<T>>>()
-        .await;
+    health_reporter.set_serving::<RaftElectionServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<RaftReplicationServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<ClusterManagementServiceServer<Node<T>>>().await;
     health_reporter.set_serving::<SnapshotServiceServer<Node<T>>>().await;
 
     // Use control plane configuration for base parameters
@@ -95,7 +89,9 @@ where
         .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
         .concurrency_limit_per_connection(control_config.concurrency_limit)
         .max_concurrent_streams(control_config.max_concurrent_streams)
-        .tcp_keepalive(Some(Duration::from_secs(control_config.tcp_keepalive_in_secs)))
+        .tcp_keepalive(Some(Duration::from_secs(
+            control_config.tcp_keepalive_in_secs,
+        )))
         .http2_keepalive_interval(Some(Duration::from_secs(
             control_config.http2_keep_alive_interval_in_secs,
         )))
@@ -126,8 +122,9 @@ where
         let server_identity = Identity::from_pem(cert, key);
         let tls = ServerTlsConfig::new().identity(server_identity);
         if config.tls.enable_mtls {
-            let client_ca_cert = std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
-                .expect("error, failed to read client certificate authority root");
+            let client_ca_cert =
+                std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
+                    .expect("error, failed to read client certificate authority root");
             let client_ca_cert = Certificate::from_pem(client_ca_cert);
             let tls = tls.client_ca_root(client_ca_cert);
             server_builder = server_builder.tls_config(tls).expect("error, failed to setup mTLS");
@@ -189,7 +186,8 @@ fn generate_self_signed_certificates(config: TlsConfig) {
         generate_simple_self_signed(subject_alt_names).expect("Certificate generation failed");
 
     // Write certificate and private key to files
-    std::fs::write(&config.server_certificate_path, cert.pem()).expect("Should succeed to write server certificate");
+    std::fs::write(&config.server_certificate_path, cert.pem())
+        .expect("Should succeed to write server certificate");
     std::fs::write(&config.server_private_key_path, key_pair.serialize_pem())
         .expect("Should succeed to write server private key");
 }

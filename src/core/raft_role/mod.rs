@@ -272,8 +272,7 @@ impl<T: TypeConfig> RaftRole<T> {
         last_entry_id: u64,
         peer_ids: Vec<u32>,
     ) -> Result<()> {
-        self.state_mut()
-            .init_peers_next_index_and_match_index(last_entry_id, peer_ids)
+        self.state_mut().init_peers_next_index_and_match_index(last_entry_id, peer_ids)
     }
 
     pub(crate) async fn tick(

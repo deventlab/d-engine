@@ -30,10 +30,14 @@ impl<'a> SnapshotGuard<'a> {
                 Ordering::AcqRel, // Ensure memory order
                 Ordering::Relaxed,
             )
-            .map_err(|e| SnapshotError::OperationFailed(format!("SnapshotGuard::compare_exchange, {e:?}")))?;
+            .map_err(|e| {
+                SnapshotError::OperationFailed(format!("SnapshotGuard::compare_exchange, {e:?}"))
+            })?;
 
         if already_in_progress {
-            return Err(SnapshotError::OperationFailed("Snapshot already in progress".to_string()).into());
+            return Err(
+                SnapshotError::OperationFailed("Snapshot already in progress".to_string()).into(),
+            );
         }
 
         Ok(Self { flag })
@@ -42,6 +46,7 @@ impl<'a> SnapshotGuard<'a> {
 
 impl Drop for SnapshotGuard<'_> {
     fn drop(&mut self) {
-        self.flag.store(false, Ordering::Release);
+        // Always reset when guard goes out of scope
+        self.flag.store(false, Ordering::SeqCst);
     }
 }
