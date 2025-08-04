@@ -681,20 +681,20 @@ pub enum PersistenceStrategy {
     /// - **Startup behavior**: All log entries are loaded from disk into memory at startup,
     ///   ensuring consistent access speed regardless of disk state.
     ///
-    /// - Suitable for systems prioritizing strong durability while still providing
-    ///   in-memory performance for reads.
+    /// - Suitable for systems prioritizing strong durability while still providing in-memory
+    ///   performance for reads.
     DiskFirst,
 
     /// Memory-first persistence strategy.
     ///
-    /// - **Write path**: On append, the log entry is first written to the in-memory `SkipMap`
-    ///   and acknowledged immediately. Disk persistence happens asynchronously in the background,
+    /// - **Write path**: On append, the log entry is first written to the in-memory `SkipMap` and
+    ///   acknowledged immediately. Disk persistence happens asynchronously in the background,
     ///   governed by [`FlushPolicy`].
     ///
     /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///
-    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup,
-    ///   the same as `DiskFirst`.
+    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup, the
+    ///   same as `DiskFirst`.
     ///
     /// - Suitable for systems that favor lower write latency and faster failover, while still
     ///   retaining a disk-backed log for crash recovery.

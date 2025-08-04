@@ -1,10 +1,11 @@
-use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+
+use crossbeam_skiplist::SkipMap;
+use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
@@ -152,7 +153,8 @@ where
             }
         }
 
-        // OPTIMIZED: Forward scan stops at first match (O(k) where k is position of first term match)
+        // OPTIMIZED: Forward scan stops at first match (O(k) where k is position of first term
+        // match)
         self.entries.iter().find(|entry| entry.value().term == term).map(|e| *e.key())
     }
 
