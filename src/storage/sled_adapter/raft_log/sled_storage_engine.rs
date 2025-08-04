@@ -245,8 +245,6 @@ impl StorageEngine for SledStorageEngine {
             }
         }
 
-        // self.raft_log.flush()?;
-
         Ok(())
     }
 

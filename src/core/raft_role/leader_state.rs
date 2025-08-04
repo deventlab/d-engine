@@ -1159,7 +1159,6 @@ impl<T: TypeConfig> LeaderState<T> {
     /// # Params
     /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(crate) async fn process_raft_request(
         &mut self,
         raft_request_with_signal: RaftRequestWithSignal,
@@ -1224,7 +1223,6 @@ impl<T: TypeConfig> LeaderState<T> {
     ///    - Client response: `ProposeFailed`
     ///    - State update: none
     ///    - Return: original error
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn process_batch(
         &mut self,
         batch: VecDeque<RaftRequestWithSignal>,

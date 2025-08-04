@@ -253,7 +253,7 @@ where
             tasks.push(task_handle.boxed());
         }
 
-        let mut responses = Vec::new();
+        let mut responses = Vec::with_capacity(tasks.len());
         while let Some(result) = tasks.next().await {
             match result {
                 Ok(r) => {

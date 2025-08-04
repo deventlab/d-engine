@@ -93,14 +93,14 @@ perf-cluster: clean build
 clean:
 	@echo "Cleaning build artifacts..."
 	cargo clean
-	rm -rf logs/
-	rm -rf db/
-	rm -rf samply_reports/
+	rm -rf logs/*
+	rm -rf db/*
+	rm -rf samply_reports/*
 
 clean-log-db:
 	@echo "Cleaning build artifacts..."
-	rm -rf logs/
-	rm -rf db/
+	rm -rf logs/*
+	rm -rf db/*
 
 help:
 	@echo "DEngine Cluster Management Commands:"
