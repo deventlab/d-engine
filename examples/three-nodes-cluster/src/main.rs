@@ -23,6 +23,10 @@ async fn main() {
         .map_err(|_| "LOG_DIR environment variable not set")
         .expect("Set log dir successfully.");
 
+    let metrics_port: u16 = env::var("METRICS_PORT")
+        .map(|v| v.parse::<u16>().expect("METRICS_PORT must be a valid port"))
+        .unwrap_or(9000); // default 9000 if not set
+
     // Initialize the log system
     let _guard = init_observability(log_dir);
 
@@ -35,18 +39,21 @@ async fn main() {
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
 
+    // --- Start Prometheus metrics server ---
+    let metrics_handle = tokio::spawn(start_metrics_server(metrics_port));
+
     // Monitor shutdown signals
     let shutdown_handler = tokio::spawn(graceful_shutdown(graceful_tx));
 
     // Wait for all tasks to complete (or error)
-    let (_server_result, _shutdown_result) = tokio::join!(server_handler, shutdown_handler);
+    let (_server_result, _metrics_result, _shutdown_result) =
+        tokio::join!(server_handler, metrics_handle, shutdown_handler);
 }
 
 async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .build()
-        .start_metrics_server(graceful_rx.clone()) //default: prometheus metrics server starts
         .start_rpc_server()
         .await
         .ready()
@@ -92,4 +99,16 @@ pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error 
         .with_filter(EnvFilter::from_default_env());
     tracing_subscriber::registry().with(base_subscriber).init();
     Ok(guard)
+}
+
+async fn start_metrics_server(port: u16) {
+    // Start Prometheus exporter with dynamic port
+    println!(
+        "Metrics server will start at http://0.0.0.0:{}/metrics",
+        port
+    );
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], port))
+        .install()
+        .expect("failed to start Prometheus metrics exporter");
 }

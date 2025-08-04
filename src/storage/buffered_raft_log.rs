@@ -1,4 +1,3 @@
-use autometrics::autometrics;
 use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
 use std::ops::RangeInclusive;
@@ -27,7 +26,6 @@ use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::Result;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 /// Commands for the log processor
 #[derive(Debug)]
@@ -339,7 +337,6 @@ where
         }))
     }
 
-    #[autometrics(objective = API_SLO)]
     fn calculate_majority_matched_index(
         &self,
         current_term: u64,
@@ -373,7 +370,6 @@ where
         }
     }
 
-    #[autometrics(objective = API_SLO)]
     fn purge_logs_up_to(
         &self,
         cutoff_index: LogId,
@@ -405,7 +401,6 @@ where
         Ok(())
     }
 
-    #[autometrics(objective = API_SLO)]
     async fn flush(&self) -> Result<()> {
         // Trigger immediate flush of all pending entries
         let (tx, rx) = oneshot::channel();
@@ -444,7 +439,6 @@ where
     /// db_size_cache_duration - how long the cache will be valid (since last
     /// activity) #[deprecated]
     #[cfg(test)]
-    #[autometrics(objective = API_SLO)]
     fn db_size(
         &self,
         _node_id: u32,
@@ -457,12 +451,12 @@ where
                 // db_size_cache.last_activity.insert(node_id, now);
                 debug!("retrieved the real db size: {size}",);
                 println!("retrieved the real db size: {size}",);
-                return Ok(size);
+                Ok(size)
             }
             Err(e) => {
                 error!("db_size() failed: {e:?}");
                 eprintln!("db_size() failed: {e:?}");
-                return Err(e);
+                Err(e)
             }
         }
     }

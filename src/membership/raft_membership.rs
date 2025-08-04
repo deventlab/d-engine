@@ -15,7 +15,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use autometrics::autometrics;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -278,7 +277,6 @@ where
             .await
     }
 
-    #[autometrics]
     async fn mark_leader_id(
         &self,
         leader_id: u32,
@@ -287,7 +285,6 @@ where
         self.update_node_role(leader_id, LEADER).await
     }
 
-    #[autometrics]
     async fn reset_leader(&self) -> Result<()> {
         self.membership
             .blocking_write(|guard| {
@@ -301,7 +298,6 @@ where
             .await
     }
 
-    #[autometrics]
     async fn update_node_role(
         &self,
         node_id: u32,
@@ -331,7 +327,6 @@ where
             .await
     }
 
-    #[autometrics]
     async fn retrieve_cluster_membership_config(&self) -> ClusterMembership {
         self.membership
             .blocking_read(|guard| ClusterMembership {
@@ -341,7 +336,6 @@ where
             .await
     }
 
-    #[autometrics]
     async fn update_cluster_conf_from_leader(
         &self,
         my_id: u32,
@@ -459,7 +453,6 @@ where
         ))
     }
 
-    #[autometrics]
     async fn get_cluster_conf_version(&self) -> u64 {
         self.membership.blocking_read(|guard| guard.cluster_conf_version).await
     }
@@ -514,7 +507,6 @@ where
             .await
     }
 
-    #[autometrics]
     async fn update_node_status(
         &self,
         node_id: u32,
@@ -527,7 +519,6 @@ where
         .await
     }
 
-    #[autometrics]
     async fn remove_node(
         &self,
         node_id: u32,

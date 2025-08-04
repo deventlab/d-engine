@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use autometrics::autometrics;
 use nanoid::nanoid;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -91,7 +90,6 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 // Supporting data structures
 #[derive(Debug, Clone)]
@@ -241,7 +239,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     /// As leader, I should not receive commit index,
     ///     which is lower than my current one
     #[tracing::instrument]
-    #[autometrics(objective = API_SLO)]
     fn update_commit_index(
         &mut self,
         new_commit_index: u64,
@@ -273,7 +270,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         self.shared_state_mut().update_voted_for(voted_for)
     }
 
-    #[autometrics(objective = API_SLO)]
     fn next_index(
         &self,
         node_id: u32,
@@ -304,7 +300,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
-    #[autometrics(objective = API_SLO)]
     fn match_index(
         &self,
         node_id: u32,
@@ -312,7 +307,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         self.match_index.get(&node_id).copied()
     }
 
-    #[autometrics(objective = API_SLO)]
     fn init_peers_next_index_and_match_index(
         &mut self,
         last_entry_id: u64,
@@ -408,7 +402,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     /// - `Ok(true)`: Quorum verification succeeded within retry limits
     /// - `Ok(false)`: Leadership definitively lost during verification
     /// - `Err(_)`: Maximum retries exceeded or critical failure occurred
-    #[autometrics(objective = API_SLO)]
     async fn verify_leadership_limited_retry(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -480,7 +473,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///
     /// 7. Critical failure (e.g., system or logic error):
     ///    - Return: original error
-    #[autometrics(objective = API_SLO)]
     async fn verify_internal_quorum(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -1380,7 +1372,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn check_learner_progress(
         &mut self,
         learner_progress: &HashMap<u32, Option<u64>>,
@@ -1466,7 +1457,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
+    #[allow(dead_code)]
     pub(super) async fn batch_promote_learners(
         &mut self,
         ready_learners_ids: Vec<u32>,
@@ -1540,48 +1531,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    // /// TODO: to be cleaned up
-    // /// Attempt to activate all pending nodes if quorum safety allows
-    // async fn try_activate_pending_nodes(
-    //     &mut self,
-    //     ctx: &RaftContext<T>,
-    //     role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    // ) -> Result<()> {
-    //     let membership = ctx.membership();
-    //     let current_voters = membership.voters().await.len();
-    //     let pending_nodes = membership.nodes_with_status(NodeStatus::Syncing);
-
-    //     if pending_nodes.is_empty() {
-    //         return Ok(());
-    //     }
-
-    //     // Check if activating all pending nodes is safe
-    //     if ensure_safe_join(self.node_id(), current_voters + pending_nodes.len()).is_ok() {
-    //         debug!("Activating {} pending nodes", pending_nodes.len());
-
-    //         // Create batch activation config change
-    //         let config_change = Change::BatchPromote(BatchPromote {
-    //             node_ids: pending_nodes.iter().map(|n| n.id).collect(),
-    //             new_status: NodeStatus::Active as i32,
-    //         });
-
-    //         // Submit batch activation
-    //         self.verify_leadership_limited_retry(vec![EntryPayload::config(config_change)], true,
-    // ctx, role_tx)             .await?;
-
-    //         // Update all pending active nodes to active
-    //         for node in pending_nodes {
-    //             if let Err(e) = ctx.membership().update_node_status(node.id, NodeStatus::Active)
-    // {                 error!(?e, %node.id, "update_node_status(node_id, NodeStatus::Active)
-    // failed");             }
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
-
     /// Calculate new submission index
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     fn calculate_new_commit_index(
         &mut self,
@@ -1604,7 +1554,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    #[tracing::instrument]
+    #[allow(dead_code)]
     fn if_update_commit_index(
         &self,
         new_commit_index_option: Option<u64>,
@@ -1620,7 +1570,6 @@ impl<T: TypeConfig> LeaderState<T> {
         (false, current_commit_index)
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(crate) fn ensure_state_machine_upto_commit_index(
         &self,
         state_machine_handler: &Arc<SMHOF<T>>,
@@ -1640,7 +1589,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     fn scheduled_purge_upto(
         &mut self,
@@ -1733,7 +1681,6 @@ impl<T: TypeConfig> LeaderState<T> {
     /// - Actual log discard should be deferred until storage confirms snapshot persistence
     /// - Design differs from followers by requiring full cluster confirmation (Raft extension for
     ///   enhanced durability)
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     #[instrument(skip(self))]
     pub(super) fn can_purge_logs(
         &self,
@@ -1752,7 +1699,6 @@ impl<T: TypeConfig> LeaderState<T> {
             && self.peer_purge_progress.values().all(|&v| v >= last_included_in_snapshot.index)
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn handle_join_cluster(
         &mut self,
         join_request: JoinRequest,
@@ -1830,7 +1776,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn send_join_success(
         &self,
         node_id: u32,
@@ -1863,7 +1808,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn send_join_error(
         &self,
         sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -1919,7 +1863,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn trigger_background_snapshot(
         node_id: u32,
         metadata: SnapshotMetadata,
@@ -1967,7 +1910,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Processes all pending promotions while respecting the cluster's odd-node constraint
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn process_pending_promotions(
         &mut self,
         ctx: &RaftContext<T>,
@@ -2051,7 +1993,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Removes the first `count` nodes from the pending queue and returns them
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) fn drain_batch(
         &mut self,
         count: usize,
@@ -2067,7 +2008,6 @@ impl<T: TypeConfig> LeaderState<T> {
         batch
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn safe_batch_promote(
         &mut self,
         batch: Vec<u32>,
@@ -2091,7 +2031,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn run_periodic_maintenance(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -2116,7 +2055,6 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Periodic check triggered every ~30s in the worst-case scenario
     /// using priority-based lazy scheduling. Actual average frequency
     /// is inversely proportional to system load.
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn conditionally_purge_stale_learners(
         &mut self,
         ctx: &RaftContext<T>,
@@ -2172,7 +2110,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Remove non-Active zombie nodes that exceed failure threshold
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     async fn conditionally_purge_zombie_nodes(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -2225,7 +2162,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) fn reset_next_membership_maintenance_check(
         &mut self,
         membership_maintenance_interval: Duration,
@@ -2234,7 +2170,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// FINRA Rule 4370-approved remediation
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
     pub(super) async fn handle_stale_learner(
         &mut self,
         node_id: u32,

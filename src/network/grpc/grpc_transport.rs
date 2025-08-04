@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use autometrics::autometrics;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -49,7 +48,6 @@ use crate::RetryPolicies;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::VoteResult;
-use crate::API_SLO;
 
 #[derive(Debug)]
 pub struct GrpcTransport<T>
@@ -68,7 +66,6 @@ impl<T> Transport<T> for GrpcTransport<T>
 where
     T: TypeConfig,
 {
-    #[autometrics(objective = API_SLO)]
     async fn send_cluster_update(
         &self,
         req: ClusterConfChangeRequest,
@@ -272,7 +269,6 @@ where
         })
     }
 
-    #[autometrics(objective = API_SLO)]
     async fn send_vote_requests(
         &self,
         req: VoteRequest,
@@ -455,7 +451,6 @@ where
         Ok(responses)
     }
 
-    #[autometrics(objective = API_SLO)]
     async fn join_cluster(
         &self,
         leader_id: u32,
@@ -490,7 +485,6 @@ where
         Ok(response.into_inner())
     }
 
-    #[autometrics(objective = API_SLO)]
     async fn discover_leader(
         &self,
         request: LeaderDiscoveryRequest,
@@ -517,7 +511,6 @@ where
     }
 
     // Add this to the Transport trait implementation
-    #[autometrics(objective = API_SLO)]
     async fn request_snapshot_from_leader(
         &self,
         leader_id: u32,
@@ -560,7 +553,7 @@ where
         }
     }
 
-    #[autometrics(objective = API_SLO)]
+    #[allow(dead_code)]
     pub(crate) fn if_mark_learner_as_follower(
         leader_commit_index: u64,
         learner_next_id: u64,
@@ -573,7 +566,7 @@ where
             return true;
         }
 
-        return false;
+        false
     }
 
     async fn process_member(

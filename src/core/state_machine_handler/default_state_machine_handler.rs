@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
-use autometrics::autometrics;
 use futures::stream::BoxStream;
 use tokio::fs;
 use tokio::fs::remove_dir_all;
@@ -60,7 +59,6 @@ use crate::SnapshotPathManager;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -171,7 +169,6 @@ where
     }
 
     /// TODO: decouple client related commands with RAFT internal logic
-    #[autometrics(objective = API_SLO)]
     fn read_from_state_machine(
         &self,
         keys: Vec<Vec<u8>>,
@@ -674,6 +671,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     #[instrument(skip(self))]
     async fn create_snapshot_chunk_stream(
         &self,

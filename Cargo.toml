@@ -58,9 +58,6 @@ parking_lot = "0.12.3"
 rand = "0.8.5"
 thiserror = "1.0"
 config = { version = "0.14.0", default-features = false, features = ["toml"] }
-autometrics = { version = "2.0.0", default-features = false, features = [
-    "prometheus-exporter",
-] }
 lazy_static = "1.4"
 nanoid = "0.4.0"
 # using Dashset
