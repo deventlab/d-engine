@@ -22,6 +22,7 @@ fn test_init_storages_case1() {
 
     use prost::Message;
     let path = "/tmp/test_init_storages_case1".to_string();
+    std::fs::remove_dir_all(&path).ok();
     let state_key = skv("state_key".to_string());
     {
         let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
@@ -76,7 +77,7 @@ fn test_init_storages_case1() {
         );
         assert_eq!(
             Some(safe_kv(17).to_vec()),
-            state_machine_db.get(state_key).expect("should succeed").map(|v| v.to_vec())
+            state_machine_db.get(&state_key).expect("should succeed").map(|v| v.to_vec())
         );
 
         let v = state_storage_db.get(safe_kv(11)).unwrap().unwrap();

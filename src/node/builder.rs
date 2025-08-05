@@ -12,7 +12,6 @@
 //!   `transport()`).
 //! - **Lifecycle Management**:
 //!   - `build()`: Assembles the [`Node`] and spawns background tasks (e.g., [`CommitHandler`]).
-//!   - `start_metrics_server()`/`start_rpc_server()`: Launches auxiliary services.
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
 //!
 //! ## Example
@@ -22,7 +21,6 @@
 //! let node = NodeBuilder::new(node_config, shutdown_rx)
 //!     .raft_log(custom_raft_log)  // Optional override
 //!     .build()
-//!     .start_metrics_server(shutdown_tx.subscribe())
 //!     .start_rpc_server().await
 //!     .ready()
 //!     .unwrap();
@@ -57,7 +55,6 @@ use crate::grpc::grpc_transport::GrpcTransport;
 use crate::init_sled_state_machine_db;
 use crate::init_sled_storage_engine_db;
 use crate::learner_state::LearnerState;
-use crate::metrics;
 use crate::BufferedRaftLog;
 use crate::ClusterConfig;
 use crate::CommitHandler;
@@ -469,21 +466,6 @@ impl NodeBuilder {
         snapshot_policy: SNP<RaftTypeConfig>,
     ) -> Self {
         self.snapshot_policy = Some(snapshot_policy);
-        self
-    }
-
-    /// Starts the metrics server for monitoring node operations.
-    ///
-    /// Launches a Prometheus endpoint on the configured port.
-    pub fn start_metrics_server(
-        self,
-        shutdown_signal: watch::Receiver<()>,
-    ) -> Self {
-        println!("start metric server!");
-        let port = self.node_config.monitoring.prometheus_port;
-        tokio::spawn(async move {
-            metrics::start_server(port, shutdown_signal).await;
-        });
         self
     }
 

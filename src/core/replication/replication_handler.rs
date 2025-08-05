@@ -4,7 +4,6 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use autometrics::autometrics;
 use dashmap::DashMap;
 use prost::Message;
 use tonic::async_trait;
@@ -42,7 +41,6 @@ use crate::Result;
 use crate::StateSnapshot;
 use crate::Transport;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
@@ -307,7 +305,6 @@ where
         })
     }
 
-    #[autometrics(objective = API_SLO)]
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: Vec<Entry>,
@@ -362,7 +359,7 @@ where
             }
         });
 
-        return peer_entries;
+        peer_entries
     }
 
     /// As Follower only
@@ -433,8 +430,6 @@ where
 
     ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index
     /// of last new entry)
-    #[autometrics(objective = API_SLO)]
-    #[tracing::instrument]
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
         last_raft_log_id: u64,

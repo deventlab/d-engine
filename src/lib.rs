@@ -21,7 +21,6 @@ mod constants;
 mod core;
 mod errors;
 mod membership;
-mod metrics;
 mod network;
 mod type_config;
 
@@ -30,7 +29,6 @@ pub use core::*;
 
 pub use errors::*;
 pub(crate) use membership::*;
-pub(crate) use metrics::*;
 pub(crate) use network::*;
 pub(crate) use storage::*;
 
@@ -46,15 +44,3 @@ pub use utils::*;
 #[cfg(test)]
 #[doc(hidden)]
 pub mod test_utils;
-
-//-----------------------------------------------------------
-// Autometrics
-/// autometrics: https://docs.autometrics.dev/rust/adding-alerts-and-slos
-use autometrics::objectives::Objective;
-use autometrics::objectives::ObjectiveLatency;
-use autometrics::objectives::ObjectivePercentile;
-
-#[doc(hidden)]
-const API_SLO: Objective = Objective::new("api")
-    .success_rate(ObjectivePercentile::P99_9)
-    .latency(ObjectiveLatency::Ms10, ObjectivePercentile::P99);

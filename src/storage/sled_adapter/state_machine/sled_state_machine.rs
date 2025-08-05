@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use async_compression::tokio::bufread::GzipDecoder;
-use autometrics::autometrics;
+use metrics::counter;
 use parking_lot::Mutex;
 use prost::Message;
 use sled::Batch;
@@ -50,8 +50,6 @@ use crate::SnapshotError;
 use crate::StateMachine;
 use crate::StateMachineIter;
 use crate::StorageError;
-use crate::API_SLO;
-use crate::COMMITTED_LOG_METRIC;
 
 pub struct SledStateMachine {
     node_id: u32,
@@ -272,8 +270,14 @@ impl StateMachine for SledStateMachine {
 
             let msg_id = entry.index.to_string();
             let id = self.node_id.to_string();
-            COMMITTED_LOG_METRIC.with_label_values(&[&id, &msg_id]).inc();
             info!("[{}]- COMMITTED_LOG_METRIC: {} ", self.node_id, &msg_id);
+            // Increment the "committed_log" counter with labels
+            counter!(
+                "committed_log",
+                "id" => id,
+                "msg_id" => msg_id
+            )
+            .increment(1);
         }
 
         // Apply batch and update last applied index
@@ -631,7 +635,6 @@ impl SledStateMachine {
         Ok(None)
     }
 
-    #[autometrics(objective = API_SLO)]
     pub(super) fn apply_batch(
         &self,
         batch: Batch,

@@ -6,7 +6,6 @@ use tokio::sync::watch;
 
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
-use crate::test_utils::node_config;
 use crate::test_utils::reset_dbs;
 use crate::BufferedRaftLog;
 use crate::Error;
@@ -123,25 +122,12 @@ async fn test_start_rpc_panics_without_node() {
     let _ = builder.start_rpc_server().await;
 }
 
-// No panic
-#[tokio::test]
-async fn test_metrics_server_starts_on_correct_port() {
-    let mut node_config = node_config("/tmp/test_metrics_server_starts_on_correct_port");
-    node_config.monitoring.prometheus_port = 12345; // Set the test port
-
-    let (shutdown_tx, shutdown_rx) = watch::channel(());
-
-    NodeBuilder::init(node_config, shutdown_rx)
-        .build()
-        .start_metrics_server(shutdown_tx.subscribe());
-}
-
 // Test helper function: create a temporary configuration file
 fn create_temp_config(content: &str) -> (PathBuf, String) {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("test_config.toml");
     std::fs::write(&file_path, content).unwrap();
-    (dir.into_path(), file_path.to_str().unwrap().to_string())
+    (dir.keep(), file_path.to_str().unwrap().to_string())
 }
 
 #[test]

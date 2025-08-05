@@ -662,40 +662,42 @@ fn default_stale_learner_threshold() -> Duration {
 fn default_stale_check_interval() -> Duration {
     Duration::from_secs(30)
 }
-/// Defines how Raft log entries are persisted and retrieved.
+/// Defines how Raft log entries are persisted and accessed.
 ///
 /// All strategies use a configurable [`FlushPolicy`] to control when memory contents
-/// are flushed to disk. This affects write latency and durability guarantees.
+/// are flushed to disk, affecting write latency and durability guarantees.
+///
+/// **Note:** Both strategies now fully load all log entries from disk into memory at startup.
+/// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
     /// Disk-first persistence strategy.
     ///
     /// - **Write path**: On append, the log entry is first written to disk. Only after a
-    ///   successful disk write is it copied into the in-memory cache.
+    ///   successful disk write is it acknowledged and stored in the in-memory `SkipMap`.
     ///
-    /// - **Read path**: Reads are served from the in-memory cache. If not found, the system falls
-    ///   back to reading from disk, and the result is cached in memory.
+    /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///
-    /// - **Startup behavior**: Entries are **not** fully loaded from disk into memory at startup.
-    ///   Entries are only cached lazily on demand.
+    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup,
+    ///   ensuring consistent access speed regardless of disk state.
     ///
-    /// - Suitable for systems prioritizing strong durability, with memory used primarily for
-    ///   caching.
+    /// - Suitable for systems prioritizing strong durability while still providing in-memory
+    ///   performance for reads.
     DiskFirst,
 
     /// Memory-first persistence strategy.
     ///
-    /// - **Write path**: On append, the log entry is written to the in-memory buffer and
-    ///   immediately acknowledged. Disk persistence happens asynchronously in the background,
+    /// - **Write path**: On append, the log entry is first written to the in-memory `SkipMap` and
+    ///   acknowledged immediately. Disk persistence happens asynchronously in the background,
     ///   governed by [`FlushPolicy`].
     ///
-    /// - **Read path**: Reads are served from memory only. If an entry is not in memory, it is
-    ///   considered nonexistent.
+    /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///
-    /// - **Startup behavior**: On startup, all log entries are loaded from disk into memory.
+    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup, the
+    ///   same as `DiskFirst`.
     ///
-    /// - Suitable for systems that favor performance and fast failover, and can tolerate data loss
-    ///   during crashes.
+    /// - Suitable for systems that favor lower write latency and faster failover, while still
+    ///   retaining a disk-backed log for crash recovery.
     MemFirst,
 }
 

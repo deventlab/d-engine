@@ -2,7 +2,6 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use autometrics::autometrics;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -26,7 +25,6 @@ use crate::Result;
 use crate::StateUpdate;
 use crate::Transport;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
@@ -39,7 +37,6 @@ impl<T> ElectionCore<T> for ElectionHandler<T>
 where
     T: TypeConfig,
 {
-    #[autometrics(objective = API_SLO)]
     async fn broadcast_vote_requests(
         &self,
         term: u64,
@@ -245,7 +242,7 @@ where
     /// logOk == \/ m.mlastLogTerm > LastTerm(log[i])
     ///          \/ /\ m.mlastLogTerm = LastTerm(log[i])
     ///             /\ m.mlastLogIndex >= Len(log[i])
-    #[autometrics(objective = API_SLO)]
+    #[allow(dead_code)]
     fn if_node_log_is_less_than_requester(
         &self,
         request_last_log_index: u64,
@@ -256,7 +253,7 @@ where
         (request_last_log_term > last_log_term)
             || (request_last_log_term == last_log_term && request_last_log_index >= last_log_index)
     }
-    #[autometrics(objective = API_SLO)]
+
     fn if_node_could_grant_the_vote_request(
         &self,
         request: &VoteRequest,

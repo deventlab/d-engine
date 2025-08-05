@@ -26,6 +26,7 @@ logs
 logs/*
 snapshots
 snapshots/*
+sample_reports/*
 
 .idea
 .idea/*

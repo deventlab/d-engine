@@ -25,7 +25,9 @@ rpc_append_entries_in_batch_threshold = 5000
 
 [raft.persistence]
 strategy = "MemFirst"
+# strategy = "DiskFirst"
 flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+# flush_policy = "Immediate"
 
 
 [retry.join_cluster]
@@ -35,7 +37,11 @@ base_delay_ms = 3000 # Initial backoff delay (recommended: 3000ms)
 max_delay_ms = 60000 # Maximum backoff delay (recommended: <=1m)
 
 [raft.snapshot]
-enable = true
+enable = false
+max_log_entries_before_snapshot = 10000
+snapshot_cool_down_since_last_check = { secs = 60 }
+snapshots_dir = "./snapshots/"
+retained_log_entries = 3
 
 [network.control]
 concurrency_limit = 8192                #// Moderate concurrency

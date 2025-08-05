@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use autometrics::autometrics;
+use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -27,7 +27,6 @@ use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::Result;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 /// Commands for the log processor
 #[derive(Debug)]
@@ -71,11 +70,15 @@ where
 
     // --- In-memory state ---
     // Pending entries
-    pub(crate) entries: DashMap<u64, Entry>,
+    pub(crate) entries: SkipMap<u64, Entry>,
     // Tracks the highest index that has been persisted to disk
     pub(crate) durable_index: AtomicU64,
     // The next index to be allocated
     pub(crate) next_id: AtomicU64,
+
+    // --- In-memory index ---
+    min_index: AtomicU64, // Smallest log index (0 if empty)
+    max_index: AtomicU64, // Largest log index (0 if empty)
 
     // --- Flush coordination ---
     // Channel to trigger flushes
@@ -96,50 +99,19 @@ where
         &self,
         index: u64,
     ) -> Result<Option<Entry>> {
-        // Memory-first synchronous read (99% of cases)
-        if let Some(entry_ref) = self.entries.get(&index) {
-            return Ok(Some(entry_ref.clone()));
-        }
-
-        // Disk fallback only for DiskFirst strategy
-        if let PersistenceStrategy::DiskFirst = self.strategy {
-            if let Some(entry) = self.storage.entry(index)? {
-                self.entries.insert(index, entry.clone());
-                return Ok(Some(entry));
-            }
-        }
-
-        Ok(None)
+        Ok(self.entries.get(&index).map(|e| e.value().clone()))
     }
 
     fn first_entry_id(&self) -> u64 {
-        self.entries
-            .iter()
-            .map(|e| *e.key())
-            .min()
-            .unwrap_or_else(|| self.durable_index.load(Ordering::Acquire))
+        self.min_index.load(Ordering::Acquire)
     }
 
     fn last_entry_id(&self) -> u64 {
-        match self.strategy {
-            // For DiskFirst: storage has the most accurate last index
-            PersistenceStrategy::DiskFirst => self.storage.last_index(),
-            // For MemFirst: memory has the complete log
-            PersistenceStrategy::MemFirst => {
-                self.entries.iter().map(|e| *e.key()).max().unwrap_or(0)
-            }
-        }
+        self.max_index.load(Ordering::Acquire)
     }
 
     fn last_entry(&self) -> Option<Entry> {
-        // Disk fallback only for DiskFirst strategy
-        let last_index = match self.strategy {
-            PersistenceStrategy::DiskFirst => self.storage.last_index(),
-            PersistenceStrategy::MemFirst => {
-                self.entries.iter().map(|e| *e.key()).max().unwrap_or(0)
-            }
-        };
-
+        let last_index = self.last_entry_id();
         if last_index > 0 {
             self.entry(last_index).ok().flatten()
         } else {
@@ -174,22 +146,35 @@ where
         &self,
         term: u64,
     ) -> Option<u64> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.value().term == term) // Filter entries by term
-            .map(|entry| *entry.key()) // Get the index of each entry
-            .min() // Find the minimum index
+        // OPTIMIZED: Check last entry first for common case
+        if let Some(front) = self.entries.front() {
+            if front.value().term == term {
+                return Some(*front.key());
+            }
+        }
+
+        // OPTIMIZED: Forward scan stops at first match (O(k) where k is position of first term
+        // match)
+        self.entries.iter().find(|entry| entry.value().term == term).map(|e| *e.key())
     }
 
     fn last_index_for_term(
         &self,
         term: u64,
     ) -> Option<u64> {
+        // OPTIMIZED: Check last entry first for common case
+        if let Some(last) = self.entries.back() {
+            if last.value().term == term {
+                return Some(*last.key());
+            }
+        }
+
+        // OPTIMIZED: Reverse scan stops at last match (O(k) where k is position of last term match)
         self.entries
             .iter()
-            .filter(|entry| entry.value().term == term) // Filter entries by term
-            .map(|entry| *entry.key()) // Get the index of each entry
-            .max() // Find the maximum index
+            .rev()
+            .find(|entry| entry.value().term == term)
+            .map(|e| *e.key())
     }
 
     fn pre_allocate_raft_logs_next_index(&self) -> u64 {
@@ -218,35 +203,8 @@ where
         &self,
         range: RangeInclusive<u64>,
     ) -> Result<Vec<Entry>> {
-        // For MemFirst: all entries are in memory
-        if matches!(self.strategy, PersistenceStrategy::MemFirst) {
-            let mut result: Vec<Entry> = self
-                .entries
-                .iter()
-                .filter(|e| range.contains(e.key()))
-                .map(|e| e.value().clone())
-                .collect();
-            result.sort_by_key(|e| e.index);
-            return Ok(result);
-        }
-
-        // For DiskFirst: hybrid memory + disk
-        let mut result: Vec<Entry> = self
-            .entries
-            .iter()
-            .filter(|e| range.contains(e.key()))
-            .map(|e| e.value().clone())
-            .collect();
-
-        let storage_entries = self.storage.get_entries_range(range.clone())?;
-        for entry in storage_entries {
-            if !self.entries.contains_key(&entry.index) {
-                result.push(entry);
-            }
-        }
-
-        result.sort_by_key(|e| e.index);
-        Ok(result)
+        // OPTIMIZED: SkipMap range scan O(k + log n)
+        Ok(self.entries.range(range).map(|e| e.value().clone()).collect())
     }
 
     async fn append_entries(
@@ -282,6 +240,38 @@ where
         let current_next = self.next_id.load(Ordering::Acquire);
         if max_index >= current_next {
             self.next_id.store(max_index + 1, Ordering::Release);
+        }
+        // Update atomic indexes
+        if let Some(first_entry) = entries.first() {
+            // Atomic min update
+            let mut current_min = self.min_index.load(Ordering::Relaxed);
+            while first_entry.index < current_min || current_min == 0 {
+                match self.min_index.compare_exchange_weak(
+                    current_min,
+                    first_entry.index,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(e) => current_min = e,
+                }
+            }
+        }
+
+        if let Some(last_entry) = entries.last() {
+            // Atomic max update
+            let mut current_max = self.max_index.load(Ordering::Relaxed);
+            while last_entry.index > current_max {
+                match self.max_index.compare_exchange_weak(
+                    current_max,
+                    last_entry.index,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(e) => current_max = e,
+                }
+            }
         }
 
         Ok(())
@@ -332,8 +322,8 @@ where
         // OPTIMIZATION: Bulk removal
         let start_index = prev_log_index + 1;
         if start_index <= last_current_index {
-            // Remove range using retain (O(n) but more efficient than per-entry removal)
-            self.entries.retain(|index, _| *index < start_index);
+            // Efficient range removal without retain
+            self.remove_range(start_index..=u64::MAX);
 
             // Truncate storage
             self.storage.truncate(start_index)?;
@@ -349,7 +339,6 @@ where
         }))
     }
 
-    #[autometrics(objective = API_SLO)]
     fn calculate_majority_matched_index(
         &self,
         current_term: u64,
@@ -383,7 +372,6 @@ where
         }
     }
 
-    #[autometrics(objective = API_SLO)]
     fn purge_logs_up_to(
         &self,
         cutoff_index: LogId,
@@ -391,8 +379,15 @@ where
         let _timer = ScopedTimer::new("purge_logs_up_to");
         debug!(?cutoff_index, "purge_logs_up_to");
 
-        // Remove from memory
-        self.entries.retain(|index, _| *index > cutoff_index.index);
+        // Remove range in O(k log n)
+        self.remove_range(0..=cutoff_index.index);
+
+        // Update boundaries
+        let new_min = self.entries.front().map(|e| *e.key()).unwrap_or(0);
+        self.min_index.store(new_min, Ordering::Release);
+
+        let new_max = self.entries.back().map(|e| *e.key()).unwrap_or(0);
+        self.max_index.store(new_max, Ordering::Release);
 
         // Update durable index if needed
         let current_durable = self.durable_index.load(Ordering::Acquire);
@@ -408,7 +403,6 @@ where
         Ok(())
     }
 
-    #[autometrics(objective = API_SLO)]
     async fn flush(&self) -> Result<()> {
         // Trigger immediate flush of all pending entries
         let (tx, rx) = oneshot::channel();
@@ -447,7 +441,6 @@ where
     /// db_size_cache_duration - how long the cache will be valid (since last
     /// activity) #[deprecated]
     #[cfg(test)]
-    #[autometrics(objective = API_SLO)]
     fn db_size(
         &self,
         _node_id: u32,
@@ -460,12 +453,12 @@ where
                 // db_size_cache.last_activity.insert(node_id, now);
                 debug!("retrieved the real db size: {size}",);
                 println!("retrieved the real db size: {size}",);
-                return Ok(size);
+                Ok(size)
             }
             Err(e) => {
                 error!("db_size() failed: {e:?}");
                 eprintln!("db_size() failed: {e:?}");
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -499,25 +492,26 @@ where
 
         //TODO: if switch to UnboundedChannel?
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
-
-        let entries = DashMap::new();
+        let entries = SkipMap::new();
 
         // Load all entries from disk to memory
-        if let PersistenceStrategy::MemFirst = persistence_config.strategy {
-            if disk_len > 0 {
-                match storage.get_entries_range(1..=disk_len) {
-                    Ok(all_entries) => {
-                        for entry in all_entries {
-                            entries.insert(entry.index, entry);
-                        }
+        if disk_len > 0 {
+            match storage.get_entries_range(1..=disk_len) {
+                Ok(all_entries) => {
+                    for entry in all_entries {
+                        entries.insert(entry.index, entry);
                     }
-                    Err(e) => {
-                        error!("Failed to load entries from storage: {:?}", e);
-                        // Handle critical error if needed
-                    }
+                }
+                Err(e) => {
+                    error!("Failed to load entries from storage: {:?}", e);
+                    // Handle critical error if needed
                 }
             }
         }
+
+        // Initialize atomic boundaries
+        let min_index = entries.front().map(|e| *e.key()).unwrap_or(0);
+        let max_index = entries.back().map(|e| *e.key()).unwrap_or(0);
 
         (
             Self {
@@ -526,6 +520,8 @@ where
                 strategy: persistence_config.strategy,
                 flush_policy: persistence_config.flush_policy,
                 entries,
+                min_index: AtomicU64::new(min_index),
+                max_index: AtomicU64::new(max_index),
                 durable_index: AtomicU64::new(disk_len),
                 next_id: AtomicU64::new(disk_len + 1),
                 command_sender: command_sender.clone(),
@@ -663,6 +659,10 @@ where
         self.next_id.store(1, Ordering::Release);
         self.waiters.clear();
 
+        // Reset boundaries
+        self.min_index.store(0, Ordering::Release);
+        self.max_index.store(0, Ordering::Release);
+
         self.storage.reset()?;
 
         Ok(())
@@ -761,6 +761,36 @@ where
         }
 
         Ok(())
+    }
+
+    /// Efficient range removal without locks
+    /// O(k log n) where k = number of entries in range
+    ///
+    /// range: [start, end]
+    pub(crate) fn remove_range(
+        &self,
+        range: RangeInclusive<u64>,
+    ) {
+        let (start, end) = range.into_inner();
+
+        // Remove entries in range
+        let mut current = start;
+        while current <= end {
+            if let Some(entry) = self.entries.range(current..=end).next() {
+                let key = *entry.key();
+                self.entries.remove(&key);
+                current = key + 1;
+            } else {
+                break;
+            }
+        }
+
+        // Always update boundaries after removal
+        let new_min = self.entries.front().map(|e| *e.key()).unwrap_or(0);
+        let new_max = self.entries.back().map(|e| *e.key()).unwrap_or(0);
+
+        self.min_index.store(new_min, Ordering::Release);
+        self.max_index.store(new_max, Ordering::Release);
     }
 }
 

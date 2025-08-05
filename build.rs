@@ -17,7 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap_or_else(|e| panic!("protobuf compile error: {e}"));
 
-    //autometrics: https://docs.autometrics.dev/rust/adding-version-information
     vergen::EmitBuilder::builder()
         .git_sha(true)
         .git_branch()

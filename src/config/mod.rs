@@ -8,14 +8,12 @@
 mod cluster;
 use std::fmt::Debug;
 use std::path::Path;
-mod monitoring;
 mod network;
 mod raft;
 mod retry;
 mod tls;
 pub use cluster::*;
 use config::ConfigError;
-pub use monitoring::*;
 pub use network::*;
 pub use raft::*;
 pub use retry::*;
@@ -26,7 +24,6 @@ mod config_test;
 #[cfg(test)]
 mod raft_test;
 
-//---
 use std::env;
 
 use config::Config;
@@ -49,8 +46,6 @@ use crate::Result;
 pub struct RaftNodeConfig {
     /// Cluster topology and node configuration
     pub cluster: ClusterConfig,
-    /// Metrics and monitoring settings
-    pub monitoring: MonitoringConfig,
     /// Network communication parameters
     pub network: NetworkConfig,
     /// Core Raft algorithm parameters
@@ -165,7 +160,6 @@ impl RaftNodeConfig {
     /// - Retry policy conflicts
     pub fn validate(&self) -> Result<()> {
         self.cluster.validate()?;
-        self.monitoring.validate()?;
         self.raft.validate()?;
         self.network.validate()?;
         self.tls.validate()?;

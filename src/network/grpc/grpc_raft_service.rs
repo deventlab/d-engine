@@ -5,7 +5,6 @@
 use std::future::Future;
 use std::time::Duration;
 
-use autometrics::autometrics;
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -48,7 +47,6 @@ use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::StreamResponseSender;
 use crate::TypeConfig;
-use crate::API_SLO;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
@@ -60,8 +58,6 @@ where
     /// - Part of leader election mechanism (Section 5.2)
     /// - Validates candidate's term and log completeness
     /// - Grants vote if candidate's log is at least as up-to-date as local log
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn request_vote(
         &self,
         request: tonic::Request<VoteRequest>,
@@ -96,8 +92,6 @@ where
     /// - Term comparison logic:
     ///   - If incoming term > current term: revert to follower state
     ///   - Reset election timeout on valid leader communication
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn append_entries(
         &self,
         request: Request<AppendEntriesRequest>,
@@ -179,8 +173,6 @@ where
         handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn purge_log(
         &self,
         request: tonic::Request<PurgeLogRequest>,
@@ -213,8 +205,6 @@ where
     /// - Implements cluster configuration changes (Section 6)
     /// - Validates new configuration against current cluster state
     /// - Ensures safety during membership transitions
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn update_cluster_conf(
         &self,
         request: tonic::Request<ClusterConfChangeRequest>,
@@ -241,8 +231,6 @@ where
     /// # Usage
     /// - Administrative API for cluster inspection
     /// - Provides snapshot of current configuration
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn get_cluster_metadata(
         &self,
         request: tonic::Request<MetadataRequest>,
@@ -268,8 +256,6 @@ where
     }
 
     // Request to join the cluster as a new learner node
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn join_cluster(
         &self,
         request: tonic::Request<JoinRequest>,
@@ -291,8 +277,6 @@ where
         handle_rpc_timeout(resp_rx, timeout_duration, "join_cluster").await
     }
 
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn discover_leader(
         &self,
         request: tonic::Request<LeaderDiscoveryRequest>,
@@ -324,8 +308,6 @@ where
     /// - Entry point for client proposals (Section 7)
     /// - Validates requests before appending to leader's log
     /// - Ensures linearizable writes through log replication
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument(skip(self))]
     async fn handle_client_write(
         &self,
         request: tonic::Request<ClientWriteRequest>,
@@ -373,8 +355,6 @@ where
     /// - Implements lease-based leader reads (Section 6.4)
     /// - Verifies leadership before serving reads
     /// - Ensures read-after-write consistency
-    #[cfg_attr(not(doc), autometrics(objective = API_SLO))]
-    #[tracing::instrument]
     async fn handle_client_read(
         &self,
         request: tonic::Request<ClientReadRequest>,
