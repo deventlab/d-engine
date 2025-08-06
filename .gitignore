@@ -39,3 +39,6 @@ docker/jepsen/store/
 # Monitoring Data (Optional)
 docker/monitoring/grafana/data/
 docker/monitoring/prometheus/data/
+
+.clj-kondo
+.lsp
