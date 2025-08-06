@@ -7,8 +7,14 @@ WORKDIR /usr/src/demo
 
 # Install build dependencies with cleanup
 RUN apt-get update && \
-    apt-get install -y protobuf-compiler && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+    pkg-config \
+    libzstd-dev \
+    protobuf-compiler \
+    build-essential \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies first
 COPY Cargo.toml Cargo.lock ./
@@ -71,4 +77,4 @@ COPY docker/monitoring/promtail/config.yml /etc/promtail/config.yml
 WORKDIR /app
 
 # Start services
-CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH RUST_LOG=demo=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo  & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]
+CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH LOG_DIR=$LOG_DIR METRICS_PORT=$METRICS_PORT RUST_LOG=demo=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo  & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]
