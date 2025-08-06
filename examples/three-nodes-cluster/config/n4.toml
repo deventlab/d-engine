@@ -1,18 +1,14 @@
 [cluster]
 node_id = 4
-listen_address = "127.0.0.1:9084"
+listen_address = "0.0.0.0:9084"
 initial_cluster = [
-    { id = 1, address = "127.0.0.1:9081", role = 1, status = 2 },
-    { id = 2, address = "127.0.0.1:9082", role = 1, status = 2 },
-    { id = 3, address = "127.0.0.1:9083", role = 1, status = 2 },
-    { id = 4, address = "127.0.0.1:9084", role = 3, status = 0 },
+    { id = 1, address = "0.0.0.0:9081", role = 1, status = 2 },
+    { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },
+    { id = 3, address = "0.0.0.0:9083", role = 1, status = 2 },
+    { id = 4, address = "0.0.0.0:9084", role = 3, status = 0 },
 ]
 db_root_dir = "./db"
 log_dir = "./logs"
-
-[monitoring]
-prometheus_enabled = true
-prometheus_port = 8084
 
 [raft]
 general_raft_timeout_duration_in_ms = 100
