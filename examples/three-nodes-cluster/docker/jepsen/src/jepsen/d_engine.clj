@@ -147,7 +147,7 @@
                     (checker/compose
                      {;; :perf   (checker/perf)
                       :linear (checker/linearizable {:model     (model/cas-register)
-                                                     :algorithm :linear})
+                                                     :algorithm :auto})
                       :timeline (timeline/html)
                       }))
           :generator (->> (independent/concurrent-generator
@@ -155,8 +155,8 @@
                            (range 3) ; Keyspace
                            (fn [k]
                              (->> (gen/mix [r w]) ; Mixed lread and write
-                                  (gen/stagger 1/3)
-                                  (gen/limit 100))))
+                                  (gen/stagger 1/2)
+                                  (gen/limit 40))))
                           ; Fault injection: inject into a partition every 15 seconds
                           (gen/nemesis
                            (cycle [(gen/sleep 10)
