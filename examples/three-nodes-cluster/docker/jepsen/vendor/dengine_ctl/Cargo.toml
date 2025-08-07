@@ -1,0 +1,15 @@
+[package]
+name = "dengine_ctl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
+
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.36.0", features = ["full"] }
+env_logger = "0.9.0"
+anyhow = "1.0"
+
+[profile.dev]
+incremental = true
