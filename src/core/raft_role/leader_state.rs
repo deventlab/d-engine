@@ -1707,6 +1707,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         let node_id = join_request.node_id;
+        let node_role = join_request.node_role;
         let address = join_request.address;
         let membership = ctx.membership();
 
@@ -1718,17 +1719,14 @@ impl<T: TypeConfig> LeaderState<T> {
             return self.send_join_error(sender, MembershipError::NodeAlreadyExists(node_id)).await;
         }
 
-        // // 2. Add the node as Learner with Joining status
-        // debug!("2. Add the node as Learner with Joining status");
-        // membership
-        //     .(node_id, address.clone())
-        //     ?;
-
-        // 3. Create configuration change payload
-        debug!("3. Create configuration change payload");
-        if let Err(e) = membership.can_rejoin(node_id).await {
-            error!("Node {node_id} cannot rejoin: {}", e);
-            return Err(e);
+        // 2. Create configuration change payload
+        debug!("2. Create configuration change payload");
+        if let Err(e) = membership.can_rejoin(node_id, node_role).await {
+            let error_msg = format!("Node {node_id} cannot rejoin: {}", e);
+            warn!(%error_msg);
+            return self
+                .send_join_error(sender, MembershipError::JoinClusterError(error_msg))
+                .await;
         }
 
         let config_change = Change::AddNode(AddNode {
@@ -1736,8 +1734,8 @@ impl<T: TypeConfig> LeaderState<T> {
             address: address.clone(),
         });
 
-        // 4. Submit config change, and wait for quorum confirmation
-        debug!("4. Wait for quorum confirmation");
+        // 3. Submit config change, and wait for quorum confirmation
+        debug!("3. Wait for quorum confirmation");
         match self
             .verify_leadership_limited_retry(
                 vec![EntryPayload::config(config_change)],
@@ -1748,19 +1746,16 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
         {
             Ok(true) => {
-                // 5. Update node status to Syncing
-                debug!("5. Update node status to Syncing");
-                // 5.1. Add the node as Learner with Syncing status
-                debug!("5.1. Add the node as Learner with Syncing status");
-                // ctx.membership().add_learner(node_id, address.clone())?;
+                // 4. Update node status to Syncing
+                debug!("4. Update node status to Syncing");
 
                 debug!(
-                    "5.1 After updating, the replications peers: {:?}",
+                    "After updating, the replications peers: {:?}",
                     ctx.membership().replication_peers().await
                 );
 
-                // 6. Send successful response
-                debug!("6. Send successful response");
+                // 5. Send successful response
+                debug!("5. Send successful response");
                 info!("Join config committed for node {}", node_id);
                 self.send_join_success(node_id, &address, sender, ctx).await?;
             }
@@ -1814,7 +1809,7 @@ impl<T: TypeConfig> LeaderState<T> {
         error: impl Into<Error>,
     ) -> Result<()> {
         let error = error.into();
-        let status = Status::internal(error.to_string());
+        let status = Status::failed_precondition(error.to_string());
 
         sender.send(Err(status)).map_err(|e| {
             error!("Failed to send join error: {:?}", e);

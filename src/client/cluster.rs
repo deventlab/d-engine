@@ -74,6 +74,7 @@ impl ClusterClient {
 
         let request = tonic::Request::new(JoinRequest {
             node_id: node.id,
+            node_role: node.role,
             address: node.address,
         });
         let response = match client.join_cluster(request).await {

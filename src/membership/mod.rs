@@ -197,6 +197,7 @@ where
     async fn can_rejoin(
         &self,
         node_id: u32,
+        role: i32,
     ) -> Result<()>;
 }
 

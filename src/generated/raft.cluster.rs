@@ -121,8 +121,11 @@ pub struct JoinRequest {
     /// Unique ID for the new node
     #[prost(uint32, tag = "1")]
     pub node_id: u32,
+    /// Role for the new node
+    #[prost(int32, tag = "2")]
+    pub node_role: i32,
     /// Network address of the new node
-    #[prost(string, tag = "2")]
+    #[prost(string, tag = "3")]
     pub address: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]

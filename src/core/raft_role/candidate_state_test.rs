@@ -42,6 +42,7 @@ use crate::MockStateMachineHandler;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
+use crate::LEARNER;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
@@ -718,6 +719,7 @@ async fn test_handle_raft_event_case10() {
     // Step 2: Prepare the event
     let request = JoinRequest {
         node_id: 2,
+        node_role: LEARNER,
         address: "127.0.0.1:9090".to_string(),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();

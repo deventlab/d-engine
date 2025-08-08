@@ -472,6 +472,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 leader_id,
                 JoinRequest {
                     node_id: node_config.cluster.node_id,
+                    node_role: LEARNER,
                     address: node_config.cluster.listen_address.to_string(),
                 },
                 node_config.retry.join_cluster,

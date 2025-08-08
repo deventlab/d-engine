@@ -56,6 +56,10 @@ pub use kv::*;
 pub use pool::*;
 
 #[cfg(test)]
+mod cluster_test;
+#[cfg(test)]
+mod kv_test;
+#[cfg(test)]
 mod pool_test;
 
 use std::sync::Arc;

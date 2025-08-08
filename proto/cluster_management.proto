@@ -59,8 +59,11 @@ message JoinRequest {
   // Unique ID for the new node
   uint32 node_id = 1;
 
+  // Role for the new node
+  int32 node_role = 2;
+
   // Network address of the new node
-  string address = 2;
+  string address = 3;
 }
 
 enum ConfigState {

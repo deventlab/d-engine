@@ -70,6 +70,7 @@ use crate::RoleEvent;
 use crate::SnapshotError;
 use crate::FOLLOWER;
 use crate::LEADER;
+use crate::LEARNER;
 
 struct ProcessRaftRequestTestContext {
     state: LeaderState<MockTypeConfig>,
@@ -526,7 +527,7 @@ async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
         ClusterMembership {
             version: 1,
@@ -559,7 +560,7 @@ async fn test_handle_raft_event_case3_1_reject_stale_term() {
     );
     // Mock membership to return success
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_get_cluster_conf_version().returning(|| 1);
     context.membership = Arc::new(membership);
 
@@ -598,7 +599,7 @@ async fn test_handle_raft_event_case3_2_update_step_down() {
     );
     // Mock membership to return success
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_get_cluster_conf_version().returning(|| 1);
     context.membership = Arc::new(membership);
 
@@ -1145,7 +1146,7 @@ mod snapshot_created_event_tests {
 
         // Prepare AppendResults
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
                 id: 2,
@@ -1199,7 +1200,7 @@ mod snapshot_created_event_tests {
 
         // Mock peer configuration
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(|| {
             vec![NodeMeta {
                 id: 2,
@@ -1345,7 +1346,7 @@ mod snapshot_created_event_tests {
 
         // Mock peer configuration
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
                 id: 2,
@@ -1421,7 +1422,7 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
                 id: 2,
@@ -1494,7 +1495,7 @@ mod snapshot_created_event_tests {
 
         // Mock peer configuration (multiple peers)
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![
                 NodeMeta {
@@ -1648,7 +1649,7 @@ async fn test_handle_raft_event_case10_1_discover_leader_success() {
 
     // Mock membership to return leader metadata
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| {
         Some(NodeMeta {
             id: 1,
@@ -1695,7 +1696,7 @@ async fn test_handle_raft_event_case10_2_discover_leader_metadata_not_found() {
 
     // Mock membership to return no metadata
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| None);
     context.membership = Arc::new(membership);
 
@@ -1729,7 +1730,7 @@ async fn test_handle_raft_event_case10_4_different_leader_terms() {
 
     // Mock membership to return leader metadata
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| {
         Some(NodeMeta {
             id: 1,
@@ -1775,7 +1776,7 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
 
     // Mock membership to return leader metadata
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| {
         Some(NodeMeta {
             id: 1,
@@ -2126,7 +2127,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         });
 
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
             NodeMeta {
@@ -2237,7 +2238,7 @@ async fn test_process_batch_case4_partial_timeouts() {
 
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
             NodeMeta {
@@ -2296,7 +2297,7 @@ async fn test_process_batch_case5_all_timeout() {
         });
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
             NodeMeta {
@@ -2501,7 +2502,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
 
     // Prepare AppendResults
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
             NodeMeta {
@@ -2701,7 +2702,7 @@ async fn test_handle_join_cluster_case1_success() {
     let address = "127.0.0.1:8080".to_string();
 
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![NodeMeta {
             id: 2,
@@ -2769,6 +2770,7 @@ async fn test_handle_join_cluster_case1_success() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
+                node_role: LEARNER,
                 address: address.clone(),
             },
             sender,
@@ -2797,7 +2799,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
 
     // Mock membership to report existing node
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| true);
     let context = RaftContext {
         membership: Arc::new(membership),
@@ -2810,6 +2812,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
+                node_role: LEARNER,
                 address: "127.0.0.1:8080".to_string(),
             },
             sender,
@@ -2820,7 +2823,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
 
     assert!(result.is_err());
     let status = receiver.recv().await.unwrap().unwrap_err();
-    assert_eq!(status.code(), Code::Internal);
+    assert_eq!(status.code(), Code::FailedPrecondition);
     assert!(status.message().contains("already been added into cluster config"));
 }
 
@@ -2838,7 +2841,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _| Ok(()));
     membership.expect_voters().returning(Vec::new); // Empty voting members will cause quorum failure
@@ -2865,6 +2868,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
+                node_role: LEARNER,
                 address: "127.0.0.1:8080".to_string(),
             },
             sender,
@@ -2875,7 +2879,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
 
     assert!(result.is_err());
     let status = receiver.recv().await.unwrap().unwrap_err();
-    assert_eq!(status.code(), Code::Internal);
+    assert_eq!(status.code(), Code::FailedPrecondition);
     assert!(status.message().contains("Commit Timeout"));
 }
 
@@ -2893,7 +2897,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _| Ok(()));
 
@@ -2921,6 +2925,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
+                node_role: LEARNER,
                 address: "127.0.0.1:8080".to_string(),
             },
             sender,
@@ -2931,7 +2936,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
 
     assert!(result.is_err());
     let status = receiver.recv().await.unwrap().unwrap_err();
-    assert_eq!(status.code(), Code::Internal);
+    assert_eq!(status.code(), Code::FailedPrecondition);
 }
 
 /// # Case 5: Snapshot transfer triggered
@@ -2949,7 +2954,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
 
     // Mock membership
     let mut membership = MockMembership::new();
-    membership.expect_can_rejoin().returning(|_| Ok(()));
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_replication_peers().returning(Vec::new);
     membership.expect_add_learner().returning(|_, _| Ok(()));
@@ -3018,7 +3023,11 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     let (sender, mut receiver) = MaybeCloneOneshot::new();
     let result = state
         .handle_join_cluster(
-            JoinRequest { node_id, address },
+            JoinRequest {
+                node_id,
+                node_role: LEARNER,
+                address,
+            },
             sender,
             &context,
             &mpsc::unbounded_channel().0,
@@ -3176,8 +3185,8 @@ mod batch_promote_learners_test {
 
         // Mock membership
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             (1..=current_voters)
                 .map(|id| NodeMeta {
@@ -3371,8 +3380,8 @@ mod pending_promotion_tests {
             };
 
             let mut membership = MockMembership::new();
-            membership.expect_can_rejoin().returning(|_| Ok(()));
-            membership.expect_can_rejoin().returning(|_| Ok(()));
+            membership.expect_can_rejoin().returning(|_, _| Ok(()));
+            membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
             membership
                 .expect_update_node_status()
@@ -3569,7 +3578,7 @@ mod pending_promotion_tests {
         let mut fixture = TestFixture::new("test_partial_batch_promotion", true).await;
         // Setup: 3 voters, 2 pending promotions -> max batch size=1
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         // mock membership with 3 voters
         membership.expect_voters().returning(|| {
             (2..=3)
@@ -3750,7 +3759,7 @@ mod stale_learner_tests {
 
         // Configure membership mock
         let mut membership = MockMembership::new();
-        membership.expect_can_rejoin().returning(|_| Ok(()));
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_update_node_status().returning(|_, _| Ok(()));
         (leader, membership)
     }

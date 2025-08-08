@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -9,9 +9,9 @@ use clap::Parser;
 use clap::Subcommand;
 use d_engine::ClientBuilder;
 use hdrhistogram::Histogram;
+use rand::distributions::Alphanumeric;
 use rand::Rng;
 use rand::SeedableRng;
-use rand::distributions::Alphanumeric;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug, Clone)]

@@ -12,8 +12,10 @@ use tracing::info;
 
 use super::MockRpcService;
 use crate::proto::client::raft_client_service_server::RaftClientServiceServer;
+use crate::proto::client::ClientResponse;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementServiceServer;
 use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::election::raft_election_service_server::RaftElectionServiceServer;
@@ -156,21 +158,6 @@ impl MockNode {
         Ok((channel, port))
     }
 
-    // pub(crate) async fn simulate_mock_service_with_cluster_conf_reps(
-    //     response: std::result::Result<ClusterMembership, tonic::Status>,
-    //     rx: oneshot::Receiver<()>,
-    // ) -> Result<(Channel, u16)> {
-    //     // Return channel + port
-    //     //prepare learner's channel address inside membership config
-    //     let mock_service = MockRpcService {
-    //         expected_metadata_response: Some(response),
-    //         ..Default::default()
-    //     };
-    //     let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
-    //     let channel = Self::mock_channel_with_port(port).await;
-    //     Ok((channel, port))
-    // }
-
     // Return channel + port
     pub(crate) async fn simulate_snapshot_mock_server(
         response: std::result::Result<SnapshotResponse, tonic::Status>,
@@ -221,6 +208,99 @@ impl MockNode {
         //prepare learner's channel address inside membership config
         let mock_service = MockRpcService {
             expected_append_entries_response: Some(response),
+            ..Default::default()
+        };
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn simulate_mock_service_with_join_cluster_reps(
+        rx: oneshot::Receiver<()>,
+        metadata_response_builder: Option<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        join_response: std::result::Result<JoinResponse, Status>,
+    ) -> Result<(Channel, u16)> {
+        let builder = metadata_response_builder.unwrap_or_else(|| {
+            Box::new(|port: u16| {
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![NodeMeta {
+                        id: 1,
+                        role: LEADER,
+                        address: format!("127.0.0.1:{port}",),
+                        status: NodeStatus::Active.into(),
+                    }],
+                })
+            })
+        });
+        let mock_service = MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_join_cluster_response: Some(join_response),
+            ..Default::default()
+        };
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn simulate_client_read_mock_server(
+        rx: oneshot::Receiver<()>,
+        metadata_response_builder: Option<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        response: ClientResponse,
+    ) -> Result<(Channel, u16)> {
+        let builder = metadata_response_builder.unwrap_or_else(|| {
+            Box::new(|port: u16| {
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![NodeMeta {
+                        id: 1,
+                        role: LEADER,
+                        address: format!("127.0.0.1:{port}",),
+                        status: NodeStatus::Active.into(),
+                    }],
+                })
+            })
+        });
+        let mock_service = MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_client_read_response: Some(Ok(response)),
+            ..Default::default()
+        };
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn simulate_client_write_mock_server(
+        rx: oneshot::Receiver<()>,
+        metadata_response_builder: Option<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        response: ClientResponse,
+    ) -> Result<(Channel, u16)> {
+        let builder = metadata_response_builder.unwrap_or_else(|| {
+            Box::new(|port: u16| {
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![NodeMeta {
+                        id: 1,
+                        role: LEADER,
+                        address: format!("127.0.0.1:{port}",),
+                        status: NodeStatus::Active.into(),
+                    }],
+                })
+            })
+        });
+        let mock_service = MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_client_propose_response: Some(Ok(response)),
             ..Default::default()
         };
         let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;

@@ -747,7 +747,13 @@ where
     async fn can_rejoin(
         &self,
         node_id: u32,
+        role: i32,
     ) -> Result<()> {
+        // New nodes must be learners
+        if role != LEARNER {
+            return Err(MembershipError::NotLearner.into());
+        }
+
         if !self.contains_node(node_id).await {
             return Ok(());
         }
