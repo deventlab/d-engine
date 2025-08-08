@@ -204,7 +204,7 @@ impl KvClient {
         Ok(client)
     }
 
-    async fn make_client(
+    pub(super) async fn make_client(
         &self
     ) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();

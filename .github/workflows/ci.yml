@@ -54,7 +54,7 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Run tests with Tarpaulin
-        run: cargo tarpaulin --all-features --out Xml --ciserver github
+        run: cargo tarpaulin --all-features --out Xml --ciserver github --exclude-files "src/generated/**/*"
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v3
