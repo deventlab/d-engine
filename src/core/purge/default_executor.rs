@@ -11,7 +11,7 @@ use crate::TypeConfig;
 
 /// Default implementation using the configured log storage
 pub struct DefaultPurgeExecutor<T: TypeConfig> {
-    raft_log: Arc<ROF<T>>,
+    pub(super) raft_log: Arc<ROF<T>>,
 
     /// === Volatile State ===
     /// Background log purge task status

@@ -7,6 +7,10 @@
 
 mod default_executor;
 pub(crate) use default_executor::*;
+
+#[cfg(test)]
+mod default_executor_test;
+
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
