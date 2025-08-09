@@ -91,7 +91,7 @@ impl ClientPool {
         self.clients[(idx % len) as usize].clone()
     }
 }
-
+#[allow(dead_code)]
 fn generate_key(
     sequential: bool,
     size: usize,
@@ -197,6 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize the connection pool
     let endpoints = cli.endpoints.clone();
+    println!("Initializing client connection with: {:?}", &endpoints);
     let client_pool = ClientPool::new(endpoints, cli.conns)
         .await
         .expect("Failed to create client pool");
