@@ -26,6 +26,9 @@ async fn test_default_purge_executor_execute_purge_success() {
 
     // Assert that the operation was successful
     assert!(result.is_ok());
+    assert!(executor.validate_purge(LogId::default()).await.is_ok());
+    assert!(executor.pre_purge().await.is_ok());
+    assert!(executor.post_purge().await.is_ok());
 }
 
 #[tokio::test]
