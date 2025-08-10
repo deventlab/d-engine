@@ -35,7 +35,6 @@ fn test_new_initializes_default_components_with_none() {
     assert!(builder.state_machine_handler.is_none());
     assert!(builder.snapshot_policy.is_none());
     assert!(builder.node.is_none());
-    assert!(builder.purge_executor.is_none());
 }
 
 #[tokio::test]

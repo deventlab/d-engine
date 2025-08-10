@@ -669,6 +669,7 @@ fn default_stale_check_interval() -> Duration {
 ///
 /// **Note:** Both strategies now fully load all log entries from disk into memory at startup.
 /// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
+#[doc = include_str!("../docs/architecture/raft-log-persistence-architecture.md")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
     /// Disk-first persistence strategy.

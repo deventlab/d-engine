@@ -43,7 +43,6 @@ use tracing::info;
 use super::RaftTypeConfig;
 use crate::alias::COF;
 use crate::alias::MOF;
-use crate::alias::PE;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
@@ -101,7 +100,6 @@ pub struct NodeBuilder {
     pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
     pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
     pub(super) snapshot_policy: Option<SNP<RaftTypeConfig>>,
-    pub(super) purge_executor: Option<PE<RaftTypeConfig>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
 
     pub(super) node: Option<Arc<Node<RaftTypeConfig>>>,
@@ -168,7 +166,6 @@ impl NodeBuilder {
             state_machine_handler: None,
             snapshot_policy: None,
             node: None,
-            purge_executor: None,
         }
     }
 
@@ -307,10 +304,7 @@ impl NodeBuilder {
             )
         }));
 
-        let purge_executor = self
-            .purge_executor
-            .take()
-            .unwrap_or_else(|| DefaultPurgeExecutor::new(raft_log.clone()));
+        let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
@@ -429,15 +423,6 @@ impl NodeBuilder {
                 }
             }
         });
-    }
-
-    /// Add Purge executor configuration method
-    pub fn with_purge_executor<E>(
-        mut self,
-        executor: PE<RaftTypeConfig>,
-    ) -> Self {
-        self.purge_executor = Some(executor);
-        self
     }
 
     /// Sets a custom state machine handler implementation.
