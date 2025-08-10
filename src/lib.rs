@@ -6,8 +6,8 @@ pub mod client;
 pub mod config;
 mod docs;
 pub mod node;
-pub mod proto;
 #[doc(hidden)]
+pub mod proto;
 pub mod storage;
 
 #[doc(hidden)]
@@ -30,7 +30,7 @@ pub use core::*;
 pub use errors::*;
 pub(crate) use membership::*;
 pub(crate) use network::*;
-pub(crate) use storage::*;
+pub use storage::*;
 
 #[doc(hidden)]
 pub mod utils;

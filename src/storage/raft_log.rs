@@ -124,21 +124,12 @@ pub trait RaftLog: Send + Sync + 'static {
         &self,
         hard_state: crate::HardState,
     ) -> Result<()>;
-
-    #[cfg(test)]
-    fn db_size(
-        &self,
-        node_id: u32,
-        db_size_cache_window: u128,
-    ) -> Result<u64>;
-
-    #[cfg(test)]
-    fn len(&self) -> usize;
 }
 
 impl EntryPayload {
+    #[allow(dead_code)]
     #[inline]
-    pub fn is_config(&self) -> bool {
+    pub(crate) fn is_config(&self) -> bool {
         match self.payload {
             Some(Payload::Command(_)) => false,
             Some(Payload::Config(_)) => true,
@@ -147,8 +138,9 @@ impl EntryPayload {
         }
     }
 
+    #[allow(dead_code)]
     #[inline]
-    pub fn is_command(&self) -> bool {
+    pub(crate) fn is_command(&self) -> bool {
         match self.payload {
             Some(Payload::Command(_)) => true,
             Some(Payload::Config(_)) => false,
@@ -157,8 +149,9 @@ impl EntryPayload {
         }
     }
 
+    #[allow(dead_code)]
     #[inline]
-    pub fn is_noop(&self) -> bool {
+    pub(crate) fn is_noop(&self) -> bool {
         match self.payload {
             Some(Payload::Command(_)) => false,
             Some(Payload::Config(_)) => false,

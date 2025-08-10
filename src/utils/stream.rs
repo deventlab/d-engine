@@ -74,7 +74,7 @@ where
     }
 }
 
-/// Converts a receiver channel into a properly encoded tonic::Streaming<SnapshotChunk>
+/// Converts a receiver channel into a properly encoded `tonic::Streaming<SnapshotChunk>`
 ///
 /// This handles:
 /// 1. Proper gRPC frame encoding

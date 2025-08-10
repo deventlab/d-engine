@@ -1,6 +1,7 @@
 #![doc = include_str!("overview.md")]
-#![doc = include_str!("quick-start.md")]
+#![doc = include_str!("quick-start-5min.md")]
 
 pub mod architecture;
-pub mod components;
+pub mod client_guide;
 pub mod performance;
+pub mod server_guide;

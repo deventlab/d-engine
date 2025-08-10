@@ -14,8 +14,8 @@ use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::convert::safe_vk;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
-use crate::storage::RAFT_LOG_NAMESPACE;
-use crate::storage::RAFT_META_NAMESPACE;
+use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
+use crate::storage::sled_adapter::RAFT_META_NAMESPACE;
 use crate::Error;
 use crate::HardState;
 use crate::ProstError;
@@ -247,18 +247,6 @@ impl StorageEngine for SledStorageEngine {
 
         Ok(())
     }
-
-    #[cfg(test)]
-    fn db_size(&self) -> Result<u64> {
-        use crate::StorageError;
-
-        self.db.size_on_disk().map_err(|e| StorageError::DbError(e.to_string()).into())
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.log_tree.len()
-    }
 }
 
 impl std::fmt::Debug for SledStorageEngine {
@@ -307,5 +295,15 @@ impl SledStorageEngine {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&key[0..8]);
         u64::from_be_bytes(bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.log_tree.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }

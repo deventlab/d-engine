@@ -1,1 +1,1 @@
-#![doc = include_str!("throughput_optimization_guide.md")]
+#![doc = include_str!("throughput-optimization-guide.md")]

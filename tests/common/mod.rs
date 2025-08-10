@@ -1,4 +1,3 @@
-use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,10 +25,9 @@ use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
 use d_engine::storage::init_sled_storage_engine_db;
-use d_engine::storage::RaftLog;
 use d_engine::storage::SledStateMachine;
 use d_engine::storage::SledStorageEngine;
-use d_engine::storage::StateMachine;
+
 use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
 use d_engine::HardState;
@@ -302,16 +300,6 @@ pub async fn manipulate_log(
     }
     assert!(storage_engine.persist_entries(entries).is_ok());
     assert!(storage_engine.flush().is_ok());
-}
-
-#[allow(dead_code)]
-pub fn manipulate_state_machine(
-    raft_log: &Arc<impl RaftLog>,
-    state_machine: &Arc<impl StateMachine>,
-    id_range: RangeInclusive<u64>,
-) {
-    let entries = raft_log.get_entries_range(id_range).expect("Failed to get entries");
-    assert!(state_machine.apply_chunk(entries).is_ok());
 }
 
 pub fn init_hard_state(

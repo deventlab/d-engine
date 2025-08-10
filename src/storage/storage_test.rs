@@ -25,10 +25,9 @@ fn test_init_storages_case1() {
     std::fs::remove_dir_all(&path).ok();
     let state_key = skv("state_key".to_string());
     {
-        let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-            init_sled_storages(path.to_string()).unwrap();
+        let (storage_engine_db, state_machine_db) = init_sled_storages(path.to_string()).unwrap();
 
-        raft_log_db.insert(safe_kv(1), &safe_kv(2)).expect("should succeed");
+        storage_engine_db.insert(safe_kv(1), &safe_kv(2)).expect("should succeed");
         state_machine_db
             .insert(state_key.clone(), &safe_kv(17))
             .expect("should succeed");
@@ -63,24 +62,23 @@ fn test_init_storages_case1() {
                 },
             ],
         };
-        state_storage_db
+        storage_engine_db
             .insert(safe_kv(11), cluster_membership.encode_to_vec())
             .expect("should succeed");
     }
 
     {
-        let (raft_log_db, state_machine_db, state_storage_db, _snapshot_storage_db) =
-            init_sled_storages(path.to_string()).unwrap();
+        let (storage_engine_db, state_machine_db) = init_sled_storages(path.to_string()).unwrap();
         assert_eq!(
             Some(safe_kv(2).to_vec()),
-            raft_log_db.get(safe_kv(1)).expect("should succeed").map(|v| v.to_vec())
+            storage_engine_db.get(safe_kv(1)).expect("should succeed").map(|v| v.to_vec())
         );
         assert_eq!(
             Some(safe_kv(17).to_vec()),
             state_machine_db.get(&state_key).expect("should succeed").map(|v| v.to_vec())
         );
 
-        let v = state_storage_db.get(safe_kv(11)).unwrap().unwrap();
+        let v = storage_engine_db.get(safe_kv(11)).unwrap().unwrap();
         let v = v.to_vec();
         let m = ClusterMembership::decode(&v[..]).unwrap();
         assert_eq!(4, m.nodes.len());

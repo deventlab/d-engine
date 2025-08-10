@@ -15,8 +15,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::trace;
 
-use super::RaftLog;
-use super::StorageEngine;
 use crate::alias::SOF;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
@@ -25,7 +23,9 @@ use crate::FlushPolicy;
 use crate::NetworkError;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
+use crate::RaftLog;
 use crate::Result;
+use crate::StorageEngine;
 use crate::TypeConfig;
 
 /// Commands for the log processor
@@ -437,36 +437,6 @@ where
     ) -> Result<()> {
         self.storage.save_hard_state(hard_state)
     }
-
-    /// db_size_cache_duration - how long the cache will be valid (since last
-    /// activity) #[deprecated]
-    #[cfg(test)]
-    fn db_size(
-        &self,
-        _node_id: u32,
-        _db_size_cache_window: u128,
-    ) -> Result<u64> {
-        // if nothing found in cache, we will query the size from the db directly
-        match self.storage.db_size() {
-            Ok(size) => {
-                // db_size_cache.size.store(size, Ordering::Release);
-                // db_size_cache.last_activity.insert(node_id, now);
-                debug!("retrieved the real db size: {size}",);
-                println!("retrieved the real db size: {size}",);
-                Ok(size)
-            }
-            Err(e) => {
-                error!("db_size() failed: {e:?}");
-                eprintln!("db_size() failed: {e:?}");
-                Err(e)
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 impl<T> BufferedRaftLog<T>
@@ -791,6 +761,11 @@ where
 
         self.min_index.store(new_min, Ordering::Release);
         self.max_index.store(new_max, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 

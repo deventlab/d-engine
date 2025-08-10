@@ -26,6 +26,8 @@ use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
+use crate::SledStorageEngine;
+use crate::StorageEngine;
 
 // Test utilities
 struct TestContext {
@@ -1133,7 +1135,7 @@ async fn test_raft_log_drop() {
     let case_path = temp_dir.path().join("test_raft_log_drop");
 
     {
-        let (db, _, _, _) = reset_dbs(case_path.to_str().unwrap());
+        let (db, _) = reset_dbs(case_path.to_str().unwrap());
         // Create real instance instead of mock
         let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
@@ -1153,7 +1155,7 @@ async fn test_raft_log_drop() {
     }
 
     // Verify flush occurred by checking persistence
-    let (reloaded_db, _, _, _) = reuse_dbs(case_path.to_str().unwrap());
+    let (reloaded_db, _) = reuse_dbs(case_path.to_str().unwrap());
     let db_engine = SledStorageEngine::new(1, reloaded_db).unwrap();
     assert!(!db_engine.is_empty());
 }
@@ -1735,7 +1737,7 @@ mod disk_first_tests {
 
         // Create and populate storage
         {
-            let (db, _, _, _) = reset_dbs(db_path.to_str().unwrap());
+            let (db, _) = reset_dbs(db_path.to_str().unwrap());
             let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 1,
@@ -1759,7 +1761,7 @@ mod disk_first_tests {
         }
 
         // Recover from disk
-        let (db, _, _, _) = reuse_dbs(db_path.to_str().unwrap());
+        let (db, _) = reuse_dbs(db_path.to_str().unwrap());
         let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
         let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
@@ -1956,7 +1958,7 @@ mod batched_tests {
 
         // Create and partially populate storage
         {
-            let (db, _, _, _) = reset_dbs(db_path.to_str().unwrap());
+            let (db, _) = reset_dbs(db_path.to_str().unwrap());
             let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 1,
@@ -1988,7 +1990,7 @@ mod batched_tests {
         }
 
         // Recover from disk
-        let (db, _, _, _) = reuse_dbs(db_path.to_str().unwrap());
+        let (db, _) = reuse_dbs(db_path.to_str().unwrap());
         let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
         let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
@@ -2083,6 +2085,8 @@ mod common_tests {
 }
 
 mod filter_out_conflicts_and_append_performance_tests {
+    use crate::MockStorageEngine;
+
     use super::*;
 
     #[tokio::test]
@@ -2238,12 +2242,11 @@ mod filter_out_conflicts_and_append_performance_tests {
 }
 
 mod performance_tests {
+    use super::*;
+    use crate::MockStorageEngine;
     use std::sync::Arc;
-
     use tokio::sync::Barrier;
     use tokio::time::Duration;
-
-    use super::*;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2726,7 +2729,7 @@ mod save_load_hard_state_tests {
 
         // Phase 1: Initial save
         {
-            let (db, _, _, _) = reset_dbs(db_path.to_str().unwrap());
+            let (db, _) = reset_dbs(db_path.to_str().unwrap());
             let storage = Arc::new(SledStorageEngine::new(node_id, db).unwrap());
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 node_id,
@@ -2754,7 +2757,7 @@ mod save_load_hard_state_tests {
 
         // Phase 2: Restart
         {
-            let (db, _, _, _) = reuse_dbs(db_path.to_str().unwrap());
+            let (db, _) = reuse_dbs(db_path.to_str().unwrap());
             let storage = Arc::new(SledStorageEngine::new(node_id, db).unwrap());
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 node_id,

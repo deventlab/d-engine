@@ -1,10 +1,4 @@
-//! StateMachine
-//!
-//! Handles all database-related operations including:
-//! - Applying log entries to the state machine
-//! - Generating snapshot data representation(e.g. file)
-//! - Applying snapshots to the underlying database
-//! - Maintaining data consistency guarantees
+#![doc = include_str!("../docs/server_guide/customize-state-machine.md")]
 
 #[cfg(test)]
 use mockall::automock;
@@ -15,9 +9,6 @@ use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
 use crate::ConvertError;
 use crate::Result;
-
-//TODO
-pub(crate) type StateMachineIter = sled::Iter;
 
 #[cfg_attr(test, automock)]
 #[async_trait]
@@ -30,7 +21,6 @@ pub trait StateMachine: Send + Sync + 'static {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Vec<u8>>>;
-    fn iter(&self) -> StateMachineIter;
 
     fn entry_term(
         &self,
@@ -130,9 +120,6 @@ pub trait StateMachine: Send + Sync + 'static {
     fn save_hard_state(&self) -> Result<()>;
 
     fn flush(&self) -> Result<()>;
-
-    #[cfg(test)]
-    fn clean(&self) -> Result<()>;
 }
 
 impl SnapshotMetadata {

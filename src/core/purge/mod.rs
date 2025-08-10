@@ -1,4 +1,4 @@
-#![doc = include_str!("../../docs/components/purge_executor.md")]
+#![doc = include_str!("../../docs/architecture/purge_executor.md")]
 //! Log compaction and purge management.
 //!
 //! Defines the interface for customizing log purge behavior in Raft leaders and followers.

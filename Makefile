@@ -5,7 +5,7 @@
 SCRIPT_PATH := scripts/pre-release-checklist.sh
 CARGO_TOOLCHAIN := 1.84.0  # Update to your toolchain
 CRATE_NAME := d_engine          # Update to your crate name
-
+RUST_LOG_LEVEL := d_engine=info
 
 ## Show this help
 help:
@@ -66,7 +66,7 @@ clippy-fix: ## Run Clippy fix
 
 # Test suite
 test: ## Run test suite
-	@cargo test --lib -- --nocapture
-	@cargo test --tests -- --nocapture
-	@cargo test --doc
-	@cargo bench -- --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --lib -- --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --tests -- --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --doc
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo bench -- --nocapture

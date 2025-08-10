@@ -48,7 +48,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::Result;
 use crate::SnapshotError;
 use crate::StateMachine;
-use crate::StateMachineIter;
 use crate::StorageError;
 
 pub struct SledStateMachine {
@@ -185,10 +184,6 @@ impl StateMachine for SledStateMachine {
                 None
             }
         }
-    }
-
-    fn iter(&self) -> StateMachineIter {
-        self.current_tree().iter()
     }
 
     fn apply_chunk(
@@ -538,12 +533,6 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn clean(&self) -> Result<()> {
-        self.current_tree().clear()?;
-        Ok(())
-    }
-
     fn len(&self) -> usize {
         self.current_tree().len()
     }
@@ -679,6 +668,11 @@ impl SledStateMachine {
 
         archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> sled::Iter {
+        self.current_tree().iter()
     }
 }
 

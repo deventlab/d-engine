@@ -90,7 +90,7 @@ pub(crate) async fn write_into_file(
 /// Asynchronous function for safely deleting files
 ///
 /// # Parameters
-/// - `path`: The file path to be deleted, accepting any type that implements AsRef<Path>
+/// - `path`: The file path to be deleted, accepting any type that implements `AsRef<Path>`
 ///
 /// # Error
 /// Returns a custom FileError error type, including various possible failure scenarios

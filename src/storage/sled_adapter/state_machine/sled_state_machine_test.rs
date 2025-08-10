@@ -68,8 +68,7 @@ async fn test_apply_committed_raft_logs_in_batch() {
 }
 
 fn init(path: &str) -> Arc<sled::Db> {
-    let (_raft_log_db, state_machine_db, _state_storage_db, _snapshot_storage_db) =
-        init_sled_storages(path.to_string()).unwrap();
+    let (_raft_log_db, state_machine_db) = init_sled_storages(path.to_string()).unwrap();
     Arc::new(state_machine_db)
 }
 

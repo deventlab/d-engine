@@ -17,7 +17,6 @@ use crate::RaftNodeConfig;
 use crate::SledStateMachine;
 use crate::SledStorageEngine;
 use crate::StateMachine;
-use crate::StorageEngine;
 use crate::SystemError;
 
 /// These components should not be initialized during builder setup; developers should have the
@@ -44,14 +43,13 @@ async fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let db_path = "/tmp/test_set_raft_log_replaces_default";
 
-    let (raft_log_db, state_machine_db, _state_storage_db, _snapshot_storage_db) =
-        reset_dbs(db_path);
+    let (storage_engine_db, state_machine_db) = reset_dbs(db_path);
 
     let id = 1;
-    let raft_log_db = raft_log_db;
     let state_machine_db = Arc::new(state_machine_db);
 
-    let sled_storage_engine = Arc::new(SledStorageEngine::new(id, raft_log_db).expect("success"));
+    let sled_storage_engine =
+        Arc::new(SledStorageEngine::new(id, storage_engine_db).expect("success"));
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,
         PersistenceConfig {

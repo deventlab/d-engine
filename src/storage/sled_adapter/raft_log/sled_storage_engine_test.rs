@@ -1,7 +1,3 @@
-use std::ops::RangeInclusive;
-
-use tempfile::TempDir;
-
 use super::*;
 use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
 use crate::init_sled_storage_engine_db;
@@ -9,13 +5,15 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
+use crate::storage::sled_adapter::RAFT_LOG_NAMESPACE;
 use crate::storage::StorageEngine;
-use crate::storage::RAFT_LOG_NAMESPACE;
 use crate::test_utils::enable_logger;
 use crate::Error;
 use crate::HardState;
 use crate::ProstError;
 use crate::SystemError;
+use std::ops::RangeInclusive;
+use tempfile::TempDir;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {

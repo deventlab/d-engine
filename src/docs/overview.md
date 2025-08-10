@@ -1,4 +1,3 @@
-
 # D-Engine
 
 [![Crates.io](https://img.shields.io/crates/v/d-engine.svg)](https://crates.io/crates/d-engine)
@@ -13,15 +12,17 @@
 
 ## Features
 
-- **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
-- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, in-memory).
-- **Observability**: Built-in metrics, structured logging, and distributed tracing.
-- **Runtime Agnostic**: Works seamlessly with `tokio`.
-- **Extensible Design**: Decouples business logic from the protocol layer for easy customization.
+- **Strong Consistency**: Full production-grade implementation of the Raft consensus protocol, including leader election, log replication, membership changes, and fault-tolerant state replication.
+- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB).
+- **Configurable Snapshotting**: Built-in snapshot generation with customizable policies, on-demand creation, or the option to disable snapshots entirely.
+- **Dynamic Cluster Membership**: New nodes can join as learners and be promoted to followers based on configurable synchronization conditions.
+- **Optimized Resource Usage**: Single-threaded, event-driven architecture maximizing single-core throughput while minimizing memory and disk overhead.
+- **Deep Observability**: Exposes rich metrics, structured logs, and tracing data for integration with your own monitoring stack (e.g., Prometheus + Grafana).
 
 ---
 
 ## Quick Start
+
 ```no_run
 use d_engine::NodeBuilder;
 use tokio::sync::watch;
@@ -47,6 +48,7 @@ async fn main() {
 ```
 
 ## Core Concepts
+
 ![Data Flow](https://www.mermaidchart.com/raw/67aa2040-9292-4aed-b5cd-44621245f1c4?theme=light&version=v0.1&format=svg)
 
 For production deployments, a minimum cluster size of **3 nodes** is required.

@@ -111,7 +111,7 @@ pub fn setup_raft_components(
     println!("Test setup_raft_components ...");
     enable_logger();
     //start from fresh
-    let (raft_log_db, state_machine_db, _state_storage_db, _snapshot_storage_db) = if restart {
+    let (raft_log_db, state_machine_db) = if restart {
         reuse_dbs(db_path)
     } else {
         reset_dbs(db_path)
@@ -208,7 +208,7 @@ pub fn setup_raft_components(
 /// cluster_metadata_tree,
 /// node_state_metadata_tree,
 /// node_snapshot_metadata_tree,
-pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
+pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db) {
     println!("[Test] reset_dbs ...");
     let _ = std::fs::remove_dir_all(db_path);
     init_sled_storages(db_path.to_string()).expect("init storage failed.")
@@ -219,7 +219,7 @@ pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
 /// cluster_metadata_tree,
 /// node_state_metadata_tree,
 /// node_snapshot_metadata_tree,
-pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db, sled::Db, sled::Db) {
+pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db) {
     println!("[Test] reuse_dbs ...");
     init_sled_storages(db_path.to_string()).expect("init storage failed.")
 }
