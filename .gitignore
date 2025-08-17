@@ -42,3 +42,4 @@ docker/monitoring/prometheus/data/
 
 .clj-kondo
 .lsp
+.zed

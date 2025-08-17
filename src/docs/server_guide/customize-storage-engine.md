@@ -1,4 +1,4 @@
-## **Implementing Custom Storage Engines**
+## **Implementing Custom Storage Engine**
 
 d-engine supports **pluggable storage** through the StorageEngine trait.
 

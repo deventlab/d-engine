@@ -1,8 +1,10 @@
-mod raft_log;
 mod state_machine;
+mod storage_engine;
 
-pub use raft_log::*;
 pub use state_machine::*;
+pub use storage_engine::*;
+
+use crate::Error;
 
 //---
 // Database namespaces
@@ -15,7 +17,7 @@ const RAFT_META_NAMESPACE: &str = "raft_meta";
 #[doc(hidden)]
 pub fn init_sled_storages(
     sled_db_root_path: impl AsRef<std::path::Path> + std::fmt::Debug
-) -> std::result::Result<(sled::Db, sled::Db), std::io::Error> {
+) -> Result<(sled::Db, sled::Db), Error> {
     tracing::debug!("init_sled_storages from path: {:?}", &sled_db_root_path);
 
     Ok((
@@ -23,17 +25,31 @@ pub fn init_sled_storages(
         init_sled_state_machine_db(&sled_db_root_path)?,
     ))
 }
+
+pub fn init_sled_log_tree_and_meta_tree(
+    sled_db_root_path: impl AsRef<std::path::Path> + std::fmt::Debug,
+    node_id: u32,
+) -> Result<(sled::Tree, sled::Tree), Error> {
+    let db = init_sled_storage_engine_db(&sled_db_root_path)?;
+    let log_tree_name = format!("raft_log_{}_{}", RAFT_LOG_NAMESPACE, node_id);
+    let meta_tree_name = format!("raft_meta_{}_{}", RAFT_META_NAMESPACE, node_id);
+    let log_tree = db.open_tree(&log_tree_name)?;
+    let meta_tree = db.open_tree(&meta_tree_name)?;
+
+    Ok((log_tree, meta_tree))
+}
+
 #[doc(hidden)]
 pub fn init_sled_storage_engine_db(
     sled_db_root_path: impl AsRef<std::path::Path> + std::fmt::Debug
-) -> std::result::Result<sled::Db, std::io::Error> {
+) -> Result<sled::Db, Error> {
     tracing::debug!(
         "init_sled_storage_engine_db from path: {:?}",
         &sled_db_root_path
     );
 
     let path = sled_db_root_path.as_ref();
-    let raft_log_db_path = path.join("raft_log");
+    let raft_log_db_path = path.join("storage_engine");
 
     sled::Config::default()
         .path(&raft_log_db_path)
@@ -51,13 +67,13 @@ pub fn init_sled_storage_engine_db(
                 raft_log_db_path,
                 e
             );
-            std::io::Error::other(e)
+            e.into()
         })
 }
 #[doc(hidden)]
 pub fn init_sled_state_machine_db(
     sled_db_root_path: impl AsRef<std::path::Path> + std::fmt::Debug
-) -> std::result::Result<sled::Db, std::io::Error> {
+) -> Result<sled::Db, Error> {
     tracing::debug!(
         "init_sled_state_machine_db from path: {:?}",
         sled_db_root_path
@@ -81,6 +97,6 @@ pub fn init_sled_state_machine_db(
                 state_machine_db_path,
                 e
             );
-            std::io::Error::other(e)
+            e.into()
         })
 }

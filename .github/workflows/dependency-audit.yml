@@ -1,0 +1,19 @@
+name: Dependency Audit
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit dependencies
+        run: |
+          cargo install cargo-deny
+          cargo deny check all
+      - name: Update dependencies
+        run: cargo update
+      - name: Check compatibility
+        run: cargo check --all-features

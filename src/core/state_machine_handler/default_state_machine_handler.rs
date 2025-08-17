@@ -513,7 +513,7 @@ where
         }
 
         // Perform physical deletion
-        match raft_log.purge_logs_up_to(req.last_included.unwrap()) {
+        match raft_log.purge_logs_up_to(req.last_included.unwrap()).await {
             Ok(_) => Ok(PurgeLogResponse {
                 node_id: self.node_id,
                 term: current_term,

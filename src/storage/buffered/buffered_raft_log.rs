@@ -1,3 +1,11 @@
+//! High-performance buffered Raft log with static dispatch
+//!
+//! - Lock-free in-memory index
+//! - Batch I/O operations
+//! - Async persistence pipeline
+//! - Generic storage integration
+//!
+
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -20,6 +28,9 @@ use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::scoped_timer::ScopedTimer;
 use crate::FlushPolicy;
+use crate::HardState;
+use crate::LogStore;
+use crate::MetaStore;
 use crate::NetworkError;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
@@ -64,7 +75,9 @@ where
     #[allow(dead_code)]
     node_id: u32,
 
-    pub(crate) storage: Arc<SOF<T>>,
+    pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
+    pub(crate) meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
+
     strategy: PersistenceStrategy,
     flush_policy: FlushPolicy,
 
@@ -326,7 +339,7 @@ where
             self.remove_range(start_index..=u64::MAX);
 
             // Truncate storage
-            self.storage.truncate(start_index)?;
+            self.log_store.truncate(start_index).await?;
         }
 
         // Append new entries
@@ -372,7 +385,7 @@ where
         }
     }
 
-    fn purge_logs_up_to(
+    async fn purge_logs_up_to(
         &self,
         cutoff_index: LogId,
     ) -> Result<()> {
@@ -398,7 +411,7 @@ where
         }
 
         // Persist to storage
-        self.storage.purge_logs(cutoff_index)?;
+        self.log_store.purge(cutoff_index).await?;
 
         Ok(())
     }
@@ -417,25 +430,23 @@ where
 
     async fn reset(&self) -> Result<()> {
         let _timer = ScopedTimer::new("buffered_raft_log::reset");
-        self.reset_internal()?;
+        self.reset_internal().await?;
 
-        let storage_clone = self.storage.clone();
-        tokio::spawn(async move {
-            let _ = storage_clone.reset();
-        });
+        //reset disk
+        self.log_store.reset().await?;
 
         Ok(())
     }
 
-    fn load_hard_state(&self) -> Result<Option<crate::HardState>> {
-        self.storage.load_hard_state()
+    fn load_hard_state(&self) -> Result<Option<HardState>> {
+        self.meta_store.load_hard_state()
     }
 
     fn save_hard_state(
         &self,
-        hard_state: crate::HardState,
+        hard_state: &HardState,
     ) -> Result<()> {
-        self.storage.save_hard_state(hard_state)
+        self.meta_store.save_hard_state(hard_state)
     }
 }
 
@@ -448,7 +459,9 @@ where
         persistence_config: PersistenceConfig,
         storage: Arc<SOF<T>>,
     ) -> (Self, mpsc::UnboundedReceiver<LogCommand>) {
-        let disk_len = storage.last_index();
+        let log_store = storage.log_store();
+        let meta_store = storage.meta_store();
+        let disk_len = log_store.last_index();
 
         debug!(
             "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
@@ -466,7 +479,7 @@ where
 
         // Load all entries from disk to memory
         if disk_len > 0 {
-            match storage.get_entries_range(1..=disk_len) {
+            match log_store.get_entries(1..=disk_len) {
                 Ok(all_entries) => {
                     for entry in all_entries {
                         entries.insert(entry.index, entry);
@@ -486,7 +499,8 @@ where
         (
             Self {
                 node_id,
-                storage,
+                log_store,
+                meta_store,
                 strategy: persistence_config.strategy,
                 flush_policy: persistence_config.flush_policy,
                 entries,
@@ -587,12 +601,19 @@ where
                 let _ = ack.send(result);
             }
             LogCommand::Reset(ack) => {
-                let result = self.reset_internal();
-                let _ = ack.send(result);
+                if let Err(e) = self.reset_internal().await {
+                    error!("Failed to reset internal state: {}", e);
+                    let _ = ack.send(Err(e));
+                } else {
+                    //reset disk
+                    let result = self.log_store.reset().await;
+                    let _ = ack.send(result);
+                }
             }
             LogCommand::Shutdown => {
                 let _ = self.force_flush().await;
-                let _ = self.storage.flush();
+                let _ = self.log_store.flush();
+                let _ = self.meta_store.flush();
             }
         }
     }
@@ -623,7 +644,7 @@ where
         std::mem::take(&mut state.pending_indexes)
     }
 
-    fn reset_internal(&self) -> Result<()> {
+    async fn reset_internal(&self) -> Result<()> {
         self.entries.clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
@@ -633,7 +654,7 @@ where
         self.min_index.store(0, Ordering::Release);
         self.max_index.store(0, Ordering::Release);
 
-        self.storage.reset()?;
+        self.log_store.reset().await?;
 
         Ok(())
     }
@@ -666,11 +687,11 @@ where
         trace!("Collected {} entries for persistence", entries.len());
 
         // Persist to storage
-        self.storage.persist_entries(entries)?;
+        self.log_store.persist_entries(entries).await?;
 
         // Handle immediate flush policy
         if matches!(self.flush_policy, FlushPolicy::Immediate) {
-            self.storage.flush()?;
+            self.log_store.flush()?;
         }
 
         // Update durable index
@@ -686,7 +707,7 @@ where
         let indexes = self.get_pending_indexes().await;
         let result = self.process_flush(&indexes).await;
 
-        self.storage.flush()?;
+        self.log_store.flush()?;
 
         result
     }
@@ -717,11 +738,11 @@ where
         &self,
         entries: &[Entry],
     ) -> Result<()> {
-        self.storage.persist_entries(entries.to_vec())?;
+        self.log_store.persist_entries(entries.to_vec()).await?;
 
         // Handle flush policy
         match self.flush_policy {
-            FlushPolicy::Immediate => self.storage.flush()?,
+            FlushPolicy::Immediate => self.log_store.flush()?,
             FlushPolicy::Batch { .. } => {} // Defer flush
         }
 

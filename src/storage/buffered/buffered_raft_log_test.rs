@@ -1,14 +1,3 @@
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use std::vec;
-
-use futures::future::join_all;
-use tempfile::tempdir;
-use tokio::time::sleep;
-use tokio::time::Instant;
-use tracing::debug;
-
 use super::*;
 use crate::alias::ROF;
 use crate::proto::common::Entry;
@@ -28,6 +17,15 @@ use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SledStorageEngine;
 use crate::StorageEngine;
+use futures::future::join_all;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+use std::vec;
+use tempfile::tempdir;
+use tokio::time::sleep;
+use tokio::time::Instant;
+use tracing::debug;
 
 // Test utilities
 struct TestContext {
@@ -45,7 +43,12 @@ impl TestContext {
         let storage = {
             let config = sled::Config::new().temporary(true);
             let db = config.open().unwrap();
-            Arc::new(SledStorageEngine::new(1, db).unwrap())
+            let log_tree_name = "raft_log_tree";
+            let meta_tree_name = "raft_meta_tree";
+            let log_tree = db.open_tree(log_tree_name).unwrap();
+            let meta_tree = db.open_tree(meta_tree_name).unwrap();
+
+            Arc::new(SledStorageEngine::new(log_tree, meta_tree))
         };
 
         let (raft_log, receiver) = BufferedRaftLog::new(
@@ -494,7 +497,7 @@ async fn test_purge_logs_up_to() {
     // assume we have generated snapshot until $last_applied,
     // now we can clean the local logs
     let last_applied = LogId { index: 3, term: 1 };
-    context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
+    context.raft_log.purge_logs_up_to(last_applied).await.expect("should succeed");
 
     assert_eq!(9, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.entry(3).unwrap());
@@ -528,21 +531,20 @@ async fn test_purge_logs_up_to_concurrent_purge() {
         .into_iter()
         .map(|cutoff| {
             let raft_log = context.raft_log.clone();
-            std::thread::spawn(move || {
+            tokio::spawn(async move {
                 raft_log
                     .purge_logs_up_to(LogId {
                         index: cutoff,
                         term: 1,
                     })
+                    .await
                     .unwrap();
             })
         })
         .collect();
 
     // Wait for all threads
-    for h in handles {
-        h.join().unwrap();
-    }
+    join_all(handles).await;
 
     // Verify final state
     assert_eq!(10, context.raft_log.last_entry_id());
@@ -574,7 +576,7 @@ async fn test_get_first_raft_log_entry_id_after_delete_entries() {
     context.raft_log.insert_batch(entries).await.expect("should succeed");
 
     let last_applied = LogId { index: 4, term: 1 };
-    context.raft_log.purge_logs_up_to(last_applied).expect("should succeed");
+    context.raft_log.purge_logs_up_to(last_applied).await.expect("should succeed");
     assert_eq!(10, context.raft_log.last_entry_id());
     assert_eq!(None, context.raft_log.entry(3).unwrap());
     assert_eq!(None, context.raft_log.entry(2).unwrap());
@@ -716,6 +718,16 @@ async fn test_insert_batch_logs_case1() {
     assert_eq!(start + i * j, end);
 }
 
+fn give_me_a_storage() -> Arc<SledStorageEngine> {
+    let config = sled::Config::new().temporary(true);
+    let db = config.open().unwrap();
+    let log_tree_name = "raft_log_tree";
+    let meta_tree_name = "raft_meta_tree";
+    let log_tree = db.open_tree(log_tree_name).unwrap();
+    let meta_tree = db.open_tree(meta_tree_name).unwrap();
+    Arc::new(SledStorageEngine::new(log_tree, meta_tree))
+}
+
 /// # Case 2: Test scenario for log replication conflict handling when combining:
 /// 1. `filter_out_conflicts_and_append` (follower's perspective)
 /// 2. `purge_logs_up_to` (snapshot compaction)
@@ -741,8 +753,6 @@ async fn test_insert_batch_logs_case1() {
 #[tokio::test]
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
-    let config = sled::Config::new().temporary(true);
-    let db = config.open().unwrap();
     let (old_leader, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         1,
         PersistenceConfig {
@@ -750,12 +760,10 @@ async fn test_insert_batch_logs_case2() {
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 1000,
         },
-        Arc::new(SledStorageEngine::new(1, db).unwrap()),
+        give_me_a_storage(),
     );
     let old_leader = old_leader.start(receiver);
 
-    let config = sled::Config::new().temporary(true);
-    let db = config.open().unwrap();
     let (new_leader, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         2,
         PersistenceConfig {
@@ -763,7 +771,7 @@ async fn test_insert_batch_logs_case2() {
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 1000,
         },
-        Arc::new(SledStorageEngine::new(2, db).unwrap()),
+        give_me_a_storage(),
     );
     let new_leader = new_leader.start(receiver);
 
@@ -792,7 +800,7 @@ async fn test_insert_batch_logs_case2() {
 
     // 4. Simulate snapshot compaction
     let last_applied = LogId { index: 3, term: 1 };
-    old_leader.purge_logs_up_to(last_applied).expect("should succeed");
+    old_leader.purge_logs_up_to(last_applied).await.expect("should succeed");
 
     // 5. New leader appends higher term logs
     let mut handles = Vec::new();
@@ -1136,6 +1144,8 @@ async fn test_raft_log_drop() {
 
     {
         let (db, _) = reset_dbs(case_path.to_str().unwrap());
+        let log_tree = db.open_tree("log_tree_name").unwrap();
+        let meta_tree = db.open_tree("meta_tree_name").unwrap();
         // Create real instance instead of mock
         let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
@@ -1144,7 +1154,7 @@ async fn test_raft_log_drop() {
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
             },
-            Arc::new(SledStorageEngine::new(1, db).unwrap()),
+            Arc::new(SledStorageEngine::new(log_tree, meta_tree)),
         );
         let raft_log = raft_log.start(receiver);
         // Insert test data
@@ -1156,8 +1166,10 @@ async fn test_raft_log_drop() {
 
     // Verify flush occurred by checking persistence
     let (reloaded_db, _) = reuse_dbs(case_path.to_str().unwrap());
-    let db_engine = SledStorageEngine::new(1, reloaded_db).unwrap();
-    assert!(!db_engine.is_empty());
+    let log_tree = reloaded_db.open_tree("log_tree_name").unwrap();
+    let meta_tree = reloaded_db.open_tree("meta_tree_name").unwrap();
+    let db_engine = SledStorageEngine::new(log_tree, meta_tree);
+    assert!(!db_engine.log_store().is_empty());
 }
 
 #[tokio::test]
@@ -1342,6 +1354,7 @@ async fn test_term_index_functions_with_purged_logs() {
     context
         .raft_log
         .purge_logs_up_to(LogId { index: 5, term: 2 })
+        .await
         .expect("purge should succeed");
 
     // Verify after purge
@@ -1354,9 +1367,8 @@ async fn test_term_index_functions_with_purged_logs() {
 #[tokio::test]
 async fn test_term_index_functions_with_concurrent_writes() {
     enable_logger();
-    let config = sled::Config::new().temporary(true);
-    let db = config.open().unwrap();
-    let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+
+    let storage = give_me_a_storage();
     let (raft_log, log_command_receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
         1,
         PersistenceConfig {
@@ -1459,7 +1471,10 @@ mod id_allocation_tests {
     fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig>> {
         let config = sled::Config::new().temporary(true);
         let db = config.open().unwrap();
-        let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+
+        let log_tree = db.open_tree("raft_log_tree").unwrap();
+        let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+        let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
 
         let (raft_log, _receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
@@ -1738,7 +1753,10 @@ mod disk_first_tests {
         // Create and populate storage
         {
             let (db, _) = reset_dbs(db_path.to_str().unwrap());
-            let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+
+            let log_tree = db.open_tree("raft_log_tree").unwrap();
+            let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+            let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 1,
                 PersistenceConfig {
@@ -1762,7 +1780,9 @@ mod disk_first_tests {
 
         // Recover from disk
         let (db, _) = reuse_dbs(db_path.to_str().unwrap());
-        let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+        let log_tree = db.open_tree("raft_log_tree").unwrap();
+        let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+        let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
         let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
             PersistenceConfig {
@@ -1814,6 +1834,8 @@ mod disk_first_tests {
 
 mod mem_first_tests {
 
+    use crate::{LogStore, StorageEngine};
+
     use super::*;
 
     #[tokio::test]
@@ -1848,7 +1870,7 @@ mod mem_first_tests {
 
         // Verify persistence
         assert_eq!(ctx.raft_log.durable_index.load(Ordering::Acquire), 100);
-        assert_eq!(ctx.storage.as_ref().last_index(), 100);
+        assert_eq!(ctx.storage.as_ref().log_store().last_index(), 100);
     }
 
     #[tokio::test]
@@ -1959,7 +1981,10 @@ mod batched_tests {
         // Create and partially populate storage
         {
             let (db, _) = reset_dbs(db_path.to_str().unwrap());
-            let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+
+            let log_tree = db.open_tree("raft_log_tree").unwrap();
+            let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+            let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 1,
                 PersistenceConfig {
@@ -1991,7 +2016,10 @@ mod batched_tests {
 
         // Recover from disk
         let (db, _) = reuse_dbs(db_path.to_str().unwrap());
-        let storage = Arc::new(SledStorageEngine::new(1, db).unwrap());
+
+        let log_tree = db.open_tree("raft_log_tree").unwrap();
+        let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+        let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
         let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
             1,
             PersistenceConfig {
@@ -2023,7 +2051,7 @@ mod common_tests {
         ctx.append_entries(1, 100, 1).await;
 
         // Compact first 50 entries
-        ctx.raft_log.purge_logs_up_to(LogId { index: 50, term: 1 }).unwrap();
+        ctx.raft_log.purge_logs_up_to(LogId { index: 50, term: 1 }).await.unwrap();
 
         // Verify compaction
         assert!(ctx.raft_log.entry(25).unwrap().is_none());
@@ -2085,7 +2113,7 @@ mod common_tests {
 }
 
 mod filter_out_conflicts_and_append_performance_tests {
-    use crate::MockStorageEngine;
+    use crate::{test_utils::MockStorageEngine, MockLogStore, MockMetaStore};
 
     use super::*;
 
@@ -2112,14 +2140,17 @@ mod filter_out_conflicts_and_append_performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let mut storage = MockStorageEngine::new();
-            storage.expect_last_index().returning(|| 0);
-            storage.expect_truncate().returning(|_| Ok(()));
-            storage.expect_persist_entries().returning(|_| Ok(()));
-            storage.expect_reset().returning(|| Ok(()));
+            let mut log_store = MockLogStore::new();
+            log_store.expect_last_index().returning(|| 0);
+            log_store.expect_truncate().returning(|_| Ok(()));
+            log_store.expect_persist_entries().returning(|_| Ok(()));
+            log_store.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) =
-                BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+                1,
+                config,
+                Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
+            );
             let log = log.start(receiver);
 
             // Populate with test data (1000 entries)
@@ -2186,14 +2217,17 @@ mod filter_out_conflicts_and_append_performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let mut storage = MockStorageEngine::new();
-            storage.expect_last_index().returning(|| 0);
-            storage.expect_truncate().returning(|_| Ok(()));
-            storage.expect_persist_entries().returning(|_| Ok(()));
-            storage.expect_reset().returning(|| Ok(()));
+            let mut log_store = MockLogStore::new();
+            log_store.expect_last_index().returning(|| 0);
+            log_store.expect_truncate().returning(|_| Ok(()));
+            log_store.expect_persist_entries().returning(|_| Ok(()));
+            log_store.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) =
-                BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+                1,
+                config,
+                Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
+            );
             let log = log.start(receiver);
 
             // Populate with test data (1000 entries)
@@ -2243,27 +2277,28 @@ mod filter_out_conflicts_and_append_performance_tests {
 
 mod performance_tests {
     use super::*;
-    use crate::MockStorageEngine;
+    use crate::test_utils::MockStorageEngine;
+    use crate::{MockLogStore, MockMetaStore};
     use std::sync::Arc;
     use tokio::sync::Barrier;
     use tokio::time::Duration;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
-        let mut storage = MockStorageEngine::new();
-        storage.expect_last_index().returning(|| 0);
-        storage.expect_truncate().returning(|_| Ok(()));
-        storage.expect_reset().returning(|| Ok(()));
-        storage.expect_flush().returning(|| Ok(()));
+        let mut log_store = MockLogStore::new();
+        log_store.expect_last_index().returning(|| 0);
+        log_store.expect_truncate().returning(|_| Ok(()));
+        log_store.expect_reset().returning(|| Ok(()));
+        log_store.expect_flush().returning(|| Ok(()));
 
         // Add controllable delay to persist_entries
-        storage.expect_persist_entries().returning(move |_| {
+        log_store.expect_persist_entries().returning(move |_| {
             let delay = Duration::from_millis(delay_ms);
             std::thread::sleep(delay);
             Ok(())
         });
 
-        Arc::new(storage)
+        Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new()))
     }
 
     // 1. Tests reset performance during active flush
@@ -2413,12 +2448,12 @@ mod performance_tests {
         ];
 
         for (strategy, flush_policy) in test_cases {
-            let mut storage = MockStorageEngine::new();
-            storage.expect_flush().return_once(|| Ok(()));
-            storage.expect_last_index().returning(|| 0);
-            storage.expect_truncate().returning(|_| Ok(()));
-            storage.expect_persist_entries().returning(|_| Ok(()));
-            storage.expect_reset().returning(|| Ok(()));
+            let mut log_store = MockLogStore::new();
+            log_store.expect_flush().return_once(|| Ok(()));
+            log_store.expect_last_index().returning(|| 0);
+            log_store.expect_truncate().returning(|_| Ok(()));
+            log_store.expect_persist_entries().returning(|_| Ok(()));
+            log_store.expect_reset().returning(|| Ok(()));
 
             let config = PersistenceConfig {
                 strategy: strategy.clone(),
@@ -2426,8 +2461,11 @@ mod performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let (log, receiver) =
-                BufferedRaftLog::<MockTypeConfig>::new(1, config, Arc::new(storage));
+            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+                1,
+                config,
+                Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
+            );
             let log_arc = Arc::new(log.start(receiver));
 
             // Measure reset performance in fresh cluster
@@ -2644,9 +2682,8 @@ mod batch_processor_tests {
 
 mod save_load_hard_state_tests {
     use super::*;
-    use crate::constants::STATE_STORAGE_HARD_STATE_KEY;
     use crate::proto::election::VotedFor;
-    use crate::HardState;
+    use crate::{HardState, LogStore, MetaStore, StorageEngine, HARD_STATE_KEY};
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]
@@ -2671,19 +2708,19 @@ mod save_load_hard_state_tests {
         // Save through buffered raft log
         context
             .raft_log
-            .save_hard_state(test_hard_state)
+            .save_hard_state(&test_hard_state)
             .expect("save_hard_state should succeed");
 
         // Verify storage engine state
         // 1. Meta tree should contain the hard state
-        let meta_value = context
+        let decoded_meta = context
             .storage
-            .meta_tree
-            .get(STATE_STORAGE_HARD_STATE_KEY)
+            .meta_store()
+            .load_hard_state()
             .expect("meta_tree.get should succeed")
             .expect("hard state should exist in meta tree");
 
-        let decoded_meta: HardState = bincode::deserialize(&meta_value).unwrap();
+        // let decoded_meta: HardState = bincode::deserialize(&meta_value).unwrap();
         assert_eq!(decoded_meta.current_term, 5);
         assert_eq!(
             decoded_meta.voted_for,
@@ -2696,8 +2733,8 @@ mod save_load_hard_state_tests {
         // 2. Log tree should NOT contain the hard state key
         let log_value = context
             .storage
-            .log_tree
-            .get(STATE_STORAGE_HARD_STATE_KEY)
+            .log_store()
+            .get(HARD_STATE_KEY)
             .expect("log_tree.get should succeed");
         assert!(
             log_value.is_none(),
@@ -2730,7 +2767,10 @@ mod save_load_hard_state_tests {
         // Phase 1: Initial save
         {
             let (db, _) = reset_dbs(db_path.to_str().unwrap());
-            let storage = Arc::new(SledStorageEngine::new(node_id, db).unwrap());
+
+            let log_tree = db.open_tree("raft_log_tree").unwrap();
+            let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+            let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 node_id,
                 PersistenceConfig {
@@ -2749,16 +2789,20 @@ mod save_load_hard_state_tests {
                     voted_for_term: 8,
                 }),
             };
-            raft_log.save_hard_state(hard_state).expect("save should succeed");
+            raft_log.save_hard_state(&hard_state).expect("save should succeed");
 
             // Explicitly flush to ensure data is persisted
-            raft_log.storage.flush().expect("flush should succeed");
+            raft_log.log_store.flush().expect("flush should succeed");
+            raft_log.meta_store.flush().expect("flush should succeed");
         }
 
         // Phase 2: Restart
         {
             let (db, _) = reuse_dbs(db_path.to_str().unwrap());
-            let storage = Arc::new(SledStorageEngine::new(node_id, db).unwrap());
+
+            let log_tree = db.open_tree("raft_log_tree").unwrap();
+            let meta_tree = db.open_tree("raft_meta_tree").unwrap();
+            let storage = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
             let (raft_log, receiver) = BufferedRaftLog::<RaftTypeConfig>::new(
                 node_id,
                 PersistenceConfig {
@@ -2787,20 +2831,15 @@ mod save_load_hard_state_tests {
             // Verify storage trees
             // 1. Meta tree should contain the value
             let meta_value = raft_log
-                .storage
-                .meta_tree
-                .get(STATE_STORAGE_HARD_STATE_KEY)
+                .meta_store
+                .get(HARD_STATE_KEY)
                 .expect("meta get should succeed")
                 .expect("value should exist");
             let decoded: HardState = bincode::deserialize(&meta_value).unwrap();
             assert_eq!(decoded.current_term, 8);
 
             // 2. Log tree should NOT contain the value
-            let log_value = raft_log
-                .storage
-                .log_tree
-                .get(STATE_STORAGE_HARD_STATE_KEY)
-                .expect("log get should succeed");
+            let log_value = raft_log.log_store.get(HARD_STATE_KEY).expect("log get should succeed");
             assert!(log_value.is_none(), "Hard state should not be in log tree");
         }
     }
@@ -2824,7 +2863,7 @@ mod save_load_hard_state_tests {
                 voted_for_term: 7,
             }),
         };
-        context.raft_log.save_hard_state(hs).expect("save should succeed");
+        context.raft_log.save_hard_state(&hs).expect("save should succeed");
 
         // Perform reset (should only clear logs)
         context.raft_log.reset().await.expect("reset should succeed");
@@ -2843,8 +2882,8 @@ mod save_load_hard_state_tests {
         // Verify meta tree still has the data
         let meta_value = context
             .storage
-            .meta_tree
-            .get(STATE_STORAGE_HARD_STATE_KEY)
+            .meta_store()
+            .get(HARD_STATE_KEY)
             .expect("meta get should succeed")
             .expect("value should exist");
         assert!(!meta_value.is_empty());

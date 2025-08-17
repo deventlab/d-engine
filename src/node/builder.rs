@@ -51,8 +51,8 @@ use crate::alias::TROF;
 use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
+use crate::init_sled_log_tree_and_meta_tree;
 use crate::init_sled_state_machine_db;
-use crate::init_sled_storage_engine_db;
 use crate::learner_state::LearnerState;
 use crate::BufferedRaftLog;
 use crate::ClusterConfig;
@@ -259,12 +259,9 @@ impl NodeBuilder {
             )
         });
         let storage_engine = self.storage_engine.take().unwrap_or_else(|| {
-            let storage_engine_db = init_sled_storage_engine_db(&db_root_dir)
+            let (log_tree, meta_tree) = init_sled_log_tree_and_meta_tree(&db_root_dir, node_id)
                 .expect("init_sled_storage_engine_db successfully.");
-            Arc::new(
-                SledStorageEngine::new(node_id, storage_engine_db)
-                    .expect("Init storage engine successfully."),
-            )
+            Arc::new(SledStorageEngine::new(log_tree, meta_tree))
         });
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;

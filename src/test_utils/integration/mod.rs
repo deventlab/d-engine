@@ -111,18 +111,18 @@ pub fn setup_raft_components(
     println!("Test setup_raft_components ...");
     enable_logger();
     //start from fresh
-    let (raft_log_db, state_machine_db) = if restart {
+    let (storage_engine_db, state_machine_db) = if restart {
         reuse_dbs(db_path)
     } else {
         reset_dbs(db_path)
     };
+    let log_tree = storage_engine_db.open_tree("raft_log").unwrap();
+    let meta_tree = storage_engine_db.open_tree("raft_meta").unwrap();
     let id = 1;
     // let raft_log_db = Arc::new(raft_log_db);
     let state_machine_db = Arc::new(state_machine_db);
 
-    let storage_engine = Arc::new(
-        SledStorageEngine::new(id, raft_log_db).expect("Init storage engine successfully."),
-    );
+    let storage_engine = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
 
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,

@@ -17,6 +17,7 @@ use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
 use d_engine::config::SnapshotConfig;
 use d_engine::convert::safe_kv;
+use d_engine::init_sled_log_tree_and_meta_tree;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
@@ -24,13 +25,13 @@ use d_engine::proto::client::WriteCommand;
 use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
-use d_engine::storage::init_sled_storage_engine_db;
 use d_engine::storage::SledStateMachine;
-use d_engine::storage::SledStorageEngine;
-
 use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
 use d_engine::HardState;
+use d_engine::LogStore;
+use d_engine::MetaStore;
+use d_engine::SledStorageEngine;
 use prost::Message;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
@@ -263,9 +264,9 @@ pub fn prepare_raft_log(
     _last_applied_index: u64,
 ) -> Arc<SledStorageEngine> {
     let raft_log_db_path = format!("{db_path}/raft_log",);
-    let storage_engine_db = init_sled_storage_engine_db(&raft_log_db_path)
+    let (log_store, meta_store) = init_sled_log_tree_and_meta_tree(&raft_log_db_path, node_id)
         .expect("init_sled_storage_engine_db successfully.");
-    Arc::new(SledStorageEngine::new(node_id, storage_engine_db).expect("success"))
+    Arc::new(SledStorageEngine::new(log_store, meta_store))
 }
 
 pub fn prepare_state_machine(
@@ -298,8 +299,8 @@ pub async fn manipulate_log(
         };
         entries.push(log);
     }
-    assert!(storage_engine.persist_entries(entries).is_ok());
-    assert!(storage_engine.flush().is_ok());
+    assert!(storage_engine.log_store().persist_entries(entries).await.is_ok());
+    assert!(storage_engine.log_store().flush().is_ok());
 }
 
 pub fn init_hard_state(
@@ -308,7 +309,8 @@ pub fn init_hard_state(
     voted_for: Option<VotedFor>,
 ) {
     assert!(storage_engine
-        .save_hard_state(HardState {
+        .meta_store()
+        .save_hard_state(&HardState {
             current_term,
             voted_for,
         })

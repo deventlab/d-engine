@@ -41,10 +41,13 @@
 mod mock_builder;
 mod mock_rpc;
 mod mock_rpc_service;
+mod mock_storage_engine;
 
 pub use mock_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
+pub use mock_storage_engine::*;
+
 use tokio::sync::watch;
 
 use super::enable_logger;

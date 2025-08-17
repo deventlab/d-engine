@@ -383,8 +383,10 @@ where
     fn drop(&mut self) {
         info!("Raft been dropped.");
 
-        if let Err(e) =
-            self.ctx.raft_log().save_hard_state(self.role.state().shared_state().hard_state)
+        if let Err(e) = self
+            .ctx
+            .raft_log()
+            .save_hard_state(&self.role.state().shared_state().hard_state)
         {
             error!(?e, "State storage persist node hard state failed.");
         }

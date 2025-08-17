@@ -25,6 +25,7 @@ use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::StateMachine;
 use d_engine::storage::StorageEngine;
+use d_engine::LogStore;
 use tokio::time::sleep;
 
 use crate::common::check_cluster_is_ready;
@@ -159,7 +160,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     // Verify raft log been purged
     for i in 1..=3 {
-        assert!(r3.entry(i).unwrap().is_none());
+        assert!(r3.log_store().entry(i).await.unwrap().is_none());
     }
 
     // Clean up

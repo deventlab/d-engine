@@ -1,3 +1,4 @@
+use super::*;
 use crate::MockCommitHandler;
 use crate::MockElectionCore;
 use crate::MockMembership;
@@ -7,7 +8,6 @@ use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
-use crate::MockStorageEngine;
 use crate::MockTransport;
 use crate::TypeConfig;
 

@@ -360,8 +360,7 @@ impl StateMachine for SledStateMachine {
         let _guard = self.snapshot_lock.write().await;
 
         // 2. Create a new state machine database instance
-        let new_db =
-            init_sled_state_machine_db(&new_snapshot_dir).map_err(StorageError::IoError)?;
+        let new_db = init_sled_state_machine_db(&new_snapshot_dir)?;
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -503,12 +502,7 @@ impl StateMachine for SledStateMachine {
             debug!(?temp_dir_path, "7. Initialize new state machine database");
             // 7. Initialize new state machine database Maintains ACID properties during state
             //    transition
-            let db = init_sled_state_machine_db(&temp_dir_path).map_err(|e| {
-                StorageError::PathError {
-                    path: temp_dir_path,
-                    source: e,
-                }
-            })?;
+            let db = init_sled_state_machine_db(&temp_dir_path)?;
 
             debug!("8. Atomically replace current database");
             // 8. Atomically replace current database Critical for maintaining consistency per Raft
