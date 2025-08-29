@@ -679,7 +679,7 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     // Create multiple chunks for the snapshot stream
     // Split compressed data into chunks
     let total_chunks = 3;
-    let chunk_size = (compressed_data.len() + total_chunks - 1) / total_chunks; // Ceiling division
+    let chunk_size = compressed_data.len().div_ceil(total_chunks); // Ceiling division
 
     let mut chunks: Vec<SnapshotChunk> = vec![];
 

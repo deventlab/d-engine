@@ -1,6 +1,5 @@
 //! It works as KV storage for client business CRUDs.
 
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -9,15 +8,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use async_compression::tokio::bufread::GzipDecoder;
 use metrics::counter;
 use parking_lot::Mutex;
 use prost::Message;
 use sled::Batch;
-use tokio::fs::File;
-use tokio::io::BufReader;
 use tokio::sync::RwLock;
-use tokio_tar::Archive;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -657,19 +652,19 @@ impl SledStateMachine {
         Ok(())
     }
 
-    pub(super) async fn decompress_snapshot(
-        &self,
-        compressed_path: &Path,
-        dest_dir: &Path,
-    ) -> Result<(), Error> {
-        let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
-        let buf_reader = BufReader::new(file);
-        let gzip_decoder = GzipDecoder::new(buf_reader);
-        let mut archive = Archive::new(gzip_decoder);
+    // pub(super) async fn decompress_snapshot(
+    //     &self,
+    //     compressed_path: &Path,
+    //     dest_dir: &Path,
+    // ) -> Result<(), Error> {
+    //     let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
+    //     let buf_reader = BufReader::new(file);
+    //     let gzip_decoder = GzipDecoder::new(buf_reader);
+    //     let mut archive = Archive::new(gzip_decoder);
 
-        archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
-        Ok(())
-    }
+    //     archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
+    //     Ok(())
+    // }
 
     #[cfg(test)]
     pub(crate) fn iter(&self) -> sled::Iter {

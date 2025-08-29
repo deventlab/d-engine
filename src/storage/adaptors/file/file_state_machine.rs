@@ -9,12 +9,10 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
-use async_compression::tokio::bufread::GzipDecoder;
 use parking_lot::RwLock;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::fs;
@@ -22,9 +20,7 @@ use tokio::fs::File;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
 use tokio::time::Instant;
-use tokio_tar::Archive;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -507,19 +503,19 @@ impl FileStateMachine {
         Ok(())
     }
 
-    pub(super) async fn decompress_snapshot(
-        &self,
-        compressed_path: &Path,
-        dest_dir: &Path,
-    ) -> Result<(), Error> {
-        let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
-        let buf_reader = BufReader::new(file);
-        let gzip_decoder = GzipDecoder::new(buf_reader);
-        let mut archive = Archive::new(gzip_decoder);
+    // pub(super) async fn decompress_snapshot(
+    //     &self,
+    //     compressed_path: &Path,
+    //     dest_dir: &Path,
+    // ) -> Result<(), Error> {
+    //     let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
+    //     let buf_reader = BufReader::new(file);
+    //     let gzip_decoder = GzipDecoder::new(buf_reader);
+    //     let mut archive = Archive::new(gzip_decoder);
 
-        archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
-        Ok(())
-    }
+    //     archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
+    //     Ok(())
+    // }
 }
 
 impl Drop for FileStateMachine {

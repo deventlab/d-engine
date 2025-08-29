@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sled::Batch;
-use tokio::fs::File;
 use tracing::debug;
 
 use super::*;
@@ -19,16 +18,13 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
+use crate::test_utils;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
 use crate::test_utils::reuse_dbs;
-use crate::test_utils::{self};
-use crate::Error;
 use crate::StateMachine;
-use crate::StorageError;
-use crate::SystemError;
 
 pub fn setup_raft_components(
     db_path: &str,
@@ -385,9 +381,7 @@ mod apply_snapshot_from_file_tests {
 
     use super::*;
     use crate::file_io::create_valid_snapshot;
-    use crate::file_io::validate_compressed_format;
     use crate::test_utils::enable_logger;
-    use crate::FileError;
 
     /// # Case 1: Basic snapshot application
     #[tokio::test]

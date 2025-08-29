@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use sha2::Digest;
 use sha2::Sha256;
 use tokio::fs;
-use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;

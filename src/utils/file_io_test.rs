@@ -286,8 +286,6 @@ mod validate_compressed_format_tests {
     use tracing::trace;
 
     use super::*;
-    use crate::constants::STATE_MACHINE_TREE;
-    use crate::file_io::create_valid_snapshot;
     use crate::file_io::validate_compressed_format;
     use crate::Result;
 

@@ -399,7 +399,7 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_len().returning(|| 0);
 
     mock.expect_update_last_applied().returning(|_| ());
-    mock.expect_last_applied().returning(|| LogId::default());
+    mock.expect_last_applied().return_const(LogId::default());
     mock.expect_persist_last_applied().returning(|_| Ok(()));
 
     mock.expect_update_last_snapshot_metadata().returning(|_| Ok(()));

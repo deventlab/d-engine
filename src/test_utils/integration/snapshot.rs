@@ -1,6 +1,3 @@
-use std::path::Path;
-
-use async_compression::tokio::bufread::GzipEncoder;
 use bytes::BufMut;
 use bytes::BytesMut;
 use crc32fast::Hasher;
@@ -11,11 +8,11 @@ use futures::TryStreamExt;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
+use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_tar::Builder;
 use tonic::Code;
 use tonic::Status;
 use tracing::debug;

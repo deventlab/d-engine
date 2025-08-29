@@ -280,7 +280,7 @@ pub fn get_root_path() -> PathBuf {
 }
 
 pub fn prepare_storage_engine(
-    node_id: u32,
+    _node_id: u32,
     db_path: &str,
     _last_applied_index: u64,
 ) -> Arc<FileStorageEngine> {

@@ -217,7 +217,7 @@ where
     pub fn build(mut self) -> Self {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
-        let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
+        // let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();

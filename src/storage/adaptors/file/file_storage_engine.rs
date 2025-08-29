@@ -21,7 +21,9 @@ const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
 /// File-based log store implementation
 #[derive(Debug)]
 pub struct FileLogStore {
+    #[allow(unused)]
     data_dir: PathBuf,
+
     entries: Mutex<BTreeMap<u64, Entry>>,
     last_index: AtomicU64,
     file_handle: Mutex<File>,
@@ -92,7 +94,12 @@ impl FileLogStore {
 
         // Open or create the log file
         let log_file_path = data_dir.join("log.data");
-        let file = OpenOptions::new().read(true).write(true).create(true).open(log_file_path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(log_file_path)?;
 
         // Load existing entries from file
         let entries = Mutex::new(BTreeMap::new());

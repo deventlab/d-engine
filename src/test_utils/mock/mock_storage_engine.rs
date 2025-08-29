@@ -14,6 +14,7 @@ pub struct MockStorageEngine {
     meta_store: Arc<MockMetaStore>,
 
     // Add an ID to differentiate between instances while sharing data
+    #[allow(unused)]
     instance_id: String,
 }
 
