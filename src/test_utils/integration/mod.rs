@@ -46,6 +46,7 @@ pub(crate) use snapshot::*;
 use tokio::sync::watch;
 
 use super::generate_insert_commands;
+use super::MockStorageEngine;
 use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMOF;
@@ -57,12 +58,16 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::NodeStatus;
 use crate::test_utils::enable_logger;
+use crate::test_utils::mock_state_machine;
 use crate::test_utils::MockTypeConfig;
 use crate::BufferedRaftLog;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::FileStateMachine;
+use crate::FileStorageEngine;
 use crate::FlushPolicy;
 use crate::LogSizePolicy;
+use crate::MockStateMachine;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
@@ -71,8 +76,6 @@ use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
-use crate::SledStateMachine;
-use crate::SledStorageEngine;
 use crate::StateMachine;
 use crate::TypeConfig;
 
@@ -107,22 +110,13 @@ pub fn setup_raft_components(
     db_path: &str,
     peers_meta_option: Option<Vec<NodeMeta>>,
     restart: bool,
-) -> TestContext<RaftTypeConfig> {
+) -> TestContext<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
     println!("Test setup_raft_components ...");
     enable_logger();
     //start from fresh
-    let (storage_engine_db, state_machine_db) = if restart {
-        reuse_dbs(db_path)
-    } else {
-        reset_dbs(db_path)
-    };
-    let log_tree = storage_engine_db.open_tree("raft_log").unwrap();
-    let meta_tree = storage_engine_db.open_tree("raft_meta").unwrap();
     let id = 1;
-    // let raft_log_db = Arc::new(raft_log_db);
-    let state_machine_db = Arc::new(state_machine_db);
 
-    let storage_engine = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
+    let storage_engine = Arc::new(MockStorageEngine::new());
 
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,
@@ -134,8 +128,8 @@ pub fn setup_raft_components(
         storage_engine.clone(),
     );
     let buffered_raft_log = buffered_raft_log.start(receiver);
-    let sled_state_machine = SledStateMachine::new(id, state_machine_db.clone()).expect("success");
-    let last_applied_pair = sled_state_machine.last_applied();
+    let mock_state_machine = mock_state_machine();
+    let last_applied_pair = mock_state_machine.last_applied();
 
     let grpc_transport = GrpcTransport::new(id);
 
@@ -171,7 +165,7 @@ pub fn setup_raft_components(
         node_config.raft.snapshot.snapshot_cool_down_since_last_check,
     );
 
-    let state_machine = Arc::new(sled_state_machine);
+    let state_machine = Arc::new(mock_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
         id,
         last_applied_pair.index,
@@ -184,7 +178,7 @@ pub fn setup_raft_components(
     let node_config_clone = node_config.clone();
     let arc_node_config = Arc::new(node_config);
 
-    TestContext::<RaftTypeConfig> {
+    TestContext::<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
         id,
         raft_log: buffered_raft_log,
         state_machine,
@@ -225,7 +219,7 @@ pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db) {
 }
 
 pub(crate) async fn insert_raft_log(
-    raft_log: &ROF<RaftTypeConfig>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -243,8 +237,8 @@ pub(crate) async fn insert_raft_log(
     }
 }
 
-pub(crate) fn insert_state_machine(
-    state_machine: &SMOF<RaftTypeConfig>,
+pub(crate) async fn insert_state_machine(
+    state_machine: &SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -257,7 +251,7 @@ pub(crate) fn insert_state_machine(
         };
         entries.push(log);
     }
-    if let Err(e) = state_machine.apply_chunk(entries) {
+    if let Err(e) = state_machine.apply_chunk(entries).await {
         panic!("error: {e:?}");
     }
 }

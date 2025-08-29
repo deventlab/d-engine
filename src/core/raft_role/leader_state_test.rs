@@ -42,6 +42,7 @@ use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
+use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResults;
 use crate::ConsensusError;
@@ -1810,7 +1811,7 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
 
 #[test]
 fn test_state_size() {
-    assert!(size_of::<LeaderState<RaftTypeConfig>>() < 360);
+    assert!(size_of::<LeaderState<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>() < 360);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus

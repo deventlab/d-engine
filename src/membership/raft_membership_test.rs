@@ -15,12 +15,14 @@ use crate::proto::common::RemoveNode;
 use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
+use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::ConnectionType;
 use crate::ConsensusError;
 use crate::Error;
 use crate::Membership;
 use crate::MembershipError;
+use crate::MockStateMachine;
 use crate::RaftNodeConfig;
 use crate::RaftTypeConfig;
 use crate::CANDIDATE;
@@ -29,7 +31,8 @@ use crate::LEADER;
 use crate::LEARNER;
 
 // Helper function to create a test instance
-pub fn create_test_membership() -> RaftMembership<RaftTypeConfig> {
+pub fn create_test_membership(
+) -> RaftMembership<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
     // Prepare cluster membership
     let initial_cluster = vec![
         NodeMeta {
@@ -63,7 +66,11 @@ pub fn create_test_membership() -> RaftMembership<RaftTypeConfig> {
             status: NodeStatus::Joining.into(),
         },
     ];
-    RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default())
+    RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    )
 }
 
 #[tokio::test]
@@ -197,8 +204,11 @@ async fn test_replication_peers_case1() {
             status: NodeStatus::Joining.into(),
         },
     ];
-    let membership =
-        RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
+    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    );
     assert_eq!(membership.replication_peers().await.len(), 3);
 }
 
@@ -248,8 +258,11 @@ async fn test_mark_leader_id_case1() {
             status: NodeStatus::Active.into(),
         },
     ];
-    let membership =
-        RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
+    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    );
 
     assert_eq!(membership.current_leader_id().await, Some(old_leader_id));
     assert!(membership.mark_leader_id(new_leader_id).await.is_ok());
@@ -300,8 +313,11 @@ async fn test_mark_leader_id_case2() {
             status: NodeStatus::Active.into(),
         },
     ];
-    let membership =
-        RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
+    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    );
 
     assert!(membership.mark_leader_id(new_leader_id).await.is_err());
     assert_eq!(membership.current_leader_id().await, None);
@@ -342,8 +358,11 @@ async fn test_retrieve_cluster_membership_config() {
             status: NodeStatus::Active.into(),
         },
     ];
-    let membership =
-        RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
+    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    );
 
     let r = membership.retrieve_cluster_membership_config().await;
     assert_eq!(r.nodes.len(), 5);
@@ -841,8 +860,11 @@ async fn test_get_peers_id_with_condition() {
             status: NodeStatus::Active.into(),
         },
     ];
-    let membership =
-        RaftMembership::<RaftTypeConfig>::new(1, initial_cluster, RaftNodeConfig::default());
+    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    );
 
     // Test 1: Filter followers and candidates
     let mut result = membership
@@ -883,6 +905,8 @@ mod check_cluster_is_ready_test {
     use crate::test_utils::enable_logger;
     use crate::test_utils::MockNode;
     use crate::test_utils::MockRpcService;
+    use crate::test_utils::MockStorageEngine;
+    use crate::MockStateMachine;
 
     /// Case 1: Test all peers are healthy
     #[tokio::test]
@@ -892,7 +916,7 @@ mod check_cluster_is_ready_test {
         let mut mock_services = Vec::new();
 
         // Create membership with 2 peers
-        let membership = RaftMembership::<RaftTypeConfig>::new(
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             1,
             peer_ids
                 .iter()
@@ -934,7 +958,7 @@ mod check_cluster_is_ready_test {
         let mut config = RaftNodeConfig::default();
         config.retry.membership.max_retries = 1;
 
-        let membership = RaftMembership::<RaftTypeConfig>::new(
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             1,
             vec![NodeMeta {
                 id: 2,
@@ -959,7 +983,7 @@ mod check_cluster_is_ready_test {
 
         let mut config = RaftNodeConfig::default();
         config.retry.membership.max_retries = 1;
-        let membership = RaftMembership::<RaftTypeConfig>::new(
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             1,
             vec![NodeMeta {
                 id: 4,
@@ -987,7 +1011,7 @@ mod check_cluster_is_ready_test {
         // Create membership with 2 peers
         let mut config = RaftNodeConfig::default();
         config.retry.membership.max_retries = 1;
-        let membership = RaftMembership::<RaftTypeConfig>::new(
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             1,
             peer_ids
                 .iter()
@@ -1029,8 +1053,11 @@ mod add_learner_test {
 
     #[tokio::test]
     async fn test_add_learner_case1() {
-        let membership =
-            RaftMembership::<RaftTypeConfig>::new(1, vec![], RaftNodeConfig::default());
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            1,
+            vec![],
+            RaftNodeConfig::default(),
+        );
 
         let result = membership.add_learner(2, "127.0.0.1:1234".to_string()).await;
         assert!(result.is_ok(), "Should add learner successfully");
@@ -1045,7 +1072,7 @@ mod add_learner_test {
 
     #[tokio::test]
     async fn test_add_learner_case2() {
-        let membership = RaftMembership::<RaftTypeConfig>::new(
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             1,
             vec![NodeMeta {
                 id: 1,
@@ -1130,7 +1157,10 @@ mod pre_warm_connections_tests {
 
     pub async fn create_test_membership(
         nodes: Vec<(u32, AddressType)>
-    ) -> (RaftMembership<RaftTypeConfig>, Vec<oneshot::Sender<()>>) {
+    ) -> (
+        RaftMembership<RaftTypeConfig<MockStorageEngine, MockStateMachine>>,
+        Vec<oneshot::Sender<()>>,
+    ) {
         let mut cluster = Vec::new();
         let mut shutdown_channels = Vec::new();
         for (id, addr_type) in nodes {
@@ -1157,8 +1187,11 @@ mod pre_warm_connections_tests {
             }
         }
 
-        let membership =
-            RaftMembership::<RaftTypeConfig>::new(1, cluster, RaftNodeConfig::default());
+        let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            1,
+            cluster,
+            RaftNodeConfig::default(),
+        );
         (membership, shutdown_channels)
     }
 

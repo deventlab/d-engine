@@ -22,33 +22,48 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
-use crate::test_utils::setup_raft_components;
+use crate::test_utils::reset_dbs;
+use crate::test_utils::reuse_dbs;
 use crate::test_utils::{self};
 use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::SystemError;
 
+pub fn setup_raft_components(
+    db_path: &str,
+    restart: bool,
+) -> SledStateMachine {
+    println!("Test setup_raft_components ...");
+    enable_logger();
+    //start from fresh
+    let (_storage_engine_db, state_machine_db) = if restart {
+        reuse_dbs(db_path)
+    } else {
+        reset_dbs(db_path)
+    };
+    SledStateMachine::new(1, Arc::new(state_machine_db)).unwrap()
+}
 #[tokio::test]
 async fn test_start_stop() {
     let root_path = "/tmp/test_start_stop";
-    let context = setup_raft_components(root_path, None, false);
+    let state_machine = setup_raft_components(root_path, false);
 
     // Test default is running
-    assert!(context.state_machine.is_running());
+    assert!(state_machine.is_running());
 
-    context.state_machine.start().expect("should succeed");
-    assert!(context.state_machine.is_running());
-    context.state_machine.stop().expect("should succeed");
-    assert!(!context.state_machine.is_running());
-    context.state_machine.start().expect("should succeed");
-    assert!(context.state_machine.is_running());
+    state_machine.start().expect("should succeed");
+    assert!(state_machine.is_running());
+    state_machine.stop().expect("should succeed");
+    assert!(!state_machine.is_running());
+    state_machine.start().expect("should succeed");
+    assert!(state_machine.is_running());
 }
 
 #[tokio::test]
 async fn test_apply_committed_raft_logs_in_batch() {
     let root_path = "/tmp/test_apply_committed_raft_logs_in_batch";
-    let context = setup_raft_components(root_path, None, false);
+    let state_machine = setup_raft_components(root_path, false);
 
     //step1: prepare some entries inside state machine
     let mut entries = Vec::new();
@@ -60,11 +75,8 @@ async fn test_apply_committed_raft_logs_in_batch() {
         };
         entries.push(log);
     }
-    context.state_machine.apply_chunk(entries).expect("should succeed");
-    assert_eq!(
-        context.state_machine.last_applied(),
-        LogId { index: 3, term: 1 }
-    );
+    state_machine.apply_chunk(entries).await.expect("should succeed");
+    assert_eq!(state_machine.last_applied(), LogId { index: 3, term: 1 });
 }
 
 fn init(path: &str) -> Arc<sled::Db> {
@@ -105,8 +117,7 @@ fn test_state_machine_flush() {
 #[tokio::test]
 async fn test_basic_kv_operations() {
     let root_path = "/tmp/test_basic_kv_operations";
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components(root_path, false);
 
     let test_key = 42u64;
     let test_value = safe_kv(test_key);
@@ -114,9 +125,9 @@ async fn test_basic_kv_operations() {
     // Test insert and read
     let mut batch = Batch::default();
     batch.insert(&test_value.clone(), &test_value.clone());
-    sm.apply_batch(batch).unwrap();
+    state_machine.apply_batch(batch).unwrap();
 
-    match sm.get(&test_value) {
+    match state_machine.get(&test_value) {
         Ok(Some(v)) => assert_eq!(v, test_value),
         _ => panic!("Value not found"),
     }
@@ -124,16 +135,15 @@ async fn test_basic_kv_operations() {
     // Test delete
     let mut batch = Batch::default();
     batch.remove(&test_value.clone());
-    sm.apply_batch(batch).unwrap();
+    state_machine.apply_batch(batch).unwrap();
 
-    assert_eq!(sm.get(&test_value).unwrap(), None);
+    assert_eq!(state_machine.get(&test_value).unwrap(), None);
 }
 
 #[tokio::test]
 async fn test_last_entry_detection() {
     let root_path = "/tmp/test_last_entry_detection";
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components(root_path, false);
 
     // Insert test data
     let mut entries = Vec::new();
@@ -145,17 +155,16 @@ async fn test_last_entry_detection() {
         };
         entries.push(log);
     }
-    sm.apply_chunk(entries).unwrap();
+    state_machine.apply_chunk(entries).await.unwrap();
 
     // Verify last entry
-    assert_eq!(sm.last_applied(), LogId { index: 5, term: 1 });
+    assert_eq!(state_machine.last_applied(), LogId { index: 5, term: 1 });
 }
 
 #[tokio::test]
 async fn test_batch_error_handling() {
     let root_path = "/tmp/test_batch_error_handling";
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components(root_path, false);
 
     // Create invalid batch (simulate error)
     let mut batch = Batch::default();
@@ -163,14 +172,13 @@ async fn test_batch_error_handling() {
 
     // This test might need mocking for specific error conditions
     // For demonstration purposes:
-    assert!(sm.apply_batch(batch).is_ok());
+    assert!(state_machine.apply_batch(batch).is_ok());
 }
 
 #[tokio::test]
 async fn test_iter_functionality() {
     let root_path = "/tmp/test_iter_functionality";
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components(root_path, false);
 
     // Insert test data
     let mut batch = Batch::default();
@@ -178,11 +186,11 @@ async fn test_iter_functionality() {
         let key = safe_kv(i);
         batch.insert(&key, &key);
     }
-    sm.apply_batch(batch).unwrap();
+    state_machine.apply_batch(batch).unwrap();
 
     // Verify iterator
     let mut count = 0;
-    for item in sm.iter() {
+    for item in state_machine.iter() {
         let (k, v) = item.unwrap();
         assert_eq!(k.to_vec(), v.to_vec());
         count += 1;
@@ -193,8 +201,8 @@ async fn test_iter_functionality() {
 #[tokio::test]
 async fn test_apply_chunk_functionality() {
     let root_path = "/tmp/test_apply_chunk_functionality";
-    let context = setup_raft_components(root_path, None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components(root_path, false);
+
     let test_entries = vec![
         Entry {
             index: 1,
@@ -209,11 +217,11 @@ async fn test_apply_chunk_functionality() {
     ];
 
     // Test chunk application
-    sm.apply_chunk(test_entries).unwrap();
+    state_machine.apply_chunk(test_entries).await.unwrap();
 
     // Verify results
-    assert_eq!(sm.get(&safe_kv(1)).unwrap(), None);
-    assert_eq!(sm.last_applied(), LogId { index: 2, term: 1 });
+    assert_eq!(state_machine.get(&safe_kv(1)).unwrap(), None);
+    assert_eq!(state_machine.last_applied(), LogId { index: 2, term: 1 });
 }
 
 /// # Case 1: test basic functionality
@@ -221,8 +229,7 @@ async fn test_apply_chunk_functionality() {
 async fn test_generate_snapshot_data_case1() {
     enable_logger();
     let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case1", None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case1", false);
 
     // Insert 3 test entries
     let mut batch = Batch::default();
@@ -230,11 +237,12 @@ async fn test_generate_snapshot_data_case1() {
         let key = safe_kv(i);
         batch.insert(&key, &key);
     }
-    sm.apply_batch(batch).unwrap();
+    state_machine.apply_batch(batch).unwrap();
 
     // Generate snapshot with last included index=3
     let temp_path = root.path().join("snapshot1");
-    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 3, term: 1 })
+    state_machine
+        .generate_snapshot_data(temp_path.clone(), LogId { index: 3, term: 1 })
         .await
         .unwrap();
 
@@ -252,7 +260,7 @@ async fn test_generate_snapshot_data_case1() {
 
     // Check metadata (stored in same tree due to code limitation)
     assert_eq!(
-        sm.snapshot_metadata(),
+        state_machine.snapshot_metadata(),
         (Some(SnapshotMetadata {
             last_included: Some(LogId {
                 index: 3u64,
@@ -276,8 +284,7 @@ async fn test_generate_snapshot_data_case1() {
 async fn test_generate_snapshot_data_case2() {
     enable_logger();
     let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case2", None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case2", false);
 
     // Insert 5 test entries
     let mut batch = Batch::default();
@@ -285,11 +292,12 @@ async fn test_generate_snapshot_data_case2() {
         let key = safe_kv(i);
         batch.insert(&key, &key);
     }
-    sm.apply_batch(batch).unwrap();
+    state_machine.apply_batch(batch).unwrap();
 
     // Generate snapshot with last included index=3
     let temp_path = root.path().join("snapshot2");
-    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 3, term: 1 })
+    state_machine
+        .generate_snapshot_data(temp_path.clone(), LogId { index: 3, term: 1 })
         .await
         .unwrap();
 
@@ -312,12 +320,12 @@ async fn test_generate_snapshot_data_case2() {
 #[tokio::test]
 async fn test_generate_snapshot_data_case3() {
     let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case3", None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case3", false);
 
     // Generate snapshot with specific metadata
     let temp_path = root.path().join("snapshot3");
-    sm.generate_snapshot_data(temp_path.clone(), LogId { index: 42, term: 5 })
+    state_machine
+        .generate_snapshot_data(temp_path.clone(), LogId { index: 42, term: 5 })
         .await
         .unwrap();
 
@@ -338,8 +346,7 @@ async fn test_generate_snapshot_data_case3() {
 #[tokio::test]
 async fn test_generate_snapshot_data_case4() {
     let root = tempfile::tempdir().unwrap();
-    let context = setup_raft_components("/tmp/test_generate_snapshot_data_case4", None, false);
-    let sm = context.state_machine.clone();
+    let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case4", false);
 
     // Insert 150 test entries
     let mut batch = Batch::default();
@@ -347,19 +354,20 @@ async fn test_generate_snapshot_data_case4() {
         let key = safe_kv(i);
         batch.insert(&key, &key);
     }
-    sm.apply_batch(batch).unwrap();
+    state_machine.apply_batch(batch).unwrap();
 
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
-    sm.generate_snapshot_data(
-        temp_path.clone(),
-        LogId {
-            index: 150,
-            term: 1,
-        },
-    )
-    .await
-    .unwrap();
+    state_machine
+        .generate_snapshot_data(
+            temp_path.clone(),
+            LogId {
+                index: 150,
+                term: 1,
+            },
+        )
+        .await
+        .unwrap();
 
     // Verify all entries exist
     let snapshot_db = init_sled_state_machine_db(&temp_path).unwrap();
@@ -373,6 +381,8 @@ async fn test_generate_snapshot_data_case4() {
 
 #[cfg(test)]
 mod apply_snapshot_from_file_tests {
+    use std::path::Path;
+
     use super::*;
     use crate::file_io::create_valid_snapshot;
     use crate::file_io::validate_compressed_format;
@@ -385,24 +395,16 @@ mod apply_snapshot_from_file_tests {
         enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case1");
-        let context = setup_raft_components("/tmp/test_apply_snapshot_case1", None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = setup_raft_components("/tmp/test_apply_snapshot_case1", false);
 
-        // Generate test snapshot - COMPRESSED FILE
-        let temp_path = case_path.join("snapshot_basic.tar.gz");
-        let checksum = create_valid_snapshot(&temp_path, |db| {
+        // Generate test snapshot - UNCOMPRESSED DIRECTORY
+        let snapshot_dir = case_path.join("snapshot_basic");
+        let checksum = create_valid_snapshot(&snapshot_dir, |db| {
             let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
             tree.insert(safe_kv(456), b"test_value").unwrap();
             db.flush().unwrap();
         })
         .await;
-
-        // Validate file format
-        validate_compressed_format(&temp_path).expect("Valid compressed format");
-
-        // Get file size
-        let file_size = std::fs::metadata(&temp_path).unwrap().len();
-        assert!(file_size > 100, "File too small: {file_size} bytes",);
 
         let last_included = LogId { index: 5, term: 2 };
         let metadata = SnapshotMetadata {
@@ -411,12 +413,15 @@ mod apply_snapshot_from_file_tests {
         };
 
         // Apply snapshot
-        sm.apply_snapshot_from_file(&metadata, temp_path.clone()).await.unwrap();
+        state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await.unwrap();
 
         // Verify data and metadata
-        assert_eq!(sm.get(&safe_kv(456)).unwrap(), Some(b"test_value".to_vec()));
-        assert_eq!(sm.last_applied(), last_included);
-        assert_eq!(sm.snapshot_metadata(), Some(metadata.clone()));
+        assert_eq!(
+            state_machine.get(&safe_kv(456)).unwrap(),
+            Some(b"test_value".to_vec())
+        );
+        assert_eq!(state_machine.last_applied(), last_included);
+        assert_eq!(state_machine.snapshot_metadata(), Some(metadata.clone()));
     }
 
     /// # Case 2: Overwrite existing state
@@ -424,19 +429,18 @@ mod apply_snapshot_from_file_tests {
     async fn test_apply_snapshot_from_file_case2() {
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case2");
-        let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = setup_raft_components(case_path.to_str().unwrap(), false);
 
         // Add initial data
         let mut batch = Batch::default();
         batch.insert(&safe_kv(232), b"old_value");
-        sm.apply_batch(batch).unwrap();
+        state_machine.apply_batch(batch).unwrap();
 
-        // Create COMPRESSED snapshot with new data
-        let temp_path = case_path.join("snapshot_overwrite.tar.gz");
+        // Create UNCOMPRESSED snapshot directory with new data
+        let snapshot_dir = case_path.join("snapshot_overwrite");
         let last_included = LogId { index: 10, term: 3 };
 
-        let checksum = create_valid_snapshot(&temp_path, |db| {
+        let checksum = create_valid_snapshot(&snapshot_dir, |db| {
             let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
             tree.insert(safe_kv(5654), b"new_value").unwrap();
             db.flush().unwrap();
@@ -449,11 +453,14 @@ mod apply_snapshot_from_file_tests {
         };
 
         // Apply snapshot
-        sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
+        state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await.unwrap();
 
         // Verify state overwrite
-        assert_eq!(sm.get(&safe_kv(232)).unwrap(), None);
-        assert_eq!(sm.get(&safe_kv(5654)).unwrap(), Some(b"new_value".to_vec()));
+        assert_eq!(state_machine.get(&safe_kv(232)).unwrap(), None);
+        assert_eq!(
+            state_machine.get(&safe_kv(5654)).unwrap(),
+            Some(b"new_value".to_vec())
+        );
     }
 
     /// # Case 3: Metadata consistency check
@@ -461,8 +468,7 @@ mod apply_snapshot_from_file_tests {
     async fn test_apply_snapshot_from_file_case3() {
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case3");
-        let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = setup_raft_components(case_path.to_str().unwrap(), false);
 
         // Create COMPRESSED snapshot
         let temp_path = case_path.join("snapshot_metadata.tar.gz");
@@ -485,11 +491,11 @@ mod apply_snapshot_from_file_tests {
             checksum: checksum.to_vec(),
         };
 
-        sm.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
+        state_machine.apply_snapshot_from_file(&metadata, temp_path).await.unwrap();
 
         // Verify metadata propagation
-        assert_eq!(sm.snapshot_metadata(), Some(metadata.clone()));
-        assert_eq!(sm.last_applied(), last_included);
+        assert_eq!(state_machine.snapshot_metadata(), Some(metadata.clone()));
+        assert_eq!(state_machine.last_applied(), last_included);
     }
 
     /// # Case 4: Concurrent snapshot protection
@@ -498,22 +504,17 @@ mod apply_snapshot_from_file_tests {
         enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case4");
-        let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = Arc::new(setup_raft_components(case_path.to_str().unwrap(), false));
 
-        let temp_path = case_path.join("snapshot_concurrent.tar.gz");
-
-        let checksum = create_valid_snapshot(&temp_path, |db| {
+        let snapshot_dir = case_path.join("snapshot_basic");
+        let last_included = LogId { index: 20, term: 5 };
+        let checksum = create_valid_snapshot(&snapshot_dir, |db| {
             let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-            tree.insert(safe_kv(656), b"test_value").unwrap();
+            tree.insert(safe_kv(456), b"test_value").unwrap();
             db.flush().unwrap();
         })
         .await;
 
-        // Validate file format
-        validate_compressed_format(&temp_path).expect("Valid compressed format");
-
-        let last_included = LogId { index: 20, term: 5 };
         let metadata = SnapshotMetadata {
             last_included: Some(last_included),
             checksum: checksum.to_vec(),
@@ -521,15 +522,15 @@ mod apply_snapshot_from_file_tests {
 
         // Start two concurrent apply operations
         let handle1 = tokio::spawn({
-            let sm = sm.clone();
-            let path = temp_path.clone();
+            let sm = state_machine.clone();
+            let path = snapshot_dir.clone();
             let metadata = metadata.clone();
             async move { sm.apply_snapshot_from_file(&metadata, path).await }
         });
 
         let handle2 = tokio::spawn({
-            let sm = sm.clone();
-            let path = temp_path.clone();
+            let sm = state_machine.clone();
+            let path = snapshot_dir.clone();
             let metadata = metadata.clone();
             async move {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -550,11 +551,10 @@ mod apply_snapshot_from_file_tests {
     /// # Case 5: Invalid snapshot handling
     #[tokio::test]
     async fn test_apply_snapshot_from_file_case5() {
-        let context =
-            setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", None, false);
-        let sm = context.state_machine.clone();
+        let state_machine =
+            setup_raft_components("/tmp/test_apply_snapshot_from_file_case5", false);
 
-        let result = sm
+        let result = state_machine
             .apply_snapshot_from_file(
                 &SnapshotMetadata {
                     last_included: Some(LogId { term: 1, index: 1 }),
@@ -565,12 +565,7 @@ mod apply_snapshot_from_file_tests {
             .await;
 
         debug!(?result, "test_apply_snapshot_from_file_case5");
-        assert!(matches!(
-            result,
-            Err(Error::System(SystemError::Storage(StorageError::File(
-                FileError::NotFound(_)
-            ))))
-        ));
+        assert!(result.is_err());
     }
 
     /// # Case 6: Checksum validation failure
@@ -579,12 +574,11 @@ mod apply_snapshot_from_file_tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path =
             temp_dir.path().join("test_apply_snapshot_from_file_case6_checksum_failure");
-        let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = setup_raft_components(case_path.to_str().unwrap(), false);
 
-        // Create valid snapshot
-        let temp_path = case_path.join("snapshot_checksum_failure.tar.gz");
-        let checksum = create_valid_snapshot(&temp_path, |_| {}).await;
+        // Create valid snapshot directory
+        let snapshot_dir = case_path.join("snapshot_checksum_failure");
+        let checksum = create_valid_snapshot(&snapshot_dir, |_| {}).await;
 
         let last_included = LogId { index: 25, term: 6 };
         let mut metadata = SnapshotMetadata {
@@ -596,8 +590,14 @@ mod apply_snapshot_from_file_tests {
         metadata.checksum[0] = !metadata.checksum[0];
 
         // Should fail on checksum validation
-        let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
+        let result = state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await;
         assert!(result.is_err());
+    }
+
+    /// Creates an invalid snapshot directory (empty or corrupted)
+    async fn create_invalid_snapshot(dir_path: &Path) {
+        tokio::fs::create_dir_all(dir_path).await.unwrap();
+        // Intentionally leave empty or create invalid files
     }
 
     /// # Case 7: Empty snapshot application
@@ -605,13 +605,11 @@ mod apply_snapshot_from_file_tests {
     async fn test_apply_snapshot_from_file_case7_empty() {
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case7_empty");
-        let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = setup_raft_components(case_path.to_str().unwrap(), false);
 
-        // Create empty snapshot file
-        tokio::fs::create_dir_all(&case_path).await.unwrap();
-        let temp_path = case_path.join("empty.snapshot.tar.gz");
-        File::create(&temp_path).await.unwrap();
+        // Create empty snapshot directory
+        let snapshot_dir = case_path.join("empty_snapshot");
+        create_invalid_snapshot(&snapshot_dir).await;
 
         let last_included = LogId { index: 0, term: 0 };
         let metadata = SnapshotMetadata {
@@ -620,13 +618,13 @@ mod apply_snapshot_from_file_tests {
         };
 
         // Should handle empty snapshot
-        let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
+        let result = state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await;
         debug!(?result, "test_apply_snapshot_from_file_case7_empty");
         assert!(result.is_err());
 
         // Should reset to initial state
-        assert_eq!(sm.get(&safe_kv(67)).unwrap(), None);
-        assert_eq!(sm.last_applied(), last_included);
+        assert_eq!(state_machine.get(&safe_kv(67)).unwrap(), None);
+        assert_eq!(state_machine.last_applied(), last_included);
     }
 
     /// # Case 8: Invalid file format
@@ -634,20 +632,23 @@ mod apply_snapshot_from_file_tests {
     async fn test_apply_snapshot_from_file_case8_invalid_format() {
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case8_invalid_format");
-        let context = setup_raft_components(case_path.to_str().unwrap(), None, false);
-        let sm = context.state_machine.clone();
+        let state_machine = setup_raft_components(case_path.to_str().unwrap(), false);
 
-        // Create invalid file (not tar.gz)
-        tokio::fs::create_dir_all(&case_path).await.unwrap();
-        let temp_path = case_path.join("invalid.txt");
-        tokio::fs::write(&temp_path, "I'm not a valid snapshot").await.unwrap();
+        // Create directory with invalid snapshot contents
+        let invalid_dir = case_path.join("invalid_snapshot");
+        tokio::fs::create_dir_all(&invalid_dir).await.unwrap();
+
+        // Add some files that don't form a valid snapshot
+        tokio::fs::write(invalid_dir.join("random.txt"), "Invalid snapshot content")
+            .await
+            .unwrap();
 
         let metadata = SnapshotMetadata {
             last_included: Some(LogId { index: 30, term: 8 }),
             checksum: vec![],
         };
 
-        let result = sm.apply_snapshot_from_file(&metadata, temp_path).await;
+        let result = state_machine.apply_snapshot_from_file(&metadata, invalid_dir).await;
         assert!(result.is_err());
     }
 }

@@ -39,6 +39,7 @@ async fn setup() -> TestConext {
         raft_log_mock,
     }
 }
+
 /// # Case 1: Receive election failed error if there is zero peers
 ///
 /// ## Validation Criterias:

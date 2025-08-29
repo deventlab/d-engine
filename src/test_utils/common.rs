@@ -12,9 +12,12 @@ use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
+use crate::MockStateMachine;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SnapshotConfig;
+
+use super::MockStorageEngine;
 
 pub fn create_mixed_entries() -> Vec<Entry> {
     let config_entry = Entry {
@@ -79,7 +82,7 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
 pub(crate) async fn simulate_insert_command(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -99,7 +102,7 @@ pub(crate) async fn simulate_insert_command(
 
 #[allow(dead_code)]
 pub(crate) async fn simulate_delete_command(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
     id_range: RangeInclusive<u64>,
     term: u64,
 ) {

@@ -31,6 +31,7 @@ use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
+use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
 use crate::ConsensusError;
@@ -42,6 +43,7 @@ use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
 use crate::MockReplicationCore;
+use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
 use crate::NewCommitData;
@@ -73,7 +75,7 @@ async fn test_new_with_fresh_start() {
     let node_config = components.arc_node_config.clone();
     let hard_state_from_db = None;
     let last_applied_index_option = None;
-    let state = FollowerState::<RaftTypeConfig>::new(
+    let state = FollowerState::<MockTypeConfig>::new(
         node_id,
         node_config,
         hard_state_from_db,
@@ -116,7 +118,7 @@ async fn test_new_with_restart() {
         let node_config = components.arc_node_config.clone();
         let hard_state_from_db = None;
         let last_applied_index_option = None;
-        let mut state = FollowerState::<RaftTypeConfig>::new(
+        let mut state = FollowerState::<MockTypeConfig>::new(
             node_id,
             node_config,
             hard_state_from_db,
@@ -141,7 +143,7 @@ async fn test_new_with_restart() {
             }),
         });
         let last_applied_index_option = Some(2);
-        let state = FollowerState::<RaftTypeConfig>::new(
+        let state = FollowerState::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             node_id,
             node_config,
             hard_state_from_db,

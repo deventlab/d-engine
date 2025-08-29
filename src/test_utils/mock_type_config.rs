@@ -17,7 +17,7 @@ pub struct MockTypeConfig;
 impl TypeConfig for MockTypeConfig {
     type R = MockRaftLog;
 
-    type S = MockStorageEngine;
+    type SE = MockStorageEngine;
 
     type E = MockElectionCore<Self>;
 

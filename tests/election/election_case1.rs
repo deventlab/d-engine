@@ -15,10 +15,6 @@
 //!   fewer entries than Node A.
 //! - Nodes A and C recognize B as the leader.
 
-use std::time::Duration;
-
-use d_engine::ClientApiError;
-
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
@@ -26,12 +22,14 @@ use crate::common::create_node_config;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
-use crate::common::prepare_raft_log;
+use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
+use d_engine::ClientApiError;
+use std::time::Duration;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
@@ -50,10 +48,10 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     ];
 
     // Prepare raft logs
-    let r1 = prepare_raft_log(1, &format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    let r1 = prepare_storage_engine(1, &format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR), 0);
     manipulate_log(&r1, (1..=10).collect(), 2).await;
     init_hard_state(&r1, 2, None);
-    let r2 = prepare_raft_log(2, &format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    let r2 = prepare_storage_engine(2, &format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR), 0);
     manipulate_log(&r2, (1..=2).collect(), 2).await;
     init_hard_state(&r2, 3, None);
     manipulate_log(&r2, (3..=8).collect(), 3).await;

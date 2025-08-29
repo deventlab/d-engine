@@ -677,3 +677,9 @@ impl From<IdAllocationError> for Error {
         StorageError::IdAllocation(e).into()
     }
 }
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        StorageError::IoError(e).into()
+    }
+}

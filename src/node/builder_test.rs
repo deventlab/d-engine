@@ -1,38 +1,42 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use tempfile::tempdir;
-use tokio::sync::watch;
-
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
-use crate::test_utils::reset_dbs;
+use crate::test_utils::mock_state_machine;
+use crate::test_utils::MockStorageEngine;
 use crate::BufferedRaftLog;
 use crate::Error;
+use crate::FileStateMachine;
+use crate::FileStorageEngine;
 use crate::FlushPolicy;
+use crate::LogStore;
+use crate::MockStateMachine;
 use crate::NodeBuilder;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftNodeConfig;
-use crate::SledStateMachine;
-use crate::SledStorageEngine;
+use crate::RaftTypeConfig;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::SystemError;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tempfile::tempdir;
+use tempfile::TempDir;
+use tokio::sync::watch;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
 #[test]
 fn test_new_initializes_default_components_with_none() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder =
-        NodeBuilder::new_from_db_path("/tmp/test_new_initializes_default_components", shutdown_rx);
+    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
+        "/tmp/test_new_initializes_default_components",
+        shutdown_rx,
+    );
 
     assert!(builder.storage_engine.is_none());
     assert!(builder.state_machine.is_none());
     assert!(builder.transport.is_none());
     assert!(builder.membership.is_none());
-    assert!(builder.commit_handler.is_none());
     assert!(builder.state_machine_handler.is_none());
     assert!(builder.snapshot_policy.is_none());
     assert!(builder.node.is_none());
@@ -41,45 +45,46 @@ fn test_new_initializes_default_components_with_none() {
 #[tokio::test]
 async fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
-    let db_path = "/tmp/test_set_raft_log_replaces_default";
-
-    let (storage_engine_db, state_machine_db) = reset_dbs(db_path);
-
-    let log_tree = storage_engine_db.open_tree("raft_log").unwrap();
-    let meta_tree = storage_engine_db.open_tree("raft_meta").unwrap();
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let id = 1;
-    let state_machine_db = Arc::new(state_machine_db);
 
-    let sled_storage_engine = Arc::new(SledStorageEngine::new(log_tree, meta_tree));
-    let (buffered_raft_log, receiver) = BufferedRaftLog::new(
-        id,
-        PersistenceConfig {
-            strategy: PersistenceStrategy::DiskFirst,
-            flush_policy: FlushPolicy::Immediate,
-            max_buffered_entries: 1000,
-        },
-        sled_storage_engine.clone(),
-    );
+    let mock_storage_engine =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage_engine")).unwrap());
+
+    let (buffered_raft_log, receiver) =
+        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
+            id,
+            PersistenceConfig {
+                strategy: PersistenceStrategy::DiskFirst,
+                flush_policy: FlushPolicy::Immediate,
+                max_buffered_entries: 1000,
+            },
+            mock_storage_engine.clone(),
+        );
     let buffered_raft_log = buffered_raft_log.start(receiver);
 
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];
     insert_raft_log(&buffered_raft_log, expected_raft_log_ids.clone(), 1).await;
 
-    let sled_state_machine =
-        Arc::new(SledStateMachine::new(id, state_machine_db.clone()).expect("success"));
+    let mock_state_machine =
+        Arc::new(FileStateMachine::new(temp_dir.path().join("state_machine"), id).await.unwrap());
+
     let expected_state_machine_ids = vec![1, 2, 3];
-    insert_state_machine(&sled_state_machine, expected_state_machine_ids.clone(), 1);
+    insert_state_machine(&mock_state_machine, expected_state_machine_ids.clone(), 1).await;
 
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new_from_db_path(db_path, shutdown_rx)
-        .storage_engine(sled_storage_engine)
-        .state_machine(sled_state_machine);
+    let builder = NodeBuilder::<FileStorageEngine, FileStateMachine>::new_from_db_path(
+        temp_dir.path().join("db_path").to_str().unwrap(),
+        shutdown_rx,
+    )
+    .storage_engine(mock_storage_engine)
+    .state_machine(mock_state_machine);
 
     // Verify that raft_log is replaced with customization one
     assert_eq!(
-        builder.storage_engine.as_ref().unwrap().log_store().len(),
-        expected_raft_log_ids.len()
+        builder.storage_engine.as_ref().unwrap().log_store().last_index(),
+        expected_raft_log_ids[1]
     );
     assert_eq!(
         builder.state_machine.as_ref().unwrap().len(),
@@ -90,8 +95,13 @@ async fn test_set_raft_log_replaces_default() {
 #[tokio::test]
 async fn test_build_creates_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder =
-        NodeBuilder::new_from_db_path("/tmp/test_build_creates_node", shutdown_rx).build();
+    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
+        "/tmp/test_build_creates_node",
+        shutdown_rx,
+    )
+    .state_machine(Arc::new(mock_state_machine()))
+    .storage_engine(Arc::new(MockStorageEngine::new()))
+    .build();
 
     // Verify that the node instance is generated
     assert!(builder.node.is_some());
@@ -100,7 +110,10 @@ async fn test_build_creates_node() {
 #[test]
 fn test_ready_fails_without_build() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::new_from_db_path("/tmp/test_ready_fails_without_build", shutdown_rx);
+    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
+        "/tmp/test_ready_fails_without_build",
+        shutdown_rx,
+    );
 
     let result = builder.ready();
     assert!(matches!(
@@ -113,8 +126,10 @@ fn test_ready_fails_without_build() {
 #[should_panic(expected = "failed to start RPC server")]
 async fn test_start_rpc_panics_without_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder =
-        NodeBuilder::new_from_db_path("/tmp/test_start_rpc_panics_without_node", shutdown_rx);
+    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
+        "/tmp/test_start_rpc_panics_without_node",
+        shutdown_rx,
+    );
 
     // If start the RPC service directly without calling build(), the service should
     // panic.

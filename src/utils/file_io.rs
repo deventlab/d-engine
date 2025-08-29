@@ -370,31 +370,24 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
 }
 
 pub(crate) async fn create_valid_snapshot<F>(
-    path: &Path,
-    data_setup: F,
+    dir_path: &Path,
+    setup_db: F,
 ) -> [u8; 32]
 where
     F: FnOnce(&sled::Db),
 {
-    let temp_data_dir = tempfile::tempdir().unwrap();
-    let db = init_sled_state_machine_db(temp_data_dir.path()).unwrap();
-    data_setup(&db);
-    let checksum = compute_checksum_from_folder_path(temp_data_dir.path()).await.unwrap();
+    // Create the snapshot directory
+    tokio::fs::create_dir_all(dir_path).await.unwrap();
 
-    // Ensure parent directory exists before file creation
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.unwrap();
-    }
+    // Initialize the database in the snapshot directory
+    let db = init_sled_state_machine_db(dir_path).unwrap();
 
-    let file = File::create(path).await.unwrap();
-    let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
-    let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
-    tar_builder.append_dir_all(".", temp_data_dir.path()).await.unwrap();
+    // Set up the database state
+    setup_db(&db);
 
-    tar_builder.finish().await.unwrap();
+    // Flush to ensure all data is written
+    db.flush().unwrap();
 
-    let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
-    gzip_encoder.shutdown().await.unwrap();
-
-    checksum
+    // Compute checksum of the directory
+    compute_checksum_from_folder_path(dir_path).await.unwrap()
 }

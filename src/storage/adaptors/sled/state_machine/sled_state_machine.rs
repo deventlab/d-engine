@@ -35,7 +35,6 @@ use crate::constants::STATE_SNAPSHOT_METADATA_TREE;
 use crate::convert::safe_kv;
 use crate::convert::safe_vk;
 use crate::file_io::compute_checksum_from_folder_path;
-use crate::file_io::validate_compressed_format;
 use crate::init_sled_state_machine_db;
 use crate::proto::client::write_command::Delete;
 use crate::proto::client::write_command::Insert;
@@ -45,7 +44,7 @@ use crate::proto::common::entry_payload::Payload;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-use crate::Result;
+use crate::Error;
 use crate::SnapshotError;
 use crate::StateMachine;
 use crate::StorageError;
@@ -98,13 +97,13 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    fn start(&self) -> Result<()> {
+    fn start(&self) -> Result<(), Error> {
         debug!("start state machine");
         self.is_serving.store(true, Ordering::Release);
         Ok(())
     }
 
-    fn stop(&self) -> Result<()> {
+    fn stop(&self) -> Result<(), Error> {
         debug!("stop state machine");
         self.is_serving.store(false, Ordering::Release);
         Ok(())
@@ -126,7 +125,7 @@ impl StateMachine for SledStateMachine {
     fn update_last_snapshot_metadata(
         &self,
         snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         debug!(%self.node_id, ?snapshot_metadata, "update_last_snapshot_metadata");
         let last_included = snapshot_metadata.last_included.unwrap();
         self.last_included_index.store(last_included.index, Ordering::SeqCst);
@@ -161,7 +160,7 @@ impl StateMachine for SledStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Vec<u8>>, Error> {
         match self.current_tree().get(key_buffer) {
             Ok(Some(v)) => Ok(Some(v.to_vec())),
             Ok(None) => Ok(None),
@@ -186,10 +185,10 @@ impl StateMachine for SledStateMachine {
         }
     }
 
-    fn apply_chunk(
+    async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         trace!("Applying chunk: {:?}.", chunk);
 
         let mut highest_index_entry: Option<LogId> = None;
@@ -288,7 +287,7 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
-    fn save_hard_state(&self) -> Result<()> {
+    fn save_hard_state(&self) -> Result<(), Error> {
         let last_applied = self.last_applied();
         self.persist_last_applied(last_applied)?;
 
@@ -303,7 +302,7 @@ impl StateMachine for SledStateMachine {
     fn persist_last_applied(
         &self,
         last_applied: LogId,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         debug!(%self.node_id, ?last_applied, "persist_last_applied");
         let db = self.db.load();
         let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
@@ -323,7 +322,7 @@ impl StateMachine for SledStateMachine {
     fn persist_last_snapshot_metadata(
         &self,
         last_snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         debug!(%self.node_id, ?last_snapshot_metadata, "persist_last_snapshot_metadata");
         let db = self.db.load();
         let tree = db.open_tree(STATE_SNAPSHOT_METADATA_TREE)?;
@@ -332,7 +331,7 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
-    fn flush(&self) -> Result<()> {
+    fn flush(&self) -> Result<(), Error> {
         let db = self.db.load();
         match db.flush() {
             Ok(bytes) => {
@@ -350,12 +349,16 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
+    async fn flush_async(&self) -> Result<(), Error> {
+        self.flush()
+    }
+
     #[instrument(skip(self))]
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32]> {
+    ) -> Result<[u8; 32], Error> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
         let _guard = self.snapshot_lock.write().await;
 
@@ -429,8 +432,8 @@ impl StateMachine for SledStateMachine {
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
-        compressed_path: PathBuf,
-    ) -> Result<()> {
+        decompressed_snapshot_path: PathBuf,
+    ) -> Result<(), Error> {
         if let Some(new_last_included) = metadata.last_included {
             debug!(
                 ?new_last_included,
@@ -451,36 +454,29 @@ impl StateMachine for SledStateMachine {
                 }
             }
 
-            debug!(
-                ?compressed_path,
-                "3. Validate file format before processing (IMPROVEMENT ADDED)"
-            );
-            // 3. Validate file format before processing (IMPROVEMENT ADDED) Verify the file is
-            //    actually compressed using magic numbers or extension
-            validate_compressed_format(&compressed_path)?;
-
             debug!("4. Create temp directory for decompression");
             // 4. Create temp directory for decompression Using tempfile crate ensures secure
             //    cleanup
-            let temp_dir = tempfile::tempdir().map_err(StorageError::IoError)?;
-            let temp_dir_path = temp_dir.path().to_path_buf();
+            // let temp_dir = tempfile::tempdir().map_err(StorageError::IoError)?;
+            // let temp_dir_path = temp_dir.path().to_path_buf();
 
-            debug!(
-                ?compressed_path,
-                ?temp_dir_path,
-                "5. Decompress snapshot using proper chunking/validation"
-            );
+            // debug!(
+            //     ?decompressed_snapshot_path,
+            //     ?temp_dir_path,
+            //     "5. Decompress snapshot using proper chunking/validation"
+            // );
             // 5. Decompress snapshot using proper chunking/validation Added compression format
             //    validation based on
-            self.decompress_snapshot(&compressed_path, &temp_dir_path).await?;
+            // self.decompress_snapshot(&compressed_path, &temp_dir_path).await?;
 
             debug!(
-                ?temp_dir_path,
+                ?decompressed_snapshot_path,
                 "6. CRITICAL SECURITY STEP: Validate checksum"
             );
             // 6. CRITICAL SECURITY STEP: Validate checksum Prevents tampered or corrupted snapshots
             //    from being applied
-            let computed_checksum = compute_checksum_from_folder_path(&temp_dir_path).await?;
+            let computed_checksum =
+                compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
 
             if metadata.checksum != computed_checksum {
                 error!(
@@ -499,10 +495,13 @@ impl StateMachine for SledStateMachine {
 
                 return Err(SnapshotError::ChecksumMismatch.into());
             }
-            debug!(?temp_dir_path, "7. Initialize new state machine database");
+            debug!(
+                ?decompressed_snapshot_path,
+                "7. Initialize new state machine database"
+            );
             // 7. Initialize new state machine database Maintains ACID properties during state
             //    transition
-            let db = init_sled_state_machine_db(&temp_dir_path)?;
+            let db = init_sled_state_machine_db(&decompressed_snapshot_path)?;
 
             debug!("8. Atomically replace current database");
             // 8. Atomically replace current database Critical for maintaining consistency per Raft
@@ -530,13 +529,19 @@ impl StateMachine for SledStateMachine {
     fn len(&self) -> usize {
         self.current_tree().len()
     }
+
+    async fn reset(&self) -> Result<(), Error> {
+        let db = self.db.load();
+        db.clear()?;
+        Ok(())
+    }
 }
 
 impl SledStateMachine {
     pub fn new(
         node_id: u32,
         db: Arc<sled::Db>,
-    ) -> Result<Self> {
+    ) -> Result<Self, Error> {
         let state_machine_meta_tree = db.open_tree(STATE_MACHINE_META_NAMESPACE)?;
         let (last_applied_index, last_applied_term) =
             Self::load_state_machine_metadata(&state_machine_meta_tree)?;
@@ -578,7 +583,7 @@ impl SledStateMachine {
         Ok(sm)
     }
 
-    fn load_state_machine_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
+    fn load_state_machine_metadata(tree: &sled::Tree) -> Result<(u64, u64), Error> {
         let index = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX)?
             .map(safe_vk)
@@ -592,7 +597,9 @@ impl SledStateMachine {
         Ok((index, term))
     }
 
-    pub(super) fn load_snapshot_metadata(tree: &sled::Tree) -> Result<Option<SnapshotMetadata>> {
+    pub(super) fn load_snapshot_metadata(
+        tree: &sled::Tree
+    ) -> Result<Option<SnapshotMetadata>, Error> {
         if let Ok(Some(v)) = tree.get(LAST_SNAPSHOT_METADATA_KEY) {
             info!(
                 "found SnapshotMetadata from DB with key: {}",
@@ -621,7 +628,7 @@ impl SledStateMachine {
     pub(super) fn apply_batch(
         &self,
         batch: Batch,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         if let Err(e) = self.current_tree().apply_batch(batch) {
             error!("state_machine apply_batch failed: {}", e);
             return Err(StorageError::DbError(e.to_string()).into());
@@ -640,7 +647,7 @@ impl SledStateMachine {
         &self,
         tree: sled::Tree,
         last_snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         let v = bincode::serialize(last_snapshot_metadata).map_err(StorageError::BincodeError)?;
 
         tree.insert(LAST_SNAPSHOT_METADATA_KEY, v)?;
@@ -654,7 +661,7 @@ impl SledStateMachine {
         &self,
         compressed_path: &Path,
         dest_dir: &Path,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
         let buf_reader = BufReader::new(file);
         let gzip_decoder = GzipDecoder::new(buf_reader);
@@ -674,7 +681,7 @@ impl SledStateMachine {
 fn new_tree(
     db: &sled::Db,
     key: &str,
-) -> Result<sled::Tree> {
+) -> Result<sled::Tree, Error> {
     db.open_tree(key)
         .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")).into())
 }

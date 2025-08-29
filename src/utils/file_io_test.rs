@@ -300,18 +300,19 @@ mod validate_compressed_format_tests {
             ("data.snap", [0x1f, 0x8b]),
         ];
 
-        for (filename, _header) in test_cases {
+        for (filename, header) in test_cases {
             let dir = tempdir().unwrap();
             let path = dir.path().join(filename);
-            let _checksum = create_valid_snapshot(&path, |db| {
-                let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-                tree.insert(b"test_key", b"test_value").unwrap();
-            })
-            .await;
+
+            // Create a file with proper GZIP header
+            let mut file = File::create(&path).unwrap();
+            file.write_all(header).unwrap();
+            // Add some dummy content after the header
+            file.write_all(b"dummy content").unwrap();
 
             // Execute validation
             let result = validate_compressed_format(&path);
-            assert!(result.is_ok(), "Failed case: {filename}",);
+            assert!(result.is_ok(), "Failed case: {filename}");
         }
 
         Ok(())
@@ -329,13 +330,13 @@ mod validate_compressed_format_tests {
         for (filename, _expected_ext) in cases {
             let dir = tempdir().unwrap();
             let path = dir.path().join(filename);
-            let _checksum = create_valid_snapshot(&path, |db| {
-                let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-                tree.insert(b"test_key", b"test_value").unwrap();
-            })
-            .await;
-            let result = validate_compressed_format(&path);
 
+            // Create a simple compressed file instead of using create_valid_snapshot
+            let mut file = File::create(&path).unwrap();
+            // Write some dummy content
+            file.write_all(b"dummy content").unwrap();
+
+            let result = validate_compressed_format(&path);
             trace!("{result:?}",);
             assert!(
                 matches!(
@@ -354,11 +355,19 @@ mod validate_compressed_format_tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("invalid.gz");
 
-        // Create file with wrong header
-        let mut file = File::create(&path).unwrap();
-        for _ in 1..=10 {
-            file.write_all(&[0x89, 0x50]).unwrap(); // PNG magic number
+        // Create file with wrong header but in a temp directory
+        let temp_dir = tempdir().unwrap();
+        let temp_path = temp_dir.path().join("temp_invalid.gz");
+
+        {
+            let mut file = File::create(&temp_path).unwrap();
+            for _ in 1..=10 {
+                file.write_all(&[0x89, 0x50]).unwrap(); // PNG magic number
+            }
         }
+
+        // Copy to final location
+        tokio::fs::copy(&temp_path, &path).await.unwrap();
 
         let result = validate_compressed_format(&path);
         trace!("{result:?}",);

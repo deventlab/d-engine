@@ -1,0 +1,68 @@
+use super::FileStorageEngine;
+use crate::{
+    storage::{
+        state_machine_test::{StateMachineBuilder, StateMachineTestSuite},
+        storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite},
+    },
+    test_utils::enable_logger,
+    Error, FileStateMachine, StateMachine,
+};
+use std::sync::Arc;
+use tonic::async_trait;
+
+use tempfile::TempDir;
+
+struct FileStorageEngineBuilder {
+    temp_dir: TempDir,
+}
+
+#[async_trait]
+impl StorageEngineBuilder for FileStorageEngineBuilder {
+    type Engine = FileStorageEngine;
+
+    async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
+        let storage_path = self.temp_dir.path().join("storage_engine");
+        Ok(Arc::new(
+            FileStorageEngine::new(storage_path).expect("Expect file init successfully"),
+        ))
+    }
+
+    async fn cleanup(&self) -> Result<(), Error> {
+        // TempDir automatically cleans up when dropped, so no need for explicit cleanup
+        Ok(())
+    }
+}
+
+struct FileStateMachineBuilder {
+    temp_dir: TempDir, // Keep the temp dir alive for the duration of the test
+}
+
+#[async_trait]
+impl StateMachineBuilder for FileStateMachineBuilder {
+    async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        let state_machine_path = self.temp_dir.path().join("state_machine");
+        Ok(Arc::new(
+            FileStateMachine::new(state_machine_path, 1)
+                .await
+                .expect("Expect file init successfully"),
+        ))
+    }
+
+    async fn cleanup(&self) -> Result<(), Error> {
+        // TempDir automatically cleans up when dropped, so no need for explicit cleanup
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_file_storage_engine() -> Result<(), Error> {
+    let temp_dir = TempDir::new()?;
+    StorageEngineTestSuite::run_all_tests(FileStorageEngineBuilder { temp_dir }).await
+}
+
+#[tokio::test]
+async fn test_file_state_machine() -> Result<(), Error> {
+    enable_logger();
+    let temp_dir = TempDir::new()?;
+    StateMachineTestSuite::run_all_tests(FileStateMachineBuilder { temp_dir }).await
+}

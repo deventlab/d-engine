@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use async_compression::tokio::bufread::GzipEncoder;
 use bytes::BufMut;
 use bytes::BytesMut;
 use crc32fast::Hasher;
@@ -14,6 +15,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_tar::Builder;
 use tonic::Code;
 use tonic::Status;
 use tracing::debug;
@@ -83,6 +85,49 @@ where
         None,
         Some(1024 * 1024 * 1024),
     )
+}
+
+pub async fn create_test_compressed_snapshot() -> (Vec<u8>, SnapshotMetadata) {
+    // Create a temporary directory for our test data
+    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create metadata
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: vec![1; 32],
+    };
+
+    // Create test data file
+    let data_file = temp_path.join("test_data.bin");
+    tokio::fs::write(&data_file, b"test snapshot content").await.unwrap();
+
+    // Create metadata file
+    let metadata_bytes = bincode::serialize(&metadata).unwrap();
+    tokio::fs::write(temp_path.join("metadata.bin"), &metadata_bytes).await.unwrap();
+
+    // Create compressed file
+    let compressed_path = temp_path.join("snapshot.tar.gz");
+    let file = tokio::fs::File::create(&compressed_path).await.unwrap();
+    let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
+    let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
+
+    // Add files to tar
+    tar_builder.append_path_with_name(&data_file, "test_data.bin").await.unwrap();
+    tar_builder
+        .append_path_with_name(temp_path.join("metadata.bin"), "metadata.bin")
+        .await
+        .unwrap();
+
+    // Finish compression
+    tar_builder.finish().await.unwrap();
+    let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
+    gzip_encoder.shutdown().await.unwrap();
+
+    // Read compressed data back
+    let compressed_data = tokio::fs::read(&compressed_path).await.unwrap();
+
+    (compressed_data, metadata)
 }
 
 #[allow(unused)]

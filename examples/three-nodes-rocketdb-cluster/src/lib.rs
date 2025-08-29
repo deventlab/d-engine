@@ -1,6 +1,7 @@
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine::proto::common::{Entry, LogId};
-use d_engine::{ConvertError, Error, ProstError, StorageEngine, StorageError};
+use d_engine::{ConvertError, Error, MetaStore, ProstError, StorageEngine, StorageError};
 use prost::Message;
 use rocksdb::{Direction, IteratorMode, Options, WriteBatch, DB};
 use std::ops::RangeInclusive;
@@ -29,7 +30,236 @@ const STATE_MACHINE_PREFIX: &[u8] = b"sm:";
 /// engine.persist_entries(vec![entry1, entry2]).unwrap();
 /// ```
 pub struct RocksDBEngine {
-    db: Arc<Mutex<DB>>,
+    log_store: Arc<RocksDBLogStore>,
+    meta_store: Arc<RocksDBMetaStore>,
+}
+/// Dedicated log store implementation
+pub struct RocksDBLogStore {}
+
+/// Dedicated metadata store implementation
+pub struct RocksDBMetaStore {}
+
+impl StorageEngine for RocksDBEngine {
+    type LogStore = RocksDBLogStore;
+    type MetaStore = RocksDBMetaStore;
+
+    #[inline]
+    fn log_store(&self) -> Arc<Self::LogStore> {
+        self.log_store.clone()
+    }
+
+    #[inline]
+    fn meta_store(&self) -> Arc<Self::MetaStore> {
+        self.meta_store.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl LogStore for RocksDBLogStore {
+    /// Persists multiple Raft log entries in a batch write
+    async fn persist_entries(
+        &self,
+        entries: Vec<Entry>,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let mut batch = WriteBatch::default();
+
+        for entry in entries {
+            let key = Self::make_log_key(entry.index);
+            let value = entry.encode_to_vec();
+            batch.put(key, value);
+        }
+
+        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
+    }
+
+    /// Retrieves a single log entry by index
+    async fn entry(
+        &self,
+        index: u64,
+    ) -> Result<Option<Entry>, Error> {
+        let db = self.db.lock().unwrap();
+        let key = Self::make_log_key(index);
+
+        match db.get(&key) {
+            Ok(Some(bytes)) => {
+                Entry::decode(&*bytes).map(Some).map_err(|e| ProstError::Decode(e).into())
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(StorageError::DbError(e.into_string()).into()),
+        }
+    }
+
+    /// Retrieves log entries within an index range (inclusive)
+    fn get_entries(
+        &self,
+        range: RangeInclusive<u64>,
+    ) -> Result<Vec<Entry>, Error> {
+        let db = self.db.lock().unwrap();
+        let start_key = Self::make_log_key(*range.start());
+        let end_key = Self::make_log_key(*range.end());
+        let mut entries = Vec::new();
+
+        let iter = db.iterator(IteratorMode::From(&start_key, Direction::Forward));
+        for (key, value) in iter {
+            // res: Result<(Box<[u8]>, Box<[u8]>), rocksdb::Error>
+            // let (key, value) = res.map_err(|e| StorageError::DbError(e.into_string()))?;
+
+            // Stop if we've passed the end key
+            if key.as_ref() > end_key.as_slice() {
+                break;
+            }
+
+            let entry = Entry::decode(&*value).map_err(|e| ProstError::Decode(e))?;
+            entries.push(entry);
+        }
+
+        Ok(entries)
+    }
+
+    /// Removes logs up to the specified index (inclusive)
+    async fn purge(
+        &self,
+        cutoff_index: LogId,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let start_key = Self::make_log_key(0);
+        let end_key = Self::make_log_key(cutoff_index.index);
+        let mut batch = WriteBatch::default();
+
+        let iter = db.iterator(IteratorMode::From(&start_key, Direction::Forward));
+        for (key, _value) in iter {
+            // let (key, _) = item.map_err(|e| StorageError::DbError(e.into_string()))?;
+
+            // Stop if we've passed the end key
+            if key.as_ref() > end_key.as_slice() {
+                break;
+            }
+
+            batch.delete(key);
+        }
+
+        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
+    }
+    /// Truncates logs from specified index onward (inclusive)
+    async fn truncate(
+        &self,
+        from_index: u64,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let start_key = Self::make_log_key(from_index);
+        let mut batch = WriteBatch::default();
+
+        let iter = db.iterator(IteratorMode::From(&start_key, Direction::Forward));
+        for (key, _) in iter {
+            // let (key, _) = item.map_err(|e| StorageError::DbError(e.into_string()))?;
+            batch.delete(key);
+        }
+
+        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
+    }
+    /// Flushes all pending writes to disk
+    fn flush(&self) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        db.flush().map_err(|e| StorageError::IoError(e.into()).into())
+    }
+
+    /// Flushes all pending writes to disk
+    async fn flush_async(&self) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        db.flush().map_err(|e| StorageError::IoError(e.into()).into())
+    }
+
+    /// Resets the storage by clearing all log entries
+    async fn reset(&self) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let mut batch = WriteBatch::default();
+
+        // Delete all log entries
+        let start_key = LOG_PREFIX.to_vec();
+        let mut end_key = LOG_PREFIX.to_vec();
+        if let Some(last) = end_key.last_mut() {
+            *last = last.wrapping_add(1);
+        }
+
+        // Batch delete log range
+        batch.delete_range(start_key, end_key);
+
+        // Clear hard state
+        batch.delete(HARD_STATE_KEY);
+
+        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
+    }
+
+    /// Gets the last log index from storage
+    fn last_index(&self) -> u64 {
+        let db = self.db.lock().unwrap();
+        let mut iter = db.iterator(IteratorMode::End);
+
+        match iter.next() {
+            Some((key, _)) => {
+                if key.starts_with(LOG_PREFIX) {
+                    Self::parse_log_key(&key).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
+}
+
+#[async_trait]
+impl MetaStore for RocksDBMetaStore {
+    /// Loads hard state from persistent storage
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+        let db = self.db.lock().unwrap();
+        match db.get(HARD_STATE_KEY) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes)
+                .map(Some)
+                .map_err(|e| StorageError::BincodeError(e).into()),
+            Ok(None) => Ok(None),
+            Err(e) => Err(StorageError::DbError(e.into_string()).into()),
+        }
+    }
+
+    /// Persists hard state to storage
+    fn save_hard_state(
+        &self,
+        hard_state: &HardState,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let bytes = bincode::serialize(&hard_state).map_err(|e| StorageError::BincodeError(e))?;
+
+        db.put(HARD_STATE_KEY, bytes)
+            .map_err(|e| StorageError::DbError(e.into_string()).into())
+    }
+
+    /// Flushes all pending writes to disk
+    fn flush(&self) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        db.flush().map_err(|e| StorageError::IoError(e.into()).into())
+    }
+
+    /// Flushes all pending writes to disk
+    async fn flush_async(&self) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        db.flush().map_err(|e| StorageError::IoError(e.into()).into())
+    }
+}
+
+impl Drop for RocksDBEngine {
+    fn drop(&mut self) {
+        if let Err(e) = self.flush() {
+            error!("Failed to flush RocksDB on drop: {}", e);
+        }
+    }
+}
+
+impl From<rocksdb::Error> for std::io::Error {
+    fn from(e: rocksdb::Error) -> Self {
+        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    }
 }
 
 impl RocksDBEngine {
@@ -83,234 +313,5 @@ impl RocksDBEngine {
                 .map_err(|_| ConvertError::ConversionFailure("Invalid log key format".into()))?,
         );
         Ok(index)
-    }
-}
-
-#[async_trait::async_trait]
-impl StorageEngine for RocksDBEngine {
-    /// Persists multiple Raft log entries in a batch write
-    fn persist_entries(
-        &self,
-        entries: Vec<Entry>,
-    ) -> Result<(), Error> {
-        let db = self.db.lock().unwrap();
-        let mut batch = WriteBatch::default();
-
-        for entry in entries {
-            let key = Self::make_log_key(entry.index);
-            let value = entry.encode_to_vec();
-            batch.put(key, value);
-        }
-
-        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
-    }
-
-    /// Inserts a key-value pair into the state machine
-    fn insert<K, V>(
-        &self,
-        key: K,
-        value: V,
-    ) -> Result<Option<Vec<u8>>, Error>
-    where
-        K: AsRef<[u8]> + 'static,
-        V: AsRef<[u8]> + 'static,
-    {
-        let db = self.db.lock().unwrap();
-        let sm_key = Self::make_sm_key(key.as_ref());
-
-        let old_value = db
-            .get(&sm_key)
-            .map_err(|e| StorageError::DbError(e.into_string()))?
-            .map(|v| v.to_vec());
-
-        db.put(sm_key, value.as_ref())
-            .map_err(|e| StorageError::DbError(e.into_string()))?;
-
-        Ok(old_value)
-    }
-
-    /// Retrieves a value from the state machine
-    fn get<K>(
-        &self,
-        key: K,
-    ) -> Result<Option<Bytes>, Error>
-    where
-        K: AsRef<[u8]> + Send + 'static,
-    {
-        let db = self.db.lock().unwrap();
-        let sm_key = Self::make_sm_key(key.as_ref());
-
-        db.get(&sm_key)
-            .map(|opt| opt.map(|v| Bytes::copy_from_slice(&v)))
-            .map_err(|e| StorageError::DbError(e.into_string()).into())
-    }
-
-    /// Retrieves a single log entry by index
-    fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error> {
-        let db = self.db.lock().unwrap();
-        let key = Self::make_log_key(index);
-
-        match db.get(&key) {
-            Ok(Some(bytes)) => {
-                Entry::decode(&*bytes).map(Some).map_err(|e| ProstError::Decode(e).into())
-            }
-            Ok(None) => Ok(None),
-            Err(e) => Err(StorageError::DbError(e.into_string()).into()),
-        }
-    }
-
-    /// Retrieves log entries within an index range (inclusive)
-    fn get_entries_range(
-        &self,
-        range: RangeInclusive<u64>,
-    ) -> Result<Vec<Entry>, Error> {
-        let db = self.db.lock().unwrap();
-        let start_key = Self::make_log_key(*range.start());
-        let end_key = Self::make_log_key(*range.end());
-        let mut entries = Vec::new();
-
-        let iter = db.iterator(IteratorMode::From(&start_key, Direction::Forward));
-        for (key, value) in iter {
-            // res: Result<(Box<[u8]>, Box<[u8]>), rocksdb::Error>
-            // let (key, value) = res.map_err(|e| StorageError::DbError(e.into_string()))?;
-
-            // Stop if we've passed the end key
-            if key.as_ref() > end_key.as_slice() {
-                break;
-            }
-
-            let entry = Entry::decode(&*value).map_err(|e| ProstError::Decode(e))?;
-            entries.push(entry);
-        }
-
-        Ok(entries)
-    }
-
-    /// Removes logs up to the specified index (inclusive)
-    fn purge_logs(
-        &self,
-        cutoff_index: LogId,
-    ) -> Result<(), Error> {
-        let db = self.db.lock().unwrap();
-        let start_key = Self::make_log_key(0);
-        let end_key = Self::make_log_key(cutoff_index.index);
-        let mut batch = WriteBatch::default();
-
-        let iter = db.iterator(IteratorMode::From(&start_key, Direction::Forward));
-        for (key, _value) in iter {
-            // let (key, _) = item.map_err(|e| StorageError::DbError(e.into_string()))?;
-
-            // Stop if we've passed the end key
-            if key.as_ref() > end_key.as_slice() {
-                break;
-            }
-
-            batch.delete(key);
-        }
-
-        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
-    }
-
-    /// Flushes all pending writes to disk
-    fn flush(&self) -> Result<(), Error> {
-        let db = self.db.lock().unwrap();
-        db.flush().map_err(|e| StorageError::IoError(e.into()).into())
-    }
-
-    /// Resets the storage by clearing all log entries
-    fn reset(&self) -> Result<(), Error> {
-        let db = self.db.lock().unwrap();
-        let mut batch = WriteBatch::default();
-
-        // Delete all log entries
-        let start_key = LOG_PREFIX.to_vec();
-        let mut end_key = LOG_PREFIX.to_vec();
-        if let Some(last) = end_key.last_mut() {
-            *last = last.wrapping_add(1);
-        }
-
-        // Batch delete log range
-        batch.delete_range(start_key, end_key);
-
-        // Clear hard state
-        batch.delete(HARD_STATE_KEY);
-
-        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
-    }
-
-    /// Gets the last log index from storage
-    fn last_index(&self) -> u64 {
-        let db = self.db.lock().unwrap();
-        let mut iter = db.iterator(IteratorMode::End);
-
-        match iter.next() {
-            Some((key, _)) => {
-                if key.starts_with(LOG_PREFIX) {
-                    Self::parse_log_key(&key).unwrap_or(0)
-                } else {
-                    0
-                }
-            }
-            _ => 0,
-        }
-    }
-
-    /// Truncates logs from specified index onward (inclusive)
-    fn truncate(
-        &self,
-        from_index: u64,
-    ) -> Result<(), Error> {
-        let db = self.db.lock().unwrap();
-        let start_key = Self::make_log_key(from_index);
-        let mut batch = WriteBatch::default();
-
-        let iter = db.iterator(IteratorMode::From(&start_key, Direction::Forward));
-        for (key, _) in iter {
-            // let (key, _) = item.map_err(|e| StorageError::DbError(e.into_string()))?;
-            batch.delete(key);
-        }
-
-        db.write(batch).map_err(|e| StorageError::DbError(e.into_string()).into())
-    }
-
-    /// Loads hard state from persistent storage
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
-        let db = self.db.lock().unwrap();
-        match db.get(HARD_STATE_KEY) {
-            Ok(Some(bytes)) => bincode::deserialize(&bytes)
-                .map(Some)
-                .map_err(|e| StorageError::BincodeError(e).into()),
-            Ok(None) => Ok(None),
-            Err(e) => Err(StorageError::DbError(e.into_string()).into()),
-        }
-    }
-
-    /// Persists hard state to storage
-    fn save_hard_state(
-        &self,
-        hard_state: HardState,
-    ) -> Result<(), Error> {
-        let db = self.db.lock().unwrap();
-        let bytes = bincode::serialize(&hard_state).map_err(|e| StorageError::BincodeError(e))?;
-
-        db.put(HARD_STATE_KEY, bytes)
-            .map_err(|e| StorageError::DbError(e.into_string()).into())
-    }
-}
-
-impl Drop for RocksDBEngine {
-    fn drop(&mut self) {
-        if let Err(e) = self.flush() {
-            error!("Failed to flush RocksDB on drop: {}", e);
-        }
-    }
-}
-
-impl From<rocksdb::Error> for std::io::Error {
-    fn from(e: rocksdb::Error) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
     }
 }

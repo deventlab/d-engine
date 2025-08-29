@@ -37,6 +37,7 @@ use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
+use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::enable_logger;
 use crate::test_utils::node_config;
 use crate::test_utils::snapshot_config;
@@ -227,7 +228,7 @@ mod apply_chunk_test {
         ];
 
         // Apply the chunk
-        let result = handler.apply_chunk(chunk);
+        let result = handler.apply_chunk(chunk).await;
 
         // Verify last_applied was updated
         assert!(result.is_ok());
@@ -260,7 +261,7 @@ mod apply_chunk_test {
         ];
 
         // Apply the chunk
-        let result = handler.apply_chunk(chunk);
+        let result = handler.apply_chunk(chunk).await;
 
         // Verify last_applied was updated to the higher index
         assert!(result.is_ok());
@@ -284,7 +285,7 @@ mod apply_chunk_test {
                 payload: None,
             },
         ];
-        let result = handler.apply_chunk(chunk);
+        let result = handler.apply_chunk(chunk).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
 
@@ -292,7 +293,7 @@ mod apply_chunk_test {
         let chunk = vec![];
 
         // Apply the empty chunk
-        let result = handler.apply_chunk(chunk);
+        let result = handler.apply_chunk(chunk).await;
 
         // Verify last_applied was updated
         assert!(result.is_ok());
@@ -317,7 +318,7 @@ mod apply_chunk_test {
         }];
 
         // Apply first chunk
-        let result1 = handler.apply_chunk(chunk1);
+        let result1 = handler.apply_chunk(chunk1).await;
         assert!(result1.is_err());
         assert_eq!(handler.last_applied(), 0);
     }
@@ -672,16 +673,21 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         MockSnapshotPolicy::new(),
     );
 
+    // Create a proper compressed snapshot for testing
+    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
+
     // Create multiple chunks for the snapshot stream
+    // Split compressed data into chunks
     let total_chunks = 3;
+    let chunk_size = (compressed_data.len() + total_chunks - 1) / total_chunks; // Ceiling division
+
     let mut chunks: Vec<SnapshotChunk> = vec![];
-    let metadata = SnapshotMetadata {
-        last_included: Some(LogId { index: 5, term: 1 }),
-        checksum: vec![1; 32],
-    };
 
     for seq in 0..total_chunks {
-        let chunk_data = format!("chunk_data_{seq}").into_bytes();
+        let start = seq * chunk_size;
+        let end = std::cmp::min(compressed_data.len(), (seq + 1) * chunk_size);
+        let chunk_data = compressed_data[start..end].to_vec();
+
         let chunk = SnapshotChunk {
             leader_term: 1,
             leader_id: 1,
@@ -690,8 +696,8 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
             } else {
                 None
             },
-            seq,
-            total_chunks,
+            seq: seq as u32,
+            total_chunks: total_chunks as u32,
             data: chunk_data.clone(),
             chunk_checksum: crc32fast::hash(&chunk_data).to_be_bytes().to_vec(),
         };
@@ -714,13 +720,15 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     // Verify intermediate ACKs
     for seq in 0..total_chunks {
         let ack = ack_rx.recv().await.unwrap();
-        assert_eq!(ack.seq, seq);
+        assert_eq!(ack.seq, seq as u32);
         assert_eq!(ack.status, ChunkStatus::Accepted as i32);
-        assert_eq!(ack.next_requested, seq + 1);
+        assert_eq!(ack.next_requested, seq as u32 + 1);
     }
 
     // Ensure handler completes successfully
-    assert!(handler_task.await.unwrap().is_ok());
+    let handler_result = handler_task.await;
+    println!("handler_task.await: {:?}", handler_result);
+    assert!(handler_result.unwrap().is_ok());
 }
 mod create_snapshot_tests {
     use super::*;

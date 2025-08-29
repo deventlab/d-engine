@@ -7,9 +7,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::file_io::validate_compressed_format;
+use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use futures::stream::BoxStream;
+use tempfile::tempdir;
 use tokio::fs;
 use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
@@ -17,11 +20,13 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
+use tokio_tar::Archive;
 use tonic::async_trait;
 use tonic::Streaming;
 use tracing::debug;
@@ -143,7 +148,7 @@ where
         }
     }
 
-    fn apply_chunk(
+    async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
     ) -> Result<()> {
@@ -158,7 +163,7 @@ where
         );
 
         let sm = self.state_machine.clone();
-        sm.apply_chunk(chunk)?;
+        sm.apply_chunk(chunk).await?;
 
         // Efficiently obtain the maximum index: directly get the index of the last entry
         if let Some(idx) = last_index {
@@ -207,6 +212,11 @@ where
             "before apply_snapshot_from_file"
         );
 
+        // Decompress before passing to state machine
+        let temp_dir = tempdir()?;
+        self.decompress_to_directory(&snapshot_path, temp_dir.path()).await?;
+
+        // Now call state machine with decompressed directory
         self.state_machine
             .apply_snapshot_from_file(&final_metadata, snapshot_path)
             .await?;
@@ -287,30 +297,7 @@ where
         // 4: Compress the snapshot directory into a tar.gz archive
         debug!("create_snapshot 4: Compressing snapshot directory");
         let final_path = self.path_mgr.final_snapshot_path(&last_included);
-        // let compressed_path = final_path.with_extension("tar.gz");
-        let compressed_file = File::create(&final_path).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}"))
-        })?;
-        let gzip_encoder = GzipEncoder::new(compressed_file);
-        let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
-
-        // Add all files in temp_path to the archive
-        tar_builder.append_dir_all(".", &temp_path).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}"))
-        })?;
-
-        // Finish writing and flush all data
-        tar_builder.finish().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}"))
-        })?;
-
-        // Get inner GzipEncoder and shutdown to ensure all data is written
-        let mut gzip_encoder = tar_builder.into_inner().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}"))
-        })?;
-        gzip_encoder.shutdown().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}"))
-        })?;
+        self.compress_directory(&temp_path, &final_path).await?;
 
         // 6. Remove the original uncompressed directory
         remove_dir_all(&temp_path).await.map_err(|e| {
@@ -943,6 +930,67 @@ where
             file_size,
             file_path,
         })
+    }
+
+    async fn compress_directory(
+        &self,
+        source_dir: &Path,
+        dest_path: &Path,
+    ) -> Result<()> {
+        let compressed_file = File::create(dest_path).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}"))
+        })?;
+
+        let gzip_encoder = GzipEncoder::new(compressed_file);
+        let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
+
+        // Add all files in source_dir to the archive
+        tar_builder.append_dir_all(".", source_dir).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}"))
+        })?;
+
+        // Finish writing and flush all data
+        tar_builder.finish().await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}"))
+        })?;
+
+        // Get inner GzipEncoder and shutdown to ensure all data is written
+        let mut gzip_encoder = tar_builder.into_inner().await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}"))
+        })?;
+        gzip_encoder.shutdown().await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}"))
+        })?;
+
+        Ok(())
+    }
+
+    async fn decompress_to_directory(
+        &self,
+        compressed_path: &Path,
+        target_dir: &Path,
+    ) -> Result<()> {
+        debug!(
+            ?compressed_path,
+            "Validate file format before processing (IMPROVEMENT ADDED)"
+        );
+        // Validate file format before processing (IMPROVEMENT ADDED) Verify the file is
+        //    actually compressed using magic numbers or extension
+        validate_compressed_format(compressed_path)?;
+
+        let file = File::open(compressed_path).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to open snapshot file: {e}"))
+        })?;
+
+        let buf_reader = BufReader::new(file);
+        let gzip_decoder = GzipDecoder::new(buf_reader);
+        let mut archive = Archive::new(gzip_decoder);
+
+        archive.unpack(target_dir).await.map_err(|e| {
+            SnapshotError::OperationFailed(format!("Failed to unpack snapshot: {e}"))
+        })?;
+
+        Ok(())
     }
 
     #[cfg(test)]

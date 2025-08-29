@@ -1,6 +1,3 @@
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-
 use crate::convert::safe_vk;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
@@ -16,6 +13,8 @@ use prost::Message;
 use sled::Batch;
 use sled::IVec;
 use sled::Tree;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 use tonic::async_trait;
 use tracing::error;
 use tracing::info;

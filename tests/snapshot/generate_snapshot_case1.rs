@@ -34,8 +34,8 @@ use crate::common::create_node_config;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
-use crate::common::prepare_raft_log;
 use crate::common::prepare_state_machine;
+use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
@@ -64,23 +64,17 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     ];
 
     // Prepare state machines
-    let sm1 = Arc::new(prepare_state_machine(
-        1,
-        &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR),
-    ));
-    let sm2 = Arc::new(prepare_state_machine(
-        2,
-        &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR),
-    ));
-    let sm3 = Arc::new(prepare_state_machine(
-        3,
-        &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR),
-    ));
+    let sm1 =
+        Arc::new(prepare_state_machine(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)).await);
+    let sm2 =
+        Arc::new(prepare_state_machine(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR)).await);
+    let sm3 =
+        Arc::new(prepare_state_machine(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR)).await);
 
     // Prepare raft logs
-    let r1 = prepare_raft_log(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
-    let r2 = prepare_raft_log(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
-    let r3 = prepare_raft_log(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
+    let r1 = prepare_storage_engine(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
+    let r2 = prepare_storage_engine(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
+    let r3 = prepare_storage_engine(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1).await;

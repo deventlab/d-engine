@@ -1,8 +1,3 @@
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
 use config::Config;
 use d_engine::alias::SMOF;
 use d_engine::alias::SOF;
@@ -17,7 +12,6 @@ use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
 use d_engine::config::SnapshotConfig;
 use d_engine::convert::safe_kv;
-use d_engine::init_sled_log_tree_and_meta_tree;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
@@ -25,14 +19,18 @@ use d_engine::proto::client::WriteCommand;
 use d_engine::proto::common::Entry;
 use d_engine::proto::common::EntryPayload;
 use d_engine::proto::election::VotedFor;
-use d_engine::storage::SledStateMachine;
+use d_engine::storage::FileStateMachine;
 use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
+use d_engine::FileStorageEngine;
 use d_engine::HardState;
 use d_engine::LogStore;
 use d_engine::MetaStore;
-use d_engine::SledStorageEngine;
 use prost::Message;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
@@ -192,8 +190,8 @@ pub async fn start_cluster(
 }
 pub async fn start_node(
     config: RaftNodeConfig,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
+    state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
 ) -> std::result::Result<
     (
         watch::Sender<()>,
@@ -215,19 +213,41 @@ pub async fn start_node(
 async fn build_node(
     config: RaftNodeConfig,
     graceful_rx: watch::Receiver<()>,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
-) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
+    state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+) -> std::result::Result<
+    Arc<Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
+    ClientApiError,
+> {
     // Prepare raft log entries
-    let mut builder = NodeBuilder::init(config, graceful_rx);
-    if let Some(s) = storage_engine {
-        // let sled_raft_log = prepare_raft_log(&config_path, last_applied_index);
-        // manipulate_log(&sled_raft_log, ids, term);
-        builder = builder.storage_engine(s);
-    }
-    if let Some(sm) = state_machine {
-        builder = builder.state_machine(sm);
-    }
+    let mut builder = NodeBuilder::init(config.clone(), graceful_rx);
+
+    // Use provided storage engine or create a new one with temp directory
+    let storage_engine = if let Some(s) = storage_engine {
+        s
+    } else {
+        let storage_path = config.cluster.db_root_dir.clone().join("storage_engine");
+        Arc::new(
+            FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
+        )
+    };
+
+    builder = builder.storage_engine(storage_engine);
+
+    // Use provided state machine or create a new one with temp directory
+    let state_machine = if let Some(sm) = state_machine {
+        sm
+    } else {
+        let state_machine_path = config.cluster.db_root_dir.join("state_machine");
+        Arc::new(
+            FileStateMachine::new(state_machine_path, config.cluster.node_id)
+                .await
+                .expect("Failed to create file state machine"),
+        )
+    };
+
+    builder = builder.state_machine(state_machine);
+
     // Build and start the node
     let node = builder
         .build()
@@ -236,12 +256,13 @@ async fn build_node(
         .ready()
         .expect("Should succeed to start node");
 
+    // Return both the node and the temp directory to keep it alive
     Ok(node)
 }
 
 async fn run_node(
     node_id: u32,
-    node: Arc<Node<RaftTypeConfig>>,
+    node: Arc<Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
 ) -> std::result::Result<(), ClientApiError> {
     println!("Run node: {node_id}",);
     // Run the node until shutdown
@@ -258,33 +279,26 @@ pub fn get_root_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-pub fn prepare_raft_log(
+pub fn prepare_storage_engine(
     node_id: u32,
     db_path: &str,
     _last_applied_index: u64,
-) -> Arc<SledStorageEngine> {
-    let raft_log_db_path = format!("{db_path}/raft_log",);
-    let (log_store, meta_store) = init_sled_log_tree_and_meta_tree(&raft_log_db_path, node_id)
-        .expect("init_sled_storage_engine_db successfully.");
-    Arc::new(SledStorageEngine::new(log_store, meta_store))
+) -> Arc<FileStorageEngine> {
+    Arc::new(FileStorageEngine::new(PathBuf::from(format!("{db_path}/raft_log"))).unwrap())
 }
 
-pub fn prepare_state_machine(
+pub async fn prepare_state_machine(
     node_id: u32,
     db_path: &str,
-) -> SledStateMachine {
+) -> FileStateMachine {
     let state_machine_db_path = format!("{db_path}/state_machine",);
-    let state_machine_db = sled::Config::default()
-        .path(state_machine_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledStateMachine::new(node_id, Arc::new(state_machine_db)).unwrap()
+    FileStateMachine::new(PathBuf::from(state_machine_db_path), node_id)
+        .await
+        .unwrap()
 }
 
 pub async fn manipulate_log(
-    storage_engine: &Arc<SOF<RaftTypeConfig>>,
+    storage_engine: &Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     log_ids: Vec<u64>,
     term: u64,
 ) {
