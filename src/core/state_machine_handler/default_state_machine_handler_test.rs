@@ -1865,5 +1865,64 @@ async fn test_snapshot_compression() {
     );
 }
 
-#[cfg(test)]
-mod receive_snapshot_stream_from_leader_test {}
+/// Test that the state machine receives the decompressed directory, not the compressed file.
+#[tokio::test]
+async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
+    enable_logger();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_decompress_before_apply");
+    let mut state_machine_mock = MockStateMachine::new();
+
+    // Expect apply_snapshot_from_file to be called with a directory path (decompressed)
+    state_machine_mock
+        .expect_apply_snapshot_from_file()
+        .times(1)
+        .withf(|metadata, path| {
+            // Check that the path is a directory (decompressed) and not a file
+            path.is_dir() && metadata.last_included == Some(LogId { index: 5, term: 1 })
+        })
+        .returning(|_, _| Ok(()));
+
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
+        10,
+        1,
+        Arc::new(state_machine_mock),
+        snapshot_config(temp_path.to_path_buf()),
+        MockSnapshotPolicy::new(),
+    );
+
+    // Create a compressed snapshot for testing
+    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
+    let chunk_checksum = crc32fast::hash(&compressed_data).to_be_bytes().to_vec();
+    // Create a single chunk for the snapshot stream
+    let chunk = SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        metadata: Some(metadata),
+        seq: 0,
+        total_chunks: 1,
+        data: compressed_data,
+        chunk_checksum,
+    };
+
+    let streaming_request = crate_test_snapshot_stream(vec![chunk]);
+    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
+
+    let handler_task = tokio::spawn({
+        let config = snapshot_config(temp_path.to_path_buf());
+        async move {
+            handler
+                .apply_snapshot_stream_from_leader(1, Box::new(streaming_request), ack_tx, &config)
+                .await
+        }
+    });
+
+    // Verify ACK
+    let ack = ack_rx.recv().await.unwrap();
+    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
+
+    // Ensure handler completes successfully
+    assert!(handler_task.await.unwrap().is_ok());
+}
