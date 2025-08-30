@@ -147,29 +147,78 @@ where
         let mut term_update = None;
         let last_logid = raft_log.last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
-        if self.check_vote_request_is_legal(
-            &request,
-            current_term,
-            last_logid.index,
-            last_logid.term,
-            voted_for_option,
-        ) {
-            debug!("switch to follower");
-            let term = request.term;
+        // if self.check_vote_request_is_legal(
+        //     &request,
+        //     current_term,
+        //     last_logid.index,
+        //     last_logid.term,
+        //     voted_for_option,
+        // ) {
+        //     debug!("switch to follower");
+        //     let term = request.term;
 
-            // 1. Update term
-            term_update = Some(term);
+        //     // 1. Update term
+        //     term_update = Some(term);
 
-            // 2. update vote for
-            debug!(
-                "updated my voted for: target node: {:?} with term:{:?}",
-                request.candidate_id, term
-            );
+        //     // 2. update vote for
+        //     debug!(
+        //         "updated my voted for: target node: {:?} with term:{:?}",
+        //         request.candidate_id, term
+        //     );
+        //     new_voted_for = Some(VotedFor {
+        //         voted_for_id: request.candidate_id,
+        //         voted_for_term: term,
+        //     });
+        // }
+        // Ok(StateUpdate {
+        //     new_voted_for,
+        //     term_update,
+        // })
+        //--------------------------------------------------
+
+        // Check if request term is higher than current term
+        let new_voted_for_option = if request.term > current_term {
+            term_update = Some(request.term);
+            None
+            // When updating term, reset voted_for to allow voting in new term
+            // But we haven't voted yet, so we'll decide below
+        } else {
+            voted_for_option
+        };
+
+        // Check if we should grant the vote
+        let grant_vote = if request.term < current_term {
+            // Request term is lower, cannot grant vote
+            false
+        } else {
+            // Request term is >= current term
+            // Check log completeness
+            if !is_target_log_more_recent(
+                last_logid.index,
+                last_logid.term,
+                request.last_log_index,
+                request.last_log_term,
+            ) {
+                false
+            } else {
+                // Check if already voted for someone else in this term
+                if let Some(voted_for) = new_voted_for_option {
+                    // If already voted for someone else, cannot grant vote unless it's the same candidate
+                    voted_for.voted_for_term == request.term
+                        && voted_for.voted_for_id == request.candidate_id
+                } else {
+                    true
+                }
+            }
+        };
+
+        if grant_vote {
             new_voted_for = Some(VotedFor {
                 voted_for_id: request.candidate_id,
-                voted_for_term: term,
+                voted_for_term: request.term,
             });
         }
+
         Ok(StateUpdate {
             new_voted_for,
             term_update,
