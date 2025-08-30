@@ -553,7 +553,6 @@ impl StateMachine for FileStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Vec<u8>>, Error> {
-        println!("Read Key: {:?}", &key_buffer);
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
@@ -868,7 +867,6 @@ impl StateMachine for FileStateMachine {
             file.write_all(&key_len.to_be_bytes()).await?;
 
             // Write key
-            println!("key: {:?}", key);
             file.write_all(key).await?;
 
             // Write value length (8 bytes)
@@ -876,7 +874,6 @@ impl StateMachine for FileStateMachine {
             file.write_all(&value_len.to_be_bytes()).await?;
 
             // Write value
-            println!("value: {:?}", value);
             file.write_all(value).await?;
 
             // Write term (8 bytes)

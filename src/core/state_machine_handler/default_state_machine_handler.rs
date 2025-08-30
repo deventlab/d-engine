@@ -218,7 +218,7 @@ where
 
         // Now call state machine with decompressed directory
         self.state_machine
-            .apply_snapshot_from_file(&final_metadata, snapshot_path)
+            .apply_snapshot_from_file(&final_metadata, temp_dir.path().to_path_buf())
             .await?;
 
         info!("Snapshot stream successfully received and applied");
