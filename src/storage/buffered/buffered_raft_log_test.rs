@@ -5,14 +5,12 @@ use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
-use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
 use crate::BufferedRaftLog;
+use crate::FileStorageEngine;
 use crate::FlushPolicy;
 use crate::LogStore;
-use crate::MockLogStore;
-use crate::MockMetaStore;
 use crate::MockStateMachine;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
@@ -21,6 +19,7 @@ use crate::RaftTypeConfig;
 use crate::StorageEngine;
 use futures::future::join_all;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,13 +31,13 @@ use tracing::debug;
 
 // Test utilities
 struct TestContext {
-    raft_log: Arc<ROF<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
-    storage: Arc<MockStorageEngine>,
+    raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
+    storage: Arc<FileStorageEngine>,
     _temp_dir: Option<tempfile::TempDir>,
     strategy: PersistenceStrategy,
     flush_policy: FlushPolicy,
     // Add instance ID to ensure proper crash recovery simulation
-    instance_id: String,
+    path: String,
 }
 
 impl TestContext {
@@ -48,8 +47,9 @@ impl TestContext {
         instance_id: &str,
     ) -> Self {
         let temp_dir = tempdir().unwrap();
-        let instance_id = instance_id.to_string();
-        let storage = Arc::new(MockStorageEngine::with_id(instance_id.clone()));
+        let path = temp_dir.path().to_path_buf().join(instance_id);
+        // let instance_id = instance_id.to_string();
+        let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
 
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
@@ -66,7 +66,7 @@ impl TestContext {
         std::thread::sleep(Duration::from_millis(10));
 
         Self {
-            instance_id,
+            path: path.to_str().unwrap().to_string(),
             raft_log,
             storage,
             strategy,
@@ -80,7 +80,7 @@ impl TestContext {
         let temp_dir = tempdir().unwrap();
 
         // Use the same instance ID to simulate recovery from the same storage
-        let storage = Arc::new(MockStorageEngine::with_id(self.instance_id.clone()));
+        let storage = Arc::new(FileStorageEngine::new(PathBuf::from(self.path.clone())).unwrap());
 
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
@@ -102,7 +102,7 @@ impl TestContext {
             strategy: self.strategy.clone(),
             flush_policy: self.flush_policy.clone(),
             _temp_dir: Some(temp_dir),
-            instance_id: self.instance_id.clone(),
+            path: self.path.clone(),
         }
     }
 
@@ -125,7 +125,7 @@ impl TestContext {
 }
 
 async fn insert(
-    raft_log: &Arc<ROF<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     key: u64,
 ) {
     let log = Entry {
@@ -778,25 +778,27 @@ async fn test_insert_batch_logs_case1() {
     assert_eq!(start + i * j, end);
 }
 
-fn give_me_mock_storage() -> Arc<MockStorageEngine> {
-    let mut mock_log_store = MockLogStore::new();
-    mock_log_store.expect_last_index().returning(|| 0);
-    mock_log_store.expect_persist_entries().returning(|_| Ok(()));
-    mock_log_store.expect_entry().returning(|_| Ok(None));
-    mock_log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    mock_log_store.expect_purge().returning(|_| Ok(()));
-    mock_log_store.expect_truncate().returning(|_| Ok(()));
-    mock_log_store.expect_flush().returning(|| Ok(()));
-    mock_log_store.expect_flush_async().returning(|| Ok(()));
-    mock_log_store.expect_reset().returning(|| Ok(()));
+fn give_me_mock_storage() -> Arc<FileStorageEngine> {
+    // let mut mock_log_store = MockLogStore::new();
+    // mock_log_store.expect_last_index().returning(|| 0);
+    // mock_log_store.expect_persist_entries().returning(|_| Ok(()));
+    // mock_log_store.expect_entry().returning(|_| Ok(None));
+    // mock_log_store.expect_get_entries().returning(|_| Ok(vec![]));
+    // mock_log_store.expect_purge().returning(|_| Ok(()));
+    // mock_log_store.expect_truncate().returning(|_| Ok(()));
+    // mock_log_store.expect_flush().returning(|| Ok(()));
+    // mock_log_store.expect_flush_async().returning(|| Ok(()));
+    // mock_log_store.expect_reset().returning(|| Ok(()));
 
-    let mut mock_meta_store = MockMetaStore::new();
-    mock_meta_store.expect_save_hard_state().returning(|_| Ok(()));
-    mock_meta_store.expect_load_hard_state().returning(|| Ok(None));
-    mock_log_store.expect_flush().returning(|| Ok(()));
-    mock_log_store.expect_flush_async().returning(|| Ok(()));
+    // let mut mock_meta_store = MockMetaStore::new();
+    // mock_meta_store.expect_save_hard_state().returning(|_| Ok(()));
+    // mock_meta_store.expect_load_hard_state().returning(|| Ok(None));
+    // mock_log_store.expect_flush().returning(|| Ok(()));
+    // mock_log_store.expect_flush_async().returning(|| Ok(()));
 
-    Arc::new(MockStorageEngine::new())
+    let temp_dir = tempdir().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    Arc::new(FileStorageEngine::new(path).unwrap())
 }
 
 /// # Case 2: Test scenario for log replication conflict handling when combining:
@@ -825,7 +827,7 @@ fn give_me_mock_storage() -> Arc<MockStorageEngine> {
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
     let (old_leader, receiver) =
-        BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
             1,
             PersistenceConfig {
                 strategy: PersistenceStrategy::DiskFirst,
@@ -837,7 +839,7 @@ async fn test_insert_batch_logs_case2() {
     let old_leader = old_leader.start(receiver);
 
     let (new_leader, receiver) =
-        BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
             2,
             PersistenceConfig {
                 strategy: PersistenceStrategy::DiskFirst,
@@ -932,7 +934,7 @@ async fn test_insert_batch_logs_case2() {
 
 /// Helper function: Validate log entries' term continuity
 async fn validate_log_continuity(
-    node: &Arc<BufferedRaftLog<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
+    node: &Arc<BufferedRaftLog<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     expected: &[(u64, u64)],
 ) {
     for (index, term) in expected {
@@ -1235,12 +1237,14 @@ async fn test_get_last_entry_metadata_case2() {
 async fn test_raft_log_drop() {
     enable_logger();
     // Save the instance ID from the first storage
-    let instance_id = "test_raft_log_drop".to_string();
-    let storage = MockStorageEngine::with_id(instance_id.clone());
+
+    let temp_dir = tempdir().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let storage = FileStorageEngine::new(path.clone()).unwrap();
 
     {
         let (raft_log, receiver) =
-            BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
                 1,
                 PersistenceConfig {
                     strategy: PersistenceStrategy::DiskFirst,
@@ -1255,8 +1259,8 @@ async fn test_raft_log_drop() {
     }
 
     // Reuse the same instance ID to access persisted entries
-    let db_engine = MockStorageEngine::with_id(instance_id);
-    assert!(!db_engine.log_store().get_entries(0..=1).unwrap().is_empty());
+    let storage = FileStorageEngine::new(path.clone()).unwrap();
+    assert!(!storage.log_store().get_entries(0..=1).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1459,7 +1463,7 @@ async fn test_term_index_functions_with_concurrent_writes() {
     enable_logger();
 
     let (raft_log, log_command_receiver) =
-        BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
             1,
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
@@ -1556,12 +1560,14 @@ mod id_allocation_tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
+    use crate::FileStorageEngine;
+
     use super::*;
 
     // In-memory test setup
-    fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig<MockStorageEngine, MockStateMachine>>> {
+    fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig<FileStorageEngine, MockStateMachine>>> {
         let (raft_log, _receiver) =
-            BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
                 1,
                 PersistenceConfig {
                     strategy: PersistenceStrategy::MemFirst,
@@ -2185,9 +2191,9 @@ mod batched_tests {
 
             // let log_tree = db.open_tree("raft_log_tree").unwrap();
             // let meta_tree = db.open_tree("raft_meta_tree").unwrap();
-            // let storage = Arc::new(MockStorageEngine::new());
+            // let storage = Arc::new(FileStorageEngine::new());
             let (raft_log, receiver) =
-                BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
                     1,
                     PersistenceConfig {
                         strategy: PersistenceStrategy::MemFirst,
@@ -2221,9 +2227,9 @@ mod batched_tests {
 
         // let log_tree = db.open_tree("raft_log_tree").unwrap();
         // let meta_tree = db.open_tree("raft_meta_tree").unwrap();
-        // let storage = Arc::new(MockStorageEngine::new());
+        // let storage = Arc::new(FileStorageEngine::new());
         let (raft_log, receiver) =
-            BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
                 1,
                 PersistenceConfig {
                     strategy: PersistenceStrategy::MemFirst,
@@ -2326,7 +2332,7 @@ mod common_tests {
 }
 
 mod filter_out_conflicts_and_append_performance_tests {
-    use crate::{test_utils::MockStorageEngine, MockLogStore, MockMetaStore};
+    use crate::FileStorageEngine;
 
     use super::*;
 
@@ -2353,16 +2359,19 @@ mod filter_out_conflicts_and_append_performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let mut log_store = MockLogStore::new();
-            log_store.expect_last_index().returning(|| 0);
-            log_store.expect_truncate().returning(|_| Ok(()));
-            log_store.expect_persist_entries().returning(|_| Ok(()));
-            log_store.expect_reset().returning(|| Ok(()));
+            // let mut log_store = MockLogStore::new();
+            // log_store.expect_last_index().returning(|| 0);
+            // log_store.expect_truncate().returning(|_| Ok(()));
+            // log_store.expect_persist_entries().returning(|_| Ok(()));
+            // log_store.expect_reset().returning(|| Ok(()));
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
-                1,
-                config,
-                Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
+            let temp_dir = tempdir().unwrap();
+            let path = temp_dir.path().to_path_buf();
+
+            let (log, receiver) = BufferedRaftLog::<
+                RaftTypeConfig<FileStorageEngine, MockStateMachine>,
+            >::new(
+                1, config, Arc::new(FileStorageEngine::new(path).unwrap())
             );
             let log = log.start(receiver);
 
@@ -2430,16 +2439,13 @@ mod filter_out_conflicts_and_append_performance_tests {
                 max_buffered_entries: 1000,
             };
 
-            let mut log_store = MockLogStore::new();
-            log_store.expect_last_index().returning(|| 0);
-            log_store.expect_truncate().returning(|_| Ok(()));
-            log_store.expect_persist_entries().returning(|_| Ok(()));
-            log_store.expect_reset().returning(|| Ok(()));
+            let temp_dir = tempdir().unwrap();
+            let path = temp_dir.path().to_path_buf();
 
-            let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
-                1,
-                config,
-                Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
+            let (log, receiver) = BufferedRaftLog::<
+                RaftTypeConfig<FileStorageEngine, MockStateMachine>,
+            >::new(
+                1, config, Arc::new(FileStorageEngine::new(path).unwrap())
             );
             let log = log.start(receiver);
 
@@ -2896,7 +2902,7 @@ mod batch_processor_tests {
 mod save_load_hard_state_tests {
     use super::*;
     use crate::proto::election::VotedFor;
-    use crate::{HardState, LogStore, MetaStore, StorageEngine};
+    use crate::{FileStorageEngine, HardState, LogStore, MetaStore, StorageEngine};
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]
@@ -2975,13 +2981,14 @@ mod save_load_hard_state_tests {
     #[tokio::test]
     async fn test_hard_state_persistence_across_restart() {
         let node_id = 1;
-        let instance_id = "test_hard_state_persistence_across_restart".to_string();
 
+        let tempdir = tempfile::tempdir().unwrap();
+        let file_path = tempdir.path().to_path_buf();
         // Phase 1: Initial save
         {
-            let storage = Arc::new(MockStorageEngine::with_id(instance_id.clone()));
+            let storage = Arc::new(FileStorageEngine::new(file_path.clone()).unwrap());
             let (raft_log, receiver) =
-                BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
                     node_id,
                     PersistenceConfig {
                         strategy: PersistenceStrategy::MemFirst,
@@ -3008,9 +3015,9 @@ mod save_load_hard_state_tests {
 
         // Phase 2: Restart
         {
-            let storage = Arc::new(MockStorageEngine::with_id(instance_id.clone()));
+            let storage = Arc::new(FileStorageEngine::new(file_path).unwrap());
             let (raft_log, receiver) =
-                BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
                     node_id,
                     PersistenceConfig {
                         strategy: PersistenceStrategy::MemFirst,

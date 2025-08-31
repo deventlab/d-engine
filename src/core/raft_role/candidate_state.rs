@@ -587,6 +587,11 @@ impl<T: TypeConfig> CandidateState<T> {
     }
     pub fn vote_myself(&mut self) -> Result<()> {
         info!("vote myself as candidate");
+        trace!(
+            "Vote myself: my_id: {}, my_new_term:{}",
+            self.node_id(),
+            self.current_term()
+        );
         self.update_voted_for(VotedFor {
             voted_for_id: self.node_id(),
             voted_for_term: self.current_term(),

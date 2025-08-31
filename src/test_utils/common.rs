@@ -1,10 +1,3 @@
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use prost::Message;
-
 use crate::alias::ROF;
 use crate::convert::safe_kv;
 use crate::proto::client::WriteCommand;
@@ -12,12 +5,16 @@ use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
+use crate::FileStorageEngine;
 use crate::MockStateMachine;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SnapshotConfig;
-
-use super::MockStorageEngine;
+use prost::Message;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub fn create_mixed_entries() -> Vec<Entry> {
     let config_entry = Entry {
@@ -82,7 +79,7 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
 pub(crate) async fn simulate_insert_command(
-    raft_log: &Arc<ROF<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -95,14 +92,13 @@ pub(crate) async fn simulate_insert_command(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries).await {
-        panic!("error: {e:?}");
-    }
+    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.flush().await.unwrap();
 }
 
 #[allow(dead_code)]
 pub(crate) async fn simulate_delete_command(
-    raft_log: &Arc<ROF<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     id_range: RangeInclusive<u64>,
     term: u64,
 ) {

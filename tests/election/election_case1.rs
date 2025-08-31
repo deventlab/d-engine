@@ -27,6 +27,7 @@ use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::enable_logger;
 use crate::ELECTION_PORT_BASE;
 use d_engine::ClientApiError;
 use std::time::Duration;
@@ -38,7 +39,7 @@ const ELECTION_CASE1_LOG_DIR: &str = "./logs/election/case1";
 
 #[tokio::test]
 async fn test_leader_election_based_on_log_term_and_index() -> Result<(), ClientApiError> {
-    crate::enable_logger();
+    enable_logger();
     reset(ELECTION_CASE1_DIR).await?;
 
     let ports = [
@@ -55,6 +56,8 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     manipulate_log(&r2, (1..=2).collect(), 2).await;
     init_hard_state(&r2, 3, None);
     manipulate_log(&r2, (3..=8).collect(), 3).await;
+    let r3 = prepare_storage_engine(3, &format!("{}/cs/3", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    init_hard_state(&r3, 0, None);
 
     // Start cluster nodes
     let mut ctx = TestContext {
@@ -75,7 +78,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
         let raft_log = match i {
             0 => Some(r1.clone()),
             1 => Some(r2.clone()),
-            _ => None,
+            _ => Some(r3.clone()),
         };
 
         let (graceful_tx, node_handle) = start_node(node_config(&config), None, raft_log).await?;

@@ -25,19 +25,33 @@
 
 ```no_run
 use d_engine::NodeBuilder;
+use d_engine::FileStorageEngine;
+use d_engine::FileStateMachine;
 use tokio::sync::watch;
 use tracing::error;
 use tracing::info;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let node = NodeBuilder::new(None, graceful_rx)
+    let path = PathBuf::from("./db/storage");
+    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
+    let state_machine =
+        Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
+    // Build Node
+    let node = NodeBuilder::new(None, graceful_rx.clone())
         .build()
+        .storage_engine(storage_engine)
+        .state_machine(state_machine)
         .start_rpc_server()
         .await
-        .ready().unwrap();
+        .ready()
+        .expect("start node failed.");
+
 
     if let Err(e) = node.run().await {
         error!("node stops: {:?}", e);

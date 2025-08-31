@@ -1,9 +1,13 @@
 use core::panic;
 use d_engine::file_io::open_file_for_append;
 use d_engine::node::NodeBuilder;
+use d_engine::FileStateMachine;
+use d_engine::FileStorageEngine;
 use std::env;
 use std::error::Error;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
@@ -51,9 +55,15 @@ async fn main() {
 }
 
 async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
+    let path = PathBuf::from("./db/storage");
+    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
+    let state_machine =
+        Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .build()
+        .storage_engine(storage_engine)
+        .state_machine(state_machine)
         .start_rpc_server()
         .await
         .ready()

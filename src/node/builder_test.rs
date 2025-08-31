@@ -17,6 +17,7 @@ use crate::RaftTypeConfig;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::SystemError;
+use serial_test::serial;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -145,6 +146,7 @@ fn create_temp_config(content: &str) -> (PathBuf, String) {
 }
 
 #[test]
+#[serial]
 fn test_config_override_success() {
     // Prepare test configuration
     let (_dir, config_path) = create_temp_config(
@@ -186,6 +188,7 @@ fn test_config_override_invalid_path() {
 }
 
 #[test]
+#[serial]
 fn test_config_override_invalid_format() {
     let (_dir, config_path) = create_temp_config(
         r#"
@@ -206,6 +209,7 @@ fn test_config_override_invalid_format() {
 }
 
 #[test]
+#[serial]
 fn test_config_override_priority() {
     let (_dir, config_path) = create_temp_config(
         r#"
@@ -234,6 +238,7 @@ fn test_config_override_priority() {
 }
 
 #[test]
+#[serial]
 fn test_partial_override() {
     let (_dir, config_path) = create_temp_config(
         r#"

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
+use tracing::trace;
 use tracing::warn;
 
 use super::ElectionCore;
@@ -179,44 +180,84 @@ where
         // Check if request term is higher than current term
         let new_voted_for_option = if request.term > current_term {
             term_update = Some(request.term);
-            None
             // When updating term, reset voted_for to allow voting in new term
             // But we haven't voted yet, so we'll decide below
+            None
         } else {
             voted_for_option
         };
 
         // Check if we should grant the vote
-        let grant_vote = if request.term < current_term {
-            // Request term is lower, cannot grant vote
-            false
-        } else {
-            // Request term is >= current term
-            // Check log completeness
-            if !is_target_log_more_recent(
-                last_logid.index,
-                last_logid.term,
-                request.last_log_index,
-                request.last_log_term,
-            ) {
+        let grant_vote =
+            if request.term < current_term {
+                // Request term is lower, cannot grant vote
+                trace!(
+                "[node-{} -> node-{}] Request term is lower, cannot grant vote. VoteRequest = {:?}",
+                request.candidate_id, self.my_id, &request
+            );
+
                 false
             } else {
-                // Check if already voted for someone else in this term
-                if let Some(voted_for) = new_voted_for_option {
-                    // If already voted for someone else, cannot grant vote unless it's the same candidate
-                    voted_for.voted_for_term == request.term
-                        && voted_for.voted_for_id == request.candidate_id
+                // Request term is >= current term
+                // Check log completeness
+                if !is_target_log_more_recent(
+                    last_logid.index,
+                    last_logid.term,
+                    request.last_log_index,
+                    request.last_log_term,
+                ) {
+                    trace!(
+                        "node-{}: last_log_index({}(t:{})) -> node-{}: last_log_index({}(t:{}))",
+                        request.candidate_id,
+                        request.last_log_index,
+                        request.last_log_term,
+                        self.my_id,
+                        last_logid.index,
+                        last_logid.term
+                    );
+
+                    false
                 } else {
-                    true
+                    // Check if already voted for someone else in this term
+                    if let Some(voted_for) = new_voted_for_option {
+                        trace!(
+                            "[node-{} -> node-{}] node-{} current vote: {:?}",
+                            request.candidate_id,
+                            self.my_id,
+                            self.my_id,
+                            &voted_for
+                        );
+                        // If already voted for someone else, cannot grant vote unless it's the same candidate
+                        voted_for.voted_for_term == request.term
+                            && voted_for.voted_for_id == request.candidate_id
+                    } else {
+                        trace!(
+                            "node-{} vote for node-{} successfully!",
+                            self.my_id,
+                            request.candidate_id,
+                        );
+
+                        true
+                    }
                 }
-            }
-        };
+            };
 
         if grant_vote {
             new_voted_for = Some(VotedFor {
                 voted_for_id: request.candidate_id,
                 voted_for_term: request.term,
             });
+            trace!(
+                "node-{} -> node-{} successfully!",
+                request.candidate_id,
+                self.my_id,
+            );
+        } else {
+            trace!(
+                "node-{} -> node-{} failed!",
+                request.candidate_id,
+                self.my_id,
+            );
         }
 
         Ok(StateUpdate {

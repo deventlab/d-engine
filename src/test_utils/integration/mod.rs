@@ -46,7 +46,6 @@ pub(crate) use snapshot::*;
 use tokio::sync::watch;
 
 use super::generate_insert_commands;
-use super::MockStorageEngine;
 use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMOF;
@@ -77,6 +76,7 @@ use crate::RaftRole;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
 use crate::StateMachine;
+use crate::StorageEngine;
 use crate::TypeConfig;
 
 #[allow(dead_code)]
@@ -110,13 +110,22 @@ pub fn setup_raft_components(
     db_path: &str,
     peers_meta_option: Option<Vec<NodeMeta>>,
     restart: bool,
-) -> TestContext<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
+) -> TestContext<RaftTypeConfig<FileStorageEngine, MockStateMachine>> {
     println!("Test setup_raft_components ...");
+
+    std::env::remove_var("CONFIG_PATH");
+    std::env::remove_var("RAFT__INITIAL_CLUSTER");
+
     enable_logger();
     //start from fresh
     let id = 1;
 
-    let storage_engine = Arc::new(MockStorageEngine::new());
+    // let tempdir = tempfile::tempdir().unwrap();
+    let path = PathBuf::from(db_path);
+    let storage_engine = Arc::new(FileStorageEngine::new(path).unwrap());
+    if restart {
+        storage_engine.log_store().reset_sync().unwrap();
+    }
 
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,
@@ -139,14 +148,20 @@ pub fn setup_raft_components(
         let follower_role = RaftRole::<MockTypeConfig>::follower_role_i32();
         vec![
             NodeMeta {
-                id: 2,
+                id: 1,
                 address: "127.0.0.1:8080".to_string(),
                 role: follower_role,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
+                id: 2,
+                address: "127.0.0.1:8081".to_string(),
+                role: follower_role,
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
                 id: 3,
-                address: "127.0.0.1:8080".to_string(),
+                address: "127.0.0.1:8082".to_string(),
                 role: follower_role,
                 status: NodeStatus::Active.into(),
             },
@@ -156,7 +171,7 @@ pub fn setup_raft_components(
     let (_graceful_tx, _graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
-    let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let mut node_config = RaftNodeConfig::default();
     node_config.cluster.db_root_dir = PathBuf::from(db_path);
     node_config.cluster.initial_cluster = peers_meta.clone();
 
@@ -178,7 +193,7 @@ pub fn setup_raft_components(
     let node_config_clone = node_config.clone();
     let arc_node_config = Arc::new(node_config);
 
-    TestContext::<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
+    TestContext::<RaftTypeConfig<FileStorageEngine, MockStateMachine>> {
         id,
         raft_log: buffered_raft_log,
         state_machine,

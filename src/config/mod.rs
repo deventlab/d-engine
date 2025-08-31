@@ -18,23 +18,19 @@ pub use network::*;
 pub use raft::*;
 pub use retry::*;
 pub use tls::*;
-
 #[cfg(test)]
 mod config_test;
 #[cfg(test)]
 mod raft_test;
-
-use std::env;
-
+use crate::proto::common::NodeStatus;
+use crate::Error;
+use crate::Result;
 use config::Config;
 use config::Environment;
 use config::File;
 use serde::Deserialize;
 use serde::Serialize;
-
-use crate::proto::common::NodeStatus;
-use crate::Error;
-use crate::Result;
+use std::env;
 
 /// Main configuration container for Raft consensus engine components
 ///

@@ -13,10 +13,7 @@ use tonic::async_trait;
 use tracing::info;
 
 // Constants for file structure
-// const LOG_FILE_EXTENSION: &str = "log";
-// const META_FILE_NAME: &str = "meta.bin";
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
-// const SNAPSHOT_DIR_NAME: &str = "snapshots";
 
 /// File-based log store implementation
 #[derive(Debug)]
@@ -208,6 +205,26 @@ impl FileLogStore {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    pub fn reset_sync(&self) -> Result<(), Error> {
+        {
+            let mut file = self.file_handle.lock().unwrap();
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.flush()?;
+        }
+        {
+            let mut store = self.entries.lock().unwrap();
+            store.clear();
+        }
+        {
+            let mut index_positions = self.index_positions.lock().unwrap();
+            index_positions.clear();
+        }
+        self.last_index.store(0, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -356,6 +373,7 @@ impl LogStore for FileLogStore {
     fn flush(&self) -> Result<(), Error> {
         let mut file = self.file_handle.lock().unwrap();
         file.flush()?;
+        file.sync_all()?;
         Ok(())
     }
 

@@ -4,6 +4,7 @@ use d_engine::alias::SOF;
 use d_engine::config::BackoffPolicy;
 use d_engine::config::ClusterConfig;
 use d_engine::config::CommitHandlerConfig;
+use d_engine::config::ElectionConfig;
 use d_engine::config::FlushPolicy;
 use d_engine::config::PersistenceConfig;
 use d_engine::config::PersistenceStrategy;
@@ -144,11 +145,17 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             max_log_entries_before_snapshot: 1,
             cleanup_retain_count: 2,
             retained_log_entries: 1,
+            snapshots_dir: cluster.db_root_dir.join("snapshots").join(cluster.node_id.to_string()),
             ..Default::default()
         },
         persistence: PersistenceConfig {
             strategy: PersistenceStrategy::DiskFirst,
             flush_policy: FlushPolicy::Immediate,
+            ..Default::default()
+        },
+        election: ElectionConfig {
+            election_timeout_min: 400,
+            election_timeout_max: 600,
             ..Default::default()
         },
         ..Default::default()
