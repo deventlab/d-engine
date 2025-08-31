@@ -941,11 +941,14 @@ async fn test_insert_batch_logs_case2() {
     // }
 
     // 7. Validate final log state
-    validate_log_continuity(&old_leader, &[
-        (7, 1),  // Original term 1 entry
-        (8, 2),  // Overwritten entry
-        (10, 2), // New highest entry
-    ])
+    validate_log_continuity(
+        &old_leader,
+        &[
+            (7, 1),  // Original term 1 entry
+            (8, 2),  // Overwritten entry
+            (10, 2), // New highest entry
+        ],
+    )
     .await;
 }
 
@@ -2551,10 +2554,13 @@ mod performance_tests {
         const MAX_RESET_DURATION_MS: u64 = 50;
 
         let test_cases = vec![
-            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
-                threshold: 1000,
-                interval_ms: 1000,
-            }),
+            (
+                PersistenceStrategy::MemFirst,
+                FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms: 1000,
+                },
+            ),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2646,11 +2652,15 @@ mod performance_tests {
             // Measure performance during active flush
             let start = Instant::now();
             log_arc
-                .filter_out_conflicts_and_append(500, 1, vec![Entry {
-                    index: 501,
-                    term: 1,
-                    payload: Some(EntryPayload::command(vec![1; 256])),
-                }])
+                .filter_out_conflicts_and_append(
+                    500,
+                    1,
+                    vec![Entry {
+                        index: 501,
+                        term: 1,
+                        payload: Some(EntryPayload::command(vec![1; 256])),
+                    }],
+                )
                 .await
                 .unwrap();
 
@@ -2670,10 +2680,13 @@ mod performance_tests {
         const MAX_DURATION_MS: u64 = 5; // Should be very fast
 
         let test_cases = vec![
-            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
-                threshold: 1000,
-                interval_ms: 1000,
-            }),
+            (
+                PersistenceStrategy::MemFirst,
+                FlushPolicy::Batch {
+                    threshold: 1000,
+                    interval_ms: 1000,
+                },
+            ),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 

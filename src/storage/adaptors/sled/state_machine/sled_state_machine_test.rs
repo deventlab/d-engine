@@ -360,10 +360,13 @@ async fn test_generate_snapshot_data_case4() {
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
     state_machine
-        .generate_snapshot_data(temp_path.clone(), LogId {
-            index: 150,
-            term: 1,
-        })
+        .generate_snapshot_data(
+            temp_path.clone(),
+            LogId {
+                index: 150,
+                term: 1,
+            },
+        )
         .await
         .unwrap();
 
