@@ -19,6 +19,7 @@ use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
+use crate::common::enable_logger;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
@@ -30,7 +31,7 @@ use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
 use d_engine::ClientApiError;
 use std::time::Duration;
-use tracing_test::traced_test;
+use tracing::debug;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
@@ -38,8 +39,10 @@ const ELECTION_CASE1_DB_ROOT_DIR: &str = "./db/election/case1";
 const ELECTION_CASE1_LOG_DIR: &str = "./logs/election/case1";
 
 #[tokio::test]
-#[traced_test]
 async fn test_leader_election_based_on_log_term_and_index() -> Result<(), ClientApiError> {
+    // enable_logger();
+
+    debug!("...test_leader_election_based_on_log_term_and_index...");
     reset(ELECTION_CASE1_DIR).await?;
 
     let ports = [
@@ -100,8 +103,23 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
 
     // Verify Leader is Node 2
     let bootstrap_urls = create_bootstrap_urls(&ports);
-    let client_manager = ClientManager::new(&bootstrap_urls).await?;
-    assert_eq!(client_manager.list_leader_id().await.unwrap(), 2);
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(15);
+
+    let client_manager = loop {
+        match ClientManager::new(&bootstrap_urls).await {
+            Ok(mgr) => break mgr,
+            Err(e) => {
+                if start.elapsed() > timeout {
+                    panic!("Leader not elected within timeout: {:?}", e);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    let leader_id = client_manager.list_leader_id().await.unwrap();
+    assert_eq!(leader_id, 2);
 
     // Clean up
     ctx.shutdown().await

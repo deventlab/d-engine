@@ -390,6 +390,7 @@ dependencies = [
  "tonic-build",
  "tonic-health",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
  "uuid",
  "vergen",
