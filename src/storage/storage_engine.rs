@@ -19,7 +19,6 @@ use crate::HardState;
 /// - Physical separation of log and metadata stores
 /// - Async-ready for I/O parallelism
 /// - Minimal interface for maximum performance
-///
 pub trait StorageEngine: Send + Sync + 'static {
     /// Associated log store type
     type LogStore: LogStore;
