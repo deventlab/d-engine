@@ -39,7 +39,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
-
 use crate::test_utils::node_config;
 use crate::test_utils::snapshot_config;
 use crate::test_utils::MockBuilder;

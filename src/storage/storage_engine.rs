@@ -1,14 +1,16 @@
 #![doc = include_str!("../docs/server_guide/customize-storage-engine.md")]
 
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
+#[cfg(test)]
+use mockall::automock;
+use tonic::async_trait;
+
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::Error;
 use crate::HardState;
-#[cfg(test)]
-use mockall::automock;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use tonic::async_trait;
 
 /// High-performance storage abstraction for Raft consensus
 ///
@@ -17,7 +19,6 @@ use tonic::async_trait;
 /// - Physical separation of log and metadata stores
 /// - Async-ready for I/O parallelism
 /// - Minimal interface for maximum performance
-///
 ///
 pub trait StorageEngine: Send + Sync + 'static {
     /// Associated log store type
@@ -93,7 +94,6 @@ pub trait LogStore: Send + Sync + 'static {
 }
 
 /// Metadata storage operations
-///
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait MetaStore: Send + Sync + 'static {

@@ -16,7 +16,6 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
 use crate::CommitHandlerConfig;
@@ -407,7 +406,6 @@ mod run_test {
     use crate::proto::common::membership_change::Change;
     use crate::proto::common::AddNode;
     use crate::proto::common::RemoveNode;
-
     use crate::FOLLOWER;
     use crate::LEADER;
 

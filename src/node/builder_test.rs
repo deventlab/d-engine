@@ -1,3 +1,12 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use serial_test::serial;
+use tempfile::tempdir;
+use tempfile::TempDir;
+use tokio::sync::watch;
+use tracing_test::traced_test;
+
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
 use crate::test_utils::mock_state_machine;
@@ -17,13 +26,6 @@ use crate::RaftTypeConfig;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::SystemError;
-use serial_test::serial;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tempfile::tempdir;
-use tempfile::TempDir;
-use tokio::sync::watch;
-use tracing_test::traced_test;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.

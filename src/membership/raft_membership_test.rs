@@ -13,7 +13,6 @@ use crate::proto::common::MembershipChange;
 use crate::proto::common::NodeStatus;
 use crate::proto::common::PromoteLearner;
 use crate::proto::common::RemoveNode;
-
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::MockStorageEngine;
@@ -923,7 +922,6 @@ mod check_cluster_is_ready_test {
     use tokio::sync::oneshot;
 
     use super::*;
-
     use crate::test_utils::MockNode;
     use crate::test_utils::MockRpcService;
     use crate::test_utils::MockStorageEngine;

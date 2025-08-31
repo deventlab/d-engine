@@ -15,6 +15,11 @@
 //!   fewer entries than Node A.
 //! - Nodes A and C recognize B as the leader.
 
+use std::time::Duration;
+
+use d_engine::ClientApiError;
+use tracing::debug;
+
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
@@ -28,9 +33,6 @@ use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::ELECTION_PORT_BASE;
-use d_engine::ClientApiError;
-use std::time::Duration;
-use tracing::debug;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";

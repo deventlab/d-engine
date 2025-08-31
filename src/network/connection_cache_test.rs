@@ -6,7 +6,6 @@ use tracing_test::traced_test;
 
 use super::*;
 use crate::net::address_str;
-
 use crate::test_utils::MockRpcService;
 use crate::test_utils::{self};
 use crate::ConnectionParams;

@@ -1,7 +1,8 @@
+use tracing_test::traced_test;
+
 use super::*;
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfUpdateResponse;
-use tracing_test::traced_test;
 
 async fn async_ok(
     number: u64

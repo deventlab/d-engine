@@ -24,7 +24,6 @@ use crate::proto::election::VoteRequest;
 use crate::proto::replication::raft_replication_service_server::RaftReplicationService;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
-
 use crate::test_utils::mock_node;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;

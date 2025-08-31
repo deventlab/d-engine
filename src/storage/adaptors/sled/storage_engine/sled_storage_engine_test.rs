@@ -1,3 +1,9 @@
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
+use tempfile::TempDir;
+use tracing_test::traced_test;
+
 use super::*;
 use crate::init_sled_log_tree_and_meta_tree;
 use crate::init_sled_storage_engine_db;
@@ -5,7 +11,6 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
-
 use crate::Error;
 use crate::HardState;
 use crate::LogStore;
@@ -13,10 +18,6 @@ use crate::MetaStore;
 use crate::ProstError;
 use crate::StorageEngine;
 use crate::SystemError;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use tempfile::TempDir;
-use tracing_test::traced_test;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {

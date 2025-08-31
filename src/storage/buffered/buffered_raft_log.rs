@@ -4,7 +4,6 @@
 //! - Batch I/O operations
 //! - Async persistence pipeline
 //! - Generic storage integration
-//!
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -186,8 +185,8 @@ where
     //         }
     //     }
 
-    //     // OPTIMIZED: Reverse scan stops at last match (O(k) where k is position of last term match)
-    //     self.entries
+    //     // OPTIMIZED: Reverse scan stops at last match (O(k) where k is position of last term
+    // match)     self.entries
     //         .iter()
     //         .rev()
     //         .find(|entry| entry.value().term == term)

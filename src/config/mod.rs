@@ -22,15 +22,17 @@ pub use tls::*;
 mod config_test;
 #[cfg(test)]
 mod raft_test;
-use crate::proto::common::NodeStatus;
-use crate::Error;
-use crate::Result;
+use std::env;
+
 use config::Config;
 use config::Environment;
 use config::File;
 use serde::Deserialize;
 use serde::Serialize;
-use std::env;
+
+use crate::proto::common::NodeStatus;
+use crate::Error;
+use crate::Result;
 
 /// Main configuration container for Raft consensus engine components
 ///

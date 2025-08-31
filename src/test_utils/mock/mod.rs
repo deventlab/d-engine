@@ -47,7 +47,6 @@ pub use mock_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
 pub use mock_storage_engine::*;
-
 use tokio::sync::watch;
 
 use super::node_config;

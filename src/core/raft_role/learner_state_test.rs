@@ -26,7 +26,6 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
-
 use crate::test_utils::mock_membership;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockTypeConfig;

@@ -1,12 +1,13 @@
+use std::time::Duration;
+use std::vec;
+
+use tokio::sync::oneshot;
+use tracing_test::traced_test;
+
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::error::ErrorCode;
-use std::time::Duration;
-use std::vec;
-use tokio::sync::oneshot;
-use tracing_test::traced_test;
-
 use crate::test_utils::MockNode;
 use crate::time::get_now_as_u32;
 use crate::ClientConfig;

@@ -1,10 +1,11 @@
+use std::sync::Arc;
+
 use tracing_test::traced_test;
 
-use crate::{test_utils::MockTypeConfig, Error, MockRaftLog};
-
 use super::*;
-
-use std::sync::Arc;
+use crate::test_utils::MockTypeConfig;
+use crate::Error;
+use crate::MockRaftLog;
 
 // Assuming RaftLog is defined and can be mocked with mockall
 // For example, if RaftLog is a trait, you can mock it as follows:

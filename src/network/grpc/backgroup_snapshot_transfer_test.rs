@@ -11,7 +11,6 @@ use super::*;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::create_snapshot_stream;
-
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
 use crate::Error;

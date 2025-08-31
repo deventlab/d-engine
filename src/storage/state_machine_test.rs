@@ -1,14 +1,20 @@
-use crate::proto::client::write_command::{Delete, Insert, Operation};
+use std::sync::Arc;
+
+use prost::Message;
+use tempfile::TempDir;
+use tonic::async_trait;
+
+use crate::proto::client::write_command::Delete;
+use crate::proto::client::write_command::Insert;
+use crate::proto::client::write_command::Operation;
 use crate::proto::client::WriteCommand;
 use crate::proto::common::entry_payload::Payload;
-use crate::proto::common::{Entry, EntryPayload, LogId};
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
 use crate::storage::StateMachine;
 use crate::Error;
-use prost::Message;
-use std::sync::Arc;
-use tempfile::TempDir;
-use tonic::async_trait;
 
 /// Test suite for StateMachine implementations
 ///
@@ -171,7 +177,8 @@ impl StateMachineTestSuite {
         assert_eq!(state_machine.get(b"key3")?, None);
         assert_eq!(state_machine.last_applied(), LogId::default());
 
-        // Assume there were some entries. After applying snapshot, all the old ones should be cleared.
+        // Assume there were some entries. After applying snapshot, all the old ones should be
+        // cleared.
         let entries = vec![
             create_insert_entry(1, b"key1".to_vec(), b"old_value1".to_vec()),
             create_insert_entry(2, b"old_key2".to_vec(), b"vold_alue2".to_vec()),

@@ -1,3 +1,13 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::trace;
+use tracing::warn;
+
 use super::ElectionCore;
 use crate::alias::MOF;
 use crate::alias::ROF;
@@ -16,14 +26,6 @@ use crate::Result;
 use crate::StateUpdate;
 use crate::Transport;
 use crate::TypeConfig;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use tonic::async_trait;
-use tracing::debug;
-use tracing::error;
-use tracing::trace;
-use tracing::warn;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {
@@ -225,7 +227,8 @@ where
                             self.my_id,
                             &voted_for
                         );
-                        // If already voted for someone else, cannot grant vote unless it's the same candidate
+                        // If already voted for someone else, cannot grant vote unless it's the same
+                        // candidate
                         voted_for.voted_for_term == request.term
                             && voted_for.voted_for_id == request.candidate_id
                     } else {

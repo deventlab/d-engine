@@ -56,7 +56,6 @@ use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::NodeStatus;
-
 use crate::test_utils::mock_state_machine;
 use crate::test_utils::MockTypeConfig;
 use crate::BufferedRaftLog;

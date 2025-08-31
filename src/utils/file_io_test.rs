@@ -15,7 +15,6 @@ use crate::file_io::convert_vec_checksum;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
 use crate::file_io::move_directory;
-
 use crate::Error;
 use crate::FileError;
 use crate::StorageError;

@@ -1,13 +1,18 @@
-use crate::proto::common::{Entry, EntryPayload, LogId};
-use crate::proto::election::VotedFor;
-
-use crate::{HardState, LogStore, MetaStore, StorageEngine};
-
-use super::*;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+
 use tempfile::TempDir;
 use tracing_test::traced_test;
+
+use super::*;
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::proto::common::LogId;
+use crate::proto::election::VotedFor;
+use crate::HardState;
+use crate::LogStore;
+use crate::MetaStore;
+use crate::StorageEngine;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {

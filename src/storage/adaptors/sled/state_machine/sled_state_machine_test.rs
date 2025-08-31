@@ -19,7 +19,6 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-
 use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
@@ -361,13 +360,10 @@ async fn test_generate_snapshot_data_case4() {
     // Generate snapshot
     let temp_path = root.path().join("snapshot4");
     state_machine
-        .generate_snapshot_data(
-            temp_path.clone(),
-            LogId {
-                index: 150,
-                term: 1,
-            },
-        )
+        .generate_snapshot_data(temp_path.clone(), LogId {
+            index: 150,
+            term: 1,
+        })
         .await
         .unwrap();
 

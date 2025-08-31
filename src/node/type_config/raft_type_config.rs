@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::BufferedRaftLog;
 use crate::DefaultCommitHandler;
@@ -10,7 +12,6 @@ use crate::ReplicationHandler;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::TypeConfig;
-use std::fmt::Debug;
 
 #[derive(Debug)]
 pub struct RaftTypeConfig<SE, SM>

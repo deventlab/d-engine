@@ -20,12 +20,10 @@ mod snapshot_path_manager;
 mod state_machine;
 mod storage_engine;
 
+pub use adaptors::*;
 pub(crate) use buffered::*;
-
 #[doc(hidden)]
 pub use raft_log::*;
-
-pub use adaptors::*;
 pub(crate) use snapshot_path_manager::*;
 pub use state_machine::*;
 pub use storage_engine::*;

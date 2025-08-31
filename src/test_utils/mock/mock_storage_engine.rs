@@ -1,7 +1,13 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use uuid::Uuid;
 
-use crate::{HardState, MockLogStore, MockMetaStore, StorageEngine};
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use crate::HardState;
+use crate::MockLogStore;
+use crate::MockMetaStore;
+use crate::StorageEngine;
 
 // Use thread-local storage to simulate persistence across instances
 thread_local! {
@@ -147,7 +153,8 @@ impl MockStorageEngine {
                 let instance_id_ref = instance_id_ref.clone();
                 MOCK_STORAGE_DATA.with(|data| {
                     let mut binding = data.borrow_mut();
-                    // Only remove log entries (keys starting with `"{id}_entry_"` or `"{id}_last_index"`)
+                    // Only remove log entries (keys starting with `"{id}_entry_"` or
+                    // `"{id}_last_index"`)
                     let last_index_key = format!("{}_last_index", instance_id_ref);
                     let keys: Vec<String> = binding
                         .keys()

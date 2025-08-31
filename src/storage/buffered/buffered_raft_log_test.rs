@@ -1,9 +1,22 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+use std::vec;
+
+use futures::future::join_all;
+use tempfile::tempdir;
+use tokio::time::sleep;
+use tokio::time::Instant;
+use tracing::debug;
+use tracing_test::traced_test;
+
 use super::*;
 use crate::alias::ROF;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
-
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
@@ -17,18 +30,6 @@ use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::StorageEngine;
-use futures::future::join_all;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use std::vec;
-use tempfile::tempdir;
-use tokio::time::sleep;
-use tokio::time::Instant;
-use tracing::debug;
-use tracing_test::traced_test;
 
 // Test utilities
 struct TestContext {
@@ -940,14 +941,11 @@ async fn test_insert_batch_logs_case2() {
     // }
 
     // 7. Validate final log state
-    validate_log_continuity(
-        &old_leader,
-        &[
-            (7, 1),  // Original term 1 entry
-            (8, 2),  // Overwritten entry
-            (10, 2), // New highest entry
-        ],
-    )
+    validate_log_continuity(&old_leader, &[
+        (7, 1),  // Original term 1 entry
+        (8, 2),  // Overwritten entry
+        (10, 2), // New highest entry
+    ])
     .await;
 }
 
@@ -1595,9 +1593,8 @@ mod id_allocation_tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    use crate::FileStorageEngine;
-
     use super::*;
+    use crate::FileStorageEngine;
 
     // In-memory test setup
     fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig<FileStorageEngine, MockStateMachine>>> {
@@ -2065,9 +2062,9 @@ mod disk_first_tests {
 
 mod mem_first_tests {
 
-    use crate::{LogStore, StorageEngine};
-
     use super::*;
+    use crate::LogStore;
+    use crate::StorageEngine;
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
@@ -2359,9 +2356,8 @@ mod common_tests {
 }
 
 mod filter_out_conflicts_and_append_performance_tests {
-    use crate::FileStorageEngine;
-
     use super::*;
+    use crate::FileStorageEngine;
 
     #[tokio::test]
     async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster()
@@ -2520,12 +2516,15 @@ mod filter_out_conflicts_and_append_performance_tests {
 }
 
 mod performance_tests {
-    use super::*;
-    use crate::test_utils::MockStorageEngine;
-    use crate::{MockLogStore, MockMetaStore};
     use std::sync::Arc;
+
     use tokio::sync::Barrier;
     use tokio::time::Duration;
+
+    use super::*;
+    use crate::test_utils::MockStorageEngine;
+    use crate::MockLogStore;
+    use crate::MockMetaStore;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2552,13 +2551,10 @@ mod performance_tests {
         const MAX_RESET_DURATION_MS: u64 = 50;
 
         let test_cases = vec![
-            (
-                PersistenceStrategy::MemFirst,
-                FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms: 1000,
-                },
-            ),
+            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+                threshold: 1000,
+                interval_ms: 1000,
+            }),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2650,15 +2646,11 @@ mod performance_tests {
             // Measure performance during active flush
             let start = Instant::now();
             log_arc
-                .filter_out_conflicts_and_append(
-                    500,
-                    1,
-                    vec![Entry {
-                        index: 501,
-                        term: 1,
-                        payload: Some(EntryPayload::command(vec![1; 256])),
-                    }],
-                )
+                .filter_out_conflicts_and_append(500, 1, vec![Entry {
+                    index: 501,
+                    term: 1,
+                    payload: Some(EntryPayload::command(vec![1; 256])),
+                }])
                 .await
                 .unwrap();
 
@@ -2678,13 +2670,10 @@ mod performance_tests {
         const MAX_DURATION_MS: u64 = 5; // Should be very fast
 
         let test_cases = vec![
-            (
-                PersistenceStrategy::MemFirst,
-                FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms: 1000,
-                },
-            ),
+            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+                threshold: 1000,
+                interval_ms: 1000,
+            }),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2924,7 +2913,11 @@ mod batch_processor_tests {
 mod save_load_hard_state_tests {
     use super::*;
     use crate::proto::election::VotedFor;
-    use crate::{FileStorageEngine, HardState, LogStore, MetaStore, StorageEngine};
+    use crate::FileStorageEngine;
+    use crate::HardState;
+    use crate::LogStore;
+    use crate::MetaStore;
+    use crate::StorageEngine;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]

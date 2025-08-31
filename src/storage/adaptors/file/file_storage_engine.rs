@@ -1,16 +1,33 @@
-use crate::proto::common::{Entry, LogId};
-use crate::MetaStore;
-use crate::{Error, HardState, LogStore, StorageEngine, StorageError, HARD_STATE_KEY};
-use prost::Message;
-use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::fs::{self};
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
 use std::ops::RangeInclusive;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use prost::Message;
 use tonic::async_trait;
 use tracing::info;
+
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::Error;
+use crate::HardState;
+use crate::LogStore;
+use crate::MetaStore;
+use crate::StorageEngine;
+use crate::StorageError;
+use crate::HARD_STATE_KEY;
 
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";

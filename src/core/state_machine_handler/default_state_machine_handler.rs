@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::file_io::validate_compressed_format;
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
@@ -44,6 +43,7 @@ use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::file_io::validate_checksum;
+use crate::file_io::validate_compressed_format;
 use crate::proto::client::ClientResult;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;

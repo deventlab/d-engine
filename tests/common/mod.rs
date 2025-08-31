@@ -1,4 +1,8 @@
-use crate::client_manager::ClientManager;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use config::Config;
 use d_engine::alias::SMOF;
 use d_engine::alias::SOF;
@@ -29,10 +33,6 @@ use d_engine::HardState;
 use d_engine::LogStore;
 use d_engine::MetaStore;
 use prost::Message;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
@@ -42,6 +42,8 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
+
+use crate::client_manager::ClientManager;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 

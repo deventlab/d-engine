@@ -1,3 +1,10 @@
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use prost::Message;
+
 use crate::alias::ROF;
 use crate::convert::safe_kv;
 use crate::proto::client::WriteCommand;
@@ -10,11 +17,6 @@ use crate::MockStateMachine;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SnapshotConfig;
-use prost::Message;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 
 pub fn create_mixed_entries() -> Vec<Entry> {
     let config_entry = Entry {

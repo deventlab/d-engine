@@ -1,21 +1,22 @@
+use std::sync::Arc;
+use std::vec;
+
+use arc_swap::ArcSwap;
+use tokio::sync::oneshot;
+use tracing_test::traced_test;
+
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientResult;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::error::ErrorCode;
-
 use crate::test_utils::MockNode;
 use crate::ClientConfig;
 use crate::ClientInner;
 use crate::ConnectionPool;
 use crate::KvClient;
 use crate::LEADER;
-use arc_swap::ArcSwap;
-use std::sync::Arc;
-use std::vec;
-use tokio::sync::oneshot;
-use tracing_test::traced_test;
 
 #[tokio::test]
 #[traced_test]

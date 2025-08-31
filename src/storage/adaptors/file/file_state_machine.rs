@@ -1,20 +1,12 @@
-use crate::proto::client::write_command::Delete;
-use crate::proto::client::write_command::Insert;
-use crate::proto::client::write_command::Operation;
-use crate::proto::client::WriteCommand;
-use crate::proto::common::entry_payload::Payload;
-use crate::proto::common::Entry;
-use crate::proto::common::LogId;
-use crate::proto::storage::SnapshotMetadata;
-use crate::Error;
-use crate::StateMachine;
-use crate::StorageError;
-use parking_lot::RwLock;
-use prost::Message;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use parking_lot::RwLock;
+use prost::Message;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -27,6 +19,18 @@ use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
+
+use crate::proto::client::write_command::Delete;
+use crate::proto::client::write_command::Insert;
+use crate::proto::client::write_command::Operation;
+use crate::proto::client::WriteCommand;
+use crate::proto::common::entry_payload::Payload;
+use crate::proto::common::Entry;
+use crate::proto::common::LogId;
+use crate::proto::storage::SnapshotMetadata;
+use crate::Error;
+use crate::StateMachine;
+use crate::StorageError;
 
 type FileStateMachineDataType = RwLock<HashMap<Vec<u8>, (Vec<u8>, u64)>>;
 /// File-based state machine implementation with persistence
