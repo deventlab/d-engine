@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::time;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::core::state_machine_handler::snapshot_policy::SnapshotContext;
@@ -9,6 +10,7 @@ use crate::proto::common::LogId;
 use crate::LEADER;
 
 #[tokio::test]
+#[traced_test]
 async fn test_should_trigger_after_interval() {
     // Create policy with 100ms interval
     let mut policy = TimeBasedPolicy::new(Duration::from_secs(0)); // 0 seconds for testing
@@ -34,6 +36,7 @@ async fn test_should_trigger_after_interval() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_should_not_trigger_before_interval() {
     // Create policy with 200ms interval
     let mut policy = TimeBasedPolicy::new(Duration::from_secs(0));
@@ -56,6 +59,7 @@ async fn test_should_not_trigger_before_interval() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_reset_timer_works() {
     // Create policy with 100ms interval
     let mut policy = TimeBasedPolicy::new(Duration::from_secs(0));

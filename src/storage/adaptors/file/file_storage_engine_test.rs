@@ -1,12 +1,13 @@
 use crate::proto::common::{Entry, EntryPayload, LogId};
 use crate::proto::election::VotedFor;
-use crate::test_utils::enable_logger;
+
 use crate::{HardState, LogStore, MetaStore, StorageEngine};
 
 use super::*;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tracing_test::traced_test;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
@@ -27,6 +28,7 @@ fn setup_storage() -> (Arc<FileStorageEngine>, TempDir) {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_empty_storage() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -37,6 +39,7 @@ async fn test_empty_storage() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_single_entry_persistence() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -50,8 +53,8 @@ async fn test_single_entry_persistence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_batch_persistence() {
-    enable_logger();
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
     let entries = create_entries(1..=100);
@@ -74,6 +77,7 @@ async fn test_batch_persistence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_purge_logs() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -95,6 +99,7 @@ async fn test_purge_logs() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_truncation() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -110,6 +115,7 @@ async fn test_truncation() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_reset_operation() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -122,6 +128,7 @@ async fn test_reset_operation() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_edge_cases() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -135,6 +142,7 @@ async fn test_edge_cases() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_concurrent_instances() {
     let tempdir1 = tempfile::tempdir().unwrap();
     let tempdir2 = tempfile::tempdir().unwrap();
@@ -151,6 +159,7 @@ async fn test_concurrent_instances() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_corrupted_data_handling() {
     // This test is less relevant for file storage as we don't directly manipulate the file bytes
     // But we can test error handling for invalid operations
@@ -163,8 +172,6 @@ async fn test_corrupted_data_handling() {
 
 #[test]
 fn test_hard_state_persistence() {
-    enable_logger();
-
     let (storage, dir) = setup_storage();
     let meta_store = storage.meta_store();
     let hard_state = HardState {
@@ -190,6 +197,7 @@ fn test_hard_state_persistence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_reset_preserves_meta() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
@@ -213,6 +221,7 @@ async fn test_reset_preserves_meta() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_flush_persists_all_data() {
     let (storage, dir) = setup_storage();
     let log_store = storage.log_store();
@@ -284,6 +293,7 @@ fn test_drop_impl_flushes() {
 // Additional tests specific to file storage
 
 #[tokio::test]
+#[traced_test]
 async fn test_file_recovery_after_crash() {
     let (storage, dir) = setup_storage();
     let log_store = storage.log_store();
@@ -305,6 +315,7 @@ async fn test_file_recovery_after_crash() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_large_entry_persistence() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();

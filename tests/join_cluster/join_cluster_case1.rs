@@ -34,6 +34,7 @@ use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::StateMachine;
 use tokio::time::sleep;
+use tracing_test::traced_test;
 
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
@@ -55,8 +56,8 @@ const JOIN_CLUSTER_CASE1_DB_ROOT_DIR: &str = "./db/join_cluster/case1";
 const JOIN_CLUSTER_CASE1_LOG_DIR: &str = "./logs/join_cluster/case1";
 
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(JOIN_CLUSTER_CASE1_DIR).await?;
 
     let ports = [

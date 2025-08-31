@@ -116,15 +116,6 @@ pub(crate) async fn simulate_delete_command(
     }
 }
 
-static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
-    env_logger::init();
-});
-
-pub fn enable_logger() {
-    *LOGGER_INIT;
-    println!("setup logger for unit test.");
-}
-
 pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
     SnapshotConfig {
         max_log_entries_before_snapshot: 1,

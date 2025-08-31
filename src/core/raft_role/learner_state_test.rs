@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use crate::learner_state::LearnerState;
 use crate::proto::client::ClientReadRequest;
@@ -25,7 +26,7 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::mock_membership;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::MockTypeConfig;
@@ -48,6 +49,7 @@ use crate::LEARNER;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
+#[traced_test]
 async fn test_tick() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_tick", graceful_rx, None);
@@ -67,6 +69,7 @@ async fn test_tick() {
 /// 2. receive reponse from Learner with vote_granted = false
 /// 3. handle_raft_event returns Ok()
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case1", graceful_rx, None);
@@ -100,6 +103,7 @@ async fn test_handle_raft_event_case1() {
 
 /// # Case 2: Receive ClusterConf Event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
@@ -119,6 +123,7 @@ async fn test_handle_raft_event_case2() {
 
 /// # Case3: Successful configuration update
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
@@ -180,6 +185,7 @@ async fn test_handle_raft_event_case3() {
 /// 5. send out AppendEntriesResponse with success=true
 /// 6. `handle_raft_event` fun returns Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -272,6 +278,7 @@ async fn test_handle_raft_event_case4_1() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -339,6 +346,7 @@ async fn test_handle_raft_event_case4_2() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -403,6 +411,7 @@ async fn test_handle_raft_event_case4_3() {
 
 /// # Case 5: Test handle client propose request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
@@ -431,6 +440,7 @@ async fn test_handle_raft_event_case5() {
 
 /// # Case 6: test ClientReadRequest with linear request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case6", graceful_rx, None);
@@ -455,6 +465,7 @@ async fn test_handle_raft_event_case6() {
 
 /// Test handling RaftLogCleanUp event by LearnerState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     // Step 1: Setup the test environment
@@ -495,6 +506,7 @@ async fn test_handle_raft_event_case8() {
 
 /// Test handling JoinCluster event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case10() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -530,6 +542,7 @@ async fn test_handle_raft_event_case10() {
 
 /// Test handling DiscoverLeader event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case11() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -561,8 +574,8 @@ async fn test_handle_raft_event_case11() {
 
 /// Tests successful leader discovery on first attempt
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_discovery_case1_success() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_context("test_broadcast_discovery_case1_success", graceful_rx);
 
@@ -585,8 +598,8 @@ async fn test_broadcast_discovery_case1_success() {
 
 /// Tests discovery failure after max retries
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_discovery_case2_retry_exhaustion() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_context(
         "test_broadcast_discovery_case2_retry_exhaustion",
@@ -621,8 +634,8 @@ fn mock_context(
 
 /// Tests leader selection with multiple valid responses
 #[tokio::test]
+#[traced_test]
 async fn test_select_valid_leader_case1_priority() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let ctx = mock_context("test_select_valid_leader_case1_priority", graceful_rx);
     let state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
@@ -654,8 +667,8 @@ async fn test_select_valid_leader_case1_priority() {
 
 /// Tests filtering of invalid responses
 #[tokio::test]
+#[traced_test]
 async fn test_select_valid_leader_case2_invalid_responses() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let ctx = mock_context(
         "test_select_valid_leader_case2_invalid_responses",
@@ -683,8 +696,8 @@ async fn test_select_valid_leader_case2_invalid_responses() {
 
 /// # Case 1: Successful join with known leader
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case1_success_known_leader() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case1", graceful_rx, None);
     let node_id = 100;
@@ -717,8 +730,8 @@ async fn test_join_cluster_case1_success_known_leader() {
 
 /// # Case 2: Successful join after leader discovery
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case2_success_after_discovery() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case2", graceful_rx, None);
     let node_id = 100;
@@ -760,8 +773,8 @@ async fn test_join_cluster_case2_success_after_discovery() {
 
 /// # Case 3: Join failure - leader discovery timeout
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case3_discovery_timeout() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case3", graceful_rx, None);
     let node_id = 100;
@@ -792,8 +805,8 @@ async fn test_join_cluster_case3_discovery_timeout() {
 
 /// # Case 4: Join failure - leader found but join RPC fails
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case4_join_rpc_failure() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case4", graceful_rx, None);
     let node_id = 100;
@@ -824,8 +837,8 @@ async fn test_join_cluster_case4_join_rpc_failure() {
 
 /// # Case 5: Join failure - leader found but invalid response
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case5_invalid_join_response() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case5", graceful_rx, None);
     let node_id = 100;
@@ -862,8 +875,8 @@ async fn test_join_cluster_case5_invalid_join_response() {
 
 /// # Case 6: Join with leader redirect
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case6_leader_redirect() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case6", graceful_rx, None);
     let node_id = 100;
@@ -903,8 +916,8 @@ async fn test_join_cluster_case6_leader_redirect() {
 
 /// # Case 7: Join with large cluster (100 nodes)
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case7_large_cluster() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case7", graceful_rx, None);
     let node_id = 100;
@@ -944,8 +957,8 @@ async fn test_join_cluster_case7_large_cluster() {
 
 /// # Case 8: Join failure - marking leader ID fails
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_case8_mark_leader_failure() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context("/tmp/test_join_cluster_case8", graceful_rx, None);
     let node_id = 100;

@@ -1,4 +1,5 @@
 use tokio::sync::oneshot;
+use tracing_test::traced_test;
 
 use super::RaftMembership;
 use crate::ensure_safe_join;
@@ -12,7 +13,7 @@ use crate::proto::common::MembershipChange;
 use crate::proto::common::NodeStatus;
 use crate::proto::common::PromoteLearner;
 use crate::proto::common::RemoveNode;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::MockStorageEngine;
@@ -74,6 +75,7 @@ pub fn create_test_membership(
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_single_node_case1() {
     let membership = create_test_membership();
 
@@ -99,6 +101,7 @@ async fn test_update_single_node_case1() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_single_node_case2() {
     let membership = create_test_membership();
 
@@ -119,6 +122,7 @@ async fn test_update_single_node_case2() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_multiple_nodes_case1() {
     let membership = create_test_membership();
     let nodes = vec![4, 5];
@@ -144,6 +148,7 @@ async fn test_update_multiple_nodes_case1() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_multiple_nodes_case2() {
     let membership = create_test_membership();
     let nodes = vec![4, 13];
@@ -170,6 +175,7 @@ async fn test_update_multiple_nodes_case2() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_replication_peers_case1() {
     // Prepare cluster membership
     let initial_cluster = vec![
@@ -221,6 +227,7 @@ async fn test_replication_peers_case1() {
 /// ## Validation criteria
 /// 1. new leader is marked as only Leader in membership
 #[tokio::test]
+#[traced_test]
 async fn test_mark_leader_id_case1() {
     let old_leader_id = 10;
     let new_leader_id = 3;
@@ -277,6 +284,7 @@ async fn test_mark_leader_id_case1() {
 /// ## Validation criteria
 /// 1. mark_leader_id returns Error
 #[tokio::test]
+#[traced_test]
 async fn test_mark_leader_id_case2() {
     let new_leader_id = 100;
 
@@ -324,6 +332,7 @@ async fn test_mark_leader_id_case2() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_cluster_membership_config() {
     // Prepare cluster membership
     let initial_cluster = vec![
@@ -370,6 +379,7 @@ async fn test_retrieve_cluster_membership_config() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case1() {
     // Test AddNode operation
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
@@ -400,6 +410,7 @@ async fn test_update_cluster_conf_from_leader_case1() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case2() {
     // Test RemoveNode operation
     let membership = RaftMembership::<MockTypeConfig>::new(
@@ -436,6 +447,7 @@ async fn test_update_cluster_conf_from_leader_case2() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case3() {
     // Test PromoteLearner operation
     let membership = RaftMembership::<MockTypeConfig>::new(
@@ -477,6 +489,7 @@ async fn test_update_cluster_conf_from_leader_case3() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
     // Try to promote non-learner node
     let membership = RaftMembership::<MockTypeConfig>::new(
@@ -521,6 +534,7 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case5_conf_missing_change() {
     // Test missing change type
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
@@ -552,6 +566,7 @@ async fn test_update_cluster_conf_from_leader_case5_conf_missing_change() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
     // Test version mismatch
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
@@ -585,6 +600,7 @@ async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_batch_remove_nodes() {
     // Setup cluster with multiple nodes
     let initial_nodes = vec![
@@ -652,6 +668,7 @@ async fn test_batch_remove_nodes() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_batch_remove_leader_protection() {
     // Setup cluster with leader
     let initial_nodes = vec![
@@ -697,6 +714,7 @@ async fn test_batch_remove_leader_protection() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_apply_batch_remove_config_change() {
     let membership = RaftMembership::<MockTypeConfig>::new(
         1,
@@ -744,6 +762,7 @@ async fn test_apply_batch_remove_config_change() {
 
 // Add to existing test series
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
     // Setup cluster
     let initial_nodes = vec![
@@ -795,6 +814,7 @@ async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_update_cluster_conf_from_leader_case8_batch_remove_nonexistent() {
     // Tests graceful handling of non-existent nodes in batch
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
@@ -825,6 +845,7 @@ async fn test_update_cluster_conf_from_leader_case8_batch_remove_nonexistent() {
 /// Empty result case
 /// All-items-match case
 #[tokio::test]
+#[traced_test]
 async fn test_get_peers_id_with_condition() {
     // Setup test data
     // Prepare cluster membership
@@ -902,7 +923,7 @@ mod check_cluster_is_ready_test {
     use tokio::sync::oneshot;
 
     use super::*;
-    use crate::test_utils::enable_logger;
+
     use crate::test_utils::MockNode;
     use crate::test_utils::MockRpcService;
     use crate::test_utils::MockStorageEngine;
@@ -911,7 +932,6 @@ mod check_cluster_is_ready_test {
     /// Case 1: Test all peers are healthy
     #[tokio::test]
     async fn test_check_cluster_is_ready_case1() {
-        enable_logger();
         let peer_ids = vec![2, 3];
         let mut mock_services = Vec::new();
 
@@ -952,8 +972,6 @@ mod check_cluster_is_ready_test {
     /// Case 2: Test failed connection to peers
     #[tokio::test]
     async fn test_check_cluster_is_ready_case2() {
-        enable_logger();
-
         // Create membership with unreachable peer
         let mut config = RaftNodeConfig::default();
         config.retry.membership.max_retries = 1;
@@ -976,7 +994,6 @@ mod check_cluster_is_ready_test {
     /// Case 3: Test peer returns unhealthy status
     #[tokio::test]
     async fn test_check_cluster_is_ready_case3() {
-        enable_logger();
         let (tx, rx) = oneshot::channel::<()>();
         let service = MockRpcService::default();
         let (port, _addr) = MockNode::mock_listener(service, rx, false).await.unwrap();
@@ -1004,7 +1021,6 @@ mod check_cluster_is_ready_test {
     /// Case 4: Test mixed status responses
     #[tokio::test]
     async fn test_check_cluster_is_ready_case4() {
-        enable_logger();
         let mut mock_services = Vec::new();
         let peer_ids = [5, 6];
 
@@ -1096,6 +1112,7 @@ mod add_learner_test {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_ensure_safe_join() {
     assert!(ensure_safe_join(1, 0).is_ok());
     assert!(ensure_safe_join(1, 1).is_err());
@@ -1106,8 +1123,8 @@ async fn test_ensure_safe_join() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_health_monitoring_integration() {
-    enable_logger();
     let mut config = RaftNodeConfig::default();
     config.raft.membership.zombie.threshold = 2; // Set low threshold for testing
 

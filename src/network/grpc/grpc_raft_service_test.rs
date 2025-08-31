@@ -6,6 +6,7 @@ use tokio::sync::watch;
 use tokio::time;
 use tonic::Code;
 use tonic::Request;
+use tracing_test::traced_test;
 
 use crate::convert::safe_kv;
 use crate::proto::client::raft_client_service_server::RaftClientService;
@@ -23,7 +24,7 @@ use crate::proto::election::VoteRequest;
 use crate::proto::replication::raft_replication_service_server::RaftReplicationService;
 use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::mock_node;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
@@ -37,6 +38,7 @@ use crate::StateUpdate;
 
 /// # Case: Test RPC services timeout
 #[tokio::test]
+#[traced_test]
 async fn test_handle_service_timeout() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = mock_node("/tmp/test_handle_service_timeout", graceful_rx, None);
@@ -101,6 +103,7 @@ async fn test_handle_service_timeout() {
 
 /// # Case: Test server is not ready
 #[tokio::test]
+#[traced_test]
 async fn test_server_is_not_ready() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = mock_node("/tmp/test_server_is_not_ready", graceful_rx, None);
@@ -174,9 +177,9 @@ async fn test_server_is_not_ready() {
 
 /// # Case: Test handle rpc services successful
 #[tokio::test]
+#[traced_test]
 async fn test_handle_rpc_services_successfully() {
     tokio::time::pause();
-    enable_logger();
     let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     settings.raft.general_raft_timeout_duration_in_ms = 200;
     settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;

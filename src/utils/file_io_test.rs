@@ -7,6 +7,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use tempfile::tempdir;
 use tempfile::NamedTempFile;
+use tracing_test::traced_test;
 
 use crate::file_io;
 use crate::file_io::compute_checksum_from_folder_path;
@@ -14,7 +15,7 @@ use crate::file_io::convert_vec_checksum;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
 use crate::file_io::move_directory;
-use crate::test_utils::enable_logger;
+
 use crate::Error;
 use crate::FileError;
 use crate::StorageError;
@@ -23,8 +24,8 @@ use crate::SystemError;
 /// Passed: "/tmp/files/data.txt"
 /// Expected: "/tmp/files" created
 #[tokio::test]
+#[traced_test]
 async fn test_create_parent_dir_for_file() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_create_parent_dir_for_file");
 
@@ -43,8 +44,8 @@ async fn test_create_parent_dir_for_file() {
 /// Passed: "/tmp/dir/subdir"
 /// Expected: "/tmp/dir/subdir" created
 #[tokio::test]
+#[traced_test]
 async fn test_create_parent_dir_for_directory_without_trailing_separator() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir
         .path()
@@ -63,8 +64,8 @@ async fn test_create_parent_dir_for_directory_without_trailing_separator() {
 /// Passed: "/tmp/dir/subdir/"
 /// Expected: "/tmp/dir/subdir" created
 #[tokio::test]
+#[traced_test]
 async fn test_create_parent_dir_for_directory_with_trailing_separator() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir
         .path()
@@ -80,6 +81,7 @@ async fn test_create_parent_dir_for_directory_with_trailing_separator() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_delete_file_success() {
     // Create temp file
     let mut file = NamedTempFile::new().unwrap();
@@ -98,6 +100,7 @@ async fn test_delete_file_success() {
 
 /// Test non-existent file path
 #[tokio::test]
+#[traced_test]
 async fn test_delete_nonexistent_file() {
     let e = delete_file("nonexistent.txt").await.unwrap_err();
     assert!(
@@ -113,6 +116,7 @@ async fn test_delete_nonexistent_file() {
 
 /// Test directory deletion attempt
 #[tokio::test]
+#[traced_test]
 async fn test_delete_directory() {
     // Create temp directory
     let dir = tempdir().unwrap();
@@ -132,6 +136,7 @@ async fn test_delete_directory() {
 
 /// Test busy file deletion (platform-specific)
 #[tokio::test]
+#[traced_test]
 async fn test_delete_busy_file() {
     // Create temp file
     let temp_dir = tempfile::tempdir().unwrap();
@@ -222,8 +227,8 @@ async fn test_delete_permission_denied() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_move_directory() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_move_directory");
 

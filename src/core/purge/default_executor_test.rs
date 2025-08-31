@@ -1,3 +1,5 @@
+use tracing_test::traced_test;
+
 use crate::{test_utils::MockTypeConfig, Error, MockRaftLog};
 
 use super::*;
@@ -9,6 +11,7 @@ use std::sync::Arc;
 // But if RaftLog is a struct, you'll need to adjust accordingly
 
 #[tokio::test]
+#[traced_test]
 async fn test_default_purge_executor_execute_purge_success() {
     // Create a mock for RaftLog
     let mut mock_raft_log = MockRaftLog::new();
@@ -32,6 +35,7 @@ async fn test_default_purge_executor_execute_purge_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_default_purge_executor_execute_purge_error() {
     // Create a mock for RaftLog that returns an error
     let mut mock_raft_log = MockRaftLog::new();
@@ -54,6 +58,7 @@ async fn test_default_purge_executor_execute_purge_error() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_default_purge_executor_pending_purge() {
     // Create a mock for RaftLog
     let mut mock_raft_log = MockRaftLog::new();
@@ -67,6 +72,7 @@ async fn test_default_purge_executor_pending_purge() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_default_purge_executor_multiple_purges() {
     // Create a mock for RaftLog that returns Ok for multiple calls
     let mut mock_raft_log = MockRaftLog::new();
@@ -95,6 +101,7 @@ async fn test_default_purge_executor_multiple_purges() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_default_purge_executor_with_large_log_id() {
     // Create a mock for RaftLog
     let mut mock_raft_log = MockRaftLog::new();

@@ -27,6 +27,7 @@ use d_engine::storage::StateMachine;
 use d_engine::storage::StorageEngine;
 use d_engine::LogStore;
 use tokio::time::sleep;
+use tracing_test::traced_test;
 
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
@@ -53,8 +54,8 @@ const SNAPSHOT_CASE1_LOG_DIR: &str = "./logs/snapshot/case1";
 /// [raft.snapshot]
 /// max_log_entries_before_snapshot = 1
 #[tokio::test]
+#[traced_test]
 async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(SNAPSHOT_CASE1_DIR).await?;
 
     let ports = [

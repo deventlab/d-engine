@@ -7,6 +7,7 @@ use tokio::sync::oneshot;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tonic::Status;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
@@ -22,7 +23,6 @@ use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotChunk;
-use crate::test_utils;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
@@ -71,9 +71,8 @@ fn mock_membership(
 // 1. return Err(NetworkError::EmptyPeerList)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_cluster_update_case1() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case1");
     node_config.retry.membership.max_retries = 1;
@@ -100,9 +99,8 @@ async fn test_send_cluster_update_case1() {
 // 1. return Err(NetworkError::EmptyPeerList)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_cluster_update_case2() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let mut node_config = node_config("/tmp/test_send_cluster_update_case2");
     node_config.retry.membership.max_retries = 1;
@@ -150,9 +148,8 @@ async fn test_send_cluster_update_case2() {
 // 1. return Ok with two responses
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_cluster_update_case3() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let peer1_id = 2;
     let peer2_id = 3;
@@ -191,9 +188,8 @@ async fn test_send_cluster_update_case3() {
 // 1. return Ok with two responses
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_cluster_update_case4() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let peer1_id = 2;
     let peer2_id = 3;
@@ -236,6 +232,7 @@ async fn test_send_cluster_update_case4() {
 // Criterias: function should return false
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_append_requests_case1() {
     let my_id = 1;
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -254,8 +251,8 @@ async fn test_send_append_requests_case1() {
 // ## Criterias:
 // 1. return Ok with empty responses
 #[tokio::test]
+#[traced_test]
 async fn test_send_append_requests_case2() {
-    test_utils::enable_logger();
     //step1: setup
     let leader_id = 1;
     let leader_current_term = 1;
@@ -315,9 +312,8 @@ async fn test_send_append_requests_case2() {
 // 1. return Ok with two responses
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_append_requests_case3_1() {
-    test_utils::enable_logger();
-
     //step1: setup
     let leader_id = 1;
     let leader_current_term = 1;
@@ -396,9 +392,8 @@ async fn test_send_append_requests_case3_1() {
 // 3. return Ok(true)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_append_requests_case3_2() {
-    test_utils::enable_logger();
-
     //step1: setup
     let leader_id = 1;
     let leader_current_term = 1;
@@ -464,9 +459,8 @@ async fn test_send_append_requests_case3_2() {
 // 1. return Err(NetworkError::EmptyPeerList)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case1() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
     let request = VoteRequest {
@@ -493,9 +487,8 @@ async fn test_send_vote_requests_case1() {
 // 1. return Ok with empty responses
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case2() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -541,9 +534,8 @@ async fn test_send_vote_requests_case2() {
 // 1. return Ok with two responses
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case3() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -591,9 +583,8 @@ async fn test_send_vote_requests_case3() {
 // 1. return Ok with two responses
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case4_1() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -642,9 +633,8 @@ async fn test_send_vote_requests_case4_1() {
 // 1. Ok(..)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case4_2() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -688,9 +678,8 @@ async fn test_send_vote_requests_case4_2() {
 // 1. Ok(..)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case4_3() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -732,9 +721,8 @@ async fn test_send_vote_requests_case4_3() {
 // 1. return Ok(true)
 //
 #[tokio::test]
+#[traced_test]
 async fn test_send_vote_requests_case5() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -787,9 +775,8 @@ async fn test_send_vote_requests_case5() {
 // ## Criteria:
 // 1. Should return EmptyPeerList error
 #[tokio::test]
+#[traced_test]
 async fn test_purge_requests_case1_empty_peers() {
-    test_utils::enable_logger();
-
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(1);
     let req = PurgeLogRequest {
         term: 1,
@@ -819,9 +806,8 @@ async fn test_purge_requests_case1_empty_peers() {
 // 1. Should filter out self node
 // 2. Return empty response collection
 #[tokio::test]
+#[traced_test]
 async fn test_purge_requests_case2_self_reference() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().unwrap();
     let req = PurgeLogRequest {
@@ -866,9 +852,8 @@ async fn test_purge_requests_case2_self_reference() {
 // 1. Should deduplicate peer list
 // 2. Process unique peers only
 #[tokio::test]
+#[traced_test]
 async fn test_purge_requests_case3_duplicate_peers() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().unwrap();
     let req = PurgeLogRequest {
@@ -913,9 +898,8 @@ async fn test_purge_requests_case3_duplicate_peers() {
 // 1. Should aggregate partial failures
 // 2. Maintain response ordering
 #[tokio::test]
+#[traced_test]
 async fn test_purge_requests_case4_mixed_responses() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().unwrap();
     let req = PurgeLogRequest {
@@ -981,9 +965,8 @@ async fn test_purge_requests_case4_mixed_responses() {
 // 1. Should process all peers
 // 2. Return aggregated successes
 #[tokio::test]
+#[traced_test]
 async fn test_purge_requests_case5_full_success() {
-    test_utils::enable_logger();
-
     let my_id = 1;
     let node_config = RaftNodeConfig::new().unwrap();
     let req = PurgeLogRequest {

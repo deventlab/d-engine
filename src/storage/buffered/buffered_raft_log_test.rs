@@ -3,7 +3,7 @@ use crate::alias::ROF;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
@@ -28,6 +28,7 @@ use tempfile::tempdir;
 use tokio::time::sleep;
 use tokio::time::Instant;
 use tracing::debug;
+use tracing_test::traced_test;
 
 // Test utilities
 struct TestContext {
@@ -137,6 +138,7 @@ async fn insert(
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_range1() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -165,6 +167,7 @@ async fn test_get_range1() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_range2() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -211,6 +214,7 @@ async fn test_get_range2() {
 ///   follower_e      7      6
 ///   follower_f      11    4
 #[tokio::test]
+#[traced_test]
 async fn test_filter_out_conflicts_and_append_case1() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -251,6 +255,7 @@ async fn test_filter_out_conflicts_and_append_case1() {
     assert_eq!(e.term, 3);
 }
 #[tokio::test]
+#[traced_test]
 async fn test_filter_out_conflicts_and_append() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -312,6 +317,7 @@ async fn test_filter_out_conflicts_and_append() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_last_raft_log() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -340,6 +346,7 @@ async fn test_get_last_raft_log() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_sled_last() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -359,6 +366,7 @@ async fn test_sled_last() {
     assert_eq!(last, len as u64);
 }
 #[tokio::test]
+#[traced_test]
 async fn test_sled_last_max() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -380,6 +388,7 @@ async fn test_sled_last_max() {
 /// entries
 /// to test insert_one_client_command and get_entries_range two functions
 #[tokio::test]
+#[traced_test]
 async fn test_insert_one_client_command() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -406,6 +415,7 @@ async fn test_insert_one_client_command() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_raft_log_entry_between() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -453,6 +463,7 @@ async fn test_get_raft_log_entry_between() {
 /// request. But, leader should not treat them as duplicated entries. They are
 /// just sequence events.
 #[tokio::test]
+#[traced_test]
 async fn test_insert_one_client_command_dup_case() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -488,6 +499,7 @@ async fn test_insert_one_client_command_dup_case() {
 /// ## Criterias:
 /// 1. all client proposal should be recorded in RaftLog without lose
 #[tokio::test]
+#[traced_test]
 async fn test_client_proposal_insert_delete() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -517,6 +529,7 @@ async fn test_client_proposal_insert_delete() {
 /// dispatcher has already been set")
 /// #[traced_test]
 #[tokio::test]
+#[traced_test]
 async fn test_purge_logs_up_to() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -552,6 +565,7 @@ async fn test_purge_logs_up_to() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_purge_logs_up_to_concurrent_purge() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -602,6 +616,7 @@ async fn test_purge_logs_up_to_concurrent_purge() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_first_raft_log_entry_id_after_delete_entries() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -638,6 +653,7 @@ async fn test_get_first_raft_log_entry_id_after_delete_entries() {
 /// entries     At last when we retrieve last entry of the locallog, we should
 /// see the last pre allocated index
 #[tokio::test]
+#[traced_test]
 async fn test_pre_allocate_raft_logs_next_index_case1() {
     let context = TestContext::new(
         PersistenceStrategy::DiskFirst,
@@ -681,6 +697,7 @@ async fn test_pre_allocate_raft_logs_next_index_case1() {
 /// logs     we still want to validate the last log entry id is the same one as
 /// we expected #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
+#[traced_test]
 async fn test_pre_allocate_raft_logs_next_index_case2() {
     let context = TestContext::new(
         PersistenceStrategy::DiskFirst,
@@ -740,6 +757,7 @@ async fn test_pre_allocate_raft_logs_next_index_case2() {
 ///     the entries was insert successfully and last log entry id is as expected
 #[ignore = "architecture changes, this case will not exist"]
 #[tokio::test]
+#[traced_test]
 async fn test_insert_batch_logs_case1() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -824,6 +842,7 @@ fn give_me_mock_storage() -> Arc<FileStorageEngine> {
 /// - Final log state must have last entry index=10, term=2
 /// - Log continuity: index 7 (term 1) and 8 (term 2) must coexist
 #[tokio::test]
+#[traced_test]
 async fn test_insert_batch_logs_case2() {
     // 1. Initialize two nodes (old_leader and new_leader)
     let (old_leader, receiver) =
@@ -952,6 +971,7 @@ async fn validate_log_continuity(
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_apply_and_then_get_last() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -968,6 +988,7 @@ async fn test_apply_and_then_get_last() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_pre_allocate_raft_logs_next_index() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -980,6 +1001,7 @@ async fn test_pre_allocate_raft_logs_next_index() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_calculate_majority_matched_index_case0() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1008,6 +1030,7 @@ async fn test_calculate_majority_matched_index_case0() {
 /// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
 /// (§5.3, §5.4).
 #[tokio::test]
+#[traced_test]
 async fn test_calculate_majority_matched_index_case1() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1033,6 +1056,7 @@ async fn test_calculate_majority_matched_index_case1() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_calculate_majority_matched_index_case2() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1060,6 +1084,7 @@ async fn test_calculate_majority_matched_index_case2() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_calculate_majority_matched_index_case3() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1085,6 +1110,7 @@ async fn test_calculate_majority_matched_index_case3() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_calculate_majority_matched_index_case4() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1120,6 +1146,7 @@ async fn test_calculate_majority_matched_index_case4() {
 /// ## Ceriteria:
 /// 1. compare calculate_majority_matched_index as calculate_majority_matched_index2's performance
 #[tokio::test]
+#[traced_test]
 async fn test_calculate_majority_matched_index_case5() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1153,6 +1180,7 @@ async fn test_calculate_majority_matched_index_case5() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_raft_log_insert() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1170,6 +1198,7 @@ async fn test_raft_log_insert() {
 
 /// #Case 1: local raft log is empty
 #[tokio::test]
+#[traced_test]
 async fn test_is_empty_case1() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1183,6 +1212,7 @@ async fn test_is_empty_case1() {
 
 /// #Case 2: local raft log is not empty
 #[tokio::test]
+#[traced_test]
 async fn test_is_empty_case2() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1200,6 +1230,7 @@ async fn test_is_empty_case2() {
 
 /// # Case1: No last log in raft_log, should returns (0,0)
 #[tokio::test]
+#[traced_test]
 async fn test_get_last_entry_metadata_case1() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1215,6 +1246,7 @@ async fn test_get_last_entry_metadata_case1() {
 }
 /// # Case2: There is last log in raft_log, should returns last log metadata
 #[tokio::test]
+#[traced_test]
 async fn test_get_last_entry_metadata_case2() {
     let c = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1234,8 +1266,8 @@ async fn test_get_last_entry_metadata_case2() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_raft_log_drop() {
-    enable_logger();
     // Save the instance ID from the first storage
 
     let temp_dir = tempdir().unwrap();
@@ -1264,6 +1296,7 @@ async fn test_raft_log_drop() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_first_index_for_term() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1344,6 +1377,7 @@ async fn test_first_index_for_term() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_last_index_for_term() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1423,6 +1457,7 @@ async fn test_last_index_for_term() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_term_index_functions_with_purged_logs() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1459,9 +1494,8 @@ async fn test_term_index_functions_with_purged_logs() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_term_index_functions_with_concurrent_writes() {
-    enable_logger();
-
     let (raft_log, log_command_receiver) =
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
             1,
@@ -1516,6 +1550,7 @@ async fn test_term_index_functions_with_concurrent_writes() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_term_index_performance_large_dataset() {
     let context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -1841,8 +1876,6 @@ mod disk_first_tests {
 
     #[tokio::test]
     async fn test_crash_recovery() {
-        enable_logger();
-
         // Create and populate storage
         let original_ctx = TestContext::new(
             PersistenceStrategy::DiskFirst,
@@ -1887,8 +1920,6 @@ mod disk_first_tests {
     // Add this test to verify the fix works correctly
     #[tokio::test]
     async fn test_crash_recovery_with_multiple_entries() {
-        enable_logger();
-
         // Create and populate storage
         let original_ctx = TestContext::new(
             PersistenceStrategy::DiskFirst,
@@ -1945,8 +1976,6 @@ mod disk_first_tests {
     // Test for MemFirst strategy crash recovery (should lose unflushed data)
     #[tokio::test]
     async fn test_crash_recovery_mem_first() {
-        enable_logger();
-
         // Create and populate storage with MemFirst strategy
         let original_ctx = TestContext::new(
             PersistenceStrategy::MemFirst,
@@ -2001,7 +2030,6 @@ mod disk_first_tests {
 
     #[tokio::test]
     async fn test_high_concurrency() {
-        enable_logger();
         let ctx = TestContext::new(
             PersistenceStrategy::DiskFirst,
             FlushPolicy::Immediate,
@@ -2182,7 +2210,6 @@ mod batched_tests {
 
     #[tokio::test]
     async fn test_partial_flush_after_crash() {
-        enable_logger();
         let batch_size = 50;
 
         // Create and partially populate storage
@@ -2339,8 +2366,6 @@ mod filter_out_conflicts_and_append_performance_tests {
     #[tokio::test]
     async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster()
     {
-        enable_logger();
-
         // Test configuration
         let test_cases = vec![
             (10, 50),   // 10ms interval, 50ms max duration
@@ -2523,7 +2548,6 @@ mod performance_tests {
     // 1. Tests reset performance during active flush
     #[tokio::test]
     async fn test_reset_performance_during_active_flush() {
-        enable_logger();
         const FLUSH_DELAY_MS: u64 = 500;
         const MAX_RESET_DURATION_MS: u64 = 50;
 
@@ -2580,7 +2604,6 @@ mod performance_tests {
     // 2. Tests filter_out_conflicts performance with active flush
     #[tokio::test]
     async fn test_filter_conflicts_performance_during_flush() {
-        enable_logger();
         const FLUSH_DELAY_MS: u64 = 300;
         // const MAX_DURATION_MS: u64 = 50;
 
@@ -2652,7 +2675,6 @@ mod performance_tests {
     // 3. Tests fresh cluster performance consistency
     #[tokio::test]
     async fn test_fresh_cluster_performance_consistency() {
-        enable_logger();
         const MAX_DURATION_MS: u64 = 5; // Should be very fast
 
         let test_cases = vec![
@@ -2705,7 +2727,7 @@ mod performance_tests {
     // // 4. Tests command processing during long flush
     // #[tokio::test]
     // async fn test_command_processing_during_flush() {
-    //     enable_logger();
+    //     ;
     //     const FLUSH_DELAY_MS: u64 = 800;
     //     const MAX_COMMAND_DURATION_MS: u64 = 10;
 
@@ -3107,6 +3129,7 @@ mod save_load_hard_state_tests {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_last_entry_id_performance() {
     // Set up test context
     let test_context = TestContext::new(
@@ -3403,8 +3426,8 @@ mod remove_range_tests {
 // Add these tests to cover important edge cases and performance scenarios
 
 #[tokio::test]
+#[traced_test]
 async fn test_high_concurrency_mixed_operations() {
-    enable_logger();
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
@@ -3475,6 +3498,7 @@ async fn test_high_concurrency_mixed_operations() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_extreme_boundary_conditions() {
     let ctx = TestContext::new(
         PersistenceStrategy::DiskFirst,
@@ -3506,9 +3530,8 @@ async fn test_extreme_boundary_conditions() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_recovery_under_different_scenarios() {
-    enable_logger();
-
     // Test various recovery scenarios
     let scenarios = vec![
         // MemFirst with Immediate flush - should persist everything
@@ -3579,9 +3602,8 @@ async fn test_recovery_under_different_scenarios() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_performance_benchmarks() {
-    enable_logger();
-
     // More realistic performance thresholds
     let operations = [
         ("append_entries", 1000, 1000.0),

@@ -5,7 +5,7 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::election::VotedFor;
-use crate::test_utils::enable_logger;
+
 use crate::Error;
 use crate::HardState;
 use crate::LogStore;
@@ -16,6 +16,7 @@ use crate::SystemError;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tracing_test::traced_test;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
@@ -37,6 +38,7 @@ fn setup_storage(_node_id: u32) -> (Arc<SledLogStore>, Arc<SledMetaStore>, TempD
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_empty_storage() {
     let (log_store, _meta_store, _dir) = setup_storage(1);
 
@@ -47,6 +49,7 @@ async fn test_empty_storage() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_single_entry_persistence() {
     let (log_store, _meta_store, _dir) = setup_storage(1);
     let entries = create_entries(1..=1);
@@ -60,8 +63,8 @@ async fn test_single_entry_persistence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_batch_persistence() {
-    enable_logger();
     let (log_store, _meta_store, _dir) = setup_storage(1);
     let entries = create_entries(1..=100);
 
@@ -84,6 +87,7 @@ async fn test_batch_persistence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_purge_logs() {
     let (log_store, _meta_store, _dir) = setup_storage(1);
     log_store.persist_entries(create_entries(1..=100)).await.unwrap();
@@ -105,6 +109,7 @@ async fn test_purge_logs() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_truncation() {
     let (log_store, _meta_store, _dir) = setup_storage(1);
     log_store.persist_entries(create_entries(1..=100)).await.unwrap();
@@ -120,6 +125,7 @@ async fn test_truncation() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_reset_operation() {
     let (log_store, _meta_store, _dir) = setup_storage(1);
     log_store.persist_entries(create_entries(1..=50)).await.unwrap();
@@ -132,6 +138,7 @@ async fn test_reset_operation() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_edge_cases() {
     let (log_store, _meta_store, _dir) = setup_storage(1);
 
@@ -147,6 +154,7 @@ async fn test_edge_cases() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_concurrent_instances() {
     let tempdir = tempfile::tempdir().unwrap();
     let db = init_sled_storage_engine_db(tempdir.path()).unwrap();
@@ -186,6 +194,7 @@ fn test_key_encoding_decoding() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_corrupted_data_handling() {
     let node_id = 100;
     let tempdir = tempfile::tempdir().unwrap();
@@ -205,8 +214,6 @@ async fn test_corrupted_data_handling() {
 
 #[test]
 fn test_hard_state_persistence() {
-    enable_logger();
-
     let (log_store, meta_store, dir) = setup_storage(1);
     let hard_state = HardState {
         current_term: 5,
@@ -232,6 +239,7 @@ fn test_hard_state_persistence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_reset_preserves_meta() {
     let (log_store, meta_store, _dir) = setup_storage(1);
     let hard_state = HardState {
@@ -252,6 +260,7 @@ async fn test_reset_preserves_meta() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_flush_persists_all_data() {
     let (log_store, meta_store, dir) = setup_storage(1);
 

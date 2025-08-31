@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 use tokio::fs::read;
+use tracing_test::traced_test;
 
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
@@ -9,6 +10,7 @@ use crate::SnapshotAssembler;
 use crate::SnapshotPathManager;
 
 #[tokio::test]
+#[traced_test]
 async fn sequential_chunks_assembly() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -37,6 +39,7 @@ async fn sequential_chunks_assembly() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn reject_out_of_order_chunks() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -52,6 +55,7 @@ async fn reject_out_of_order_chunks() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn detect_duplicate_chunk_index() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -67,6 +71,7 @@ async fn detect_duplicate_chunk_index() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn handle_empty_chunk() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -88,6 +93,7 @@ async fn handle_empty_chunk() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn verify_flush_operation() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -105,6 +111,7 @@ async fn verify_flush_operation() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn return_correct_final_path() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -123,6 +130,7 @@ async fn return_correct_final_path() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn handle_large_data_volume() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(
@@ -146,6 +154,7 @@ async fn handle_large_data_volume() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn handle_existing_directory_conflict() {
     let dir = tempdir().unwrap();
     let path_mgr = Arc::new(SnapshotPathManager::new(

@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use tracing_test::traced_test;
+
 use super::*;
 use crate::core::state_machine_handler::snapshot_policy::SnapshotContext;
 use crate::core::state_machine_handler::snapshot_policy::SnapshotPolicy;
@@ -37,6 +39,7 @@ fn follower_ctx(last_applied_index: u64) -> SnapshotContext {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_composite_policy_time_trigger() {
     // Setup policy with short time interval (100ms) and high log threshold
     let mut policy = CompositePolicy::new(Duration::from_millis(100), 1000, Duration::from_secs(1));
@@ -61,6 +64,7 @@ async fn test_composite_policy_time_trigger() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_composite_policy_log_size_trigger() {
     // Setup policy with long time interval (1 hour) and small log threshold (5)
     // Use zero cooldown to avoid timing issues in test
@@ -89,6 +93,7 @@ async fn test_composite_policy_log_size_trigger() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_composite_policy_follower_never_triggers() {
     // Setup policy that should trigger easily
     let policy = CompositePolicy::new(Duration::from_millis(10), 1, Duration::from_secs(1));
@@ -107,6 +112,7 @@ async fn test_composite_policy_follower_never_triggers() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_composite_policy_both_conditions() {
     // Setup policy with short time interval and small log threshold
     // Use zero cooldown for log size policy
@@ -140,6 +146,7 @@ async fn test_composite_policy_both_conditions() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_log_index_update_mechanism() {
     // Setup policy with large time interval and threshold of 5
     let policy = CompositePolicy::new(Duration::from_secs(3600), 5, Duration::from_millis(0));

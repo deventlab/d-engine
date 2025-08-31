@@ -27,10 +27,10 @@ use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
-use crate::enable_logger;
 use crate::ELECTION_PORT_BASE;
 use d_engine::ClientApiError;
 use std::time::Duration;
+use tracing_test::traced_test;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
@@ -38,8 +38,8 @@ const ELECTION_CASE1_DB_ROOT_DIR: &str = "./db/election/case1";
 const ELECTION_CASE1_LOG_DIR: &str = "./logs/election/case1";
 
 #[tokio::test]
+#[traced_test]
 async fn test_leader_election_based_on_log_term_and_index() -> Result<(), ClientApiError> {
-    enable_logger();
     reset(ELECTION_CASE1_DIR).await?;
 
     let ports = [

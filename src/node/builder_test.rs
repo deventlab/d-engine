@@ -23,6 +23,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use tempfile::TempDir;
 use tokio::sync::watch;
+use tracing_test::traced_test;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
@@ -44,6 +45,7 @@ fn test_new_initializes_default_components_with_none() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_set_raft_log_replaces_default() {
     // Prepare RaftTypeConfig components
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
@@ -94,6 +96,7 @@ async fn test_set_raft_log_replaces_default() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_build_creates_node() {
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(

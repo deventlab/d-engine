@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
@@ -38,7 +39,7 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::node_config;
 use crate::test_utils::snapshot_config;
 use crate::test_utils::MockBuilder;
@@ -98,6 +99,7 @@ fn test_update_pending_case2() {
 }
 // Case 3: multi thread update
 #[tokio::test]
+#[traced_test]
 async fn test_update_pending_case3() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
@@ -330,9 +332,8 @@ fn listen_addr(port: u32) -> SocketAddr {
 
 /// Case1: Complete successful snapshot installation
 #[tokio::test]
+#[traced_test]
 async fn test_install_snapshot_case1() {
-    enable_logger();
-
     let port = MOCK_STATE_MACHINE_HANDLER_PORT_BASE + 1;
     // 1. Simulate node with RPC server running in a new thread
     let (graceful_tx, graceful_rx) = watch::channel(());
@@ -416,9 +417,8 @@ fn create_test_handler(
 
 /// # Case 2: Successfully applies valid chunks
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_case2() {
-    enable_logger();
-
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case2");
     let mut state_machine_mock = MockStateMachine::new();
@@ -498,9 +498,8 @@ const TEST_LEADER_ID: u32 = 1;
 
 /// # Case 3: Rejects chunk with invalid checksum
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_case3() {
-    enable_logger();
-
     let temp_dir = tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case3");
     create_dir_all(&temp_path).await.unwrap();
@@ -535,9 +534,8 @@ async fn test_apply_snapshot_stream_from_leader_case3() {
 
 /// # Case 4: Aborts when leader changes during stream
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_case4() {
-    enable_logger();
-
     let temp_dir = tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case4");
     create_dir_all(&temp_path).await.unwrap();
@@ -576,9 +574,8 @@ async fn test_apply_snapshot_stream_from_leader_case4() {
 
 /// # Case 5: Handles stream errors gracefully
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_case5() {
-    enable_logger();
-
     let temp_dir = tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case5");
     create_dir_all(&temp_path).await.unwrap();
@@ -617,9 +614,8 @@ async fn test_apply_snapshot_stream_from_leader_case5() {
 
 /// # Case 6: Rejects chunks with missing metadata
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_case6() {
-    enable_logger();
-
     let temp_dir = tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case6");
     create_dir_all(&temp_path).await.unwrap();
@@ -651,9 +647,8 @@ async fn test_apply_snapshot_stream_from_leader_case6() {
 
 /// # Case 7: Handles successful snapshot stream with multiple chunks
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_case7() {
-    enable_logger();
-
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case7");
     create_dir_all(&temp_path).await.unwrap();
@@ -737,8 +732,6 @@ mod create_snapshot_tests {
     /// # Case 1: Basic creation flow
     #[tokio::test]
     async fn test_create_snapshot_case1() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_create_snapshot_case1");
         let mut sm = MockStateMachine::new();
@@ -799,8 +792,6 @@ mod create_snapshot_tests {
     /// # Case 2: Test concurrent protection
     #[tokio::test]
     async fn test_create_snapshot_case2() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_create_snapshot_case2");
         let mut sm = MockStateMachine::new();
@@ -891,7 +882,6 @@ mod create_snapshot_tests {
     /// # Case 3: Test cleanup old versions
     #[tokio::test]
     async fn test_create_snapshot_case3() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_create_snapshot_case3");
 
@@ -946,7 +936,6 @@ mod create_snapshot_tests {
     /// # Case 4: Test failure handling
     #[tokio::test]
     async fn test_create_snapshot_case4() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_create_snapshot_case4");
         let mut sm = MockStateMachine::new();
@@ -980,7 +969,6 @@ mod create_snapshot_tests {
     /// # Case 5: Test snapshot_in_progress flag is reset on success
     #[tokio::test]
     async fn test_create_snapshot_resets_flag_on_success() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_flag_reset_success");
         let mut sm = MockStateMachine::new();
@@ -1016,7 +1004,6 @@ mod create_snapshot_tests {
     /// # Case 6: Test snapshot_in_progress flag is reset on error
     #[tokio::test]
     async fn test_create_snapshot_resets_flag_on_error() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_flag_reset_error");
         let mut sm = MockStateMachine::new();
@@ -1096,9 +1083,8 @@ fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
 
 /// # Case 1: Test normal deletion
 #[tokio::test]
+#[traced_test]
 async fn test_cleanup_snapshot_case1() {
-    enable_logger();
-
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
 
@@ -1131,6 +1117,7 @@ async fn test_cleanup_snapshot_case1() {
 
 /// # Case 2: Test no old versions to be cleaned
 #[tokio::test]
+#[traced_test]
 async fn test_cleanup_snapshot_case2() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
@@ -1157,9 +1144,8 @@ async fn test_cleanup_snapshot_case2() {
 
 /// # Case 3: Test invalid dirnames
 #[tokio::test]
+#[traced_test]
 async fn test_cleanup_snapshot_case3() {
-    enable_logger();
-
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
     // Create valid and invalid directories
@@ -1189,6 +1175,7 @@ async fn test_cleanup_snapshot_case3() {
 
 /// #Case 1: Reject stale term
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case1() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
@@ -1227,6 +1214,7 @@ async fn test_handle_purge_request_case1() {
 
 /// # Case 2: Reject if not from current leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case2() {
     let temp_dir = TempDir::new().unwrap();
     let sm = MockStateMachine::new();
@@ -1264,6 +1252,7 @@ async fn test_handle_purge_request_case2() {
 
 // # Case 3: Reject if local state is behind
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case3() {
     let temp_dir = TempDir::new().unwrap();
     let mut sm = MockStateMachine::new();
@@ -1303,6 +1292,7 @@ async fn test_handle_purge_request_case3() {
 
 /// # Case 4: Reject on checksum mismatch
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case4() {
     let temp_dir = TempDir::new().unwrap();
     let mut sm = MockStateMachine::new();
@@ -1346,6 +1336,7 @@ async fn test_handle_purge_request_case4() {
 
 /// # Case 5: Successful purge
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case5() {
     let temp_dir = TempDir::new().unwrap();
     let mut sm = MockStateMachine::new();
@@ -1387,6 +1378,7 @@ async fn test_handle_purge_request_case5() {
 
 /// # Case 6: Handle storage errors during purge
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case6() {
     let temp_dir = TempDir::new().unwrap();
     let mut sm = MockStateMachine::new();
@@ -1428,6 +1420,7 @@ async fn test_handle_purge_request_case6() {
 
 /// # Case 7: Reject when no local snapshot exists
 #[tokio::test]
+#[traced_test]
 async fn test_handle_purge_request_case7() {
     let temp_dir = TempDir::new().unwrap();
     let mut sm = MockStateMachine::new();
@@ -1522,8 +1515,6 @@ fn mock_node_with_rpc_service(
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Arc<Node<MockTypeConfig>> {
-    enable_logger();
-
     let mut node_config = node_config(db_path);
     if let Some(peers_meta) = peers_meta_option {
         node_config.cluster.initial_cluster = peers_meta;
@@ -1605,9 +1596,8 @@ fn mock_node_with_rpc_service(
 
 // Update test_load_snapshot_data_case1_single_file_single_chunk
 #[tokio::test]
+#[traced_test]
 async fn test_load_snapshot_data_case1_single_file_single_chunk() {
-    enable_logger();
-
     let temp_dir = tempdir().unwrap();
     let snapshot_dir = temp_dir.path();
     tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
@@ -1653,6 +1643,7 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
 
 // Update test_load_snapshot_data_case2_single_file_multi_chunk
 #[tokio::test]
+#[traced_test]
 async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
     let temp_dir = tempdir().unwrap();
     let snapshot_dir = temp_dir.path();
@@ -1708,8 +1699,8 @@ async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
 
 // Update test_load_snapshot_data_case4_empty_snapshot
 #[tokio::test]
+#[traced_test]
 async fn test_load_snapshot_data_case4_empty_snapshot() {
-    enable_logger();
     let temp_dir = tempdir().unwrap();
     let snapshot_dir = temp_dir.path();
     tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
@@ -1730,6 +1721,7 @@ async fn test_load_snapshot_data_case4_empty_snapshot() {
 
 // Update test_load_snapshot_data_case5_checksum
 #[tokio::test]
+#[traced_test]
 async fn test_load_snapshot_data_case5_checksum() {
     let temp_dir = tempdir().unwrap();
     let snapshot_dir = temp_dir.path();
@@ -1755,9 +1747,8 @@ async fn test_load_snapshot_data_case5_checksum() {
 
 // Update test_load_snapshot_data_case6_read_error
 #[tokio::test]
+#[traced_test]
 async fn test_load_snapshot_data_case6_read_error() {
-    enable_logger();
-
     let temp_dir = tempdir().unwrap();
     let snapshot_dir = temp_dir.path();
     tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
@@ -1778,6 +1769,7 @@ async fn test_load_snapshot_data_case6_read_error() {
 
 // Add new test for metadata in first chunk only
 #[tokio::test]
+#[traced_test]
 async fn test_load_snapshot_data_case7_metadata_in_first_chunk_only() {
     let temp_dir = tempdir().unwrap();
     let snapshot_dir = temp_dir.path();
@@ -1813,8 +1805,8 @@ async fn test_load_snapshot_data_case7_metadata_in_first_chunk_only() {
 
 // Add new test for compression functionality
 #[tokio::test]
+#[traced_test]
 async fn test_snapshot_compression() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_snapshot_compression");
     let mut sm = MockStateMachine::new();
@@ -1867,9 +1859,8 @@ async fn test_snapshot_compression() {
 
 /// Test that the state machine receives the decompressed directory, not the compressed file.
 #[tokio::test]
+#[traced_test]
 async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
-    enable_logger();
-
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_decompress_before_apply");
     let mut state_machine_mock = MockStateMachine::new();

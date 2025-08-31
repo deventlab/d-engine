@@ -38,11 +38,13 @@ impl StateMachineBuilder for MemStateMachineBuilder {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_mem_storage_engine() -> Result<(), Error> {
     StorageEngineTestSuite::run_all_tests(MemStorageEngineBuilder).await
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_mem_state_machine() -> Result<(), Error> {
     StateMachineTestSuite::run_all_tests(MemStateMachineBuilder).await
 }

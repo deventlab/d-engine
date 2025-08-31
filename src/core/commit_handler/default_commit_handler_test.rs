@@ -16,7 +16,7 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::MockTypeConfig;
 use crate::CommitHandlerConfig;
@@ -407,7 +407,7 @@ mod run_test {
     use crate::proto::common::membership_change::Change;
     use crate::proto::common::AddNode;
     use crate::proto::common::RemoveNode;
-    use crate::test_utils;
+
     use crate::FOLLOWER;
     use crate::LEADER;
 
@@ -520,7 +520,6 @@ mod run_test {
     /// 4. Test batch processing under load
     #[tokio::test]
     async fn test_high_throughput_processing() {
-        enable_logger();
         let mut entries = Vec::new();
         for i in 1..=1000 {
             entries.push(CommandType::Command(format!("cmd{i}").encode_to_vec()));
@@ -568,7 +567,6 @@ mod run_test {
     #[tokio::test]
     async fn test_run_case1() {
         tokio::time::pause();
-        test_utils::enable_logger();
 
         let entries = build_entries(
             vec![
@@ -1178,8 +1176,6 @@ mod process_batch_test {
 
     #[tokio::test]
     async fn config_failure_prevents_subsequent_processing() {
-        enable_logger();
-
         let entries = build_entries(
             vec![
                 CommandType::Configuration(Change::AddNode(AddNode {

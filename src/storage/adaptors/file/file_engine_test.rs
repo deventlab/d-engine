@@ -4,13 +4,13 @@ use crate::{
         state_machine_test::{StateMachineBuilder, StateMachineTestSuite},
         storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite},
     },
-    test_utils::enable_logger,
     Error, FileStateMachine, StateMachine,
 };
 use std::sync::Arc;
 use tonic::async_trait;
 
 use tempfile::TempDir;
+use tracing_test::traced_test;
 
 struct FileStorageEngineBuilder {
     temp_dir: TempDir,
@@ -55,14 +55,15 @@ impl StateMachineBuilder for FileStateMachineBuilder {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_file_storage_engine() -> Result<(), Error> {
     let temp_dir = TempDir::new()?;
     StorageEngineTestSuite::run_all_tests(FileStorageEngineBuilder { temp_dir }).await
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_file_state_machine() -> Result<(), Error> {
-    enable_logger();
     let temp_dir = TempDir::new()?;
     StateMachineTestSuite::run_all_tests(FileStateMachineBuilder { temp_dir }).await
 }

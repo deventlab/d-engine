@@ -56,7 +56,7 @@ use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::NodeStatus;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::mock_state_machine;
 use crate::test_utils::MockTypeConfig;
 use crate::BufferedRaftLog;
@@ -115,8 +115,6 @@ pub fn setup_raft_components(
 
     std::env::remove_var("CONFIG_PATH");
     std::env::remove_var("RAFT__INITIAL_CLUSTER");
-
-    enable_logger();
     //start from fresh
     let id = 1;
 

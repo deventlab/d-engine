@@ -32,6 +32,7 @@ use d_engine::ClientApiError;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
+use tracing_test::traced_test;
 
 const TEST_CASE_DIR: &str = "append_entries/case1";
 const DB_ROOT_DIR: &str = "./db/append_entries/case1";
@@ -39,8 +40,8 @@ const LOG_DIR: &str = "./logs/append_entries/case1";
 
 #[tracing::instrument]
 #[tokio::test]
+#[traced_test]
 async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(TEST_CASE_DIR).await?;
 
     // 1. Prepare node data

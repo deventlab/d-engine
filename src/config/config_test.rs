@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::*;
 use serial_test::serial;
 use temp_env::with_vars;

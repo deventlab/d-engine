@@ -1,5 +1,6 @@
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::test_utils::MockNode;
@@ -10,6 +11,7 @@ use crate::NetworkConfig;
 
 /// Case 1: server is not ready
 #[tokio::test]
+#[traced_test]
 async fn test_check_peer_is_ready_case1() {
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = false;
@@ -61,6 +63,7 @@ async fn test_check_peer_is_ready_case1() {
 
 /// Case 2: server is ready
 #[tokio::test]
+#[traced_test]
 async fn test_check_peer_is_ready_case2() {
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = true;

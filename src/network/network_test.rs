@@ -1,6 +1,7 @@
 use super::*;
 use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
 use crate::proto::cluster::ClusterConfUpdateResponse;
+use tracing_test::traced_test;
 
 async fn async_ok(
     number: u64
@@ -24,6 +25,7 @@ async fn async_err(
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_rpc_task_with_exponential_backoff() {
     tokio::time::pause();
 

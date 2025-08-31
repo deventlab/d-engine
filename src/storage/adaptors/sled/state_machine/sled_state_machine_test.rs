@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use sled::Batch;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::constants::LAST_SNAPSHOT_METADATA_KEY;
@@ -18,8 +19,7 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::proto::storage::SnapshotMetadata;
-use crate::test_utils;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::reset_dbs;
@@ -31,7 +31,6 @@ pub fn setup_raft_components(
     restart: bool,
 ) -> SledStateMachine {
     println!("Test setup_raft_components ...");
-    enable_logger();
     //start from fresh
     let (_storage_engine_db, state_machine_db) = if restart {
         reuse_dbs(db_path)
@@ -41,6 +40,7 @@ pub fn setup_raft_components(
     SledStateMachine::new(1, Arc::new(state_machine_db)).unwrap()
 }
 #[tokio::test]
+#[traced_test]
 async fn test_start_stop() {
     let root_path = "/tmp/test_start_stop";
     let state_machine = setup_raft_components(root_path, false);
@@ -57,6 +57,7 @@ async fn test_start_stop() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_apply_committed_raft_logs_in_batch() {
     let root_path = "/tmp/test_apply_committed_raft_logs_in_batch";
     let state_machine = setup_raft_components(root_path, false);
@@ -83,8 +84,6 @@ fn init(path: &str) -> Arc<sled::Db> {
 /// # Case 1: test if node restart, the state machine entries should load from disk
 #[test]
 fn test_state_machine_flush() {
-    test_utils::enable_logger();
-
     let p = "/tmp/test_state_machine_flush";
     {
         let _ = std::fs::remove_dir_all(p);
@@ -111,6 +110,7 @@ fn test_state_machine_flush() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_basic_kv_operations() {
     let root_path = "/tmp/test_basic_kv_operations";
     let state_machine = setup_raft_components(root_path, false);
@@ -137,6 +137,7 @@ async fn test_basic_kv_operations() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_last_entry_detection() {
     let root_path = "/tmp/test_last_entry_detection";
     let state_machine = setup_raft_components(root_path, false);
@@ -158,6 +159,7 @@ async fn test_last_entry_detection() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_batch_error_handling() {
     let root_path = "/tmp/test_batch_error_handling";
     let state_machine = setup_raft_components(root_path, false);
@@ -172,6 +174,7 @@ async fn test_batch_error_handling() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_iter_functionality() {
     let root_path = "/tmp/test_iter_functionality";
     let state_machine = setup_raft_components(root_path, false);
@@ -195,6 +198,7 @@ async fn test_iter_functionality() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_apply_chunk_functionality() {
     let root_path = "/tmp/test_apply_chunk_functionality";
     let state_machine = setup_raft_components(root_path, false);
@@ -222,8 +226,8 @@ async fn test_apply_chunk_functionality() {
 
 /// # Case 1: test basic functionality
 #[tokio::test]
+#[traced_test]
 async fn test_generate_snapshot_data_case1() {
-    enable_logger();
     let root = tempfile::tempdir().unwrap();
     let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case1", false);
 
@@ -277,8 +281,8 @@ async fn test_generate_snapshot_data_case1() {
 
 /// # Case 2: Exclude upper entries
 #[tokio::test]
+#[traced_test]
 async fn test_generate_snapshot_data_case2() {
-    enable_logger();
     let root = tempfile::tempdir().unwrap();
     let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case2", false);
 
@@ -314,6 +318,7 @@ async fn test_generate_snapshot_data_case2() {
 
 /// # Case 3: Metadata correctness
 #[tokio::test]
+#[traced_test]
 async fn test_generate_snapshot_data_case3() {
     let root = tempfile::tempdir().unwrap();
     let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case3", false);
@@ -340,6 +345,7 @@ async fn test_generate_snapshot_data_case3() {
 
 /// # Case 4: Batch processing
 #[tokio::test]
+#[traced_test]
 async fn test_generate_snapshot_data_case4() {
     let root = tempfile::tempdir().unwrap();
     let state_machine = setup_raft_components("/tmp/test_generate_snapshot_data_case4", false);
@@ -381,12 +387,10 @@ mod apply_snapshot_from_file_tests {
 
     use super::*;
     use crate::file_io::create_valid_snapshot;
-    use crate::test_utils::enable_logger;
 
     /// # Case 1: Basic snapshot application
     #[tokio::test]
     async fn test_apply_snapshot_from_file_case1() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case1");
         let state_machine = setup_raft_components("/tmp/test_apply_snapshot_case1", false);
@@ -495,7 +499,6 @@ mod apply_snapshot_from_file_tests {
     /// # Case 4: Concurrent snapshot protection
     #[tokio::test]
     async fn test_apply_snapshot_from_file_case4() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_apply_snapshot_from_file_case4");
         let state_machine = Arc::new(setup_raft_components(case_path.to_str().unwrap(), false));
@@ -648,6 +651,7 @@ mod apply_snapshot_from_file_tests {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_state_machine_drop() {
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_state_machine_drop");

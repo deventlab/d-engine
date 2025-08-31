@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::proto::cluster::NodeMeta;
@@ -18,6 +19,7 @@ fn create_test_node(id: u32) -> NodeMeta {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn initial_state_correctly_set() {
     let nodes = vec![create_test_node(1), create_test_node(2)];
     let guard = MembershipGuard::new(nodes.clone(), 100);
@@ -33,6 +35,7 @@ async fn initial_state_correctly_set() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn blocking_read_access() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
@@ -44,6 +47,7 @@ async fn blocking_read_access() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn blocking_write_updates_state() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
@@ -63,6 +67,7 @@ async fn blocking_write_updates_state() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn update_node_success() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
@@ -81,6 +86,7 @@ async fn update_node_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn update_node_not_found() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
@@ -95,6 +101,7 @@ async fn update_node_not_found() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn contains_node_checks_existence() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
@@ -103,6 +110,7 @@ async fn contains_node_checks_existence() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn concurrent_read_access() {
     let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
     let mut handles = vec![];
@@ -121,6 +129,7 @@ async fn concurrent_read_access() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn write_operations_are_serialized() {
     let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
     let (tx_started, rx_started) = oneshot::channel();
@@ -182,6 +191,7 @@ async fn write_operations_are_serialized() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn reads_are_not_blocked_by_writes() {
     let guard = Arc::new(MembershipGuard::new(vec![create_test_node(1)], 1));
     let (tx_started, rx_started) = oneshot::channel();

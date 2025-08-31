@@ -11,6 +11,7 @@ use tokio::sync::watch;
 use tonic::transport::Endpoint;
 use tonic::Code;
 use tonic::Status;
+use tracing_test::traced_test;
 
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
@@ -37,7 +38,7 @@ use crate::proto::storage::PurgeLogResponse;
 use crate::proto::storage::SnapshotMetadata;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
-use crate::test_utils::enable_logger;
+
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
@@ -183,6 +184,7 @@ pub async fn assert_client_response(
 ///    - Peer2, next_index: 6
 /// 4. Receiver Ok(ClientResponse::write_success) signal
 #[tokio::test]
+#[traced_test]
 async fn test_process_raft_request_case1_1() {
     // Initialize the test environment (threshold = 0 means immediate execution)
 
@@ -261,6 +263,7 @@ async fn test_process_raft_request_case1_1() {
 ///    - Peer2, next_index: 6
 /// 4. Receiver two Ok(ClientResponse::write_success) signal
 #[tokio::test]
+#[traced_test]
 async fn test_process_raft_request_case1_2() {
     // Initialize the test environment (threshold = 0 means immediate execution)
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -338,6 +341,7 @@ async fn test_process_raft_request_case1_2() {
 /// ## Criterias
 /// - return Ok()
 #[tokio::test]
+#[traced_test]
 async fn test_process_raft_request_case2() {
     // let context = setup_raft_components("/tmp/test_process_raft_request_case2", None, false);
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -378,6 +382,7 @@ async fn test_process_raft_request_case2() {
 /// # Case 1: state_machine_handler::update_pending should be executed once
 /// if last_applied < commit_index
 #[tokio::test]
+#[traced_test]
 async fn test_ensure_state_machine_upto_commit_index_case1() {
     // Prepare Leader State
     let context = setup_raft_components(
@@ -405,6 +410,7 @@ async fn test_ensure_state_machine_upto_commit_index_case1() {
 /// # Case 2: state_machine_handler::update_pending should not be executed
 /// if last_applied >= commit_index
 #[tokio::test]
+#[traced_test]
 async fn test_ensure_state_machine_upto_commit_index_case2() {
     // Prepare Leader State
     let context = setup_raft_components(
@@ -452,6 +458,7 @@ fn setup_handle_raft_event_case1_params(
 /// 2. Role should not step to Follower
 /// 3. Term should not be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
@@ -486,6 +493,7 @@ async fn test_handle_raft_event_case1_1() {
 /// 3. Term should be updated
 /// 4. Replay raft event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
@@ -524,6 +532,7 @@ async fn test_handle_raft_event_case1_2() {
 
 /// # Case 2: Receive ClusterConf Event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
@@ -552,6 +561,7 @@ async fn test_handle_raft_event_case2() {
 
 /// # Test reject_stale_term
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_1_reject_stale_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
@@ -591,6 +601,7 @@ async fn test_handle_raft_event_case3_1_reject_stale_term() {
 
 /// # Test update_step_down
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_2_update_step_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
@@ -634,6 +645,7 @@ async fn test_handle_raft_event_case3_2_update_step_down() {
 
 /// # Case 4.1: As Leader, if I receive append request with (my_term >= append_entries_request.term), then I should reject the request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Leader State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -677,9 +689,9 @@ async fn test_handle_raft_event_case4_1() {
 /// 2. my term should be updated to the request one
 /// 3. receive replay event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Leader State
-    enable_logger();
 
     // Prepare leader term smaller than request one
     let my_term = 10;
@@ -730,6 +742,7 @@ async fn test_handle_raft_event_case4_2() {
 /// # Case 5.1: Test handle client propose request
 ///     if process_raft_request returns Ok()
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case5_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case5_1", graceful_rx, None);
@@ -770,14 +783,15 @@ async fn test_handle_raft_event_case5_1() {
 /// # Case 5.1: Test handle client propose request
 ///     if process_raft_request returns Err()
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case5_2() {}
 
 /// # Case 6.1: Test ClientReadRequest event
 ///     if both peers failed to confirm leader's commit, the lread request
 /// should be failed
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_1() {
-    enable_logger();
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
@@ -828,8 +842,8 @@ async fn test_handle_raft_event_case6_1() {
 /// 2. event "RoleEvent::NotifyNewCommitIndex" should be received
 /// 3. resp_rx receives Ok()
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_2() {
-    enable_logger();
     let expect_new_commit_index = 3;
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
@@ -925,8 +939,8 @@ async fn test_handle_raft_event_case6_2() {
 /// 2. event "RoleEvent::BecomeFollower" should be received
 /// 3. resp_rx receives Err(e)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_3() {
-    enable_logger();
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
@@ -982,6 +996,7 @@ async fn test_handle_raft_event_case6_3() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case7() {
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1008,6 +1023,7 @@ async fn test_handle_raft_event_case7() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8() {
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1050,8 +1066,6 @@ mod create_snapshot_event_tests {
     /// progress.
     #[tokio::test]
     async fn test_create_snapshot_event_starts_and_ignores_duplicates() {
-        enable_logger();
-
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let context = MockBuilder::new(graceful_rx).build_context();
 
@@ -1081,8 +1095,6 @@ mod create_snapshot_event_tests {
     /// Test that snapshot_in_progress is reset after SnapshotCreated event (success and error)
     #[tokio::test]
     async fn test_snapshot_in_progress_flag_reset_on_created_event() {
-        enable_logger();
-
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let context = MockBuilder::new(graceful_rx).build_context();
 
@@ -1113,8 +1125,6 @@ mod create_snapshot_event_tests {
     /// Test that CreateSnapshotEvent returns immediately and does not block on snapshot creation.
     #[tokio::test]
     async fn test_create_snapshot_event_is_non_blocking() {
-        enable_logger();
-
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let context = MockBuilder::new(graceful_rx).build_context();
         let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
@@ -1136,8 +1146,6 @@ mod snapshot_created_event_tests {
     /// # Case 1: test handle SnapshotCreated with transport error
     #[tokio::test]
     async fn test_handle_snapshot_created_transport_error() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_snapshot_created_transport_error");
 
@@ -1190,8 +1198,6 @@ mod snapshot_created_event_tests {
     /// # Case2: test handle SnapshotCreated successful
     #[tokio::test]
     async fn test_handle_snapshot_created_successful() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_snapshot_created_successful");
 
@@ -1300,8 +1306,6 @@ mod snapshot_created_event_tests {
     /// # Case3: Test snapshot creation failure scenario
     #[tokio::test]
     async fn test_handle_snapshot_created_error() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_snapshot_created_error");
 
@@ -1336,8 +1340,6 @@ mod snapshot_created_event_tests {
     /// # Case4: Test higher term response triggering leader step-down
     #[tokio::test]
     async fn test_handle_snapshot_created_higher_term() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_snapshot_created_higher_term");
 
@@ -1413,8 +1415,6 @@ mod snapshot_created_event_tests {
     /// # Case5: Test purge preconditions not met (commit index < snapshot index)
     #[tokio::test]
     async fn test_handle_snapshot_created_purge_conditions() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_snapshot_created_purge_conditions");
 
@@ -1485,8 +1485,6 @@ mod snapshot_created_event_tests {
     /// # Case6: Test peer purge progress tracking
     #[tokio::test]
     async fn test_handle_snapshot_created_peer_progress() {
-        enable_logger();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_snapshot_created_peer_progress");
 
@@ -1578,7 +1576,6 @@ mod log_purge_completed_event_tests {
     /// # New test for LogPurgeCompleted event
     #[tokio::test]
     async fn test_handle_log_purge_completed() {
-        enable_logger();
         let temp_dir = tempfile::tempdir().unwrap();
         let case_path = temp_dir.path().join("test_handle_log_purge_completed");
 
@@ -1639,8 +1636,8 @@ mod log_purge_completed_event_tests {
 
 /// # Case 1: Successful leader discovery
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case10_1_discover_leader_success() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_raft_event_case10_1_discover_leader_success",
@@ -1687,7 +1684,6 @@ async fn test_handle_raft_event_case10_1_discover_leader_success() {
 #[tokio::test]
 #[should_panic(expected = "Leader can not find its address? It must be a bug.")]
 async fn test_handle_raft_event_case10_2_discover_leader_metadata_not_found() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_raft_event_case10_2_discover_leader_metadata_not_found",
@@ -1720,8 +1716,8 @@ async fn test_handle_raft_event_case10_2_discover_leader_metadata_not_found() {
 
 /// # Case 4: Discovery with different leader terms
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case10_4_different_leader_terms() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_raft_event_case10_4_different_leader_terms",
@@ -1766,8 +1762,8 @@ async fn test_handle_raft_event_case10_4_different_leader_terms() {
 
 /// # Case 5: Discovery with invalid node ID
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case10_5_invalid_node_id() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_raft_event_case10_5_invalid_node_id",
@@ -1967,6 +1963,7 @@ fn test_can_purge_logs_case5() {
 /// - Commit index should advance
 /// - Clients receive success responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case1_quorum_achieved() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = setup_process_batch_test_context(
@@ -2037,6 +2034,7 @@ async fn test_process_batch_case1_quorum_achieved() {
 /// - Majority of peers responded but quorum not achieved
 /// - Clients receive RetryRequired responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case2_quorum_failed() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = setup_process_batch_test_context(
@@ -2097,6 +2095,7 @@ async fn test_process_batch_case2_quorum_failed() {
 /// - Less than majority of peers responded
 /// - Clients receive ProposeFailed responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = setup_process_batch_test_context(
@@ -2170,6 +2169,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
 /// - Leader should step down
 /// - Clients receive TermOutdated responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case3_higher_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context =
@@ -2208,6 +2208,7 @@ async fn test_process_batch_case3_higher_term() {
 /// - Some peers succeed, some time out
 /// - Clients receive ProposeFailed responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case4_partial_timeouts() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = setup_process_batch_test_context(
@@ -2277,6 +2278,7 @@ async fn test_process_batch_case4_partial_timeouts() {
 /// - Commit index unchanged
 /// - Clients receive failure responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case5_all_timeout() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context =
@@ -2336,6 +2338,7 @@ async fn test_process_batch_case5_all_timeout() {
 /// - Storage failure or unrecoverable error
 /// - Clients receive failure responses
 #[tokio::test]
+#[traced_test]
 async fn test_process_batch_case6_fatal_error() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context =
@@ -2392,6 +2395,7 @@ fn mock_request(sender: MaybeCloneOneshotSender<ClientResponseResult>) -> RaftRe
 /// - All peers respond successfully
 /// - Returns `Ok(QuorumVerificationResult::Success)`
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case1_quorum_achieved() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2439,6 +2443,7 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
 /// - Majority of peers responded but quorum not achieved
 /// - Returns `Ok(QuorumVerificationResult::RetryRequired)`
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case2_verifiable_failure() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2478,6 +2483,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
 /// - Less than majority of peers responded
 /// - Returns `Ok(QuorumVerificationResult::LeadershipLost)`
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2541,6 +2547,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
 /// - Some peers respond, some time out
 /// - Returns `Ok(QuorumVerificationResult::RetryRequired)`
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case4_partial_timeouts() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2580,6 +2587,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
 /// - No peers respond
 /// - Returns `Ok(QuorumVerificationResult::RetryRequired)`
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case5_all_timeouts() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2615,6 +2623,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
 /// - Follower responds with higher term
 /// - Returns `Err(HigherTerm)`
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case6_higher_term() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2659,6 +2668,7 @@ async fn test_verify_internal_quorum_case6_higher_term() {
 /// - System or logic error occurs
 /// - Returns original error
 #[tokio::test]
+#[traced_test]
 async fn test_verify_internal_quorum_case7_critical_failure() {
     let payloads = vec![EntryPayload::command(vec![])];
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2691,8 +2701,8 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
 
 /// # Case 1: Successful join
 #[tokio::test]
+#[traced_test]
 async fn test_handle_join_cluster_case1_success() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_handle_join_cluster_case1_success",
@@ -2788,8 +2798,8 @@ async fn test_handle_join_cluster_case1_success() {
 
 /// # Case 2: Node already exists
 #[tokio::test]
+#[traced_test]
 async fn test_handle_join_cluster_case2_node_exists() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context(
         "/tmp/test_handle_join_cluster_case2_node_exists",
@@ -2830,8 +2840,8 @@ async fn test_handle_join_cluster_case2_node_exists() {
 
 /// # Case 3: Quorum not achieved
 #[tokio::test]
+#[traced_test]
 async fn test_handle_join_cluster_case3_quorum_failed() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_join_cluster_case3_quorum_failed",
@@ -2886,8 +2896,8 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
 
 /// # Case 4: Quorum verification error
 #[tokio::test]
+#[traced_test]
 async fn test_handle_join_cluster_case4_quorum_error() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_join_cluster_case4_quorum_error",
@@ -2942,8 +2952,8 @@ async fn test_handle_join_cluster_case4_quorum_error() {
 
 /// # Case 5: Snapshot transfer triggered
 #[tokio::test]
+#[traced_test]
 async fn test_handle_join_cluster_case5_snapshot_triggered() {
-    enable_logger();
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
         "/tmp/test_handle_join_cluster_case5_snapshot_triggered",
@@ -3257,7 +3267,6 @@ mod batch_promote_learners_test {
     #[tokio::test]
     #[ignore]
     async fn test_batch_promote_learners_success() {
-        enable_logger();
         // Use safe cluster configuration: 1 voter promoting 1 learner = 2 voters total
         let mut ctx = setup_test_context(
             "test_success",
@@ -3544,7 +3553,6 @@ mod pending_promotion_tests {
     // Test cases for process_pending_promotions
     #[tokio::test]
     async fn test_process_pending_promotions() {
-        enable_logger();
         let mut fixture = TestFixture::new("test_process_pending_promotions", true).await;
         // Setup test data
         fixture.leader_state.pending_promotions = vec![
@@ -3575,7 +3583,6 @@ mod pending_promotion_tests {
 
     #[tokio::test]
     async fn test_partial_batch_promotion() {
-        enable_logger();
         let mut fixture = TestFixture::new("test_partial_batch_promotion", true).await;
         // Setup: 3 voters, 2 pending promotions -> max batch size=1
         let mut membership = MockMembership::new();
@@ -3610,7 +3617,6 @@ mod pending_promotion_tests {
 
     #[tokio::test]
     async fn test_promotion_event_rescheduling() {
-        enable_logger();
         let mut fixture = TestFixture::new("test_promotion_event_rescheduling", true).await;
         // Setup more nodes than can be promoted in one batch
         fixture.leader_state.pending_promotions =
@@ -3888,7 +3894,6 @@ mod stale_learner_tests {
 
     #[tokio::test]
     async fn test_promotion_timeout_threshold() {
-        enable_logger();
         let (mut leader, membership) = create_test_leader_state(
             "test",
             vec![
@@ -3914,7 +3919,6 @@ mod stale_learner_tests {
 
     #[tokio::test]
     async fn test_downgrade_affects_replication() {
-        enable_logger();
         let (mut leader, mut membership) = create_test_leader_state(
             "test",
             vec![

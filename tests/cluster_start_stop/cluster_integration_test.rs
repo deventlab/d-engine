@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use d_engine::ClientApiError;
 use tracing::error;
+use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
@@ -27,8 +28,8 @@ const TEST_CASE2_LOG_DIR: &str = "./logs/cluster_start_stop/case2";
 /// Case 1: start 3 node cluster and test simple get/put, and then stop the
 /// cluster
 #[tokio::test]
+#[traced_test]
 async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(TEST_CASE1_DIR).await?;
 
     let ports = [
@@ -122,8 +123,8 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
 /// - get 2
 /// 21
 #[tokio::test]
+#[traced_test]
 async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(TEST_CASE2_DIR).await?;
 
     let ports = [

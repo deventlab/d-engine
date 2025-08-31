@@ -27,6 +27,7 @@ use crate::FOLLOWER;
 use crate::LEARNER;
 
 #[tokio::test]
+#[traced_test]
 async fn test_readiness_state_transition() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let node = mock_node("/tmp/test_readiness_state_transition", shutdown_rx, None);
@@ -37,6 +38,7 @@ async fn test_readiness_state_transition() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_run_sequence_with_mock_peers() {
     let (shutdown_tx, shutdown_rx) = watch::channel(());
     let node = mock_node("/tmp/test_run_sequence_with_mock_peers", shutdown_rx, None);
