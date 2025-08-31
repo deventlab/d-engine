@@ -3862,12 +3862,9 @@ mod stale_learner_tests {
         a: Duration,
         b: Duration,
     ) -> Duration {
-        if a > b {
-            a - b
-        } else {
-            b - a
-        }
+        a.abs_diff(b)
     }
+
     /// Test system remains responsive during large queues
     #[tokio::test]
     async fn test_performance_large_queue() {
