@@ -42,7 +42,6 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -82,17 +81,17 @@ impl TestContext {
     }
 }
 
-static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
-        .init();
-});
+// static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
+//     tracing_subscriber::registry()
+//         .with(fmt::layer())
+//         .with(EnvFilter::from_default_env())
+//         .init();
+// });
 
-pub fn enable_logger() {
-    *LOGGER_INIT;
-    println!("setup logger for unit test.");
-}
+// pub fn enable_logger() {
+//     *LOGGER_INIT;
+//     println!("setup logger for unit test.");
+// }
 
 pub async fn create_node_config(
     node_id: u64,

@@ -19,7 +19,6 @@ use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
-use crate::common::enable_logger;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
