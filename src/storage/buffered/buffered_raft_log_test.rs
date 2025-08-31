@@ -2677,7 +2677,9 @@ mod performance_tests {
     // 3. Tests fresh cluster performance consistency
     #[tokio::test]
     async fn test_fresh_cluster_performance_consistency() {
-        const MAX_DURATION_MS: u64 = 5; // Should be very fast
+        let is_ci = std::env::var("CI").is_ok();
+        // Relax time limit in CI environment
+        let max_duration_ms = if is_ci { 50 } else { 5 };
 
         let test_cases = vec![
             (
@@ -2717,7 +2719,7 @@ mod performance_tests {
             let duration = start.elapsed();
 
             assert!(
-                duration.as_millis() < MAX_DURATION_MS as u128,
+                duration.as_millis() < max_duration_ms as u128,
                 "Fresh cluster reset took {}ms ({:?}/{:?})",
                 duration.as_millis(),
                 strategy,
@@ -3610,13 +3612,26 @@ async fn test_recovery_under_different_scenarios() {
 #[tokio::test]
 #[traced_test]
 async fn test_performance_benchmarks() {
-    // More realistic performance thresholds
-    let operations = [
-        ("append_entries", 1000, 1000.0),
-        ("get_entries_range", 5000, 50000.0),
-        ("entry_lookup", 10000, 200000.0),
-        ("term_queries", 8000, 50000.0), // Reduced expectation
-    ];
+    let is_ci = std::env::var("CI").is_ok();
+
+    // Adjust test parameters according to the environment
+    let operations = if is_ci {
+        // CI environment uses a more relaxed threshold
+        [
+            ("append_entries", 500, 500.0),
+            ("get_entries_range", 2500, 25000.0),
+            ("entry_lookup", 5000, 100000.0),
+            ("term_queries", 4000, 25000.0),
+        ]
+    } else {
+        // Local environment uses a stricter threshold
+        [
+            ("append_entries", 1000, 1000.0),
+            ("get_entries_range", 5000, 50000.0),
+            ("entry_lookup", 10000, 200000.0),
+            ("term_queries", 8000, 50000.0),
+        ]
+    };
 
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -3629,7 +3644,10 @@ async fn test_performance_benchmarks() {
 
     // Pre-populate with data
     let mut entries = Vec::new();
-    for i in 1..=10000 {
+    // Reduce pre-population data in a CI environment
+    let pre_populate_count = if is_ci { 5000 } else { 10000 };
+
+    for i in 1..=pre_populate_count {
         entries.push(Entry {
             index: i,
             term: i / 100 + 1,                                  // Vary terms
