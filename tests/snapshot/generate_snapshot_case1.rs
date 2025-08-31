@@ -66,16 +66,16 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     // Prepare state machines
     let sm1 =
-        Arc::new(prepare_state_machine(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR)).await);
+        Arc::new(prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1")).await);
     let sm2 =
-        Arc::new(prepare_state_machine(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR)).await);
+        Arc::new(prepare_state_machine(2, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/2")).await);
     let sm3 =
-        Arc::new(prepare_state_machine(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR)).await);
+        Arc::new(prepare_state_machine(3, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/3")).await);
 
     // Prepare raft logs
-    let r1 = prepare_storage_engine(1, &format!("{}/cs/1", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
-    let r2 = prepare_storage_engine(2, &format!("{}/cs/2", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
-    let r3 = prepare_storage_engine(3, &format!("{}/cs/3", SNAPSHOT_CASE1_DB_ROOT_DIR), 0);
+    let r1 = prepare_storage_engine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1"), 0);
+    let r2 = prepare_storage_engine(2, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/2"), 0);
+    let r3 = prepare_storage_engine(3, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/3"), 0);
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1).await;
@@ -117,7 +117,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         let mut node_config = node_config(&config);
 
         node_config.raft.snapshot.snapshots_dir =
-            PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
+            PathBuf::from(format!("{SNAPSHOT_DIR}/{node_id}"));
         //Dirty code: could leave it like this for now.
         snapshot_last_included_id =
             Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));

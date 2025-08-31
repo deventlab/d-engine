@@ -721,7 +721,7 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
 
     // Ensure handler completes successfully
     let handler_result = handler_task.await;
-    println!("handler_task.await: {:?}", handler_result);
+    println!("handler_task.await: {handler_result:?}");
     assert!(handler_result.unwrap().is_ok());
 }
 mod create_snapshot_tests {

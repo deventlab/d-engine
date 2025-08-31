@@ -50,7 +50,7 @@ async fn test_put_success() {
     let value = "test_value".to_string().into_bytes();
 
     let result = client.put(key, value).await;
-    println!("Result: {:?}", result);
+    println!("Result: {result:?}",);
     assert!(result.is_ok());
 }
 

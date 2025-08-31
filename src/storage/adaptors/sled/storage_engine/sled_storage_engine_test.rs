@@ -206,10 +206,10 @@ async fn test_corrupted_data_handling() {
 
     // Should return decode error
     let r = storage.log_store().entry(1).await;
-    println!("{:?}", r);
+    println!("{r:?}");
     match r {
         Err(Error::System(SystemError::Prost(ProstError::Decode(_)))) => {} // Expected
-        other => panic!("Unexpected result: {:?}", other),
+        other => panic!("Unexpected result: {other:?}"),
     }
 }
 

@@ -140,7 +140,7 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
 
     let cluster: ClusterConfig = settings.try_deserialize().unwrap();
 
-    println!("Parsed cluster: {:#?}", cluster);
+    println!("Parsed cluster: {cluster:#?}",);
 
     let raft = RaftConfig {
         general_raft_timeout_duration_in_ms: 10000,
@@ -324,7 +324,7 @@ pub async fn manipulate_log(
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        println!("pre_allocate_raft_logs_next_index: {}", id);
+        println!("pre_allocate_raft_logs_next_index: {id}",);
 
         let log = Entry {
             index: id,
@@ -362,9 +362,7 @@ pub async fn test_put_get(
             .execute_command(ClientCommands::Put, key, Some(value))
             .await
             .is_ok(),
-        "Put command failed for key {} value {}",
-        key,
-        value
+        "Put command failed for key {key} value {value}"
     );
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     client_manager.verify_read(key, value, ITERATIONS).await;

@@ -266,7 +266,7 @@ where
 
                 let indexes: Vec<u64> = entries.iter().map(|e| e.index).collect();
                 self.command_sender.send(LogCommand::PersistEntries(indexes)).map_err(|e| {
-                    NetworkError::SingalSendFailed(format!("Failed to send signal: {:?}", e))
+                    NetworkError::SingalSendFailed(format!("Failed to send signal: {e:?}",))
                 })?;
             }
         }
@@ -442,7 +442,7 @@ where
         // Trigger immediate flush of all pending entries
         let (tx, rx) = oneshot::channel();
         self.command_sender.send(LogCommand::Flush(tx)).map_err(|e| {
-            NetworkError::SingalSendFailed(format!("Failed to send flush command: {:?}", e))
+            NetworkError::SingalSendFailed(format!("Failed to send flush command: {e:?}",))
         })?;
         let _result = rx
             .await

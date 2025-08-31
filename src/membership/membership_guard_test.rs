@@ -13,7 +13,7 @@ use crate::MembershipError;
 fn create_test_node(id: u32) -> NodeMeta {
     NodeMeta {
         id,
-        address: format!("node-{}.test:8080", id),
+        address: format!("node-{id}.test:8080"),
         ..Default::default()
     }
 }
@@ -231,11 +231,10 @@ async fn reads_are_not_blocked_by_writes() {
     write_handle.await.unwrap();
 
     let avg_read_time = elapsed.as_micros() as f64 / 100.0;
-    println!("Average read time: {:.2}μs", avg_read_time);
+    println!("Average read time: {avg_read_time:.2}μs");
     assert!(
         avg_read_time < 50.0,
-        "Reads should be fast, average was {:.2}μs",
-        avg_read_time
+        "Reads should be fast, average was {avg_read_time:.2}μs"
     );
 
     // Verify write completed

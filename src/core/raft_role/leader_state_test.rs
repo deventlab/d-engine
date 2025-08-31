@@ -3284,7 +3284,7 @@ mod batch_promote_learners_test {
 
         assert!(result.is_ok());
         let r = ctx.role_rx.recv().await.unwrap();
-        println!("Received role: {:?}", r);
+        println!("Received role: {r:?}",);
     }
 
     /// Test promotion failure when quorum not achieved
@@ -3524,7 +3524,7 @@ mod pending_promotion_tests {
 
         // Test debug formatting
         assert!(
-            format!("{:?}", promotion).contains("1001"),
+            format!("{promotion:?}",).contains("1001"),
             "Debug output should contain node ID"
         );
     }
@@ -3543,8 +3543,7 @@ mod pending_promotion_tests {
             let result = calculate_safe_batch_size(current, available);
             assert_eq!(
                 result, expected_batch_size,
-                "Expected batch size for (current={}, available={}) is {}",
-                current, available, expected_batch_size
+                "Expected batch size for (current={current}, available={available}) is {expected_batch_size}"
             );
         }
     }
@@ -3633,7 +3632,7 @@ mod pending_promotion_tests {
         // Wait up to 200ms for events to arrive
         let result = timeout(Duration::from_millis(200), async {
             while let Some(event) = fixture.role_rx.recv().await {
-                println!("Event received: {:?}", event);
+                println!("Event received: {event:?}");
                 if matches!(event, RoleEvent::ReprocessEvent(inner) if matches!(*inner, RaftEvent::PromoteReadyLearners)) {
                     found = true;
                     break;
@@ -3881,7 +3880,7 @@ mod stale_learner_tests {
         let elapsed = start.elapsed();
 
         // Should take <1ms even for large queues
-        println!("Staleness check for 10k nodes: {:?}", elapsed);
+        println!("Staleness check for 10k nodes: {elapsed:?}");
         assert!(
             elapsed < Duration::from_millis(20),
             "Staleness check shouldn't process entire queue"

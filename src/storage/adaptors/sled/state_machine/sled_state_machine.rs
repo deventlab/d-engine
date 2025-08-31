@@ -402,7 +402,7 @@ impl StateMachine for SledStateMachine {
         // Calculate the checksum after generating snapshot data
         let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
 
-        println!("checksum = {:?}", checksum);
+        println!("checksum = {checksum:?}",);
         // Make sure last included is updated to the new ones
 
         let last_snapshot_metadata = SnapshotMetadata {

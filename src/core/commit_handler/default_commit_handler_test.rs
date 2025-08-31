@@ -1219,7 +1219,7 @@ mod process_batch_test {
 
         // Verify only first config was processed
         let order = process_order.lock();
-        println!("Order: {:?}", order);
+        println!("Order: {order:?}",);
         assert_eq!(order.len(), 1);
         assert!(order[0].starts_with("command"));
     }

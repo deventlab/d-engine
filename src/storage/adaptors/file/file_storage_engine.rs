@@ -183,7 +183,7 @@ impl FileLogStore {
                     max_index = max_index.max(entry.index);
                 }
                 Err(e) => {
-                    eprintln!("Failed to decode entry: {}", e);
+                    eprintln!("Failed to decode entry: {e}",);
                     // Continue with next entry
                 }
             }
@@ -455,7 +455,7 @@ impl FileMetaStore {
                     info!("Loaded hard state from file");
                 }
                 Err(e) => {
-                    eprintln!("Failed to decode hard state: {}", e);
+                    eprintln!("Failed to decode hard state: {e}",);
                 }
             }
         }

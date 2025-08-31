@@ -69,7 +69,7 @@ impl MockStorageEngine {
                 let instance_id_ref = instance_id_ref.clone();
                 MOCK_STORAGE_DATA.with(|data| {
                     let binding = data.borrow();
-                    let key = format!("{}_last_index", instance_id_ref);
+                    let key = format!("{instance_id_ref}_last_index");
                     binding
                         .get(&key)
                         .map(|v| {
@@ -98,7 +98,7 @@ impl MockStorageEngine {
 
                     // Update last index
                     if let Some(last_entry) = entries.last() {
-                        let key = format!("{}_last_index", instance_id_ref);
+                        let key = format!("{instance_id_ref}_last_index");
                         binding.insert(key, last_entry.index.to_be_bytes().to_vec());
                     }
 
@@ -114,7 +114,7 @@ impl MockStorageEngine {
                 let instance_id_ref = instance_id_ref.clone();
                 Ok(MOCK_STORAGE_DATA.with(|data| {
                     let binding = data.borrow();
-                    let key = format!("{}_entry_{}", instance_id_ref, index);
+                    let key = format!("{instance_id_ref}_entry_{index}");
                     binding.get(&key).map(|v| bincode::deserialize(v).unwrap())
                 }))
             }
@@ -131,7 +131,7 @@ impl MockStorageEngine {
                     let mut result = Vec::new();
 
                     for index in *range.start()..=*range.end() {
-                        let key = format!("{}_entry_{}", instance_id_ref, index);
+                        let key = format!("{instance_id_ref}_entry_{index}");
                         if let Some(value) = binding.get(&key) {
                             result.push(bincode::deserialize(value).unwrap());
                         }
@@ -155,11 +155,11 @@ impl MockStorageEngine {
                     let mut binding = data.borrow_mut();
                     // Only remove log entries (keys starting with `"{id}_entry_"` or
                     // `"{id}_last_index"`)
-                    let last_index_key = format!("{}_last_index", instance_id_ref);
+                    let last_index_key = format!("{instance_id_ref}_last_index");
                     let keys: Vec<String> = binding
                         .keys()
                         .filter(|k| {
-                            k.starts_with(&format!("{}_entry_", instance_id_ref))
+                            k.starts_with(&format!("{instance_id_ref}_entry_"))
                                 || k.as_str() == last_index_key
                         })
                         .cloned()
@@ -179,7 +179,7 @@ impl MockStorageEngine {
             move |state| {
                 MOCK_STORAGE_DATA.with(|data| {
                     let mut binding = data.borrow_mut();
-                    let key = format!("{}_meta_hard_state", instance_id_ref);
+                    let key = format!("{instance_id_ref}_meta_hard_state");
                     let value = bincode::serialize(state).expect("serialize hard_state");
                     binding.insert(key, value);
                     Ok(())
@@ -191,7 +191,7 @@ impl MockStorageEngine {
             move || {
                 Ok(MOCK_STORAGE_DATA.with(|data| {
                     let binding = data.borrow();
-                    let key = format!("{}_meta_hard_state", instance_id_ref);
+                    let key = format!("{instance_id_ref}_meta_hard_state");
                     binding.get(&key).map(|bytes| {
                         bincode::deserialize::<HardState>(bytes).expect("deserialize hard_state")
                     })

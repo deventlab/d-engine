@@ -63,7 +63,7 @@ async fn test_join_cluster_success() {
                 nodes: vec![NodeMeta {
                     id: 1,
                     role: LEADER,
-                    address: format!("127.0.0.1:{}", port),
+                    address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
             })

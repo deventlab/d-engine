@@ -53,14 +53,14 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     ];
 
     // Prepare raft logs
-    let r1 = prepare_storage_engine(1, &format!("{}/cs/1", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    let r1 = prepare_storage_engine(1, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/1"), 0);
     manipulate_log(&r1, (1..=10).collect(), 2).await;
     init_hard_state(&r1, 2, None);
-    let r2 = prepare_storage_engine(2, &format!("{}/cs/2", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    let r2 = prepare_storage_engine(2, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/2"), 0);
     manipulate_log(&r2, (1..=2).collect(), 2).await;
     init_hard_state(&r2, 3, None);
     manipulate_log(&r2, (3..=8).collect(), 3).await;
-    let r3 = prepare_storage_engine(3, &format!("{}/cs/3", ELECTION_CASE1_DB_ROOT_DIR), 0);
+    let r3 = prepare_storage_engine(3, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/3"), 0);
     init_hard_state(&r3, 0, None);
 
     // Start cluster nodes
@@ -112,7 +112,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
             Ok(mgr) => break mgr,
             Err(e) => {
                 if start.elapsed() > timeout {
-                    panic!("Leader not elected within timeout: {:?}", e);
+                    panic!("Leader not elected within timeout: {e:?}");
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }

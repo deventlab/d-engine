@@ -31,8 +31,8 @@ pub fn init_sled_log_tree_and_meta_tree(
     node_id: u32,
 ) -> Result<(sled::Tree, sled::Tree), Error> {
     let db = init_sled_storage_engine_db(&sled_db_root_path)?;
-    let log_tree_name = format!("raft_log_{}_{}", RAFT_LOG_NAMESPACE, node_id);
-    let meta_tree_name = format!("raft_meta_{}_{}", RAFT_META_NAMESPACE, node_id);
+    let log_tree_name = format!("raft_log_{RAFT_LOG_NAMESPACE}_{node_id}");
+    let meta_tree_name = format!("raft_meta_{RAFT_META_NAMESPACE}_{node_id}");
     let log_tree = db.open_tree(&log_tree_name)?;
     let meta_tree = db.open_tree(&meta_tree_name)?;
 

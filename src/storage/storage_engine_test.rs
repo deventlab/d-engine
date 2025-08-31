@@ -276,8 +276,8 @@ fn create_test_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
 /// Helper function to create test command payload
 fn create_test_command_payload(index: u64) -> crate::proto::common::EntryPayload {
     // Create a simple insert command
-    let key = format!("key_{}", index).into_bytes();
-    let value = format!("value_{}", index).into_bytes();
+    let key = format!("key_{index}").into_bytes();
+    let value = format!("value_{index}").into_bytes();
 
     let insert = Insert { key, value };
     let operation = crate::proto::client::write_command::Operation::Insert(insert);

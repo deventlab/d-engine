@@ -1742,13 +1742,13 @@ mod id_allocation_tests {
         for result in &results {
             match result {
                 AllocationResult::Single(id) => {
-                    assert!(!all_ids.contains(id), "Duplicate ID: {}", id);
+                    assert!(!all_ids.contains(id), "Duplicate ID: {id}",);
                     all_ids.insert(*id);
                 }
                 AllocationResult::Range(range) => {
                     if !range.is_empty() {
                         for id in *range.start()..=*range.end() {
-                            assert!(!all_ids.contains(&id), "Duplicate ID: {}", id);
+                            assert!(!all_ids.contains(&id), "Duplicate ID: {id}",);
                             all_ids.insert(id);
                         }
                     }
@@ -1934,7 +1934,7 @@ mod disk_first_tests {
                 .append_entries(vec![Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(format!("data{}", i).into_bytes())),
+                    payload: Some(EntryPayload::command(format!("data{i}",).into_bytes())),
                 }])
                 .await
                 .unwrap();
@@ -1993,7 +1993,7 @@ mod disk_first_tests {
                 .append_entries(vec![Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(format!("data{}", i).into_bytes())),
+                    payload: Some(EntryPayload::command(format!("data{i}",).into_bytes())),
                 }])
                 .await
                 .unwrap();
@@ -2425,15 +2425,12 @@ mod filter_out_conflicts_and_append_performance_tests {
             .unwrap();
 
             let duration = start.elapsed().as_millis() as u64;
-            println!("Interval {}ms: Took {}ms", interval_ms, duration);
+            println!("Interval {interval_ms}ms: Took {duration}ms");
 
             // Verify performance consistency
             assert!(
                 duration <= max_duration_ms,
-                "Duration {}ms exceeds max {}ms for {}ms interval",
-                duration,
-                max_duration_ms,
-                interval_ms
+                "Duration {duration}ms exceeds max {max_duration_ms}ms for {interval_ms}ms interval"
             );
 
             // Verify correctness
@@ -2499,15 +2496,12 @@ mod filter_out_conflicts_and_append_performance_tests {
             .unwrap();
 
             let duration = start.elapsed().as_millis() as u64;
-            println!("Interval {}ms: Took {}ms", interval_ms, duration);
+            println!("Interval {interval_ms}ms: Took {duration}ms");
 
             // Verify performance consistency
             assert!(
                 duration <= max_duration_ms,
-                "Duration {}ms exceeds max {}ms for {}ms interval",
-                duration,
-                max_duration_ms,
-                interval_ms
+                "Duration {duration}ms exceeds max {max_duration_ms}ms for {interval_ms}ms interval"
             );
 
             // Verify correctness
@@ -3172,7 +3166,7 @@ async fn test_last_entry_id_performance() {
     let insert_start = Instant::now();
     test_context.raft_log.append_entries(entries).await.unwrap();
     let insert_duration = insert_start.elapsed();
-    println!("Insert duration: {:?}", insert_duration);
+    println!("Insert duration: {insert_duration:?}");
 
     // Measure last_entry_id performance
     let mut durations = Vec::with_capacity(10);
@@ -3186,7 +3180,7 @@ async fn test_last_entry_id_performance() {
 
     // Calculate average duration
     let avg_duration = durations.iter().sum::<Duration>() / durations.len() as u32;
-    println!("Average last_entry_id duration: {:?}", avg_duration);
+    println!("Average last_entry_id duration: {avg_duration:?}");
     assert!(avg_duration < Duration::from_millis(1));
     // Assert that the last entry ID is correct
     assert_eq!(last_id, ENTRY_COUNT as u64 - 1);
@@ -3399,7 +3393,7 @@ mod remove_range_tests {
         context.raft_log.remove_range(25_001..=75_000);
         let duration = start.elapsed();
 
-        println!("Removed 50,000 entries in {:?}", duration);
+        println!("Removed 50,000 entries in {duration:?}");
         assert!(duration < std::time::Duration::from_millis(100));
 
         // Verify state
@@ -3503,14 +3497,13 @@ async fn test_high_concurrency_mixed_operations() {
     }
 
     let duration = start_time.elapsed();
-    println!("Mixed operations completed in: {:?}", duration);
+    println!("Mixed operations completed in: {duration:?}");
 
     // Verify data integrity
     assert_eq!(ctx.raft_log.len(), 10000);
     assert!(
         duration < Duration::from_secs(10),
-        "Operations took too long: {:?}",
-        duration
+        "Operations took too long: {duration:?}"
     );
 }
 
@@ -3575,7 +3568,7 @@ async fn test_recovery_under_different_scenarios() {
     ];
 
     for (strategy, flush_policy, expected_recovery) in scenarios {
-        let instance_id = format!("recovery_test_{:?}_{:?}", strategy, flush_policy);
+        let instance_id = format!("recovery_test_{strategy:?}_{flush_policy:?}");
         let original_ctx = TestContext::new(strategy.clone(), flush_policy.clone(), &instance_id);
 
         // Add test data
@@ -3585,7 +3578,7 @@ async fn test_recovery_under_different_scenarios() {
                 .append_entries(vec![Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(format!("data{}", i).into_bytes())),
+                    payload: Some(EntryPayload::command(format!("data{i}").into_bytes())),
                 }])
                 .await
                 .unwrap();
@@ -3611,9 +3604,7 @@ async fn test_recovery_under_different_scenarios() {
         assert_eq!(
             recovered_ctx.raft_log.len(),
             expected_recovery,
-            "Recovery mismatch for strategy {:?} policy {:?}",
-            strategy,
-            flush_policy
+            "Recovery mismatch for strategy {strategy:?} policy {flush_policy:?}"
         );
     }
 }
@@ -3709,17 +3700,13 @@ async fn test_performance_benchmarks() {
         results.insert(op_name, (duration, ops_per_sec));
 
         println!(
-            "{}: {} operations in {:?} ({:.2} ops/sec)",
-            op_name, count, duration, ops_per_sec
+            "{op_name}: {count} operations in {duration:?} ({ops_per_sec:.2} ops/sec)"
         );
 
         // Performance assertions with more realistic thresholds
         assert!(
             ops_per_sec > min_ops_per_sec,
-            "{} operations too slow: {:.2} ops/sec (expected > {:.2})",
-            op_name,
-            ops_per_sec,
-            min_ops_per_sec
+            "{op_name} operations too slow: {ops_per_sec:.2} ops/sec (expected > {min_ops_per_sec:.2})"
         );
     }
 }
