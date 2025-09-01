@@ -11,10 +11,8 @@ use super::*;
 use crate::proto::storage::SnapshotChunk;
 use crate::proto::storage::SnapshotResponse;
 use crate::test_utils::create_snapshot_stream;
-use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
-use crate::test_utils::{self};
 use crate::Error;
 use crate::NetworkError;
 use crate::SnapshotConfig;
@@ -58,7 +56,6 @@ mod run_push_transfer_test {
 
     #[tokio::test]
     async fn test_push_transfer_success() {
-        test_utils::enable_logger();
         let config = default_snapshot_config();
         let stream = create_snapshot_stream(3, 1024); // 3 chunks of 1KB each
 
@@ -125,7 +122,6 @@ mod run_push_transfer_test {
     // Test: Transfer respects bandwidth limit
     #[tokio::test]
     async fn test_push_transfer_respects_bandwidth_limit() {
-        enable_logger();
         let mut config = default_snapshot_config();
         config.max_bandwidth_mbps = 1; // 1 MBps
         config.push_queue_size = 1;
@@ -170,7 +166,6 @@ mod run_push_transfer_test {
     // Test: First chunk validation fails when metadata is missing
     #[tokio::test]
     async fn test_push_transfer_fails_on_invalid_first_chunk_metadata() {
-        enable_logger();
         let config = default_snapshot_config();
 
         // Create a stream with first chunk missing metadata
@@ -208,7 +203,6 @@ mod run_push_transfer_test {
     // Test: First chunk validation fails when sequence is not 0
     #[tokio::test]
     async fn test_push_transfer_fails_on_invalid_first_chunk_sequence() {
-        enable_logger();
         let config = default_snapshot_config();
 
         // Create a stream with first chunk having wrong sequence
@@ -245,7 +239,6 @@ mod run_push_transfer_test {
     // Test: Transfer fails when stream is empty
     #[tokio::test]
     async fn test_push_transfer_fails_on_empty_stream() {
-        enable_logger();
         let config = default_snapshot_config();
 
         // Empty stream
@@ -281,7 +274,6 @@ mod run_push_transfer_test {
     // Test: Transfer fails when gRPC call returns error
     #[tokio::test]
     async fn test_push_transfer_fails_on_grpc_error() {
-        enable_logger();
         let config = default_snapshot_config();
         let stream = create_snapshot_stream(3, 1024);
 
@@ -313,7 +305,6 @@ mod run_push_transfer_test {
     // Test: Transfer fails when background task fails to send chunk
     #[tokio::test]
     async fn test_push_transfer_fails_on_background_task_error() {
-        enable_logger();
         let mut config = default_snapshot_config();
         config.push_queue_size = 1; // Small queue to cause backpressure
         config.snapshot_push_backoff_in_ms = 0;
@@ -357,7 +348,6 @@ mod run_push_transfer_test {
     // Test: Transfer fails when gRPC response indicates failure
     #[tokio::test]
     async fn test_push_transfer_fails_on_remote_rejection() {
-        enable_logger();
         let mut config = default_snapshot_config();
         config.push_timeout_in_ms = 50;
         let stream = create_snapshot_stream(3, 1024);

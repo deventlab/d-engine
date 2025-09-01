@@ -1,3 +1,11 @@
+//! High-performance buffered Raft log with static dispatch
+//!
+//! - Lock-free in-memory index
+//! - Batch I/O operations
+//! - Async persistence pipeline
+//! - Generic storage integration
+
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -20,6 +28,9 @@ use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::scoped_timer::ScopedTimer;
 use crate::FlushPolicy;
+use crate::HardState;
+use crate::LogStore;
+use crate::MetaStore;
 use crate::NetworkError;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
@@ -64,9 +75,11 @@ where
     #[allow(dead_code)]
     node_id: u32,
 
-    pub(crate) storage: Arc<SOF<T>>,
-    strategy: PersistenceStrategy,
-    flush_policy: FlushPolicy,
+    pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
+    pub(crate) meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
+
+    pub(crate) strategy: PersistenceStrategy,
+    pub(crate) flush_policy: FlushPolicy,
 
     // --- In-memory state ---
     // Pending entries
@@ -79,6 +92,9 @@ where
     // --- In-memory index ---
     min_index: AtomicU64, // Smallest log index (0 if empty)
     max_index: AtomicU64, // Largest log index (0 if empty)
+
+    term_first_index: SkipMap<u64, AtomicU64>,
+    term_last_index: SkipMap<u64, AtomicU64>,
 
     // --- Flush coordination ---
     // Channel to trigger flushes
@@ -142,39 +158,53 @@ where
         self.entry(entry_id).ok().flatten().map(|entry| entry.term)
     }
 
+    // fn first_index_for_term(
+    //     &self,
+    //     term: u64,
+    // ) -> Option<u64> {
+    //     // OPTIMIZED: Check last entry first for common case
+    //     if let Some(front) = self.entries.front() {
+    //         if front.value().term == term {
+    //             return Some(*front.key());
+    //         }
+    //     }
+
+    //     // OPTIMIZED: Forward scan stops at first match (O(k) where k is position of first term
+    //     // match)
+    //     self.entries.iter().find(|entry| entry.value().term == term).map(|e| *e.key())
+    // }
+
+    // fn last_index_for_term(
+    //     &self,
+    //     term: u64,
+    // ) -> Option<u64> {
+    //     // OPTIMIZED: Check last entry first for common case
+    //     if let Some(last) = self.entries.back() {
+    //         if last.value().term == term {
+    //             return Some(*last.key());
+    //         }
+    //     }
+
+    //     // OPTIMIZED: Reverse scan stops at last match (O(k) where k is position of last term
+    // match)     self.entries
+    //         .iter()
+    //         .rev()
+    //         .find(|entry| entry.value().term == term)
+    //         .map(|e| *e.key())
+    // }
+
     fn first_index_for_term(
         &self,
         term: u64,
     ) -> Option<u64> {
-        // OPTIMIZED: Check last entry first for common case
-        if let Some(front) = self.entries.front() {
-            if front.value().term == term {
-                return Some(*front.key());
-            }
-        }
-
-        // OPTIMIZED: Forward scan stops at first match (O(k) where k is position of first term
-        // match)
-        self.entries.iter().find(|entry| entry.value().term == term).map(|e| *e.key())
+        self.term_first_index.get(&term).map(|e| e.value().load(Ordering::Acquire))
     }
 
     fn last_index_for_term(
         &self,
         term: u64,
     ) -> Option<u64> {
-        // OPTIMIZED: Check last entry first for common case
-        if let Some(last) = self.entries.back() {
-            if last.value().term == term {
-                return Some(*last.key());
-            }
-        }
-
-        // OPTIMIZED: Reverse scan stops at last match (O(k) where k is position of last term match)
-        self.entries
-            .iter()
-            .rev()
-            .find(|entry| entry.value().term == term)
-            .map(|e| *e.key())
+        self.term_last_index.get(&term).map(|e| e.value().load(Ordering::Acquire))
     }
 
     fn pre_allocate_raft_logs_next_index(&self) -> u64 {
@@ -223,15 +253,20 @@ where
                 for entry in &entries {
                     self.entries.insert(entry.index, entry.clone());
                 }
+
+                self.update_term_indexes(&entries);
             }
             PersistenceStrategy::MemFirst => {
                 // For MemFirst, update memory first then persist async
                 for entry in &entries {
                     self.entries.insert(entry.index, entry.clone());
                 }
+
+                self.update_term_indexes(&entries);
+
                 let indexes: Vec<u64> = entries.iter().map(|e| e.index).collect();
                 self.command_sender.send(LogCommand::PersistEntries(indexes)).map_err(|e| {
-                    NetworkError::SingalSendFailed(format!("Failed to send signal: {:?}", e))
+                    NetworkError::SingalSendFailed(format!("Failed to send signal: {e:?}",))
                 })?;
             }
         }
@@ -326,7 +361,7 @@ where
             self.remove_range(start_index..=u64::MAX);
 
             // Truncate storage
-            self.storage.truncate(start_index)?;
+            self.log_store.truncate(start_index).await?;
         }
 
         // Append new entries
@@ -372,7 +407,7 @@ where
         }
     }
 
-    fn purge_logs_up_to(
+    async fn purge_logs_up_to(
         &self,
         cutoff_index: LogId,
     ) -> Result<()> {
@@ -398,7 +433,7 @@ where
         }
 
         // Persist to storage
-        self.storage.purge_logs(cutoff_index)?;
+        self.log_store.purge(cutoff_index).await?;
 
         Ok(())
     }
@@ -407,7 +442,7 @@ where
         // Trigger immediate flush of all pending entries
         let (tx, rx) = oneshot::channel();
         self.command_sender.send(LogCommand::Flush(tx)).map_err(|e| {
-            NetworkError::SingalSendFailed(format!("Failed to send flush command: {:?}", e))
+            NetworkError::SingalSendFailed(format!("Failed to send flush command: {e:?}",))
         })?;
         let _result = rx
             .await
@@ -417,25 +452,23 @@ where
 
     async fn reset(&self) -> Result<()> {
         let _timer = ScopedTimer::new("buffered_raft_log::reset");
-        self.reset_internal()?;
+        self.reset_internal().await?;
 
-        let storage_clone = self.storage.clone();
-        tokio::spawn(async move {
-            let _ = storage_clone.reset();
-        });
+        //reset disk
+        self.log_store.reset().await?;
 
         Ok(())
     }
 
-    fn load_hard_state(&self) -> Result<Option<crate::HardState>> {
-        self.storage.load_hard_state()
+    fn load_hard_state(&self) -> Result<Option<HardState>> {
+        self.meta_store.load_hard_state()
     }
 
     fn save_hard_state(
         &self,
-        hard_state: crate::HardState,
+        hard_state: &HardState,
     ) -> Result<()> {
-        self.storage.save_hard_state(hard_state)
+        self.meta_store.save_hard_state(hard_state)
     }
 }
 
@@ -448,14 +481,16 @@ where
         persistence_config: PersistenceConfig,
         storage: Arc<SOF<T>>,
     ) -> (Self, mpsc::UnboundedReceiver<LogCommand>) {
-        let disk_len = storage.last_index();
+        let log_store = storage.log_store();
+        let meta_store = storage.meta_store();
+        let disk_len = log_store.last_index();
 
         debug!(
             "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
             node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
         );
 
-        println!(
+        trace!(
             "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
             node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
         );
@@ -464,12 +499,29 @@ where
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
         let entries = SkipMap::new();
 
+        // Initialize term indexes
+        let term_first_index = SkipMap::new();
+        let term_last_index = SkipMap::new();
+
         // Load all entries from disk to memory
         if disk_len > 0 {
-            match storage.get_entries_range(1..=disk_len) {
+            match log_store.get_entries(1..=disk_len) {
                 Ok(all_entries) => {
                     for entry in all_entries {
-                        entries.insert(entry.index, entry);
+                        let index = entry.index;
+                        entries.insert(index, entry.clone());
+
+                        // MODIFIED: Initialize term indexes for each loaded entry
+                        // Update first index for term
+                        term_first_index
+                            .get_or_insert(entry.term, AtomicU64::new(u64::MAX))
+                            .value()
+                            .fetch_min(index, Ordering::AcqRel);
+                        // Update last index for term
+                        term_last_index
+                            .get_or_insert(entry.term, AtomicU64::new(0))
+                            .value()
+                            .fetch_max(index, Ordering::AcqRel);
                     }
                 }
                 Err(e) => {
@@ -486,7 +538,8 @@ where
         (
             Self {
                 node_id,
-                storage,
+                log_store,
+                meta_store,
                 strategy: persistence_config.strategy,
                 flush_policy: persistence_config.flush_policy,
                 entries,
@@ -499,6 +552,8 @@ where
                     pending_indexes: Vec::new(),
                 }),
                 waiters: DashMap::new(),
+                term_first_index,
+                term_last_index,
             },
             command_receiver,
         )
@@ -587,12 +642,19 @@ where
                 let _ = ack.send(result);
             }
             LogCommand::Reset(ack) => {
-                let result = self.reset_internal();
-                let _ = ack.send(result);
+                if let Err(e) = self.reset_internal().await {
+                    error!("Failed to reset internal state: {}", e);
+                    let _ = ack.send(Err(e));
+                } else {
+                    //reset disk
+                    let result = self.log_store.reset().await;
+                    let _ = ack.send(result);
+                }
             }
             LogCommand::Shutdown => {
                 let _ = self.force_flush().await;
-                let _ = self.storage.flush();
+                let _ = self.log_store.flush();
+                let _ = self.meta_store.flush();
             }
         }
     }
@@ -601,19 +663,40 @@ where
         &self,
         indexes: &[u64],
     ) {
-        let should_flush = match self.flush_policy {
-            FlushPolicy::Immediate => true,
-            FlushPolicy::Batch { threshold, .. } => {
-                let mut state = self.flush_state.lock().await;
-                state.pending_indexes.extend_from_slice(indexes);
-                state.pending_indexes.len() >= threshold
+        match self.flush_policy {
+            FlushPolicy::Immediate => {
+                // For Immediate we must persist the *exact incoming indexes* directly.
+                // Do not rely on flush_state.pending_indexes because this field is used
+                // for batching only and may be empty for Immediate path.
+                if !indexes.is_empty() {
+                    // process_flush expects a slice of indexes -> call directly
+                    // We ignore the Result here but log on error for debugging.
+                    if let Err(e) = self.process_flush(indexes).await {
+                        error!("Immediate persist failed: {:?}", e);
+                    }
+                }
             }
-        };
+            FlushPolicy::Batch { threshold, .. } => {
+                // For Batch: accumulate indexes into pending_indexes, then check threshold.
+                let mut flush_now = false;
+                {
+                    // lock scope small for performance
+                    let mut state = self.flush_state.lock().await;
+                    state.pending_indexes.extend_from_slice(indexes);
+                    if state.pending_indexes.len() >= threshold {
+                        flush_now = true;
+                    }
+                }
 
-        if should_flush {
-            let indexes = self.get_pending_indexes().await;
-            if !indexes.is_empty() {
-                let _ = self.process_flush(&indexes).await;
+                if flush_now {
+                    // Drain pending indexes and flush them
+                    let pending = self.get_pending_indexes().await;
+                    if !pending.is_empty() {
+                        if let Err(e) = self.process_flush(&pending).await {
+                            error!("Batch persist failed: {:?}", e);
+                        }
+                    }
+                }
             }
         }
     }
@@ -623,7 +706,7 @@ where
         std::mem::take(&mut state.pending_indexes)
     }
 
-    fn reset_internal(&self) -> Result<()> {
+    async fn reset_internal(&self) -> Result<()> {
         self.entries.clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
@@ -633,7 +716,11 @@ where
         self.min_index.store(0, Ordering::Release);
         self.max_index.store(0, Ordering::Release);
 
-        self.storage.reset()?;
+        // Clear term indexes to ensure consistency after reset
+        self.term_first_index.clear();
+        self.term_last_index.clear();
+
+        self.log_store.reset().await?;
 
         Ok(())
     }
@@ -666,11 +753,11 @@ where
         trace!("Collected {} entries for persistence", entries.len());
 
         // Persist to storage
-        self.storage.persist_entries(entries)?;
+        self.log_store.persist_entries(entries).await?;
 
         // Handle immediate flush policy
         if matches!(self.flush_policy, FlushPolicy::Immediate) {
-            self.storage.flush()?;
+            self.log_store.flush()?;
         }
 
         // Update durable index
@@ -686,7 +773,7 @@ where
         let indexes = self.get_pending_indexes().await;
         let result = self.process_flush(&indexes).await;
 
-        self.storage.flush()?;
+        self.log_store.flush()?;
 
         result
     }
@@ -717,11 +804,12 @@ where
         &self,
         entries: &[Entry],
     ) -> Result<()> {
-        self.storage.persist_entries(entries.to_vec())?;
+        trace!("persisting entries {:?}", entries);
+        self.log_store.persist_entries(entries.to_vec()).await?;
 
         // Handle flush policy
         match self.flush_policy {
-            FlushPolicy::Immediate => self.storage.flush()?,
+            FlushPolicy::Immediate => self.log_store.flush()?,
             FlushPolicy::Batch { .. } => {} // Defer flush
         }
 
@@ -733,25 +821,76 @@ where
         Ok(())
     }
 
-    /// Efficient range removal without locks
-    /// O(k log n) where k = number of entries in range
-    ///
-    /// range: [start, end]
+    /// Efficient range removal with targeted term index updates
+    /// O(k + t) where k = number of entries removed, t = number of affected terms
     pub(crate) fn remove_range(
         &self,
         range: RangeInclusive<u64>,
     ) {
         let (start, end) = range.into_inner();
 
-        // Remove entries in range
+        // MODIFIED: Track affected terms and their min/max indexes in the removal range
+        let mut affected_terms: HashMap<u64, (Option<u64>, Option<u64>)> = HashMap::new();
+
+        // Remove entries in range and track affected terms
         let mut current = start;
         while current <= end {
             if let Some(entry) = self.entries.range(current..=end).next() {
                 let key = *entry.key();
+                let term = entry.value().term;
+
+                // Track min/max indexes for each affected term
+                let (min_idx, max_idx) = affected_terms.entry(term).or_insert((None, None));
+                if min_idx.is_none() || key < min_idx.unwrap() {
+                    *min_idx = Some(key);
+                }
+                if max_idx.is_none() || key > max_idx.unwrap() {
+                    *max_idx = Some(key);
+                }
+
                 self.entries.remove(&key);
                 current = key + 1;
             } else {
                 break;
+            }
+        }
+
+        // MODIFIED: Update only affected term indexes
+        for (term, (removed_min, removed_max)) in affected_terms {
+            // Update first index if the removed entry was the first for this term
+            if let Some(term_first) = self.term_first_index.get(&term) {
+                let current_first = term_first.value().load(Ordering::Acquire);
+                if removed_min.is_some() && current_first >= removed_min.unwrap() {
+                    // Find new first index for this term
+                    let new_first =
+                        self.entries.iter().find(|e| e.value().term == term).map(|e| *e.key());
+
+                    if let Some(idx) = new_first {
+                        term_first.value().store(idx, Ordering::Release);
+                    } else {
+                        self.term_first_index.remove(&term);
+                    }
+                }
+            }
+
+            // Update last index if the removed entry was the last for this term
+            if let Some(term_last) = self.term_last_index.get(&term) {
+                let current_last = term_last.value().load(Ordering::Acquire);
+                if removed_max.is_some() && current_last <= removed_max.unwrap() {
+                    // Find new last index for this term
+                    let new_last = self
+                        .entries
+                        .iter()
+                        .rev()
+                        .find(|e| e.value().term == term)
+                        .map(|e| *e.key());
+
+                    if let Some(idx) = new_last {
+                        term_last.value().store(idx, Ordering::Release);
+                    } else {
+                        self.term_last_index.remove(&term);
+                    }
+                }
             }
         }
 
@@ -761,6 +900,28 @@ where
 
         self.min_index.store(new_min, Ordering::Release);
         self.max_index.store(new_max, Ordering::Release);
+    }
+
+    // Update the term index (completely lock-free)
+    fn update_term_indexes(
+        &self,
+        entries: &[Entry],
+    ) {
+        for entry in entries {
+            let term = entry.term;
+
+            // Update first index
+            self.term_first_index
+                .get_or_insert(term, AtomicU64::new(u64::MAX))
+                .value()
+                .fetch_min(entry.index, Ordering::AcqRel);
+
+            // Update last index
+            self.term_last_index
+                .get_or_insert(term, AtomicU64::new(0))
+                .value()
+                .fetch_max(entry.index, Ordering::AcqRel);
+        }
     }
 
     #[cfg(test)]

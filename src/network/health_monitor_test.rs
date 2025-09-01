@@ -1,6 +1,9 @@
+use tracing_test::traced_test;
+
 use super::*;
 
 #[tokio::test]
+#[traced_test]
 async fn test_record_failure_increments_count() {
     let monitor = RaftHealthMonitor::new(3);
     let node_id = 42;
@@ -12,6 +15,7 @@ async fn test_record_failure_increments_count() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_record_success_resets_count() {
     let monitor = RaftHealthMonitor::new(3);
     let node_id = 7;
@@ -24,6 +28,7 @@ async fn test_record_success_resets_count() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_zombie_candidates() {
     let monitor = RaftHealthMonitor::new(2);
     let node1 = 1;

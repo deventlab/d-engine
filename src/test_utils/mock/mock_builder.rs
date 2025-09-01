@@ -369,13 +369,6 @@ pub fn mock_raft_log() -> MockRaftLog {
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_log
 }
-pub fn mock_state_machine() -> MockStateMachine {
-    let mut state_machine = MockStateMachine::new();
-    state_machine.expect_last_applied().returning(|| LogId { index: 0, term: 0 });
-    state_machine.expect_flush().returning(|| Ok(()));
-    state_machine.expect_save_hard_state().returning(|| Ok(()));
-    state_machine
-}
 
 pub fn mock_transport() -> MockTransport<MockTypeConfig> {
     MockTransport::new()
@@ -391,6 +384,35 @@ pub fn mock_election_core() -> MockElectionCore<MockTypeConfig> {
 
 pub fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> {
     MockReplicationCore::new()
+}
+
+pub fn mock_state_machine() -> MockStateMachine {
+    let mut mock = MockStateMachine::new();
+
+    mock.expect_start().returning(|| Ok(()));
+    mock.expect_stop().returning(|| Ok(()));
+    mock.expect_is_running().returning(|| true);
+
+    mock.expect_get().returning(|_| Ok(None));
+    mock.expect_entry_term().returning(|_| None);
+    mock.expect_apply_chunk().returning(|_| Ok(()));
+    mock.expect_len().returning(|| 0);
+
+    mock.expect_update_last_applied().returning(|_| ());
+    mock.expect_last_applied().return_const(LogId::default());
+    mock.expect_persist_last_applied().returning(|_| Ok(()));
+
+    mock.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
+    mock.expect_snapshot_metadata().returning(|| None);
+    mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+
+    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    mock.expect_generate_snapshot_data().returning(|_, _| Ok([0u8; 32]));
+
+    mock.expect_save_hard_state().returning(|| Ok(()));
+    mock.expect_flush().returning(|| Ok(()));
+
+    mock
 }
 
 pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {

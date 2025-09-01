@@ -6,15 +6,6 @@ mod election;
 mod join_cluster;
 mod snapshot;
 
-static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
-    env_logger::init();
-});
-
-pub fn enable_logger() {
-    *LOGGER_INIT;
-    println!("setup logger for unit test.");
-}
-
 // Unit test port base: 6xxxx
 // Integration test port base: 3xxxx
 pub(crate) const CLUSTER_PORT_BASE: u16 = 30100;

@@ -1,24 +1,26 @@
+use std::sync::Arc;
+use std::vec;
+
+use arc_swap::ArcSwap;
+use tokio::sync::oneshot;
+use tracing_test::traced_test;
+
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientResult;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::error::ErrorCode;
-use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
 use crate::ClientConfig;
 use crate::ClientInner;
 use crate::ConnectionPool;
 use crate::KvClient;
 use crate::LEADER;
-use arc_swap::ArcSwap;
-use std::sync::Arc;
-use std::vec;
-use tokio::sync::oneshot;
 
 #[tokio::test]
+#[traced_test]
 async fn test_put_success() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_write_mock_server(
         rx,
@@ -48,13 +50,13 @@ async fn test_put_success() {
     let value = "test_value".to_string().into_bytes();
 
     let result = client.put(key, value).await;
-    println!("Result: {:?}", result);
+    println!("Result: {result:?}",);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_put_failure() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_write_mock_server(
         rx,
@@ -95,8 +97,8 @@ async fn test_put_failure() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_success() {
-    enable_logger();
     let key = "test_key".to_string().into_bytes();
     let value = "test_value".to_string().into_bytes();
     let (_tx, rx) = oneshot::channel::<()>();
@@ -143,8 +145,8 @@ async fn test_get_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_not_found() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_read_mock_server(
         rx,
@@ -177,8 +179,8 @@ async fn test_get_not_found() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_delete_success() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_write_mock_server(
         rx,
@@ -211,8 +213,8 @@ async fn test_delete_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_delete_failure() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_write_mock_server(
         rx,
@@ -248,8 +250,8 @@ async fn test_delete_failure() {
     );
 }
 #[tokio::test]
+#[traced_test]
 async fn test_get_multi_success_linear() {
-    enable_logger();
     // Set up mock data for multiple keys
     let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
     let values = [
@@ -314,8 +316,8 @@ async fn test_get_multi_success_linear() {
     }
 }
 #[tokio::test]
+#[traced_test]
 async fn test_get_multi_success_non_linear() {
-    enable_logger();
     // Set up mock data for multiple keys with some missing
     let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
     let values = [
@@ -384,8 +386,8 @@ async fn test_get_multi_success_non_linear() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_multi_failure() {
-    enable_logger();
     let keys = vec!["key1".to_string()];
 
     // Set up mock server to return an error
@@ -428,8 +430,8 @@ async fn test_get_multi_failure() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_get_multi_empty_keys() {
-    enable_logger();
     let response = ClientResponse::read_results(vec![]);
     // Set up mock server to handle the request and return the response
     let (_tx, rx) = oneshot::channel::<()>();

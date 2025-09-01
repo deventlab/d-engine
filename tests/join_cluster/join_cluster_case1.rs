@@ -34,19 +34,21 @@ use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::StateMachine;
 use tokio::time::sleep;
+use tracing_test::traced_test;
 
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
-use crate::common::prepare_raft_log;
 use crate::common::prepare_state_machine;
+use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::JOIN_CLUSTER_PORT_BASE;
+
 // Constants for test configuration
 const JOIN_CLUSTER_CASE1_DIR: &str = "join_cluster/case1";
 const SNAPSHOT_DIR: &str = "./snapshots/join_cluster/case1";
@@ -54,8 +56,8 @@ const JOIN_CLUSTER_CASE1_DB_ROOT_DIR: &str = "./db/join_cluster/case1";
 const JOIN_CLUSTER_CASE1_LOG_DIR: &str = "./logs/join_cluster/case1";
 
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(JOIN_CLUSTER_CASE1_DIR).await?;
 
     let ports = [
@@ -66,28 +68,20 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     let new_node_port = JOIN_CLUSTER_PORT_BASE + 4;
 
     // Prepare state machines
-    let sm1 = Arc::new(prepare_state_machine(
-        1,
-        &format!("{}/cs/1", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-    ));
-    let sm2 = Arc::new(prepare_state_machine(
-        2,
-        &format!("{}/cs/2", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-    ));
-    let sm3 = Arc::new(prepare_state_machine(
-        3,
-        &format!("{}/cs/3", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-    ));
-    let sm4 = Arc::new(prepare_state_machine(
-        4,
-        &format!("{}/cs/4", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
-    ));
+    let sm1 =
+        Arc::new(prepare_state_machine(1, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/1")).await);
+    let sm2 =
+        Arc::new(prepare_state_machine(2, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/2")).await);
+    let sm3 =
+        Arc::new(prepare_state_machine(3, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/3")).await);
+    let sm4 =
+        Arc::new(prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4")).await);
 
     // Prepare raft logs
-    let r1 = prepare_raft_log(1, &format!("{}/cs/1", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
-    let r2 = prepare_raft_log(2, &format!("{}/cs/2", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
-    let r3 = prepare_raft_log(3, &format!("{}/cs/3", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
-    let r4 = prepare_raft_log(4, &format!("{}/cs/4", JOIN_CLUSTER_CASE1_DB_ROOT_DIR), 0);
+    let r1 = prepare_storage_engine(1, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/1"), 0);
+    let r2 = prepare_storage_engine(2, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/2"), 0);
+    let r3 = prepare_storage_engine(3, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/3"), 0);
+    let r4 = prepare_storage_engine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4"), 0);
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1).await;
@@ -136,7 +130,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
         node_config.raft.snapshot.cleanup_retain_count = 2;
         node_config.raft.snapshot.snapshots_dir =
-            PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, node_id));
+            PathBuf::from(format!("{SNAPSHOT_DIR}/{node_id}"));
         node_config.raft.snapshot.chunk_size = 100;
         //Dirty code: could leave it like this for now.
         snapshot_last_included_id =
@@ -163,7 +157,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     let leader_snapshot_metadata = sm3.snapshot_metadata().unwrap();
 
     // Verify snapshot file exists
-    let snapshot_path = format!("{}/3", SNAPSHOT_DIR);
+    let snapshot_path = format!("{SNAPSHOT_DIR}/3");
     assert!(check_path_contents(&snapshot_path).unwrap_or(false));
     assert!(leader_snapshot_metadata.last_included.unwrap().index >= last_included);
     assert!(!leader_snapshot_metadata.checksum.is_empty());
@@ -180,7 +174,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         4,
         new_node_port,
         cluster_nodes,
-        &format!("{}/cs/4", JOIN_CLUSTER_CASE1_DB_ROOT_DIR),
+        &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4"),
         JOIN_CLUSTER_CASE1_LOG_DIR,
     )
     .await;
@@ -200,7 +194,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     sleep(Duration::from_secs(3)).await;
 
     // Validate node 4
-    let snapshot_path = format!("{}/4", SNAPSHOT_DIR);
+    let snapshot_path = format!("{SNAPSHOT_DIR}/4");
     assert!(check_path_contents(&snapshot_path).unwrap_or(false));
 
     for i in 1..=10 {
@@ -219,7 +213,7 @@ async fn create_node_config(
     db_root_dir: &str,
     log_dir: &str,
 ) -> String {
-    println!("Port: {}", port);
+    println!("Port: {port}");
 
     let initial_cluster_entries = cluster_nodes
         .iter()

@@ -79,7 +79,7 @@ where
     );
 
     /// Applies a batch of committed log entries to the state machine
-    fn apply_chunk(
+    async fn apply_chunk(
         &self,
         chunk: Vec<crate::proto::common::Entry>,
     ) -> Result<()>;

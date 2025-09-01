@@ -12,6 +12,8 @@ use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
+use crate::FileStorageEngine;
+use crate::MockStateMachine;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::SnapshotConfig;
@@ -79,7 +81,7 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
 pub(crate) async fn simulate_insert_command(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -92,14 +94,13 @@ pub(crate) async fn simulate_insert_command(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries).await {
-        panic!("error: {e:?}");
-    }
+    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.flush().await.unwrap();
 }
 
 #[allow(dead_code)]
 pub(crate) async fn simulate_delete_command(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     id_range: RangeInclusive<u64>,
     term: u64,
 ) {
@@ -115,15 +116,6 @@ pub(crate) async fn simulate_delete_command(
     if let Err(e) = raft_log.insert_batch(entries).await {
         panic!("error: {e:?}");
     }
-}
-
-static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
-    env_logger::init();
-});
-
-pub fn enable_logger() {
-    *LOGGER_INIT;
-    println!("setup logger for unit test.");
 }
 
 pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {

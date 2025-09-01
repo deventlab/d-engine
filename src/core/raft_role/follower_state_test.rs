@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
+use tracing_test::traced_test;
 
 use super::follower_state::FollowerState;
 use super::HardState;
@@ -26,11 +27,11 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::enable_logger;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
 use crate::test_utils::MockBuilder;
+use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
 use crate::ConsensusError;
@@ -42,6 +43,7 @@ use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
 use crate::MockReplicationCore;
+use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
 use crate::NewCommitData;
@@ -67,13 +69,14 @@ use crate::LEARNER;
 /// 8. noop_log_id = None
 /// 9. raft_log len is 0
 #[tokio::test]
+#[traced_test]
 async fn test_new_with_fresh_start() {
     let components = setup_raft_components("/tmp/test_new_with_fresh_start", None, false);
     let node_id = 1;
     let node_config = components.arc_node_config.clone();
     let hard_state_from_db = None;
     let last_applied_index_option = None;
-    let state = FollowerState::<RaftTypeConfig>::new(
+    let state = FollowerState::<MockTypeConfig>::new(
         node_id,
         node_config,
         hard_state_from_db,
@@ -104,6 +107,7 @@ async fn test_new_with_fresh_start() {
 /// 8. noop_log_id = None
 /// 9. raft_log len is 10
 #[tokio::test]
+#[traced_test]
 async fn test_new_with_restart() {
     let voted_for = VotedFor {
         voted_for_id: 3,
@@ -116,7 +120,7 @@ async fn test_new_with_restart() {
         let node_config = components.arc_node_config.clone();
         let hard_state_from_db = None;
         let last_applied_index_option = None;
-        let mut state = FollowerState::<RaftTypeConfig>::new(
+        let mut state = FollowerState::<MockTypeConfig>::new(
             node_id,
             node_config,
             hard_state_from_db,
@@ -141,7 +145,7 @@ async fn test_new_with_restart() {
             }),
         });
         let last_applied_index_option = Some(2);
-        let state = FollowerState::<RaftTypeConfig>::new(
+        let state = FollowerState::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             node_id,
             node_config,
             hard_state_from_db,
@@ -156,6 +160,7 @@ async fn test_new_with_restart() {
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
+#[traced_test]
 async fn test_tick() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_tick", graceful_rx, None);
@@ -194,6 +199,7 @@ fn setup_handle_raft_event_case1_params(
 /// 2. Role should not step to Follower
 /// 3. Term should not be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
@@ -238,6 +244,7 @@ async fn test_handle_raft_event_case1_1() {
 /// 2. Follower should not step to Follower again
 /// 3. Term should be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
@@ -290,6 +297,7 @@ async fn test_handle_raft_event_case1_2() {
 /// 3. Role should not step to Follower
 /// 4. Term should not be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_3", graceful_rx, None);
@@ -321,6 +329,7 @@ async fn test_handle_raft_event_case1_3() {
 
 /// # Case 2: Receive ClusterConf Event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
@@ -349,6 +358,7 @@ async fn test_handle_raft_event_case2() {
 
 /// # Case3_1: Successful configuration update
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_1", graceful_rx, None);
@@ -399,6 +409,7 @@ async fn test_handle_raft_event_case3_1() {
 
 /// # Case3_2: Reject configuration change from non-leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_2", graceful_rx, None);
@@ -449,6 +460,7 @@ async fn test_handle_raft_event_case3_2() {
 
 /// # Case3_3: Reject configuration change with version conflict
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_3", graceful_rx, None);
@@ -500,6 +512,7 @@ async fn test_handle_raft_event_case3_3() {
 
 /// # Case3_4: Reject configuration change with outdated term
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_4", graceful_rx, None);
@@ -552,6 +565,7 @@ async fn test_handle_raft_event_case3_4() {
 
 /// # Case3_5: Handle internal error during configuration update
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_5", graceful_rx, None);
@@ -598,6 +612,7 @@ async fn test_handle_raft_event_case3_5() {
 
 /// # Case3_6: Reject configuration change when no leader is known
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3_6() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_6", graceful_rx, None);
@@ -660,6 +675,7 @@ async fn test_handle_raft_event_case3_6() {
 /// 5. send out AppendEntriesResponse with success=true
 /// 6. `handle_raft_event` fun returns Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -754,6 +770,7 @@ async fn test_handle_raft_event_case4_1() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -830,6 +847,7 @@ async fn test_handle_raft_event_case4_2() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -896,6 +914,7 @@ async fn test_handle_raft_event_case4_3() {
 
 /// # Case 5: Test handle client propose request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
@@ -923,6 +942,7 @@ async fn test_handle_raft_event_case5() {
 
 /// # Case 6.1: test ClientReadRequest with linear request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
@@ -947,6 +967,7 @@ async fn test_handle_raft_event_case6_1() {
 
 /// # Case 6.2: test ClientReadRequest with request(linear=false)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case6_2", graceful_rx, None);
@@ -978,9 +999,8 @@ async fn test_handle_raft_event_case6_2() {
 
 /// # Case8_1: Test purge request without current leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_1() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_8");
@@ -1032,9 +1052,8 @@ async fn test_handle_raft_event_case8_1() {
 
 /// # Case8_2: Test successful log cleanup with valid purge request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_2() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_2");
@@ -1115,9 +1134,8 @@ async fn test_handle_raft_event_case8_2() {
 
 /// # Case8_3: Test purge request fails validation
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_3() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_3");
@@ -1171,9 +1189,8 @@ async fn test_handle_raft_event_case8_3() {
 
 /// # Case8_4: Test purge request with invalid leader term
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_4() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_4");
@@ -1234,9 +1251,8 @@ async fn test_handle_raft_event_case8_4() {
 
 /// # Case8_5: Test purge request fails can_purge_logs check
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_5() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_5");
@@ -1295,9 +1311,8 @@ async fn test_handle_raft_event_case8_5() {
 
 /// # Case8_6: Test purge request with non-monotonic purge index
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_6() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_6");
@@ -1353,9 +1368,8 @@ async fn test_handle_raft_event_case8_6() {
 
 /// # Case8_7: Test purge execution failure
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8_7() {
-    enable_logger();
-
     // Setup Context
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join("test_handle_raft_event_case8_7");
@@ -1422,6 +1436,7 @@ async fn test_handle_raft_event_case8_7() {
 
 /// Test handling JoinCluster event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case10() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1458,6 +1473,7 @@ async fn test_handle_raft_event_case10() {
 
 /// Test handling DiscoverLeader event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case11() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());

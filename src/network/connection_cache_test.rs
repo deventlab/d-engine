@@ -2,10 +2,10 @@ use std::time::Duration;
 use std::time::Instant;
 
 use tokio::sync::oneshot;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::net::address_str;
-use crate::test_utils::enable_logger;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::{self};
 use crate::ConnectionParams;
@@ -33,8 +33,8 @@ async fn mock_address() -> (String, oneshot::Sender<()>) {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_cache_hit_same_address() {
-    enable_logger();
     let cache = ConnectionCache::new(test_config());
     let node_id = 1;
     let conn_type = ConnectionType::Data;
@@ -55,6 +55,7 @@ async fn test_cache_hit_same_address() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_cache_miss_address_change() {
     let cache = ConnectionCache::new(test_config());
     let node_id = 1;
@@ -75,6 +76,7 @@ async fn test_cache_miss_address_change() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_cache_miss_connection_type() {
     let cache = ConnectionCache::new(test_config());
     let node_id = 1;
@@ -100,6 +102,7 @@ async fn test_cache_miss_connection_type() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_remove_node() {
     let cache = ConnectionCache::new(test_config());
     let node1 = 1;
@@ -126,6 +129,7 @@ async fn test_remove_node() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_last_used_update() {
     let cache = ConnectionCache::new(test_config());
     let node_id = 1;
@@ -161,6 +165,7 @@ async fn test_last_used_update() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_error_handling() {
     let cache = ConnectionCache::new(test_config());
     let node_id = 1;

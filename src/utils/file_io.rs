@@ -1,25 +1,21 @@
+use crate::ConvertError;
+use crate::FileError;
+use crate::Result;
+use crate::StorageError;
+use sha2::Digest;
+use sha2::Sha256;
 use std::fs::create_dir_all;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-
-use sha2::Digest;
-use sha2::Sha256;
 use tokio::fs;
-use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 use tracing::debug;
 use tracing::error;
-
-use crate::init_sled_state_machine_db;
-use crate::ConvertError;
-use crate::FileError;
-use crate::Result;
-use crate::StorageError;
 
 /// Creates parent directories for the given path.
 /// e.g. path = "/tmp/a/b/c", "/tmp/a/b" will be crated
@@ -367,34 +363,4 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub(crate) async fn create_valid_snapshot<F>(
-    path: &Path,
-    data_setup: F,
-) -> [u8; 32]
-where
-    F: FnOnce(&sled::Db),
-{
-    let temp_data_dir = tempfile::tempdir().unwrap();
-    let db = init_sled_state_machine_db(temp_data_dir.path()).unwrap();
-    data_setup(&db);
-    let checksum = compute_checksum_from_folder_path(temp_data_dir.path()).await.unwrap();
-
-    // Ensure parent directory exists before file creation
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.unwrap();
-    }
-
-    let file = File::create(path).await.unwrap();
-    let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
-    let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
-    tar_builder.append_dir_all(".", temp_data_dir.path()).await.unwrap();
-
-    tar_builder.finish().await.unwrap();
-
-    let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
-    gzip_encoder.shutdown().await.unwrap();
-
-    checksum
 }

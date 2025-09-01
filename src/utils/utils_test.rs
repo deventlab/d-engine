@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use dashmap::DashSet;
 use tokio::time::sleep;
+use tracing_test::traced_test;
 
 use super::cluster::find_nearest_lower_number;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
@@ -84,6 +85,7 @@ async fn async_err() -> Result<()> {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_task_with_exponential_backoff() {
     // Case 1: when ok task return ok
     let policy = BackoffPolicy {

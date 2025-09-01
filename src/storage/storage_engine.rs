@@ -1,80 +1,117 @@
 #![doc = include_str!("../docs/server_guide/customize-storage-engine.md")]
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
-use bytes::Bytes;
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
 
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
+use crate::Error;
 use crate::HardState;
-use crate::Result;
 
-/// Unified storage engine handling both Raft logs and state machine
-#[async_trait]
-#[cfg_attr(test, automock)]
+/// High-performance storage abstraction for Raft consensus
+///
+/// Design principles:
+/// - Zero-cost abstractions through static dispatch
+/// - Physical separation of log and metadata stores
+/// - Async-ready for I/O parallelism
+/// - Minimal interface for maximum performance
 pub trait StorageEngine: Send + Sync + 'static {
-    /// Persist multiple Raft log entries
-    fn persist_entries(
+    /// Associated log store type
+    type LogStore: LogStore;
+
+    /// Associated metadata store type
+    type MetaStore: MetaStore;
+
+    /// Get log storage handle
+    fn log_store(&self) -> Arc<Self::LogStore>;
+
+    /// Get metadata storage handle
+    fn meta_store(&self) -> Arc<Self::MetaStore>;
+}
+
+#[cfg_attr(test, automock)]
+#[async_trait]
+pub trait LogStore: Send + Sync + 'static {
+    /// Batch persist entries into disk (optimized for sequential writes)
+    ///
+    /// # Performance
+    /// Implementations should use batch operations and avoid
+    /// per-entry synchronization. Expected throughput: >100k ops/sec.
+    async fn persist_entries(
         &self,
         entries: Vec<Entry>,
-    ) -> Result<()>;
-
-    fn insert<K, V>(
-        &self,
-        key: K,
-        value: V,
-    ) -> Result<Option<Vec<u8>>>
-    where
-        K: AsRef<[u8]> + 'static,
-        V: AsRef<[u8]> + 'static;
-
-    fn get<K>(
-        &self,
-        key: K,
-    ) -> crate::Result<Option<Bytes>>
-    where
-        K: AsRef<[u8]> + Send + 'static;
+    ) -> Result<(), Error>;
 
     /// Get single log entry by index
-    fn entry(
+    async fn entry(
         &self,
         index: u64,
-    ) -> Result<Option<Entry>>;
+    ) -> Result<Option<Entry>, Error>;
 
-    /// Get log entries within index range (inclusive)
-    fn get_entries_range(
+    /// Get entries in range [start, end] (inclusive)
+    ///
+    /// # Performance
+    /// Should use efficient range scans. Expected latency: <1ms for 10k entries.
+    fn get_entries(
         &self,
         range: RangeInclusive<u64>,
-    ) -> Result<Vec<Entry>>;
+    ) -> Result<Vec<Entry>, Error>;
 
     /// Remove logs up to specified index
-    fn purge_logs(
+    async fn purge(
         &self,
         cutoff_index: LogId,
-    ) -> Result<()>;
-
-    fn flush(&self) -> Result<()>;
-
-    fn reset(&self) -> Result<()>;
-
-    /// Get last log index
-    fn last_index(&self) -> u64;
+    ) -> Result<(), Error>;
 
     /// Truncates log from specified index onward
-    fn truncate(
+    async fn truncate(
         &self,
         from_index: u64,
-    ) -> Result<()>;
+    ) -> Result<(), Error>;
 
-    /// When node restarts, check if there is stored state from disk
-    fn load_hard_state(&self) -> Result<Option<HardState>>;
+    /// Optional: Flush pending writes (use with caution)
+    fn flush(&self) -> Result<(), Error> {
+        Ok(()) // Default no-op for engines with auto-flush
+    }
 
-    /// Persist hard state
+    /// Optional: Flush pending writes (use with caution)
+    async fn flush_async(&self) -> Result<(), Error> {
+        Ok(()) // Default no-op for engines with auto-flush
+    }
+
+    async fn reset(&self) -> Result<(), Error>;
+
+    /// Get last log index (optimized for frequent access)
+    ///
+    /// # Implementation note
+    /// Should maintain cached value updated on write operations
+    fn last_index(&self) -> u64;
+}
+
+/// Metadata storage operations
+#[cfg_attr(test, automock)]
+#[async_trait]
+pub trait MetaStore: Send + Sync + 'static {
+    /// Atomically persist hard state (current term and votedFor)
     fn save_hard_state(
         &self,
-        hard_state: HardState,
-    ) -> Result<()>;
+        state: &HardState,
+    ) -> Result<(), Error>;
+
+    /// Load persisted hard state
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error>;
+
+    /// Optional: Flush pending writes (use with caution)
+    fn flush(&self) -> Result<(), Error> {
+        Ok(()) // Default no-op for engines with auto-flush
+    }
+
+    /// Optional: Flush pending writes (use with caution)
+    async fn flush_async(&self) -> Result<(), Error> {
+        Ok(()) // Default no-op for engines with auto-flush
+    }
 }

@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time;
 use tokio::time::timeout;
+use tracing_test::traced_test;
 
 use super::*;
 use crate::candidate_state::CandidateState;
@@ -18,7 +19,6 @@ use crate::proto::cluster::MetadataRequest;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::election::VoteResponse;
-use crate::test_utils::enable_logger;
 use crate::test_utils::mock_raft;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResults;
@@ -36,6 +36,7 @@ use crate::VoteResult;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
+#[traced_test]
 async fn test_tick_priority_over_role_event() {
     tokio::time::pause();
 
@@ -78,8 +79,8 @@ async fn test_tick_priority_over_role_event() {
 
 /// # Case 2: RoleEvent has higher priority than event_rx
 #[tokio::test]
+#[traced_test]
 async fn test_role_event_priority_over_event_rx() {
-    enable_logger();
     tokio::time::pause();
 
     // 1. Create a Raft instance
@@ -140,6 +141,7 @@ async fn test_role_event_priority_over_event_rx() {
 /// - should receive role change event with Candidate as new role
 /// - term should no change
 #[tokio::test]
+#[traced_test]
 async fn test_election_timeout_case1() {
     tokio::time::pause();
 
@@ -195,6 +197,7 @@ async fn test_election_timeout_case1() {
 /// ## Criterias:
 /// - broadcast_vote_requests should be invoked once
 #[tokio::test]
+#[traced_test]
 async fn test_election_timeout_case2_1() {
     tokio::time::pause();
 
@@ -252,6 +255,7 @@ async fn test_election_timeout_case2_1() {
 /// ## Criterias:
 /// - broadcast_vote_requests should be invoked only one time
 #[tokio::test]
+#[traced_test]
 async fn test_election_timeout_case2_2() {
     tokio::time::pause();
 
@@ -311,6 +315,7 @@ async fn test_election_timeout_case2_2() {
 /// - broadcast_vote_requests should be called zero times
 /// - no role change event should be received
 #[tokio::test]
+#[traced_test]
 async fn test_election_timeout_case3() {
     tokio::time::pause();
 
@@ -363,8 +368,8 @@ async fn test_election_timeout_case3() {
 /// - broadcast_vote_requests should be called zero times
 /// - no role change event should be received
 #[tokio::test]
+#[traced_test]
 async fn test_election_timeout_case4() {
-    enable_logger();
     tokio::time::pause();
 
     // 1. Mock Election Handler, assume broadcast_vote_requests successfully.
@@ -445,6 +450,7 @@ async fn test_election_timeout_case4() {
 
 /// # Case 1.1: Leader can not switch to Learner
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1", graceful_rx, None);
@@ -468,6 +474,7 @@ async fn test_handle_role_event_case1_1() {
 
 /// # Case 1.2: Leader can not switch to candidate
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_2", graceful_rx, None);
@@ -489,6 +496,7 @@ async fn test_handle_role_event_case1_2() {
 
 /// # Case 1.3: Leader can not switch to Leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_3", graceful_rx, None);
@@ -510,6 +518,7 @@ async fn test_handle_role_event_case1_3() {
 
 /// # Case 1.4: Leader can  switch to Follower
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case1_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case1_4", graceful_rx, None);
@@ -531,6 +540,7 @@ async fn test_handle_role_event_case1_4() {
 
 /// # Case 2.1: Candidate can switch to Leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case2_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_1", graceful_rx, None);
@@ -549,6 +559,7 @@ async fn test_handle_role_event_case2_1() {
 
 /// # Case 2.2: Candidate can switch to Follower
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case2_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_2", graceful_rx, None);
@@ -566,6 +577,7 @@ async fn test_handle_role_event_case2_2() {
 
 /// # Case 2.3: Candidate can switch to Learner
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case2_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_3", graceful_rx, None);
@@ -581,6 +593,7 @@ async fn test_handle_role_event_case2_3() {
 
 /// # Case 2.4: Candidate can not switch to Candidate
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case2_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case2_4", graceful_rx, None);
@@ -596,6 +609,7 @@ async fn test_handle_role_event_case2_4() {
 
 /// # Case 3.1: Follower can not switch to Leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_1", graceful_rx, None);
@@ -606,6 +620,7 @@ async fn test_handle_role_event_case3_1() {
 }
 /// # Case 3.2: Follower can switch to Candidate
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_2", graceful_rx, None);
@@ -619,6 +634,7 @@ async fn test_handle_role_event_case3_2() {
 
 /// # Case 3.3: Follower can switch to Learner
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case3_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_3", graceful_rx, None);
@@ -630,6 +646,7 @@ async fn test_handle_role_event_case3_3() {
 
 /// # Case 3.4: Follower can not switch to Follower
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case3_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft("/tmp/test_handle_role_event_case3_4", graceful_rx, None);
@@ -641,6 +658,7 @@ async fn test_handle_role_event_case3_4() {
 
 /// # Case 4.1: Learner can not switch to Leader
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_case4_1() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -654,6 +672,7 @@ async fn test_handle_role_event_case4_1() {
 
 /// # Case 4.2: Learner can not switch to Candidate
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_event_case4_2() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -667,6 +686,7 @@ async fn test_handle_role_event_event_case4_2() {
 
 /// # Case 4.3: Learner can switch to Follower
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_event_case4_3() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -682,6 +702,7 @@ async fn test_handle_role_event_event_case4_3() {
 
 /// # Case 4.4: Learner can not switch to Learner
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_event_case4_4() {
     // 1. Create a Raft instance
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -695,6 +716,7 @@ async fn test_handle_role_event_event_case4_4() {
 
 /// Case 1.1: as Follower
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -718,6 +740,7 @@ async fn test_handle_role_event_state_update_case1_1() {
 
 /// Case 1.2: as Candidate
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -751,6 +774,7 @@ async fn test_handle_role_event_state_update_case1_2() {
 /// 1. Test Candidate could become Leader
 /// 2. Test commit index listener
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -788,6 +812,7 @@ async fn test_handle_role_event_state_update_case1_3_1() {
 /// Test Criterias:
 /// 1. peer next index and match index should be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_3_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -869,6 +894,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
 
 /// Case 1.4: as Learner
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_4() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -942,9 +968,9 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
 /// ## Validation criterias:
 /// 1. should monitor BecomeFollower event been send out.
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_5_1() {
     tokio::time::pause();
-    enable_logger();
     // 1. Create a Raft instance with mocks
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -1009,9 +1035,9 @@ async fn test_handle_role_event_state_update_case1_5_1() {
 /// ## Validation criterias:
 /// 1. should no BecomeFollower event been sent out.
 #[tokio::test]
+#[traced_test]
 async fn test_handle_role_event_state_update_case1_5_2() {
     tokio::time::pause();
-    enable_logger();
     // 1. Create a Raft instance with mocks
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = mock_raft(
@@ -1065,6 +1091,7 @@ async fn test_handle_role_event_state_update_case1_5_2() {
 /// 3. Raft Log should be flushed
 /// 4. State Machine should be flushed
 #[tokio::test]
+#[traced_test]
 async fn test_raft_drop() {
     tokio::time::pause();
 

@@ -30,6 +30,7 @@
 //! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
 
+use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -41,18 +42,13 @@ use tracing::error;
 use tracing::info;
 
 use super::RaftTypeConfig;
-use crate::alias::COF;
 use crate::alias::MOF;
 use crate::alias::SMHOF;
-use crate::alias::SMOF;
 use crate::alias::SNP;
-use crate::alias::SOF;
 use crate::alias::TROF;
 use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::init_sled_state_machine_db;
-use crate::init_sled_storage_engine_db;
 use crate::learner_state::LearnerState;
 use crate::BufferedRaftLog;
 use crate::ClusterConfig;
@@ -76,9 +72,8 @@ use crate::RaftStorageHandles;
 use crate::ReplicationHandler;
 use crate::Result;
 use crate::SignalParams;
-use crate::SledStateMachine;
-use crate::SledStorageEngine;
 use crate::StateMachine;
+use crate::StorageEngine;
 use crate::SystemError;
 
 pub enum NodeMode {
@@ -89,23 +84,30 @@ pub enum NodeMode {
 /// Builder pattern implementation for constructing a Raft node with configurable components.
 /// Provides a fluent interface to set up node configuration, storage, transport, and other
 /// dependencies.
-pub struct NodeBuilder {
+pub struct NodeBuilder<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
     node_id: u32,
 
     pub(super) node_config: RaftNodeConfig,
-    pub(super) storage_engine: Option<Arc<SOF<RaftTypeConfig>>>,
-    pub(super) membership: Option<MOF<RaftTypeConfig>>,
-    pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    pub(super) transport: Option<TROF<RaftTypeConfig>>,
-    pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
-    pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
-    pub(super) snapshot_policy: Option<SNP<RaftTypeConfig>>,
+    pub(super) storage_engine: Option<Arc<SE>>,
+    pub(super) membership: Option<MOF<RaftTypeConfig<SE, SM>>>,
+    pub(super) state_machine: Option<Arc<SM>>,
+    pub(super) transport: Option<TROF<RaftTypeConfig<SE, SM>>>,
+    pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig<SE, SM>>>>,
+    pub(super) snapshot_policy: Option<SNP<RaftTypeConfig<SE, SM>>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
 
-    pub(super) node: Option<Arc<Node<RaftTypeConfig>>>,
+    pub(super) node: Option<Arc<Node<RaftTypeConfig<SE, SM>>>>,
 }
 
-impl NodeBuilder {
+impl<SE, SM> NodeBuilder<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
     /// Creates a new NodeBuilder with cluster configuration loaded from file
     ///
     /// # Arguments
@@ -162,7 +164,6 @@ impl NodeBuilder {
             membership: None,
             node_config,
             shutdown_signal,
-            commit_handler: None,
             state_machine_handler: None,
             snapshot_policy: None,
             node: None,
@@ -172,7 +173,7 @@ impl NodeBuilder {
     /// Sets a custom storage engine implementation
     pub fn storage_engine(
         mut self,
-        storage_engine: Arc<SOF<RaftTypeConfig>>,
+        storage_engine: Arc<SE>,
     ) -> Self {
         self.storage_engine = Some(storage_engine);
         self
@@ -181,36 +182,9 @@ impl NodeBuilder {
     /// Sets a custom state machine implementation
     pub fn state_machine(
         mut self,
-        state_machine: Arc<SMOF<RaftTypeConfig>>,
+        state_machine: Arc<SM>,
     ) -> Self {
         self.state_machine = Some(state_machine);
-        self
-    }
-
-    /// Sets a custom network transport implementation
-    pub fn transport(
-        mut self,
-        transport: TROF<RaftTypeConfig>,
-    ) -> Self {
-        self.transport = Some(transport);
-        self
-    }
-
-    /// Sets a custom commit handler implementation
-    pub fn commit_handler(
-        mut self,
-        commit_handler: COF<RaftTypeConfig>,
-    ) -> Self {
-        self.commit_handler = Some(commit_handler);
-        self
-    }
-
-    /// Sets a custom membership management implementation
-    pub fn membership(
-        mut self,
-        membership: MOF<RaftTypeConfig>,
-    ) -> Self {
-        self.membership = Some(membership);
         self
     }
 
@@ -245,27 +219,17 @@ impl NodeBuilder {
     pub fn build(mut self) -> Self {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
-        let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
+        // let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
-        let state_machine = self.state_machine.take().unwrap_or_else(|| {
-            let state_machine_db = init_sled_state_machine_db(&db_root_dir)
-                .expect("init_sled_state_machine_db successfully.");
-            Arc::new(
-                SledStateMachine::new(node_id, Arc::new(state_machine_db))
-                    .expect("Init raft state machine successfully."),
-            )
-        });
-        let storage_engine = self.storage_engine.take().unwrap_or_else(|| {
-            let storage_engine_db = init_sled_storage_engine_db(&db_root_dir)
-                .expect("init_sled_storage_engine_db successfully.");
-            Arc::new(
-                SledStorageEngine::new(node_id, storage_engine_db)
-                    .expect("Init storage engine successfully."),
-            )
-        });
+        // Handle state machine initialization
+        let state_machine = self.state_machine.take().expect("State machine must be set");
+
+        // Handle storage engine initialization
+        let storage_engine = self.storage_engine.take().expect("Storage engine must be set");
+
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
         let raft_log = {
@@ -341,15 +305,15 @@ impl NodeBuilder {
         );
 
         // Construct raft core
-        let mut raft_core = Raft::<RaftTypeConfig>::new(
+        let mut raft_core = Raft::<RaftTypeConfig<SE, SM>>::new(
             node_id,
             my_role,
-            RaftStorageHandles::<RaftTypeConfig> {
+            RaftStorageHandles::<RaftTypeConfig<SE, SM>> {
                 raft_log,
                 state_machine: state_machine.clone(),
             },
             transport,
-            RaftCoreHandlers::<RaftTypeConfig> {
+            RaftCoreHandlers::<RaftTypeConfig<SE, SM>> {
                 election_handler: ElectionHandler::new(node_id),
                 replication_handler: ReplicationHandler::new(node_id),
                 state_machine_handler: state_machine_handler.clone(),
@@ -383,7 +347,7 @@ impl NodeBuilder {
         //     process_interval_ms: node_config_arc.raft.commit_handler.process_interval_ms,
         //     max_entries_per_chunk: 1,
         // };
-        let commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
+        let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(
             node_id,
             my_role_i32,
             my_current_term,
@@ -394,7 +358,7 @@ impl NodeBuilder {
         self.enable_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_tx.clone();
-        let node = Node::<RaftTypeConfig> {
+        let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,
             raft_core: Arc::new(Mutex::new(raft_core)),
             membership,
@@ -410,7 +374,7 @@ impl NodeBuilder {
     /// When a new commit is detected, convert the log into a state machine log.
     fn enable_state_machine_commit_listener(
         &self,
-        mut commit_handler: DefaultCommitHandler<RaftTypeConfig>,
+        mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>,
     ) {
         tokio::spawn(async move {
             match commit_handler.run().await {
@@ -440,7 +404,7 @@ impl NodeBuilder {
     /// - The handler should properly handle snapshot creation and restoration
     pub fn with_custom_state_machine_handler(
         mut self,
-        handler: Arc<SMHOF<RaftTypeConfig>>,
+        handler: Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
     ) -> Self {
         self.state_machine_handler = Some(handler);
         self
@@ -448,7 +412,7 @@ impl NodeBuilder {
 
     pub fn set_snapshot_policy(
         mut self,
-        snapshot_policy: SNP<RaftTypeConfig>,
+        snapshot_policy: SNP<RaftTypeConfig<SE, SM>>,
     ) -> Self {
         self.snapshot_policy = Some(snapshot_policy);
         self
@@ -483,7 +447,7 @@ impl NodeBuilder {
     ///
     /// # Errors
     /// Returns Error::NodeFailedToStartError if build hasn't completed
-    pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig>>> {
+    pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
         self.node.ok_or_else(|| {
             SystemError::NodeStartFailed("check node ready failed".to_string()).into()
         })

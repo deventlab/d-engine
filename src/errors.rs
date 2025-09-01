@@ -3,10 +3,9 @@
 //! Defines comprehensive error types for a Raft-based distributed system,
 //! categorized by protocol layer and operational concerns.
 
+use config::ConfigError;
 use std::path::PathBuf;
 use std::time::Duration;
-
-use config::ConfigError;
 use tokio::task::JoinError;
 
 #[doc(hidden)]
@@ -654,11 +653,11 @@ impl From<tonic::transport::Error> for Error {
     }
 }
 
-impl From<sled::Error> for Error {
-    fn from(err: sled::Error) -> Self {
-        StorageError::DbError(err.to_string()).into()
-    }
-}
+// impl From<sled::Error> for Error {
+//     fn from(err: sled::Error) -> Self {
+//         StorageError::DbError(err.to_string()).into()
+//     }
+// }
 
 impl From<JoinError> for Error {
     fn from(err: JoinError) -> Self {
@@ -675,5 +674,11 @@ impl From<SnapshotError> for Error {
 impl From<IdAllocationError> for Error {
     fn from(e: IdAllocationError) -> Self {
         StorageError::IdAllocation(e).into()
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        StorageError::IoError(e).into()
     }
 }

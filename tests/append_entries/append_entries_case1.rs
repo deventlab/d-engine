@@ -18,6 +18,7 @@ use std::time::Duration;
 use d_engine::storage::StateMachine;
 use d_engine::ClientApiError;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
@@ -26,8 +27,8 @@ use crate::common::create_node_config;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
-use crate::common::prepare_raft_log;
 use crate::common::prepare_state_machine;
+use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
@@ -41,8 +42,8 @@ const LOG_DIR: &str = "./logs/append_entries/case1";
 
 #[tracing::instrument]
 #[tokio::test]
+#[traced_test]
 async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
-    crate::enable_logger();
     reset(TEST_CASE_DIR).await?;
 
     // 1. Prepare node data
@@ -57,11 +58,16 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     // Prepare state machine and logs
     println!("Prepare state machine and logs");
 
-    let sm1 = Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1")));
+    let sm1 = Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1")).await);
+    // let state_machines = [
+    //     Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1"))),
+    //     Arc::new(prepare_state_machine(2, &format!("{DB_ROOT_DIR}/cs/2"))),
+    //     Arc::new(prepare_state_machine(3, &format!("{DB_ROOT_DIR}/cs/3"))),
+    // ];
     let raft_logs = [
-        prepare_raft_log(1, &format!("{DB_ROOT_DIR}/cs/1"), 0),
-        prepare_raft_log(2, &format!("{DB_ROOT_DIR}/cs/2"), 0),
-        prepare_raft_log(3, &format!("{DB_ROOT_DIR}/cs/3"), 0),
+        prepare_storage_engine(1, &format!("{DB_ROOT_DIR}/cs/1"), 0),
+        prepare_storage_engine(2, &format!("{DB_ROOT_DIR}/cs/2"), 0),
+        prepare_storage_engine(3, &format!("{DB_ROOT_DIR}/cs/3"), 0),
     ];
 
     manipulate_log(&raft_logs[0], vec![1, 2, 3], 1).await;
@@ -85,6 +91,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
             node_config(
                 &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
             ),
+            // Some(state_machines[i].clone()),
             if i == 0 { Some(sm1.clone()) } else { None },
             Some(raft_logs[i].clone()),
         )
@@ -108,6 +115,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
 
     // 4. Test client request
+    // let sm1 = state_machines[0].clone();
     test_put_get(&mut client_manager, 11, 100).await?;
     assert_eq!(sm1.len(), 11);
 

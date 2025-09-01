@@ -6,7 +6,6 @@ pub mod client;
 pub mod config;
 mod docs;
 pub mod node;
-#[doc(hidden)]
 pub mod proto;
 pub mod storage;
 

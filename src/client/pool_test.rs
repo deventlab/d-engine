@@ -2,12 +2,12 @@ use std::time::Duration;
 use std::vec;
 
 use tokio::sync::oneshot;
+use tracing_test::traced_test;
 
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::error::ErrorCode;
-use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
 use crate::time::get_now_as_u32;
 use crate::ClientConfig;
@@ -16,6 +16,7 @@ use crate::FOLLOWER;
 use crate::LEADER;
 
 #[tokio::test]
+#[traced_test]
 async fn test_parse_cluster_metadata_success() {
     let nodes = vec![
         NodeMeta {
@@ -38,6 +39,7 @@ async fn test_parse_cluster_metadata_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_parse_cluster_metadata_no_leader() {
     let nodes = vec![NodeMeta {
         id: 1,
@@ -52,6 +54,7 @@ async fn test_parse_cluster_metadata_no_leader() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_load_cluster_metadata_success() {
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
@@ -73,6 +76,7 @@ async fn test_load_cluster_metadata_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_create_channel_success() {
     let config = ClientConfig {
         id: get_now_as_u32(),
@@ -92,8 +96,8 @@ async fn test_create_channel_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_connection_pool_creation() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx,
@@ -116,6 +120,7 @@ async fn test_connection_pool_creation() {
     assert_eq!(pool.follower_conns.len(), 0);
 }
 #[tokio::test]
+#[traced_test]
 async fn test_get_all_channels() {
     let (_tx1, rx1) = oneshot::channel::<()>();
     let (_tx2, rx2) = oneshot::channel::<()>();
@@ -150,8 +155,8 @@ async fn test_get_all_channels() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_refresh_successful_leader_change() {
-    enable_logger();
     let leader_id = 1;
     let new_leader_id = 2;
 

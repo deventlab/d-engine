@@ -83,6 +83,7 @@ impl ConnectionPool {
         // 1. Load cluster metadata
         let members = Self::load_cluster_metadata(endpoints, config).await?;
         info!("Cluster members discovered: {:?}", members);
+        println!("Cluster members discovered: {members:?}",);
 
         // 2. Parse leader and follower addresses
         let (leader_addr, follower_addrs) = Self::parse_cluster_metadata(&members)?;

@@ -1722,7 +1722,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // 2. Create configuration change payload
         debug!("2. Create configuration change payload");
         if let Err(e) = membership.can_rejoin(node_id, node_role).await {
-            let error_msg = format!("Node {node_id} cannot rejoin: {}", e);
+            let error_msg = format!("Node {node_id} cannot rejoin: {e}",);
             warn!(%error_msg);
             return self
                 .send_join_error(sender, MembershipError::JoinClusterError(error_msg))

@@ -4,7 +4,6 @@ use crate::convert::skv;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
-use crate::test_utils;
 use crate::FOLLOWER;
 use crate::LEARNER;
 
@@ -18,8 +17,6 @@ use crate::LEARNER;
 /// 1. find the same key value from local log db
 #[test]
 fn test_init_storages_case1() {
-    test_utils::enable_logger();
-
     use prost::Message;
     let path = "/tmp/test_init_storages_case1".to_string();
     std::fs::remove_dir_all(&path).ok();

@@ -13,23 +13,20 @@
 //! This module is designed so developers can easily implement custom
 //! storage backends without changing the Raft protocol logic.
 
+mod adaptors;
+mod buffered;
+mod raft_log;
+mod snapshot_path_manager;
 mod state_machine;
 mod storage_engine;
 
-mod buffered;
-mod raft_log;
-mod sled_adapter;
-mod snapshot_path_manager;
-
+pub use adaptors::*;
 pub(crate) use buffered::*;
-
 #[doc(hidden)]
 pub use raft_log::*;
-
-pub use sled_adapter::*;
 pub(crate) use snapshot_path_manager::*;
 pub use state_machine::*;
 pub use storage_engine::*;
 
-#[cfg(test)]
-mod storage_test;
+pub mod state_machine_test;
+pub mod storage_engine_test;

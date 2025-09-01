@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
+use tracing_test::traced_test;
 
 use super::candidate_state::CandidateState;
 use crate::proto::client::ClientReadRequest;
@@ -46,6 +47,7 @@ use crate::LEARNER;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
+#[traced_test]
 async fn test_can_vote_myself_case1() {
     let context = setup_raft_components("/tmp/test_can_vote_myself_case1", None, false);
     let state = CandidateState::<MockTypeConfig>::new(1, Arc::new(context.node_config.clone()));
@@ -54,6 +56,7 @@ async fn test_can_vote_myself_case1() {
 
 /// # Case 2: Can not vote myself
 #[tokio::test]
+#[traced_test]
 async fn test_can_vote_myself_case2() {
     let context = setup_raft_components("/tmp/test_can_vote_myself_case2", None, false);
     let mut state = CandidateState::<MockTypeConfig>::new(1, Arc::new(context.node_config.clone()));
@@ -72,6 +75,7 @@ async fn test_can_vote_myself_case2() {
 /// 2. old vote will be reset
 /// 3. vote myself as Candidate
 #[tokio::test]
+#[traced_test]
 async fn test_tick_case1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_tick_case1", graceful_rx, None);
@@ -106,6 +110,7 @@ async fn test_tick_case1() {
 /// 1. term will be updated to the reponse one
 /// 2. send out become follower signal
 #[tokio::test]
+#[traced_test]
 async fn test_tick_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_tick_case2", graceful_rx, None);
@@ -157,6 +162,7 @@ fn setup_handle_raft_event_case1_params(
 /// 2. Role should not step to Follower
 /// 3. Term should not be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
@@ -197,6 +203,7 @@ async fn test_handle_raft_event_case1_1() {
 /// 3. Term should be updated
 /// 4. Should receive replay event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
@@ -236,6 +243,7 @@ async fn test_handle_raft_event_case1_2() {
 
 /// # Case 2: Receive ClusterConf Event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
@@ -263,6 +271,7 @@ async fn test_handle_raft_event_case2() {
 
 /// # Case3: Successful configuration update
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
@@ -326,6 +335,7 @@ async fn test_handle_raft_event_case3() {
 /// 7. `handle_raft_event` fun returns Ok(())
 /// 8. commit should not be updated. We should let Follower continue.
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -409,6 +419,7 @@ async fn test_handle_raft_event_case4_1() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -474,6 +485,7 @@ async fn test_handle_raft_event_case4_2() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -531,6 +543,7 @@ async fn test_handle_raft_event_case4_3() {
 
 /// # Case 5: Test handle client propose request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
@@ -557,6 +570,7 @@ async fn test_handle_raft_event_case5() {
 
 /// # Case 6.1: test ClientReadRequest with linear request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
@@ -580,6 +594,7 @@ async fn test_handle_raft_event_case6_1() {
 
 /// # Case 6.2: test ClientReadRequest with request(linear=false)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case6_2", graceful_rx, None);
@@ -646,6 +661,7 @@ fn test_send_replay_raft_event() {
 
 /// Test handling InstallSnapshotChunk event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case7() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -675,6 +691,7 @@ async fn test_handle_raft_event_case7() {
 
 /// Test handling RaftLogCleanUp event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case8() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -710,6 +727,7 @@ async fn test_handle_raft_event_case8() {
 
 /// Test handling JoinCluster event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case10() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -745,6 +763,7 @@ async fn test_handle_raft_event_case10() {
 
 /// Test handling DiscoverLeader event by CandidateState
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case11() {
     // Step 1: Setup the test environment
     let (_graceful_tx, graceful_rx) = watch::channel(());

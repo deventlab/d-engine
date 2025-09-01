@@ -41,13 +41,14 @@
 mod mock_builder;
 mod mock_rpc;
 mod mock_rpc_service;
+mod mock_storage_engine;
 
 pub use mock_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
+pub use mock_storage_engine::*;
 use tokio::sync::watch;
 
-use super::enable_logger;
 use super::node_config;
 use super::MockTypeConfig;
 use crate::proto::cluster::NodeMeta;
@@ -60,8 +61,6 @@ pub(crate) fn mock_node(
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Node<MockTypeConfig> {
-    enable_logger();
-
     let mut node_config = node_config(db_path);
     if let Some(peers_meta) = peers_meta_option {
         node_config.cluster.initial_cluster = peers_meta;
@@ -76,8 +75,6 @@ pub(crate) fn mock_raft(
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Raft<MockTypeConfig> {
-    enable_logger();
-
     let mut node_config = node_config(db_path);
     // Set batch_threshold=0, means the replication will be triggered immediatelly.
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = 0;
@@ -93,8 +90,6 @@ pub(crate) fn mock_raft_context(
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> RaftContext<MockTypeConfig> {
-    enable_logger();
-
     let mut node_config = node_config(db_path);
     if let Some(peers_meta) = peers_meta_option {
         node_config.cluster.initial_cluster = peers_meta;

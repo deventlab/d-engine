@@ -166,25 +166,6 @@ where
         );
         // Merge consecutive normal commands
         let mut command_batch = vec![];
-        let flush = |batch: &mut Vec<_>| -> Result<()> {
-            if !batch.is_empty() {
-                // Use take to transfer ownership while preserving the underlying memory allocation
-                // Note: when taking out the batch, the original order will be maintained
-                trace!(
-                    "[Node-{} | Before] Flushing command batch: {:?}",
-                    self.my_id,
-                    batch
-                );
-                let entries = std::mem::take(batch);
-                trace!(
-                    "[Node-{} | After] Flushing command batch: {:?}",
-                    self.my_id,
-                    batch
-                );
-                self.state_machine_handler.apply_chunk(entries)?;
-            }
-            Ok(())
-        };
 
         let mut last_error = None;
         for entry in entries {
@@ -195,7 +176,7 @@ where
                     Some(Payload::Config(_)) => {
                         command_batch.push(entry.clone());
 
-                        flush(&mut command_batch)?;
+                        self.flush_batch(&mut command_batch).await?;
 
                         if last_error.is_none() {
                             if let Err(e) = self.apply_config_change(entry).await {
@@ -206,7 +187,7 @@ where
                     Some(Payload::Noop(_)) => {
                         command_batch.push(entry);
 
-                        flush(&mut command_batch)?;
+                        self.flush_batch(&mut command_batch).await?;
                     }
                     None => unreachable!(),
                 }
@@ -218,7 +199,7 @@ where
         if let Some(e) = last_error {
             return Err(e);
         } else {
-            flush(&mut command_batch)?;
+            self.flush_batch(&mut command_batch).await?;
         }
 
         debug!("After processing all entries: validate if generate snapshot");
@@ -289,5 +270,22 @@ where
         );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval
+    }
+
+    // Define flush as an async function
+    async fn flush_batch(
+        &self,
+        batch: &mut Vec<Entry>,
+    ) -> Result<()> {
+        if !batch.is_empty() {
+            let entries = std::mem::take(batch);
+            trace!(
+                "[Node-{}] Flushing command batch: {:?}",
+                self.my_id,
+                entries
+            );
+            self.state_machine_handler.apply_chunk(entries).await?;
+        }
+        Ok(())
     }
 }

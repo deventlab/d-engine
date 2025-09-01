@@ -7,6 +7,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use tempfile::tempdir;
 use tempfile::NamedTempFile;
+use tracing_test::traced_test;
 
 use crate::file_io;
 use crate::file_io::compute_checksum_from_folder_path;
@@ -14,7 +15,6 @@ use crate::file_io::convert_vec_checksum;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
 use crate::file_io::move_directory;
-use crate::test_utils::enable_logger;
 use crate::Error;
 use crate::FileError;
 use crate::StorageError;
@@ -23,8 +23,8 @@ use crate::SystemError;
 /// Passed: "/tmp/files/data.txt"
 /// Expected: "/tmp/files" created
 #[tokio::test]
+#[traced_test]
 async fn test_create_parent_dir_for_file() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_create_parent_dir_for_file");
 
@@ -43,8 +43,8 @@ async fn test_create_parent_dir_for_file() {
 /// Passed: "/tmp/dir/subdir"
 /// Expected: "/tmp/dir/subdir" created
 #[tokio::test]
+#[traced_test]
 async fn test_create_parent_dir_for_directory_without_trailing_separator() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir
         .path()
@@ -63,8 +63,8 @@ async fn test_create_parent_dir_for_directory_without_trailing_separator() {
 /// Passed: "/tmp/dir/subdir/"
 /// Expected: "/tmp/dir/subdir" created
 #[tokio::test]
+#[traced_test]
 async fn test_create_parent_dir_for_directory_with_trailing_separator() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir
         .path()
@@ -80,6 +80,7 @@ async fn test_create_parent_dir_for_directory_with_trailing_separator() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_delete_file_success() {
     // Create temp file
     let mut file = NamedTempFile::new().unwrap();
@@ -98,6 +99,7 @@ async fn test_delete_file_success() {
 
 /// Test non-existent file path
 #[tokio::test]
+#[traced_test]
 async fn test_delete_nonexistent_file() {
     let e = delete_file("nonexistent.txt").await.unwrap_err();
     assert!(
@@ -113,6 +115,7 @@ async fn test_delete_nonexistent_file() {
 
 /// Test directory deletion attempt
 #[tokio::test]
+#[traced_test]
 async fn test_delete_directory() {
     // Create temp directory
     let dir = tempdir().unwrap();
@@ -132,6 +135,7 @@ async fn test_delete_directory() {
 
 /// Test busy file deletion (platform-specific)
 #[tokio::test]
+#[traced_test]
 async fn test_delete_busy_file() {
     // Create temp file
     let temp_dir = tempfile::tempdir().unwrap();
@@ -222,8 +226,8 @@ async fn test_delete_permission_denied() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_move_directory() {
-    enable_logger();
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_move_directory");
 
@@ -286,8 +290,6 @@ mod validate_compressed_format_tests {
     use tracing::trace;
 
     use super::*;
-    use crate::constants::STATE_MACHINE_TREE;
-    use crate::file_io::create_valid_snapshot;
     use crate::file_io::validate_compressed_format;
     use crate::Result;
 
@@ -300,18 +302,19 @@ mod validate_compressed_format_tests {
             ("data.snap", [0x1f, 0x8b]),
         ];
 
-        for (filename, _header) in test_cases {
+        for (filename, header) in test_cases {
             let dir = tempdir().unwrap();
             let path = dir.path().join(filename);
-            let _checksum = create_valid_snapshot(&path, |db| {
-                let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-                tree.insert(b"test_key", b"test_value").unwrap();
-            })
-            .await;
+
+            // Create a file with proper GZIP header
+            let mut file = File::create(&path).unwrap();
+            file.write_all(header).unwrap();
+            // Add some dummy content after the header
+            file.write_all(b"dummy content").unwrap();
 
             // Execute validation
             let result = validate_compressed_format(&path);
-            assert!(result.is_ok(), "Failed case: {filename}",);
+            assert!(result.is_ok(), "Failed case: {filename}");
         }
 
         Ok(())
@@ -329,13 +332,13 @@ mod validate_compressed_format_tests {
         for (filename, _expected_ext) in cases {
             let dir = tempdir().unwrap();
             let path = dir.path().join(filename);
-            let _checksum = create_valid_snapshot(&path, |db| {
-                let tree = db.open_tree(STATE_MACHINE_TREE).unwrap();
-                tree.insert(b"test_key", b"test_value").unwrap();
-            })
-            .await;
-            let result = validate_compressed_format(&path);
 
+            // Create a simple compressed file instead of using create_valid_snapshot
+            let mut file = File::create(&path).unwrap();
+            // Write some dummy content
+            file.write_all(b"dummy content").unwrap();
+
+            let result = validate_compressed_format(&path);
             trace!("{result:?}",);
             assert!(
                 matches!(
@@ -354,11 +357,19 @@ mod validate_compressed_format_tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("invalid.gz");
 
-        // Create file with wrong header
-        let mut file = File::create(&path).unwrap();
-        for _ in 1..=10 {
-            file.write_all(&[0x89, 0x50]).unwrap(); // PNG magic number
+        // Create file with wrong header but in a temp directory
+        let temp_dir = tempdir().unwrap();
+        let temp_path = temp_dir.path().join("temp_invalid.gz");
+
+        {
+            let mut file = File::create(&temp_path).unwrap();
+            for _ in 1..=10 {
+                file.write_all(&[0x89, 0x50]).unwrap(); // PNG magic number
+            }
         }
+
+        // Copy to final location
+        tokio::fs::copy(&temp_path, &path).await.unwrap();
 
         let result = validate_compressed_format(&path);
         trace!("{result:?}",);

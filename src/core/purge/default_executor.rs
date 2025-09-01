@@ -28,7 +28,7 @@ impl<T: TypeConfig> PurgeExecutor for DefaultPurgeExecutor<T> {
         &self,
         last_included: LogId,
     ) -> Result<()> {
-        self.raft_log.purge_logs_up_to(last_included)
+        self.raft_log.purge_logs_up_to(last_included).await
     }
 }
 

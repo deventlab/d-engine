@@ -852,7 +852,7 @@ pub fn ensure_safe_join(
     let total_voters = current_voters + 1;
 
     // Always allow if cluster will have even number of voters
-    if (total_voters + 1) % 2 == 0 {
+    if (total_voters + 1).is_multiple_of(2) {
         Ok(())
     } else {
         // metrics::counter!("cluster.unsafe_join_attempts", 1);

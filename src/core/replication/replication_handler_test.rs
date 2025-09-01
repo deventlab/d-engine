@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use prost::Message;
 use tokio::sync::watch;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use super::ReplicationCore;
 use super::ReplicationData;
@@ -26,7 +27,6 @@ use crate::proto::replication::AppendEntriesRequest;
 use crate::proto::replication::AppendEntriesResponse;
 use crate::proto::replication::ConflictResult;
 use crate::proto::replication::SuccessResult;
-use crate::test_utils::enable_logger;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::setup_raft_components;
@@ -35,9 +35,11 @@ use crate::test_utils::MockTypeConfig;
 use crate::AppendResult;
 use crate::ConsensusError;
 use crate::Error;
+use crate::FileStorageEngine;
 use crate::LeaderStateSnapshot;
 use crate::MockMembership;
 use crate::MockRaftLog;
+use crate::MockStateMachine;
 use crate::MockTransport;
 use crate::NetworkError;
 use crate::PeerUpdate;
@@ -58,6 +60,7 @@ use crate::LEARNER;
 /// ## Validate criterias
 /// 1. only new_entries returned
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_to_be_synced_logs_for_peers_case1() {
     let context = setup_raft_components(
         "/tmp/test_retrieve_to_be_synced_logs_for_peers_case1",
@@ -75,7 +78,8 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case1() {
     let max_entries = 100;
     let peer_next_indices =
         HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -98,6 +102,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case1() {
 /// ## Validate criterias
 /// 1. both log-1 and new_entries are returned
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_to_be_synced_logs_for_peers_case2() {
     let context = setup_raft_components(
         "/tmp/test_retrieve_to_be_synced_logs_for_peers_case2",
@@ -111,16 +116,19 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case2() {
 
     let my_id = 1;
     let peer3_id = 3;
+    let next_index = raft_log.pre_allocate_raft_logs_next_index();
     let new_entries = vec![Entry {
-        index: 2,
+        index: next_index,
         term: 1,
         payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
-    let leader_last_index_before_inserting_new_entries = 1;
+
+    let leader_last_index_before_inserting_new_entries = raft_log.last_entry_id();
     let max_entries = 100;
     let peer_next_indices =
         HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -145,6 +153,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case2() {
 /// ## Validate criterias
 /// 1. only log-1 is returned
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_to_be_synced_logs_for_peers_case3() {
     let context = setup_raft_components(
         "/tmp/test_retrieve_to_be_synced_logs_for_peers_case3",
@@ -159,11 +168,13 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case3() {
     let my_id = 1;
     let peer3_id = 3;
     let new_entries = vec![];
-    let leader_last_index_before_inserting_new_entries = 1;
+
+    let leader_last_index_before_inserting_new_entries = raft_log.last_entry_id();
     let max_entries = 100;
     let peer_next_indices =
         HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -188,6 +199,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case3() {
 /// ## Validate criterias
 /// 1. both log-1,log-2 and new_entries are returned
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
     let context = setup_raft_components(
         "/tmp/test_retrieve_to_be_synced_logs_for_peers_case4_1",
@@ -215,7 +227,8 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
         payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let peer_next_indices = HashMap::from([(peer3_id, peer3_next_id)]);
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -243,6 +256,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
 /// ## Validate criterias
 /// 1. only new_entries are returned
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
     let context = setup_raft_components(
         "/tmp/test_retrieve_to_be_synced_logs_for_peers_case4_2",
@@ -270,7 +284,8 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
         payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let peer_next_indices = HashMap::from([(peer3_id, peer3_next_id)]);
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -288,6 +303,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
 /// ## Validate criterias
 /// 1. No leader ones should be retruned
 #[tokio::test]
+#[traced_test]
 async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
     let context = setup_raft_components(
         "/tmp/test_retrieve_to_be_synced_logs_for_peers_case5",
@@ -307,7 +323,8 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
         (my_id, 1),
         (peer3_id, leader_last_index_before_inserting_new_entries),
     ]);
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -328,10 +345,12 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
 /// 1. fun returns Ok(vec![])
 /// 2. no update on local raft log
 #[tokio::test]
+#[traced_test]
 async fn test_generate_new_entries_case1() {
     let context = setup_raft_components("/tmp/test_generate_new_entries_case1", None, false);
     let my_id = 1;
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     let commands = vec![];
     let current_term = 1;
@@ -346,11 +365,12 @@ async fn test_generate_new_entries_case1() {
 /// 1. fun returns Ok(vec![log-1])
 /// 2. update on local raft log with one extra entry
 #[tokio::test]
+#[traced_test]
 async fn test_generate_new_entries_case2() {
-    enable_logger();
     let context = setup_raft_components("/tmp/test_generate_new_entries_case2", None, false);
     let my_id = 1;
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     debug!("last_id: {}", last_id);
     let commands = vec![WriteCommand::delete(safe_kv(1))];
@@ -379,6 +399,7 @@ async fn test_generate_new_entries_case2() {
 /// ## Validation criterias:
 /// 1. retrieved entries' length is 2
 #[tokio::test]
+#[traced_test]
 async fn test_build_append_request_case() {
     let context = setup_raft_components("/tmp/test_build_append_request_case", None, false);
     let my_id = 1;
@@ -386,7 +407,8 @@ async fn test_build_append_request_case() {
     let peer2_next_index = 3;
     let peer3_id = 3;
     let peer3_next_index = 1;
-    let handler = ReplicationHandler::<RaftTypeConfig>::new(my_id);
+    let handler =
+        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
     entries_per_peer.insert(
@@ -837,7 +859,6 @@ mod handle_raft_request_in_batch_test {
     use tracing::debug;
 
     use super::*;
-    use crate::test_utils::enable_logger;
     use crate::test_utils::node_config;
     use crate::test_utils::MockBuilder;
 
@@ -2814,7 +2835,6 @@ mod handle_raft_request_in_batch_test {
     #[tokio::test]
     async fn test_learner_catchup_threshold() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        enable_logger();
 
         let mut node_config = node_config("/tmp/test_learner_catchup_threshold");
         node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;

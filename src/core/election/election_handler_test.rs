@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use crate::alias::ROF;
 use crate::alias::TROF;
@@ -39,15 +40,18 @@ async fn setup() -> TestConext {
         raft_log_mock,
     }
 }
+
 /// # Case 1: Receive election failed error if there is zero peers
 ///
 /// ## Validation Criterias:
 /// 1. Receive ElectionError::QuorumFailure error
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case1() {
     // 1. Create a ElectionHandler instance
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case1", None, false);
+
     let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
     // 2.
@@ -97,6 +101,7 @@ async fn test_broadcast_vote_requests_case1() {
 /// ## Validation criterias:
 /// 1. Test should receive Err(ElectionError::LogConflict)
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case2", None, false);
@@ -149,6 +154,7 @@ async fn test_broadcast_vote_requests_case2() {
 /// ## Validation criterias:
 /// 1. Test should receive Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case3() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case3", None, false);
@@ -203,6 +209,7 @@ async fn test_broadcast_vote_requests_case3() {
 // ## Criterias:
 // 1. return Err(ElectionError::HigherTerm)
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case4() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case4", None, false);
@@ -239,6 +246,7 @@ async fn test_broadcast_vote_requests_case4() {
 // ## Criterias:
 // 1. return Err(ElectionError::LogConflict)
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case5() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case5", None, false);
@@ -281,6 +289,7 @@ async fn test_broadcast_vote_requests_case5() {
 ///     - voted_for_option = Some(x)
 ///     - term_update = Some(y)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_vote_request_case1() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let mut test_context = setup().await;
@@ -322,6 +331,7 @@ async fn test_handle_vote_request_case1() {
 /// 1. role_rx.try_recv with None
 /// 2. Returns with Ok(None)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_vote_request_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let mut test_context = setup().await;
@@ -362,6 +372,7 @@ async fn test_handle_vote_request_case2() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_1() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(
@@ -413,6 +424,7 @@ async fn test_check_vote_request_is_legal_case_1_1() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_2() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(
@@ -466,6 +478,7 @@ async fn test_check_vote_request_is_legal_case_1_2() {
 /// Criterias:
 /// - true
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_3() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(
@@ -501,6 +514,7 @@ async fn test_check_vote_request_is_legal_case_1_3() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_4() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(
@@ -543,6 +557,7 @@ async fn test_check_vote_request_is_legal_case_1_4() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_2_1() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(
@@ -586,6 +601,7 @@ async fn test_check_vote_request_is_legal_case_2_1() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_2_2() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(
@@ -628,6 +644,7 @@ async fn test_check_vote_request_is_legal_case_2_2() {
 /// Criterias:
 /// - true
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_2_3() {
     // 1. Prepare RaftContext mock
     let context = setup_raft_components(

@@ -11,6 +11,14 @@
 
 ---
 
+## Runtime Requirements
+
+**d-engine requires a Tokio runtime environment to function.** Key considerations:
+
+- **Must be initialized within Tokio context**: All async operations require an active Tokio runtime
+
+---
+
 ## Features
 
 - **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.

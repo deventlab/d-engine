@@ -101,7 +101,7 @@ pub trait RaftLog: Send + Sync + 'static {
     /// Clear out all the entries in local logs before last_applied
     /// this function will be invoked only when entries been applied to state
     /// machine successfully
-    fn purge_logs_up_to(
+    async fn purge_logs_up_to(
         &self,
         cutoff_index: LogId,
     ) -> Result<()>;
@@ -122,7 +122,7 @@ pub trait RaftLog: Send + Sync + 'static {
 
     fn save_hard_state(
         &self,
-        hard_state: crate::HardState,
+        hard_state: &crate::HardState,
     ) -> Result<()>;
 }
 

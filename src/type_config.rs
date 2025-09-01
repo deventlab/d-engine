@@ -12,22 +12,24 @@ use crate::StateMachineHandler;
 use crate::StorageEngine;
 use crate::Transport;
 
-pub trait TypeConfig:
-    Sync + Send + Sized + Debug + Clone + Copy + Default + Eq + PartialEq + Ord + PartialOrd + 'static
-{
-    type R: RaftLog + Debug;
-
-    type S: StorageEngine + Debug;
-
-    type TR: Transport<Self> + Debug;
+pub trait TypeConfig: Sync + Send + Sized + Debug + 'static {
+    // Required type - specified by the application layer
+    //
+    type SE: StorageEngine + Debug;
 
     type SM: StateMachine + Debug;
 
+    // Optional type - has default implementation
+    //
+    type R: RaftLog + Debug;
+
     type M: Membership<Self> + Debug;
 
-    type E: ElectionCore<Self> + Clone;
+    type TR: Transport<Self>;
 
-    type REP: ReplicationCore<Self> + Debug;
+    type E: ElectionCore<Self>;
+
+    type REP: ReplicationCore<Self>;
 
     type C: CommitHandler;
 
@@ -43,7 +45,7 @@ pub mod alias {
 
     pub type ROF<T> = <T as TypeConfig>::R;
 
-    pub type SOF<T> = <T as TypeConfig>::S;
+    pub type SOF<T> = <T as TypeConfig>::SE;
 
     pub type TROF<T> = <T as TypeConfig>::TR;
 

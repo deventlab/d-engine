@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::BufferedRaftLog;
 use crate::DefaultCommitHandler;
@@ -7,21 +9,31 @@ use crate::ElectionHandler;
 use crate::LogSizePolicy;
 use crate::RaftMembership;
 use crate::ReplicationHandler;
-use crate::SledStateMachine;
-use crate::SledStorageEngine;
+use crate::StateMachine;
+use crate::StorageEngine;
 use crate::TypeConfig;
 
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
-pub struct RaftTypeConfig;
+#[derive(Debug)]
+pub struct RaftTypeConfig<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
+    _marker: std::marker::PhantomData<(SE, SM)>,
+}
 
-impl TypeConfig for RaftTypeConfig {
+impl<SE, SM> TypeConfig for RaftTypeConfig<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
+    type SE = SE;
+
+    type SM = SM;
+
     type R = BufferedRaftLog<Self>;
 
-    type S = SledStorageEngine;
-
     type TR = GrpcTransport<Self>;
-
-    type SM = SledStateMachine;
 
     type M = RaftMembership<Self>;
 

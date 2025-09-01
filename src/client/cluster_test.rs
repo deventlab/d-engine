@@ -1,9 +1,16 @@
+use std::sync::Arc;
+use std::vec;
+
+use arc_swap::ArcSwap;
+use tokio::sync::oneshot;
+use tonic::Status;
+use tracing_test::traced_test;
+
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::JoinResponse;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
 use crate::proto::error::ErrorCode;
-use crate::test_utils::enable_logger;
 use crate::test_utils::MockNode;
 use crate::ClientConfig;
 use crate::ClientInner;
@@ -11,15 +18,10 @@ use crate::ClusterClient;
 use crate::ConnectionPool;
 use crate::FOLLOWER;
 use crate::LEADER;
-use arc_swap::ArcSwap;
-use std::sync::Arc;
-use std::vec;
-use tokio::sync::oneshot;
-use tonic::Status;
 
 #[tokio::test]
+#[traced_test]
 async fn test_list_members_success() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx,
@@ -50,8 +52,8 @@ async fn test_list_members_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_success() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_join_cluster_reps(
         rx,
@@ -61,7 +63,7 @@ async fn test_join_cluster_success() {
                 nodes: vec![NodeMeta {
                     id: 1,
                     role: LEADER,
-                    address: format!("127.0.0.1:{}", port),
+                    address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
             })
@@ -100,8 +102,8 @@ async fn test_join_cluster_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_join_cluster_failure() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_mock_service_with_join_cluster_reps(
         rx,

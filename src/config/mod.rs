@@ -18,12 +18,10 @@ pub use network::*;
 pub use raft::*;
 pub use retry::*;
 pub use tls::*;
-
 #[cfg(test)]
 mod config_test;
 #[cfg(test)]
 mod raft_test;
-
 use std::env;
 
 use config::Config;

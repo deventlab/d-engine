@@ -51,18 +51,20 @@ use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::TROF;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::NodeStatus;
-use crate::test_utils::enable_logger;
+use crate::test_utils::mock_state_machine;
 use crate::test_utils::MockTypeConfig;
 use crate::BufferedRaftLog;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::FileStateMachine;
+use crate::FileStorageEngine;
 use crate::FlushPolicy;
 use crate::LogSizePolicy;
+use crate::MockStateMachine;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
@@ -71,9 +73,8 @@ use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftTypeConfig;
 use crate::ReplicationHandler;
-use crate::SledStateMachine;
-use crate::SledStorageEngine;
 use crate::StateMachine;
+use crate::StorageEngine;
 use crate::TypeConfig;
 
 #[allow(dead_code)]
@@ -107,22 +108,20 @@ pub fn setup_raft_components(
     db_path: &str,
     peers_meta_option: Option<Vec<NodeMeta>>,
     restart: bool,
-) -> TestContext<RaftTypeConfig> {
+) -> TestContext<RaftTypeConfig<FileStorageEngine, MockStateMachine>> {
     println!("Test setup_raft_components ...");
-    enable_logger();
-    //start from fresh
-    let (raft_log_db, state_machine_db) = if restart {
-        reuse_dbs(db_path)
-    } else {
-        reset_dbs(db_path)
-    };
-    let id = 1;
-    // let raft_log_db = Arc::new(raft_log_db);
-    let state_machine_db = Arc::new(state_machine_db);
 
-    let storage_engine = Arc::new(
-        SledStorageEngine::new(id, raft_log_db).expect("Init storage engine successfully."),
-    );
+    std::env::remove_var("CONFIG_PATH");
+    std::env::remove_var("RAFT__INITIAL_CLUSTER");
+    //start from fresh
+    let id = 1;
+
+    // let tempdir = tempfile::tempdir().unwrap();
+    let path = PathBuf::from(db_path);
+    let storage_engine = Arc::new(FileStorageEngine::new(path).unwrap());
+    if restart {
+        storage_engine.log_store().reset_sync().unwrap();
+    }
 
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,
@@ -134,8 +133,8 @@ pub fn setup_raft_components(
         storage_engine.clone(),
     );
     let buffered_raft_log = buffered_raft_log.start(receiver);
-    let sled_state_machine = SledStateMachine::new(id, state_machine_db.clone()).expect("success");
-    let last_applied_pair = sled_state_machine.last_applied();
+    let mock_state_machine = mock_state_machine();
+    let last_applied_pair = mock_state_machine.last_applied();
 
     let grpc_transport = GrpcTransport::new(id);
 
@@ -145,14 +144,20 @@ pub fn setup_raft_components(
         let follower_role = RaftRole::<MockTypeConfig>::follower_role_i32();
         vec![
             NodeMeta {
-                id: 2,
+                id: 1,
                 address: "127.0.0.1:8080".to_string(),
                 role: follower_role,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
+                id: 2,
+                address: "127.0.0.1:8081".to_string(),
+                role: follower_role,
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
                 id: 3,
-                address: "127.0.0.1:8080".to_string(),
+                address: "127.0.0.1:8082".to_string(),
                 role: follower_role,
                 status: NodeStatus::Active.into(),
             },
@@ -162,7 +167,7 @@ pub fn setup_raft_components(
     let (_graceful_tx, _graceful_rx) = watch::channel(());
 
     // Each unit test db path will be different
-    let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let mut node_config = RaftNodeConfig::default();
     node_config.cluster.db_root_dir = PathBuf::from(db_path);
     node_config.cluster.initial_cluster = peers_meta.clone();
 
@@ -171,7 +176,7 @@ pub fn setup_raft_components(
         node_config.raft.snapshot.snapshot_cool_down_since_last_check,
     );
 
-    let state_machine = Arc::new(sled_state_machine);
+    let state_machine = Arc::new(mock_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(
         id,
         last_applied_pair.index,
@@ -184,7 +189,7 @@ pub fn setup_raft_components(
     let node_config_clone = node_config.clone();
     let arc_node_config = Arc::new(node_config);
 
-    TestContext::<RaftTypeConfig> {
+    TestContext::<RaftTypeConfig<FileStorageEngine, MockStateMachine>> {
         id,
         raft_log: buffered_raft_log,
         state_machine,
@@ -202,30 +207,8 @@ pub fn setup_raft_components(
     }
 }
 
-///Returns
-/// raft_log_db,
-/// state_machine_db,
-/// cluster_metadata_tree,
-/// node_state_metadata_tree,
-/// node_snapshot_metadata_tree,
-pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db) {
-    println!("[Test] reset_dbs ...");
-    let _ = std::fs::remove_dir_all(db_path);
-    init_sled_storages(db_path.to_string()).expect("init storage failed.")
-}
-///Returns
-/// raft_log_db,
-/// state_machine_db,
-/// cluster_metadata_tree,
-/// node_state_metadata_tree,
-/// node_snapshot_metadata_tree,
-pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db) {
-    println!("[Test] reuse_dbs ...");
-    init_sled_storages(db_path.to_string()).expect("init storage failed.")
-}
-
 pub(crate) async fn insert_raft_log(
-    raft_log: &ROF<RaftTypeConfig>,
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -243,8 +226,8 @@ pub(crate) async fn insert_raft_log(
     }
 }
 
-pub(crate) fn insert_state_machine(
-    state_machine: &SMOF<RaftTypeConfig>,
+pub(crate) async fn insert_state_machine(
+    state_machine: &SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -257,7 +240,7 @@ pub(crate) fn insert_state_machine(
         };
         entries.push(log);
     }
-    if let Err(e) = state_machine.apply_chunk(entries) {
+    if let Err(e) = state_machine.apply_chunk(entries).await {
         panic!("error: {e:?}");
     }
 }
