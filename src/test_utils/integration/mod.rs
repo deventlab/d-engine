@@ -51,7 +51,6 @@ use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::TROF;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::init_sled_storages;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
@@ -206,28 +205,6 @@ pub fn setup_raft_components(
         arc_node_config,
         state_machine_handler,
     }
-}
-
-///Returns
-/// raft_log_db,
-/// state_machine_db,
-/// cluster_metadata_tree,
-/// node_state_metadata_tree,
-/// node_snapshot_metadata_tree,
-pub fn reset_dbs(db_path: &str) -> (sled::Db, sled::Db) {
-    println!("[Test] reset_dbs ...");
-    let _ = std::fs::remove_dir_all(db_path);
-    init_sled_storages(db_path.to_string()).expect("init storage failed.")
-}
-///Returns
-/// raft_log_db,
-/// state_machine_db,
-/// cluster_metadata_tree,
-/// node_state_metadata_tree,
-/// node_snapshot_metadata_tree,
-pub fn reuse_dbs(db_path: &str) -> (sled::Db, sled::Db) {
-    println!("[Test] reuse_dbs ...");
-    init_sled_storages(db_path.to_string()).expect("init storage failed.")
 }
 
 pub(crate) async fn insert_raft_log(

@@ -28,10 +28,5 @@ pub(crate) use snapshot_path_manager::*;
 pub use state_machine::*;
 pub use storage_engine::*;
 
-#[cfg(test)]
-mod storage_test;
-
-#[cfg(test)]
-mod state_machine_test;
-#[cfg(test)]
-mod storage_engine_test;
+pub mod state_machine_test;
+pub mod storage_engine_test;

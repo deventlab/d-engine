@@ -1,28 +1,30 @@
-use core::panic;
 use d_engine::file_io::open_file_for_append;
-use d_engine::node::NodeBuilder;
-use d_engine::FileStateMachine;
-use d_engine::FileStorageEngine;
+use d_engine::NodeBuilder;
+use sled_demo::{SledStateMachine, SledStorageEngine};
 use std::env;
 use std::error::Error;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
-use tracing::error;
-use tracing::info;
+use tracing::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::Layer;
+use tracing_subscriber::{EnvFilter, Layer};
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::main]
 async fn main() {
-    // Get the log directory path from the environment variable
+    // Parse configuration
+    let node_id = env::var("NODE_ID")
+        .expect("NODE_ID required")
+        .parse::<u32>()
+        .expect("Invalid NODE_ID");
+
+    let db_path = env::var("DB_PATH").unwrap_or_else(|_| format!("/tmp/data/node-{node_id}"));
+
     let log_dir = env::var("LOG_DIR")
         .map_err(|_| "LOG_DIR environment variable not set")
         .expect("Set log dir successfully.");
@@ -31,19 +33,23 @@ async fn main() {
         .map(|v| v.parse::<u16>().expect("METRICS_PORT must be a valid port"))
         .unwrap_or(9000); // default 9000 if not set
 
-    // Initialize the log system
+    // Initialize observability
     let _guard = init_observability(log_dir);
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     // Start the server (wait for its initialization to complete)
-    let server_handler = tokio::spawn(start_dengine_server(graceful_rx.clone()));
+    let server_handler = tokio::spawn(start_dengine_server(
+        node_id,
+        PathBuf::from(db_path),
+        graceful_rx.clone(),
+    ));
 
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // --- Start Prometheus metrics server ---
+    // Start Prometheus metrics server
     let metrics_handle = tokio::spawn(start_metrics_server(metrics_port));
 
     // Monitor shutdown signals
@@ -54,11 +60,16 @@ async fn main() {
         tokio::join!(server_handler, metrics_handle, shutdown_handler);
 }
 
-async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
-    let path = PathBuf::from("./db/storage");
-    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
+async fn start_dengine_server(
+    node_id: u32,
+    db_path: PathBuf,
+    graceful_rx: watch::Receiver<()>,
+) {
+    let storage_engine =
+        Arc::new(SledStorageEngine::new(db_path.join("storage_engine"), node_id).unwrap());
     let state_machine =
-        Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
+        Arc::new(SledStateMachine::new(db_path.join("state_machine"), node_id).unwrap());
+
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
@@ -77,6 +88,26 @@ async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     }
 
     println!("Exiting program.");
+}
+
+pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error + Send>> {
+    let log_file = open_file_for_append(Path::new(&log_dir).join("d.log")).unwrap();
+
+    let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
+    let base_subscriber = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_filter(EnvFilter::from_default_env());
+    tracing_subscriber::registry().with(base_subscriber).init();
+    Ok(guard)
+}
+
+async fn start_metrics_server(port: u16) {
+    // Start Prometheus exporter with dynamic port
+    println!("Metrics server will start at http://0.0.0.0:{port}/metrics",);
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], port))
+        .install()
+        .expect("failed to start Prometheus metrics exporter");
 }
 
 async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {
@@ -98,24 +129,4 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {
     graceful_tx.send(()).unwrap();
 
     info!("Shutdown completed");
-}
-
-pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error + Send>> {
-    let log_file = open_file_for_append(Path::new(&log_dir).join("d.log")).unwrap();
-
-    let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
-    let base_subscriber = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
-        .with_filter(EnvFilter::from_default_env());
-    tracing_subscriber::registry().with(base_subscriber).init();
-    Ok(guard)
-}
-
-async fn start_metrics_server(port: u16) {
-    // Start Prometheus exporter with dynamic port
-    println!("Metrics server will start at http://0.0.0.0:{port}/metrics",);
-    metrics_exporter_prometheus::PrometheusBuilder::new()
-        .with_http_listener(([0, 0, 0, 0], port))
-        .install()
-        .expect("failed to start Prometheus metrics exporter");
 }

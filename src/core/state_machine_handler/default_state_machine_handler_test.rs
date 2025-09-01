@@ -25,7 +25,7 @@ use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
 use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
-use crate::init_sled_state_machine_db;
+// use crate::init_sled_state_machine_db;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
@@ -896,7 +896,6 @@ mod create_snapshot_tests {
         sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().returning(|path, _| {
             debug!(?path, "expect_generate_snapshot_data");
-            let _new_db = init_sled_state_machine_db(path).expect("");
 
             Ok([0; 32])
         });

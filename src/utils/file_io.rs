@@ -1,24 +1,21 @@
+use crate::ConvertError;
+use crate::FileError;
+use crate::Result;
+use crate::StorageError;
+use sha2::Digest;
+use sha2::Sha256;
 use std::fs::create_dir_all;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-
-use sha2::Digest;
-use sha2::Sha256;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 use tracing::debug;
 use tracing::error;
-
-use crate::init_sled_state_machine_db;
-use crate::ConvertError;
-use crate::FileError;
-use crate::Result;
-use crate::StorageError;
 
 /// Creates parent directories for the given path.
 /// e.g. path = "/tmp/a/b/c", "/tmp/a/b" will be crated
@@ -366,27 +363,4 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub(crate) async fn create_valid_snapshot<F>(
-    dir_path: &Path,
-    setup_db: F,
-) -> [u8; 32]
-where
-    F: FnOnce(&sled::Db),
-{
-    // Create the snapshot directory
-    tokio::fs::create_dir_all(dir_path).await.unwrap();
-
-    // Initialize the database in the snapshot directory
-    let db = init_sled_state_machine_db(dir_path).unwrap();
-
-    // Set up the database state
-    setup_db(&db);
-
-    // Flush to ensure all data is written
-    db.flush().unwrap();
-
-    // Compute checksum of the directory
-    compute_checksum_from_folder_path(dir_path).await.unwrap()
 }

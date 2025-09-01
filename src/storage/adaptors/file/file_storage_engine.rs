@@ -27,10 +27,10 @@ use crate::LogStore;
 use crate::MetaStore;
 use crate::StorageEngine;
 use crate::StorageError;
-use crate::HARD_STATE_KEY;
 
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
+pub(crate) const HARD_STATE_KEY: &[u8] = b"hard_state";
 
 /// File-based log store implementation
 #[derive(Debug)]

@@ -1,13 +1,9 @@
+use crate::ConvertError;
+use crate::Result;
+use prost::Message;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
-
-use prost::Message;
-use sled::IVec;
-use tracing::error;
-
-use crate::ConvertError;
-use crate::Result;
 
 pub fn str_to_u64(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -37,27 +33,6 @@ pub fn safe_vk<K: AsRef<[u8]>>(bytes: K) -> Result<u64> {
     }
     let array: [u8; 8] = bytes.try_into().expect("Guaranteed safe after length check");
     Ok(u64::from_be_bytes(array))
-}
-
-pub fn vki(v: &IVec) -> u64 {
-    // Convert `IVec` to a byte slice
-    let bytes: &[u8] = v.as_ref();
-
-    // Check if the byte slice is empty
-    if bytes.is_empty() {
-        error!("v is empty");
-    }
-
-    // Ensure the length is correct
-    assert_eq!(bytes.len(), 8); // Expecting exactly 8 bytes for u64
-
-    // Compute the u64 value from the byte slice
-    let mut result: u64 = 0;
-    for &byte in bytes.iter() {
-        result = (result << 8) | byte as u64; // Shift left by 8 bits and add
-                                              // the byte
-    }
-    result
 }
 
 pub fn skv(name: String) -> Vec<u8> {
