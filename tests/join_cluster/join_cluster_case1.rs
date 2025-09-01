@@ -68,18 +68,14 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     let new_node_port = JOIN_CLUSTER_PORT_BASE + 4;
 
     // Prepare state machines
-    let sm1 = Arc::new(
-        prepare_state_machine(1, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/1")).await,
-    );
-    let sm2 = Arc::new(
-        prepare_state_machine(2, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/2")).await,
-    );
-    let sm3 = Arc::new(
-        prepare_state_machine(3, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/3")).await,
-    );
-    let sm4 = Arc::new(
-        prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4")).await,
-    );
+    let sm1 =
+        Arc::new(prepare_state_machine(1, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/1")).await);
+    let sm2 =
+        Arc::new(prepare_state_machine(2, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/2")).await);
+    let sm3 =
+        Arc::new(prepare_state_machine(3, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/3")).await);
+    let sm4 =
+        Arc::new(prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4")).await);
 
     // Prepare raft logs
     let r1 = prepare_storage_engine(1, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/1"), 0);

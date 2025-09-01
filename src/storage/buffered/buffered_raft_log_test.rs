@@ -3699,9 +3699,7 @@ async fn test_performance_benchmarks() {
         let ops_per_sec = count as f64 / duration.as_secs_f64();
         results.insert(op_name, (duration, ops_per_sec));
 
-        println!(
-            "{op_name}: {count} operations in {duration:?} ({ops_per_sec:.2} ops/sec)"
-        );
+        println!("{op_name}: {count} operations in {duration:?} ({ops_per_sec:.2} ops/sec)");
 
         // Performance assertions with more realistic thresholds
         assert!(

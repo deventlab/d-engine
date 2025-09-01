@@ -1044,10 +1044,7 @@ mod check_cluster_is_ready_test {
             let (tx, rx) = oneshot::channel::<()>();
             let service = MockRpcService::default();
             let (port, addr) = MockNode::mock_listener(service, rx, false).await.unwrap();
-            membership
-                .update_node_address(*id, format!("127.0.0.1:{port}"))
-                .await
-                .unwrap();
+            membership.update_node_address(*id, format!("127.0.0.1:{port}")).await.unwrap();
             mock_services.push((tx, addr));
         }
 
