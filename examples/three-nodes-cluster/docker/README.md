@@ -16,14 +16,13 @@ ln -sf $(pwd)/config docker/config
 
 ```bash
 # Build core component (run in the project root directory)
-docker build -t dengine:1.3 -f docker/Dockerfile .
+docker build -t demo:1.3 -f docker/Dockerfile .
 
 # Build monitoring component
 docker build -t prometheus:1.0 -f docker/monitoring/prometheus/Dockerfile .
 
 # Build Jepsen test container
-cd docker/jepsen
-docker build -t jepsen:1.0 -f Dockerfile .
+docker build -t jepsen:1.0 -f docker/jepsen/Dockerfile .
 ```
 
 ### 3. Start the Cluster
