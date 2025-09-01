@@ -880,6 +880,7 @@ mod create_snapshot_tests {
 
     /// # Case 3: Test cleanup old versions
     #[tokio::test]
+    #[traced_test]
     async fn test_create_snapshot_case3() {
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_path = temp_dir.path().join("test_create_snapshot_case3");
@@ -896,7 +897,8 @@ mod create_snapshot_tests {
         sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().returning(|path, _| {
             debug!(?path, "expect_generate_snapshot_data");
-
+            std::fs::create_dir_all(path).expect("Failed to create directory");
+            // let _new_db = init_sled_state_machine_db(path).expect("");
             Ok([0; 32])
         });
         let snapshot_dir = temp_path.to_path_buf();
