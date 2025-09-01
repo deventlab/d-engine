@@ -56,7 +56,7 @@ async fn main() {
 
 async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
     let path = PathBuf::from("./db/storage");
-    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
+    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage_engine")).unwrap());
     let state_machine =
         Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
     // Build Node

@@ -11,18 +11,10 @@
 
 ---
 
-## Runtime Requirements
-
-**d-engine requires a Tokio runtime environment to function.** Key considerations:
-
-- **Must be initialized within Tokio context**: All async operations require an active Tokio runtime
-
----
-
 ## Features
 
 - **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
-- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, in-memory).
+- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, Raw File).
 - **Observability**: Built-in metrics, structured logging, and distributed tracing.
 - **Runtime Agnostic**: Works seamlessly with `tokio`.
 - **Extensible Design**: Decouples business logic from the protocol layer for easy customization.
@@ -100,34 +92,57 @@ sequenceDiagram
 
 ## Key Components
 
-### Protocol Core (src/core/)
+### Protocol Core (`src/core/`)
 
-- `election/`: Leader election and heartbeat management.
-- `replication/`: Log replication pipeline with batch buffering and consistency guarantees.
-- `raft_role/`: State transition handlers: (leader_state | follower_state | candidate_state)
-- `commit_handler/`: Commit application pipeline with default/test implementations
-- `state_machine_handler/`: State machine operation executors
-- `timer/`: Critical timing components: "Election timeouts" and "Heartbeat intervals"
+- **`election/`**: Leader election logic with configurable handlers and comprehensive test coverage.
+- **`replication/`**: Log replication pipeline featuring batch buffering, handler management, and consistency guarantees.
+- **`raft_role/`**: State machine implementations for all Raft roles (Leader, Follower, Candidate, Learner) with individual state handlers and tests.
+- **`commit_handler/`**: Commit application pipeline with default implementation and test suite.
+- **`state_machine_handler/`**: State machine operation handlers featuring snapshot policies (composite, log-size, time-based), snapshot assembly, and stream processing.
 
-### Node Control Plane (src/node/)
+### Node Control Plane (`src/node/`)
 
-- `builder.rs`: Type-safe node construction with configurable components
-- `type_config/`: Generic type configurations for protocol extensibility
-- `settings.rs`: Node configuration parameters and runtime tuning
-- `errors.rs`: Unified error handling for node operations
+- **`builder.rs`**: Type-safe node construction with configurable components and built-in testing.
+- **`type_config/`**: Generic type configurations for protocol extensibility, including oneshot utilities and Raft type configurations.
 
-### Storage Abstraction (src/storage/)
+### Storage Abstraction (`src/storage/`)
 
-- `raft_log.rs`: Raft local log operation definitions.
-- `sled_adapter/`: Storage implementations which is based on Sled DB
-- `state_machine.rs`: State machine operation definitions
+- **`raft_log.rs`**: Core Raft log operation definitions.
+- **`adaptors/`**: Multiple storage engine implementations:
+  - **File-based** (`file/`): Persistent storage using file system.
+  - **RocksDB** (`rocksdb/`): High-performance embedded database storage.
+- **`buffered/`**: Buffered Raft log layer for performance optimization.
+- **`state_machine.rs`**: State machine operation definitions and test suites.
 
-### Network Layer (src/network/)
+### Network Layer (`src/network/`)
 
-- `grpc/`: gRPC implementation:
-  - `grpc_transport.rs`: Network primitives
-  - `grpc_raft_service.rs`: RPC service definitions
-- `rpc_peer_channels.rs`: Peer-to-peer communication channels
+- **`grpc/`**: Complete gRPC implementation:
+  - `grpc_transport.rs`: Core network transport layer.
+  - `grpc_raft_service.rs`: RPC service definitions and implementations.
+  - `backgroup_snapshot_transfer.rs`: Background snapshot transfer management.
+- **`connection_cache.rs`**: Connection pooling and management.
+- **`health_checker.rs`** & **`health_monitor.rs`**: Node health monitoring and failure detection.
+
+### Client Implementation (`src/client/`)
+
+- **`cluster.rs`**: Cluster management and configuration.
+- **`kv.rs`**: Key-value client interface with test coverage.
+- **`pool.rs`**: Connection pooling for client applications.
+- **`builder.rs`**: Client construction utilities.
+
+### Configuration System (`src/config/`)
+
+- Comprehensive configuration management covering:
+  - Cluster settings (`cluster.rs`)
+  - Raft parameters (`raft.rs`)
+  - Network configurations (`network.rs`)
+  - Security and TLS settings (`security.rs`, `tls.rs`)
+  - Retry policies (`retry.rs`)
+  - Monitoring configurations (`monitoring.rs`)
+
+### Membership Management (`src/membership/`)
+
+- **`raft_membership.rs`**: Cluster membership management with consistency guarantees.
 
 ## Performance Benchmarks
 
@@ -135,20 +150,20 @@ d-engine is designed for low-latency consensus operations while maintaining stro
 
 **Test Setup**: d-engine v0.1.2 vs etcd 3.5， 10k ops, 8B keys, 256B values, Apple M2
 
-| **Test Case**            | **Metric**  | **d-engine** | **etcd**      | **Advantage**     |
-| ------------------------ | ----------- | ------------ | ------------- | ----------------- |
-| **Basic Write**          | Throughput  | 385.31 ops/s | 157.85 ops/s  | ✅ 2.44× d-engine |
-| (1 connection, 1 client) | Avg Latency | 2,594 μs     | 6,300 μs      | ✅ 59% lower      |
-|                          | p99 Latency | 4,527 μs     | 16,700 μs     | ✅ 73% lower      |
-| **High Concurrency**     | Throughput  | 3,972 ops/s  | 5,439 ops/s   | ❌ 1.37× etcd     |
-| (10 conns, 100 clients)  | Avg Latency | 2,516 μs     | 18,300 μs     | ✅ 86% lower      |
-|                          | p99 Latency | 4,359 μs     | 32,400 μs     | ✅ 87% lower      |
-| **Linear Read**          | Throughput  | 8,230 ops/s  | 85,904 ops/s  | ❌ 10.43× etcd    |
-| (Strong consistency)     | Avg Latency | 1,212 μs     | 1,100 μs      | ❌ 10% higher     |
-|                          | p99 Latency | 1,467 μs     | 3,200 μs      | ✅ 54% lower      |
-| **Sequential Read**      | Throughput  | 40,860 ops/s | 124,631 ops/s | ❌ 3.05× etcd     |
-| (Eventual consistency)   | Avg Latency | 243 μs       | 700 μs        | ✅ 65% lower      |
-|                          | p99 Latency | 529 μs       | 2,800 μs      | ✅ 81% lower      |
+| **Test Case**            | **Metric**  | **d-engine(rocksdb)** | **etcd**      | **Advantage**     |
+| ------------------------ | ----------- | --------------------- | ------------- | ----------------- |
+| **Basic Write**          | Throughput  | 423.61 ops/s          | 157.85 ops/s  | ✅ 2.68× d-engine |
+| (1 connection, 1 client) | Avg Latency | 2,359 μs              | 6,300 μs      | ✅ 63% lower      |
+|                          | p99 Latency | 3,915 μs              | 16,700 μs     | ✅ 77% lower      |
+| **High Concurrency**     | Throughput  | 3,597.27 ops/s        | 5,439 ops/s   | ❌ 1.51× etcd     |
+| (10 conns, 100 clients)  | Avg Latency | 2,774 μs              | 18,300 μs     | ✅ 85% lower      |
+|                          | p99 Latency | 5,999 μs              | 32,400 μs     | ✅ 81% lower      |
+| **Linear Read**          | Throughput  | 9,999 ops/s           | 85,904 ops/s  | ❌ 8.59× etcd     |
+| (Strong consistency)     | Avg Latency | 997 μs                | 1,100 μs      | ✅ 9% lower       |
+|                          | p99 Latency | 1,498 μs              | 3,200 μs      | ✅ 53% lower      |
+| **Sequential Read**      | Throughput  | 42,002 ops/s          | 124,631 ops/s | ❌ 2.97× etcd     |
+| (Eventual consistency)   | Avg Latency | 236 μs                | 700 μs        | ✅ 66% lower      |
+|                          | p99 Latency | 514 μs                | 2,800 μs      | ✅ 82% lower      |
 
 **Important Notes**
 

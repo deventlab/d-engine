@@ -2,24 +2,23 @@
 //! Raft cluster.
 //!
 //! The [`NodeBuilder`] provides a fluent interface to configure and assemble
-//! components required by the Raft node, including storage layers (log, state
-//! machine, membership), transport, and asynchronous handlers.
+//! components required by the Raft node, including storage engines, state machines,
+//! transport layers, membership management, and asynchronous handlers.
 //!
 //! ## Key Design Points
-//! - **Default Components**: Initializes with production-ready defaults (Sled-based storage, gRPC
-//!   transport).
-//! - **Customization**: Allows overriding defaults via setter methods (e.g., `raft_log()`,
-//!   `transport()`).
+//! - **Explicit Component Initialization**: Requires explicit configuration of storage engines and state machines (no implicit defaults).
+//! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`, `state_machine()`, `transport()`).
 //! - **Lifecycle Management**:
-//!   - `build()`: Assembles the [`Node`] and spawns background tasks (e.g., [`CommitHandler`]).
+//!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`], replication, election).
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
+//!   - `start_rpc_server()`: Spawns the gRPC server for cluster communication.
 //!
 //! ## Example
 //! ```ignore
-//!
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
-//! let node = NodeBuilder::new(node_config, shutdown_rx)
-//!     .raft_log(custom_raft_log)  // Optional override
+//! let node = NodeBuilder::new(Some("cluster_config.yaml"), shutdown_rx)
+//!     .storage_engine(custom_storage_engine)  // Required component
+//!     .state_machine(custom_state_machine)    // Required component
 //!     .build()
 //!     .start_rpc_server().await
 //!     .ready()
@@ -27,8 +26,9 @@
 //! ```
 //!
 //! ## Notes
-//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
+//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership and thread safety.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
+//! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory config.
 
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
@@ -209,7 +209,7 @@ where
     /// Finalizes the builder and constructs the Raft node instance.
     ///
     /// Initializes default implementations for any unconfigured components:
-    /// - Creates sled-based databases for state machine and logs
+    /// - Creates file-based databases for state machine and logs
     /// - Sets up default gRPC transport
     /// - Initializes commit handling subsystem
     /// - Configures membership management

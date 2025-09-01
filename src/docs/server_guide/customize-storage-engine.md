@@ -1,85 +1,199 @@
-## **Implementing Custom Storage Engine**
+# Implementing Custom Storage Engines
 
-d-engine supports **pluggable storage** through the StorageEngine trait.
+d-engine supports **pluggable storage** through the `StorageEngine` trait. This storage engine is responsible for **persisting Raft log entries and metadata to durable storage**.
 
-This storage engine is responsible for **persisting Raft log entries and latest vote metadata to disk**.
+## Architecture Context
 
-### **Architecture Context**
+- The **StorageEngine** trait provides a **generic interface** for storage backends
+- **Physical separation** between log storage (`LogStore`) and metadata storage (`MetaStore`)
+- **Built-in implementations** include:
+  - **File-based**: Production-ready file system storage
+  - **RocksDB**: High-performance embedded database (requires `features = ["rocksdb"]`)
+  - **Sled**: Modern embedded database
+  - **In-memory**: Volatile storage for testing
+- Custom implementations enable support for cloud storage, SQL databases, etc.
 
-- The **RaftLog** trait (e.g., implemented by BufferedRaftLog) focuses on **Raft protocol-level log operations** — handling log sequencing, conflict resolution, and in-memory buffering.
-- The **StorageEngine** trait is a **disk persistence backend** — it handles the actual reading/writing of log entries and vote metadata data to permanent storage.
-- BufferedRaftLog can store logs in memory first (for performance) and flush them asynchronously to a StorageEngine.
-- By default you can use **Built-in engines** (e.g., sled engine shipped with d-engine).
-- But d-engine also enables you to inject your **Custom implementations** for RocksDB, SQLite, in-memory snapshots, cloud storage, etc.
-
-### 1. Implement the Trait
+## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::storage::StorageEngine;
+use d_engine::storage::{StorageEngine, LogStore, MetaStore};
 use async_trait::async_trait;
 
-struct MyCustomStore;
+struct CustomLogStore;
+struct CustomMetaStore;
 
 #[async_trait]
-impl StorageEngine for MyCustomStore {
-    async fn persist_entries(&self, entries: Vec<Entry>) -> Result<()> {
-        // Your implementation
+impl LogStore for CustomLogStore {
+    async fn persist_entries(&self, entries: Vec<Entry>) -> Result<(), Error> {
+        // Your implementation - batch operations recommended
+        Ok(())
     }
 
-    // Other required methods...
+    async fn entry(&self, index: u64) -> Result<Option<Entry>, Error> {
+        // Retrieve single entry
+        Ok(None)
+    }
+
+    // Implement all required methods...
 }
+
+impl MetaStore for CustomMetaStore {
+    fn save_hard_state(&self, state: &HardState) -> Result<(), Error> {
+        // Persist hard state atomically
+        Ok(())
+    }
+
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+        // Load persisted hard state
+        Ok(None)
+    }
+}
+
+// Combine log and metadata stores
+struct CustomStorageEngine {
+    log_store: Arc<CustomLogStore>,
+    meta_store: Arc<CustomMetaStore>,
+}
+
+impl StorageEngine for CustomStorageEngine {
+    type LogStore = CustomLogStore;
+    type MetaStore = CustomMetaStore;
+
+    fn log_store(&self) -> Arc<Self::LogStore> {
+        self.log_store.clone()
+    }
+
+    fn meta_store(&self) -> Arc<Self::MetaStore> {
+        self.meta_store.clone()
+    }
+}
+
 ```
 
-### **2. Key Implementation Notes**
+## 2. Key Implementation Notes
 
-- **Atomicity**: Ensure write operations are atomic
-- **Durability**: Flush writes to persistent storage
+- **Atomicity**: Ensure write operations are atomic—use batch operations where possible
+- **Durability**: Flush writes to persistent storage—implement `flush()` properly
 - **Consistency**: Maintain exactly-once semantics for log entries
-- **Performance**: Batch operations where possible
+- **Performance**: Target >100k ops/sec for log persistence
+- **Resource Management**: Clean up resources in `Drop` implementation
 
----
+## 3. StorageEngine API Reference
 
-### **3. StorageEngine API Reference**
+### LogStore Methods
 
-The following table describes each method in the StorageEngine trait:
+| Method              | Purpose                     | Performance Target     |
+| ------------------- | --------------------------- | ---------------------- |
+| `persist_entries()` | Batch persist log entries   | >100k entries/sec      |
+| `entry()`           | Get single entry by index   | <1ms latency           |
+| `get_entries()`     | Get entries in range        | <1ms for 10k entries   |
+| `purge()`           | Remove logs up to index     | <100ms for 10k entries |
+| `truncate()`        | Remove entries from index   | <100ms                 |
+| `flush()`           | Sync writes to disk         | Varies by backend      |
+| `reset()`           | Clear all data              | <1s                    |
+| `last_index()`      | Get highest persisted index | <100μs                 |
 
-| **Method**                           | **Purpose**                                                                            | **Typical Usage in** BufferedRaftLog                                       |
-| ------------------------------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| persist_entries(entries: Vec<Entry>) | Persist multiple Raft log entries to disk.                                             | Called when flushing new log entries from memory to disk.                  |
-| insert<K, V>(key, value)             | Insert arbitrary key-value data (state machine storage). Returns old value if present. | Used by state machine layer to store application state.                    |
-| get<K>(key)                          | Retrieve a value by key from state machine storage.                                    | Reads state for queries or snapshot restoration.                           |
-| entry(index)                         | Fetch a single Raft log entry by its index.                                            | Used during Raft log replication and consistency checks.                   |
-| get_entries_range(range)             | Fetch a batch of log entries for a given inclusive index range.                        | Used for leader-to-follower log catch-up and restart recovery.             |
-| purge_logs(cutoff_index)             | Delete log entries up to and including the specified LogId.                            | Used during log compaction after entries are applied to the state machine. |
-| flush()                              | Ensure all pending writes are persisted to disk.                                       | Triggered on commit points or before shutdown.                             |
-| reset()                              | Clear all stored logs and state.                                                       | Used during snapshot installation or cluster reinitialization.             |
-| last_index()                         | Return the highest persisted log index.                                                | Used during recovery to rebuild in-memory state.                           |
-| truncate(from_index)                 | Remove log entries from from_index onward.                                             | Used when conflicts are detected in log replication.                       |
-| load_hard_state()                    | Load persisted Raft hard state (term, vote, commit index).                             | Called on node startup.                                                    |
-| save_hard_state(hard_state)          | Persist Raft hard state to disk.                                                       | Called when term, vote, or commit index changes.                           |
+### MetaStore Methods
 
-### **4. RocksDB Reference Implementation**
+| Method              | Purpose                 | Criticality            |
+| ------------------- | ----------------------- | ---------------------- |
+| `save_hard_state()` | Persist term/vote state | High - atomic required |
+| `load_hard_state()` | Load persisted state    | High                   |
+| `flush()`           | Sync metadata writes    | Medium                 |
 
-For a production-grade implementation, see **rocksdb_engine.rs**:
+## 4. Testing Your Implementation
 
-- Uses **write batches** for atomic operations.
-- Implements **log compaction** to reclaim disk space.
-- Stores **snapshots** efficiently.
-
----
-
-### **5. Register with NodeBuilder**
+Use the standardized test suite to ensure compatibility:
 
 ```rust,ignore
-NodeBuilder::new(config, shutdown_rx)
-    .storage_engine(Arc::new(MyCustomStore::new()))
-    .build();
+use d_engine::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
+use tempfile::TempDir;
+
+struct CustomStorageEngineBuilder {
+    temp_dir: TempDir,
+}
+
+#[async_trait]
+impl StorageEngineBuilder for CustomStorageEngineBuilder {
+    type Engine = CustomStorageEngine;
+
+    async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
+        let path = self.temp_dir.path().join("storage");
+        let engine = CustomStorageEngine::new(path).await?;
+        Ok(Arc::new(engine))
+    }
+
+    async fn cleanup(&self) -> Result<(), Error> {
+        Ok(()) // TempDir auto-cleans on drop
+    }
+}
+
+#[tokio::test]
+async fn test_custom_storage_engine() -> Result<(), Error> {
+    let builder = CustomStorageEngineBuilder::new();
+    StorageEngineTestSuite::run_all_tests(builder).await
+}
+
+#[tokio::test]
+async fn test_performance() -> Result<(), Error> {
+    let builder = CustomStorageEngineBuilder::new();
+    let engine = builder.build().await?;
+    let log_store = engine.log_store();
+
+    // Performance test: persist 10,000 entries
+    let start = std::time::Instant::now();
+    let entries = (1..=10000)
+        .map(|i| create_test_entry(i, i))
+        .collect();
+
+    log_store.persist_entries(entries).await?;
+    let duration = start.elapsed();
+
+    assert!(duration.as_millis() < 1000, "Should persist 10k entries in <1s");
+    Ok(())
+}
+
 ```
 
-**6. Relationship Between RaftLog and StorageEngine**
+## 5. Register with NodeBuilder
 
-| **Component**     | **Responsibility**                                                                                                                 | **Example**                 |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
-| **RaftLog**       | Protocol-level log management — sequencing, conflict resolution, matching terms.                                                   | BufferedRaftLog             |
-| **StorageEngine** | Physical persistence of logs and state machine data.                                                                               | sled engine, RocksDB engine |
-| **Integration**   | BufferedRaftLog maintains in-memory log entries and flushes them to the StorageEngine according to the chosen PersistenceStrategy. | MemFirst or DiskFirst modes |
+```rust,ignore
+use d_engine::NodeBuilder;
+
+let storage_engine = Arc::new(CustomStorageEngine::new().await?);
+
+NodeBuilder::new(config, shutdown_rx)
+    .storage_engine(storage_engine)  // Required component
+    .build();
+
+```
+
+## 6. Production Examples
+
+Reference implementations available in:
+
+- `src/storage/adaptors/rocksdb/` - RocksDB storage engine
+- `src/storage/adaptors/sled/` - Sled storage engine
+- `src/storage/adaptors/file/` - File-based storage
+- `src/storage/adaptors/mem/` - In-memory storage
+
+Enable RocksDB feature in your `Cargo.toml`:
+
+```toml
+d-engine = { version = "0.1.3", features = ["rocksdb"] }
+
+```
+
+## 7. Performance Optimization
+
+- **Batch Operations**: Use batch writes for log persistence
+- **Caching**: Cache frequently accessed data (e.g., last index)
+- **Concurrency**: Use appropriate locking strategies
+- **Compression**: Consider compressing log entries for large deployments
+
+See `src/storage/adaptors/rocksdb/rocksdb_engine.rs` for a production-grade implementation featuring:
+
+- Write batches for atomic operations
+- Log compaction to reclaim disk space
+- Efficient snapshot storage
+- Metrics integration

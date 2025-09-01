@@ -653,12 +653,6 @@ impl From<tonic::transport::Error> for Error {
     }
 }
 
-// impl From<sled::Error> for Error {
-//     fn from(err: sled::Error) -> Self {
-//         StorageError::DbError(err.to_string()).into()
-//     }
-// }
-
 impl From<JoinError> for Error {
     fn from(err: JoinError) -> Self {
         NetworkError::TaskFailed(err).into()

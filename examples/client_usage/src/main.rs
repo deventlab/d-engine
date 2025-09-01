@@ -72,7 +72,7 @@ async fn handle_write(
     key: u64,
     value: u64,
 ) -> Result<()> {
-    println!("Writing key-value({}-{}) pair", key, value);
+    println!("Writing key-value({key}-{value}) pair");
     client
         .kv()
         .put(safe_kv(key), safe_kv(value))
@@ -85,7 +85,7 @@ async fn handle_delete(
     client: &d_engine::Client,
     key: u64,
 ) -> Result<()> {
-    println!("Deleting key({})", key);
+    println!("Deleting key({key})");
     client
         .kv()
         .delete(safe_kv(key))
@@ -108,7 +108,7 @@ async fn handle_read(
     match result {
         Some(ClientResult { key: _, value }) => {
             let value = safe_vk(&value).unwrap();
-            println!("{:?}", value);
+            println!("{value:?}");
         }
         None => println!("Key not found"),
     }

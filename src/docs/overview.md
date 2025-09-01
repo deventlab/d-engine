@@ -42,11 +42,12 @@ async fn main() {
     let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
     let state_machine =
         Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
+
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
-        .build()
         .storage_engine(storage_engine)
         .state_machine(state_machine)
+        .build()
         .start_rpc_server()
         .await
         .ready()

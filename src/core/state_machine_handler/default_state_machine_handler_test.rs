@@ -25,7 +25,6 @@ use super::DefaultStateMachineHandler;
 use super::MockStateMachineHandler;
 use super::StateMachineHandler;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
-// use crate::init_sled_state_machine_db;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
@@ -748,7 +747,7 @@ mod create_snapshot_tests {
                 debug!(?path, ?last_included);
                 // Create the directory structure correctly
                 fs::create_dir_all(path.clone()).unwrap();
-                //Simulate sled to create a subdirectory
+
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
 
@@ -898,7 +897,7 @@ mod create_snapshot_tests {
         sm.expect_generate_snapshot_data().returning(|path, _| {
             debug!(?path, "expect_generate_snapshot_data");
             std::fs::create_dir_all(path).expect("Failed to create directory");
-            // let _new_db = init_sled_state_machine_db(path).expect("");
+
             Ok([0; 32])
         });
         let snapshot_dir = temp_path.to_path_buf();
