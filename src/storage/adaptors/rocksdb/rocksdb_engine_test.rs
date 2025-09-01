@@ -29,10 +29,16 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
         let path = self.temp_dir.path().join("rocksdb");
         let engine = RocksDBStorageEngine::new(path)?;
+
+        // Ensure the engine is fully initialized before returning
+        engine.log_store().flush_async().await?;
         Ok(Arc::new(engine))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
+        // Add a small delay to ensure all operations complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         // TempDir will be cleaned up automatically when dropped
         Ok(())
     }
