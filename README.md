@@ -29,7 +29,7 @@ Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = "0.1.2"
+d-engine = "0.1.3"
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -85,85 +85,9 @@ sequenceDiagram
     State_Machine-->>Client: Return Result
 ```
 
-## Architecture Principles
+## Performance Comparison (d-engine v0.1.3 vs etcd 3.5)
 
-- Single Responsibility Principle (SRP)
-- Error Handling Design Principles
-
-## Key Components
-
-### Protocol Core (`src/core/`)
-
-- **`election/`**: Leader election logic with configurable handlers and comprehensive test coverage.
-- **`replication/`**: Log replication pipeline featuring batch buffering, handler management, and consistency guarantees.
-- **`raft_role/`**: State machine implementations for all Raft roles (Leader, Follower, Candidate, Learner) with individual state handlers and tests.
-- **`commit_handler/`**: Commit application pipeline with default implementation and test suite.
-- **`state_machine_handler/`**: State machine operation handlers featuring snapshot policies (composite, log-size, time-based), snapshot assembly, and stream processing.
-
-### Node Control Plane (`src/node/`)
-
-- **`builder.rs`**: Type-safe node construction with configurable components and built-in testing.
-- **`type_config/`**: Generic type configurations for protocol extensibility, including oneshot utilities and Raft type configurations.
-
-### Storage Abstraction (`src/storage/`)
-
-- **`raft_log.rs`**: Core Raft log operation definitions.
-- **`adaptors/`**: Multiple storage engine implementations:
-  - **File-based** (`file/`): Persistent storage using file system.
-  - **RocksDB** (`rocksdb/`): High-performance embedded database storage.
-- **`buffered/`**: Buffered Raft log layer for performance optimization.
-- **`state_machine.rs`**: State machine operation definitions and test suites.
-
-### Network Layer (`src/network/`)
-
-- **`grpc/`**: Complete gRPC implementation:
-  - `grpc_transport.rs`: Core network transport layer.
-  - `grpc_raft_service.rs`: RPC service definitions and implementations.
-  - `backgroup_snapshot_transfer.rs`: Background snapshot transfer management.
-- **`connection_cache.rs`**: Connection pooling and management.
-- **`health_checker.rs`** & **`health_monitor.rs`**: Node health monitoring and failure detection.
-
-### Client Implementation (`src/client/`)
-
-- **`cluster.rs`**: Cluster management and configuration.
-- **`kv.rs`**: Key-value client interface with test coverage.
-- **`pool.rs`**: Connection pooling for client applications.
-- **`builder.rs`**: Client construction utilities.
-
-### Configuration System (`src/config/`)
-
-- Comprehensive configuration management covering:
-  - Cluster settings (`cluster.rs`)
-  - Raft parameters (`raft.rs`)
-  - Network configurations (`network.rs`)
-  - Security and TLS settings (`security.rs`, `tls.rs`)
-  - Retry policies (`retry.rs`)
-  - Monitoring configurations (`monitoring.rs`)
-
-### Membership Management (`src/membership/`)
-
-- **`raft_membership.rs`**: Cluster membership management with consistency guarantees.
-
-## Performance Benchmarks
-
-d-engine is designed for low-latency consensus operations while maintaining strong consistency. Below are key metrics compared to etcd 3.5:
-
-**Test Setup**: d-engine v0.1.2 vs etcd 3.5， 10k ops, 8B keys, 256B values, Apple M2
-
-| **Test Case**            | **Metric**  | **d-engine(rocksdb)** | **etcd**      | **Advantage**     |
-| ------------------------ | ----------- | --------------------- | ------------- | ----------------- |
-| **Basic Write**          | Throughput  | 423.61 ops/s          | 157.85 ops/s  | ✅ 2.68× d-engine |
-| (1 connection, 1 client) | Avg Latency | 2,359 μs              | 6,300 μs      | ✅ 63% lower      |
-|                          | p99 Latency | 3,915 μs              | 16,700 μs     | ✅ 77% lower      |
-| **High Concurrency**     | Throughput  | 3,597.27 ops/s        | 5,439 ops/s   | ❌ 1.51× etcd     |
-| (10 conns, 100 clients)  | Avg Latency | 2,774 μs              | 18,300 μs     | ✅ 85% lower      |
-|                          | p99 Latency | 5,999 μs              | 32,400 μs     | ✅ 81% lower      |
-| **Linear Read**          | Throughput  | 9,999 ops/s           | 85,904 ops/s  | ❌ 8.59× etcd     |
-| (Strong consistency)     | Avg Latency | 997 μs                | 1,100 μs      | ✅ 9% lower       |
-|                          | p99 Latency | 1,498 μs              | 3,200 μs      | ✅ 53% lower      |
-| **Sequential Read**      | Throughput  | 42,002 ops/s          | 124,631 ops/s | ❌ 2.97× etcd     |
-| (Eventual consistency)   | Avg Latency | 236 μs                | 700 μs        | ✅ 66% lower      |
-|                          | p99 Latency | 514 μs                | 2,800 μs      | ✅ 82% lower      |
+## ![d-engine vs etcd comparison](./benches/d-engine-bench/reportrs/v0.1.3/dengine_comparison_v0.1.3.png)
 
 **Important Notes**
 
