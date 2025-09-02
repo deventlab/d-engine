@@ -10,15 +10,21 @@ use tempfile::TempDir;
 use tonic::async_trait;
 use tracing::debug;
 use tracing_test::traced_test;
+use uuid::Uuid;
 
 pub struct RocksDBStorageEngineBuilder {
     temp_dir: TempDir,
+    instance_id: String,
 }
 
 impl RocksDBStorageEngineBuilder {
     pub fn new() -> Self {
         let temp_dir = TempDir::new().unwrap();
-        Self { temp_dir }
+        let instance_id = Uuid::new_v4().to_string();
+        Self {
+            temp_dir,
+            instance_id,
+        }
     }
 }
 
@@ -27,7 +33,7 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
     type Engine = RocksDBStorageEngine;
 
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
-        let path = self.temp_dir.path().join("rocksdb");
+        let path = self.temp_dir.path().join(format!("rocksdb-{}", self.instance_id));
         let engine = RocksDBStorageEngine::new(path)?;
 
         // Ensure the engine is fully initialized before returning
