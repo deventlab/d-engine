@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
 
 jobs:
   lint:
@@ -13,32 +14,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install Protobuf compiler
-        run: sudo apt-get install protobuf-compiler
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: 1.87.0
+          toolchain: 1.88.0
           components: rustfmt, clippy
 
       - name: Check Formatting
-        run: cargo fmt --all -- --check # Verify code formatting compliance
+        run: cargo fmt --all -- --check
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-  coverage:
-    needs: lint
+  test-lib:
+    name: Library Tests
     runs-on: ubuntu-latest
-
+    needs: lint
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Cache Cargo Dependencies
+      - name: Cache dependencies
         uses: actions/cache@v4
         with:
           path: |
@@ -46,19 +50,75 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Install Protobuf compiler
-        run: sudo apt-get install protobuf-compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Run library tests with nextest
+        run: cargo nextest run --lib --verbose
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Run integration tests with nextest
+        run: cargo nextest run --tests --verbose
+
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: [test-lib, test-integration]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
 
       - name: Install Tarpaulin
         run: cargo install cargo-tarpaulin
 
-      - name: Run tests with Tarpaulin
-        run: cargo tarpaulin --all-features --out Xml --ciserver github --exclude-files "src/generated/*" --exclude-files "src/errors.rs"
+      - name: Generate coverage for library tests
+        run: cargo tarpaulin --lib --all-features --out Xml --ciserver github --exclude-files "src/generated/*" --exclude-files "src/errors.rs"
         env:
           CI: true
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
