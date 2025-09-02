@@ -167,8 +167,8 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         election: ElectionConfig {
-            election_timeout_min: 400,
-            election_timeout_max: 600,
+            election_timeout_min: 1000,
+            election_timeout_max: 2000,
             ..Default::default()
         },
         ..Default::default()
@@ -490,4 +490,17 @@ pub fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> 
     }
 
     Ok(has_contents)
+}
+
+pub async fn get_available_ports(count: usize) -> Vec<u16> {
+    use std::net::TcpListener;
+    let mut ports = Vec::new();
+
+    for _ in 0..count {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        ports.push(port);
+        drop(listener);
+    }
+    ports
 }

@@ -38,12 +38,11 @@ use std::sync::Arc;
 async fn main() {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let path = PathBuf::from("./db/storage");
+    let path = PathBuf::from("/tmp/db");
     let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
     let state_machine =
         Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
 
-    // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
         .state_machine(state_machine)

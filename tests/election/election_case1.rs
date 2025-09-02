@@ -24,6 +24,7 @@ use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
+use crate::common::get_available_ports;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
@@ -32,7 +33,6 @@ use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
-use crate::ELECTION_PORT_BASE;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
@@ -46,11 +46,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     debug!("...test_leader_election_based_on_log_term_and_index...");
     reset(ELECTION_CASE1_DIR).await?;
 
-    let ports = [
-        ELECTION_PORT_BASE + 1,
-        ELECTION_PORT_BASE + 2,
-        ELECTION_PORT_BASE + 3,
-    ];
+    let ports = get_available_ports(3).await;
 
     // Prepare raft logs
     let r1 = prepare_storage_engine(1, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/1"), 0);
@@ -94,7 +90,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster is ready
-    for port in ports {
+    for port in ports.clone() {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
