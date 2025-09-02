@@ -49,7 +49,7 @@ pub(crate) fn if_higher_term_found(
 ) -> bool {
     //means I am fake leader or we should ignore learner's response
     if !is_learner && my_current_term < term {
-        tracing::error!("my_current_term: {} < term: {} ?", my_current_term, term);
+        tracing::warn!("my_current_term: {} < term: {} ?", my_current_term, term);
         return true;
     }
 

@@ -102,6 +102,13 @@ sequenceDiagram
 open benches/reports/
 ```
 
+## Jepsen Tests
+
+d-engine includes [Jepsen](https://jepsen.io/) tests to validate linearizability and fault-tolerance under partitions and crashes.
+
+To run Jepsen tests (requires Docker & Leiningen):
+See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-nodes-cluster/docker/jepsen/README.md) for full instructions.
+
 ## Contribution Guide
 
 ### Prerequisites

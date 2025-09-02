@@ -63,7 +63,7 @@ view:
 		echo "No test results found"; \
 		exit 1; \
 	fi; \
-	open "$$latest/index.html" 2>/dev/null || \
+	open "$$(pwd)/store/$$latest/index.html" 2>/dev/null || \
 	echo "Open manually: file://$$(pwd)/$$latest/index.html"
 
 # Show path to latest report
@@ -73,7 +73,7 @@ report:
 		echo "No test results available"; \
 		exit 1; \
 	fi; \
-	echo "Latest report: $$(pwd)/$$latest"
+	echo "Latest report: $$(pwd)/store/$$latest"
 
 # Clean test artifacts
 clean:
