@@ -121,3 +121,4 @@ help:
 	@echo "  clean            - Remove build artifacts, logs, and profiles"
 	@echo "  clean-log-db     - Remove only logs and database files"
 	@echo "  help             - Show this help message"
+

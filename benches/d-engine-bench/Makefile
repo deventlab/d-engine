@@ -76,3 +76,4 @@ build-soak-tester:
 soak-test: build-soak-tester
 	@docker compose -f $(SOAK_COMPOSE_FILE) down
 	@docker compose -f $(SOAK_COMPOSE_FILE) up -d
+
