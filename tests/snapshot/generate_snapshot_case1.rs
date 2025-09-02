@@ -32,6 +32,7 @@ use tracing_test::traced_test;
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_node_config;
+use crate::common::get_available_ports;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
@@ -41,7 +42,6 @@ use crate::common::reset;
 use crate::common::start_node;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
-use crate::SNAPSHOT_PORT_BASE;
 
 // Constants for test configuration
 const SNAPSHOT_DIR: &str = "./snapshots/snapshot/case1";
@@ -58,11 +58,7 @@ const SNAPSHOT_CASE1_LOG_DIR: &str = "./logs/snapshot/case1";
 async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     reset(SNAPSHOT_CASE1_DIR).await?;
 
-    let ports = [
-        SNAPSHOT_PORT_BASE + 1,
-        SNAPSHOT_PORT_BASE + 2,
-        SNAPSHOT_PORT_BASE + 3,
-    ];
+    let ports = get_available_ports(3).await;
 
     // Prepare state machines
     let sm1 =

@@ -8,6 +8,7 @@ use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
+use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::reset;
 use crate::common::start_node;
@@ -15,7 +16,6 @@ use crate::common::test_put_get;
 use crate::common::TestContext;
 use crate::common::ITERATIONS;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
-use crate::CLUSTER_PORT_BASE;
 
 // Constants for test configuration
 const TEST_CASE1_DIR: &str = "cluster_start_stop/case1";
@@ -32,11 +32,7 @@ const TEST_CASE2_LOG_DIR: &str = "./logs/cluster_start_stop/case2";
 async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     reset(TEST_CASE1_DIR).await?;
 
-    let ports = [
-        CLUSTER_PORT_BASE + 1, // 30101
-        CLUSTER_PORT_BASE + 2, // 30102
-        CLUSTER_PORT_BASE + 3, // 30103
-    ];
+    let ports = get_available_ports(3).await;
 
     // Start cluster nodes
     let mut ctx = TestContext {
@@ -66,7 +62,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster is ready
-    for port in ports {
+    for port in ports.clone() {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
@@ -127,11 +123,8 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
 async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     reset(TEST_CASE2_DIR).await?;
 
-    let ports = [
-        CLUSTER_PORT_BASE + 11, // 30111
-        CLUSTER_PORT_BASE + 12, // 30112
-        CLUSTER_PORT_BASE + 13, // 30113
-    ];
+    let ports = get_available_ports(3).await;
+
     let bootstrap_urls = create_bootstrap_urls(&ports);
     let bootstrap_urls_without_n1 = create_bootstrap_urls(&ports[1..]);
 
@@ -164,7 +157,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
-    for port in ports {
+    for port in ports.clone() {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 

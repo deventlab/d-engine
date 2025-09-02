@@ -342,11 +342,6 @@ where
             shutdown_signal,
         };
 
-        // let config = CommitHandlerConfig {
-        //     batch_size_threshold: node_config_arc.raft.commit_handler.batch_size_threshold,
-        //     process_interval_ms: node_config_arc.raft.commit_handler.process_interval_ms,
-        //     max_entries_per_chunk: 1,
-        // };
         let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(
             node_id,
             my_role_i32,

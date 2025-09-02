@@ -24,6 +24,7 @@ use crate::client_manager::ClientManager;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
+use crate::common::get_available_ports;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
@@ -34,7 +35,6 @@ use crate::common::start_node;
 use crate::common::test_put_get;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
-use crate::APPEND_ENNTRIES_PORT_BASE;
 
 const TEST_CASE_DIR: &str = "append_entries/case1";
 const DB_ROOT_DIR: &str = "./db/append_entries/case1";
@@ -49,21 +49,12 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     // 1. Prepare node data
     println!("1. Prepare node data");
 
-    let ports = [
-        APPEND_ENNTRIES_PORT_BASE + 1,
-        APPEND_ENNTRIES_PORT_BASE + 2,
-        APPEND_ENNTRIES_PORT_BASE + 3,
-    ];
+    let ports = get_available_ports(3).await;
 
     // Prepare state machine and logs
     println!("Prepare state machine and logs");
 
     let sm1 = Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1")).await);
-    // let state_machines = [
-    //     Arc::new(prepare_state_machine(1, &format!("{DB_ROOT_DIR}/cs/1"))),
-    //     Arc::new(prepare_state_machine(2, &format!("{DB_ROOT_DIR}/cs/2"))),
-    //     Arc::new(prepare_state_machine(3, &format!("{DB_ROOT_DIR}/cs/3"))),
-    // ];
     let raft_logs = [
         prepare_storage_engine(1, &format!("{DB_ROOT_DIR}/cs/1"), 0),
         prepare_storage_engine(2, &format!("{DB_ROOT_DIR}/cs/2"), 0),
@@ -91,7 +82,6 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
             node_config(
                 &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
             ),
-            // Some(state_machines[i].clone()),
             if i == 0 { Some(sm1.clone()) } else { None },
             Some(raft_logs[i].clone()),
         )
@@ -105,7 +95,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     // Check cluster status
     println!("Check cluster status");
-    for port in ports {
+    for port in ports.clone() {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
     debug!("[test_out_of_sync_peer_scenario] Cluster started. Running tests...");
@@ -115,7 +105,6 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
 
     // 4. Test client request
-    // let sm1 = state_machines[0].clone();
     test_put_get(&mut client_manager, 11, 100).await?;
     assert_eq!(sm1.len(), 11);
 

@@ -66,7 +66,7 @@ clippy-fix: ## Run Clippy fix
 
 # Test suite
 test: ## Run test suite
-	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --lib -- --nocapture
-	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --tests -- --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo nextest run --no-fail-fast --tests --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo nextest run --no-fail-fast --lib --nocapture
 	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --doc
 	@RUST_LOG=$(RUST_LOG_LEVEL) cargo bench -- --nocapture
