@@ -42,8 +42,13 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
-        // Add a small delay to ensure all operations complete
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Increase delay for CI environments to ensure all operations complete
+        let delay = if std::env::var("CI").is_ok() {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+        tokio::time::sleep(delay).await;
 
         // TempDir will be cleaned up automatically when dropped
         Ok(())

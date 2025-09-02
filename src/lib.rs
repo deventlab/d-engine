@@ -4,7 +4,7 @@
 
 pub mod client;
 pub mod config;
-mod docs;
+pub mod docs;
 pub mod node;
 pub mod proto;
 pub mod storage;

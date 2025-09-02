@@ -266,34 +266,40 @@ impl LogStore for RocksDBLogStore {
         let start_key = Self::index_to_key(from_index);
         let mut batch = WriteBatch::default();
 
+        // Get the last_index before deletion
+        let current_last_index = self.last_index.load(Ordering::SeqCst);
+
+        // Collect all keys to be deleted
+        let mut keys_to_delete = Vec::new();
         let iter = self.db.iterator_cf(&cf, IteratorMode::From(&start_key, Direction::Forward));
 
         for item in iter {
             let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            keys_to_delete.push(key.clone());
+
+            // Check if it is the last key
+            if key.len() == 8 {
+                let key_index = u64::from_be_bytes([
+                    key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
+                ]);
+                if key_index >= current_last_index {
+                    break;
+                }
+            }
+        }
+
+        // Batch delete
+        for key in keys_to_delete {
             batch.delete_cf(&cf, &key);
         }
 
         self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        // Update last index
-        if from_index > 0 {
-            // We need to find the new last index
-            let iter = self.db.iterator_cf(&cf, IteratorMode::End);
-            if let Some(Ok((key, _))) = iter.last() {
-                if key.len() == 8 {
-                    let new_last_index = u64::from_be_bytes([
-                        key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-                    ]);
-                    self.last_index.store(new_last_index, Ordering::SeqCst);
-                } else {
-                    self.last_index.store(0, Ordering::SeqCst);
-                }
-            } else {
-                self.last_index.store(0, Ordering::SeqCst);
-            }
-        } else {
-            self.last_index.store(0, Ordering::SeqCst);
-        }
+        // Update last_index: The new last_index should be from_index - 1
+        // But if from_index is 0 or 1, last_index should be 0
+        let new_last_index = from_index.saturating_sub(1);
+
+        self.last_index.store(new_last_index, Ordering::SeqCst);
 
         Ok(())
     }

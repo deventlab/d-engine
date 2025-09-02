@@ -2,4 +2,7 @@ mod file;
 pub use file::*;
 
 #[cfg(feature = "rocksdb")]
-pub mod rocksdb;
+mod rocksdb;
+
+#[cfg(feature = "rocksdb")]
+pub use rocksdb::*;

@@ -150,10 +150,15 @@ impl StorageEngineTestSuite {
         E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
+        log_store.reset().await?;
         log_store.persist_entries(create_test_entries(1..=100)).await?;
+        // Ensure all operations are flushed to disk before truncation
+        log_store.flush()?;
 
         // Truncate from index 76 onward
         log_store.truncate(76).await?;
+        // Ensure truncation is persisted
+        log_store.flush()?;
 
         assert_eq!(log_store.last_index(), 75);
         assert!(log_store.entry(76).await?.is_none());

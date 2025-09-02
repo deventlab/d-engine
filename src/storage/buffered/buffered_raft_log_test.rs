@@ -3374,6 +3374,12 @@ mod remove_range_tests {
 
     #[tokio::test]
     async fn test_remove_range_performance() {
+        // Skip performance tests during coverage runs due to instrumentation overhead
+        if std::env::var("CARGO_LLVM_COV").is_ok() || std::env::var("CARGO_TARPAULIN").is_ok() {
+            eprintln!("Skipping performance test during coverage run");
+            return;
+        }
+
         let context = TestContext::new(
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
@@ -3612,6 +3618,12 @@ async fn test_recovery_under_different_scenarios() {
 #[tokio::test]
 #[traced_test]
 async fn test_performance_benchmarks() {
+    // Skip performance tests during coverage runs due to instrumentation overhead
+    if std::env::var("CARGO_LLVM_COV").is_ok() || std::env::var("CARGO_TARPAULIN").is_ok() {
+        eprintln!("Skipping performance test during coverage run");
+        return;
+    }
+
     let is_ci = std::env::var("CI").is_ok();
 
     // Adjust test parameters according to the environment

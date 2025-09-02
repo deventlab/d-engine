@@ -45,7 +45,7 @@ bench: ## Run performance benchmarks
 
 # Documentation Targets
 doc: ## Generate documentation
-	@cargo doc --no-deps --open
+	@cargo doc --all-features --no-deps --open
 
 # Format Verification
 fmt-check: ## Check formatting
@@ -54,7 +54,6 @@ fmt-check: ## Check formatting
 # Format Verification
 fmt-fix: ## Check formatting
 	@cargo fmt --all
-
 
 # Run Clippy
 clippy: ## Run Clippy
