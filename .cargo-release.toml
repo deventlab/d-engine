@@ -1,0 +1,2 @@
+[commit-message]
+format = "chore(release): #release: Release {{crate_name}} version {{version}}"
