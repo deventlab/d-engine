@@ -7,9 +7,14 @@
 // Protobuf GRPC service introduction
 // -----------------------------------------------------------------------------
 
+mod backgroup_snapshot_transfer;
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
 
+pub(crate) use backgroup_snapshot_transfer::*;
+
+#[cfg(test)]
+mod backgroup_snapshot_transfer_test;
 #[cfg(test)]
 mod grpc_raft_service_test;
 
@@ -37,7 +42,11 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::proto::rpc_service_server::RpcServiceServer;
+use crate::proto::client::raft_client_service_server::RaftClientServiceServer;
+use crate::proto::cluster::cluster_management_service_server::ClusterManagementServiceServer;
+use crate::proto::election::raft_election_service_server::RaftElectionServiceServer;
+use crate::proto::replication::raft_replication_service_server::RaftReplicationServiceServer;
+use crate::proto::storage::snapshot_service_server::SnapshotServiceServer;
 use crate::Node;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -61,24 +70,41 @@ where
     let (mut health_reporter, health_service) = health_reporter();
 
     // Set the initial health status to SERVING
-    health_reporter.set_serving::<RpcServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<RaftClientServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<RaftElectionServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<RaftReplicationServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<ClusterManagementServiceServer<Node<T>>>().await;
+    health_reporter.set_serving::<SnapshotServiceServer<Node<T>>>().await;
+
+    // Use control plane configuration for base parameters
+    // Rationale: Election RPCs need low latency and high reliability
+    let control_config = &config.network.control;
+
+    // Use data plane configuration for stream/flow control parameters
+    // Rationale: AppendEntries needs higher throughput when large logs are sent
+    let data_config = &config.network.data;
 
     let mut server_builder = tonic::transport::Server::builder()
-        .concurrency_limit_per_connection(config.network.concurrency_limit_per_connection)
-        .timeout(Duration::from_millis(config.network.connect_timeout_in_ms))
-        .initial_stream_window_size(config.network.initial_stream_window_size)
-        .initial_connection_window_size(config.network.initial_connection_window_size)
-        .max_concurrent_streams(config.network.max_concurrent_streams)
-        .tcp_keepalive(Some(Duration::from_secs(config.network.tcp_keepalive_in_secs)))
-        .tcp_nodelay(config.network.tcp_nodelay)
+        // Control-plane parameters for core RPC operations
+        .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
+        .concurrency_limit_per_connection(control_config.concurrency_limit)
+        .max_concurrent_streams(control_config.max_concurrent_streams)
+        .tcp_keepalive(Some(Duration::from_secs(
+            control_config.tcp_keepalive_in_secs,
+        )))
         .http2_keepalive_interval(Some(Duration::from_secs(
-            config.network.http2_keep_alive_interval_in_secs,
+            control_config.http2_keep_alive_interval_in_secs,
         )))
         .http2_keepalive_timeout(Some(Duration::from_secs(
-            config.network.http2_keep_alive_timeout_in_secs,
+            control_config.http2_keep_alive_timeout_in_secs,
         )))
-        .http2_adaptive_window(Some(config.network.http2_adaptive_window))
-        .max_frame_size(Some(config.network.max_frame_size));
+        // Data-plane parameters for stream performance
+        .initial_stream_window_size(data_config.stream_window_size)
+        .initial_connection_window_size(data_config.connection_window_size)
+        .http2_adaptive_window(Some(data_config.adaptive_window))
+        .max_frame_size(Some(data_config.max_frame_size))
+        // Common TCP parameters
+        .tcp_nodelay(config.network.tcp_nodelay);
 
     if config.tls.enable_tls {
         if config.tls.generate_self_signed_certificates {
@@ -96,8 +122,9 @@ where
         let server_identity = Identity::from_pem(cert, key);
         let tls = ServerTlsConfig::new().identity(server_identity);
         if config.tls.enable_mtls {
-            let client_ca_cert = std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
-                .expect("error, failed to read client certificate authority root");
+            let client_ca_cert =
+                std::fs::read_to_string(config.tls.client_certificate_authority_root_path.clone())
+                    .expect("error, failed to read client certificate authority root");
             let client_ca_cert = Certificate::from_pem(client_ca_cert);
             let tls = tls.client_ca_root(client_ca_cert);
             server_builder = server_builder.tls_config(tls).expect("error, failed to setup mTLS");
@@ -111,7 +138,27 @@ where
     if let Err(e) = server_builder
         .add_service(health_service)
         .add_service(
-            RpcServiceServer::from_arc(node)
+            RaftClientServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            RaftElectionServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            RaftReplicationServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            ClusterManagementServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            SnapshotServiceServer::from_arc(node)
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
         )
@@ -139,7 +186,8 @@ fn generate_self_signed_certificates(config: TlsConfig) {
         generate_simple_self_signed(subject_alt_names).expect("Certificate generation failed");
 
     // Write certificate and private key to files
-    std::fs::write(&config.server_certificate_path, cert.pem()).expect("Should succeed to write server certificate");
+    std::fs::write(&config.server_certificate_path, cert.pem())
+        .expect("Should succeed to write server certificate");
     std::fs::write(&config.server_private_key_path, key_pair.serialize_pem())
         .expect("Should succeed to write server private key");
 }

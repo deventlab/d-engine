@@ -5,165 +5,100 @@ use serde::Serialize;
 use crate::Error;
 use crate::Result;
 
-/// Network communication configuration for gRPC/HTTP2 transport
+/// Hierarchical network configuration for different Raft connection types
 ///
-/// Provides fine-grained control over low-level network parameters
+/// Provides specialized tuning for three distinct communication patterns:
+/// - Control plane: Election/heartbeat (low bandwidth, high priority)
+/// - Data plane: Log replication (balanced throughput/latency)
+/// - Bulk transfer: Snapshotting (high bandwidth, tolerant to latency)
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct NetworkConfig {
-    /// Timeout for establishing TCP connections in milliseconds
-    /// Default: 20ms (suitable for LAN environments)
-    #[serde(default = "default_connect_timeout")]
-    pub connect_timeout_in_ms: u64,
+    /// Configuration for control plane connections (leader election/heartbeats)
+    #[serde(default = "default_control_params")]
+    pub control: ConnectionParams,
 
-    /// Maximum duration for completing gRPC requests in milliseconds
-    /// Default: 100ms (adjust based on RPC complexity)
-    #[serde(default = "default_request_timeout")]
-    pub request_timeout_in_ms: u64,
+    /// Configuration for data plane connections (log replication)
+    #[serde(default = "default_data_params")]
+    pub data: ConnectionParams,
 
-    /// Maximum concurrent requests per connection
-    /// Default: 8192 (matches typical gRPC server settings)
-    #[serde(default = "default_concurrency_limit")]
-    pub concurrency_limit_per_connection: usize,
+    /// Configuration for bulk transfer connections (snapshot installation)
+    #[serde(default = "default_bulk_params")]
+    pub bulk: ConnectionParams,
 
-    /// HTTP2 SETTINGS_MAX_CONCURRENT_STREAMS value
-    /// Default: 100 (controls concurrent streams per connection)
-    #[serde(default = "default_max_streams")]
-    pub max_concurrent_streams: u32,
-
-    /// Enable TCP_NODELAY to disable Nagle's algorithm
-    /// Default: true (recommended for low-latency scenarios)
+    /// Common TCP setting for all connection types
     #[serde(default = "default_tcp_nodelay")]
     pub tcp_nodelay: bool,
 
-    /// TCP keepalive duration in seconds
-    /// Default: 3600s (1 hour, OS may enforce minimum values)
+    /// I/O buffer size in bytes for all connections
+    #[serde(default = "default_buffer_size")]
+    pub buffer_size: usize,
+}
+
+/// Low-level network parameters for a specific connection type
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ConnectionParams {
+    /// TCP connect timeout in milliseconds
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_in_ms: u64,
+
+    /// gRPC request completion timeout in milliseconds
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_in_ms: u64,
+
+    /// Max concurrent requests per connection
+    #[serde(default = "default_concurrency_limit")]
+    pub concurrency_limit: usize,
+
+    /// HTTP2 SETTINGS_MAX_CONCURRENT_STREAMS
+    #[serde(default = "default_max_streams")]
+    pub max_concurrent_streams: u32,
+
+    /// TCP keepalive in seconds (None to disable)
     #[serde(default = "default_tcp_keepalive")]
     pub tcp_keepalive_in_secs: u64,
 
     /// HTTP2 keepalive ping interval in seconds
-    /// Default: 300s (5 minutes)
     #[serde(default = "default_h2_keepalive_interval")]
     pub http2_keep_alive_interval_in_secs: u64,
 
     /// HTTP2 keepalive timeout in seconds
-    /// Default: 20s (must be < interval)
     #[serde(default = "default_h2_keepalive_timeout")]
     pub http2_keep_alive_timeout_in_secs: u64,
 
-    /// Maximum HTTP2 frame size in bytes
-    /// Default: 12MB (12582912 bytes)
+    /// HTTP2 max frame size in bytes
     #[serde(default = "default_max_frame_size")]
     pub max_frame_size: u32,
 
     /// Initial connection-level flow control window in bytes
-    /// Default: 12MB (12582912 bytes)
     #[serde(default = "default_conn_window_size")]
-    pub initial_connection_window_size: u32,
+    pub connection_window_size: u32,
 
-    /// Initial per-stream flow control window in bytes
-    /// Default: 2MB (2097152 bytes)
+    /// Initial stream-level flow control window in bytes
     #[serde(default = "default_stream_window_size")]
-    pub initial_stream_window_size: u32,
+    pub stream_window_size: u32,
 
-    /// I/O buffer size in bytes
-    /// Default: 64KB (65536 bytes)
-    #[serde(default = "default_buffer_size")]
-    pub buffer_size: usize,
-
-    /// Enable adaptive flow control window sizing
-    /// When enabled, overrides initial window size settings
-    /// Default: false (use fixed window sizes)
+    /// Enable HTTP2 adaptive window sizing
     #[serde(default = "default_adaptive_window")]
-    pub http2_adaptive_window: bool,
+    pub adaptive_window: bool,
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            connect_timeout_in_ms: default_connect_timeout(),
-            request_timeout_in_ms: default_request_timeout(),
-            concurrency_limit_per_connection: default_concurrency_limit(),
-            max_concurrent_streams: default_max_streams(),
+            control: default_control_params(),
+            data: default_data_params(),
+            bulk: default_bulk_params(),
             tcp_nodelay: default_tcp_nodelay(),
-            http2_adaptive_window: default_adaptive_window(),
-            tcp_keepalive_in_secs: default_tcp_keepalive(),
-            http2_keep_alive_interval_in_secs: default_h2_keepalive_interval(),
-            http2_keep_alive_timeout_in_secs: default_h2_keepalive_timeout(),
-            max_frame_size: default_max_frame_size(),
-            initial_connection_window_size: default_conn_window_size(),
-            initial_stream_window_size: default_stream_window_size(),
             buffer_size: default_buffer_size(),
         }
     }
 }
+
 impl NetworkConfig {
-    /// Validates network configuration consistency and safety
-    /// Returns Error::InvalidConfig with detailed message if any rule fails
+    /// Validates configuration sanity across all connection types
     pub fn validate(&self) -> Result<()> {
-        // 1. Validate timeouts
-        if self.connect_timeout_in_ms == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "Connection timeout must be greater than 0".into(),
-            )));
-        }
-
-        if self.request_timeout_in_ms <= self.connect_timeout_in_ms {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "Request timeout {}ms must exceed connection timeout {}ms",
-                self.request_timeout_in_ms, self.connect_timeout_in_ms
-            ))));
-        }
-
-        // 2. Validate HTTP2 keepalive relationship
-        if self.http2_keep_alive_timeout_in_secs >= self.http2_keep_alive_interval_in_secs {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "HTTP2 keepalive timeout {}s must be shorter than interval {}s",
-                self.http2_keep_alive_timeout_in_secs, self.http2_keep_alive_interval_in_secs
-            ))));
-        }
-
-        // 3. Validate concurrency limits
-        if self.concurrency_limit_per_connection == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "Concurrency limit per connection must be > 0".into(),
-            )));
-        }
-
-        if self.max_concurrent_streams == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "Max concurrent streams must be > 0".into(),
-            )));
-        }
-
-        // 4. Validate HTTP2 frame size limits
-        const MAX_FRAME_SIZE_LIMIT: u32 = 16_777_215; // 2^24-1 per spec
-        if self.max_frame_size > MAX_FRAME_SIZE_LIMIT {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "Max frame size {} exceeds protocol limit {}",
-                self.max_frame_size, MAX_FRAME_SIZE_LIMIT
-            ))));
-        }
-
-        // 5. Validate window sizes when adaptive window is disabled
-        if !self.http2_adaptive_window {
-            const MIN_INITIAL_WINDOW: u32 = 65_535; // HTTP2 minimum
-            if self.initial_stream_window_size < MIN_INITIAL_WINDOW {
-                return Err(Error::Config(ConfigError::Message(format!(
-                    "Initial stream window size {} below minimum {}",
-                    self.initial_stream_window_size, MIN_INITIAL_WINDOW
-                ))));
-            }
-
-            if self.initial_connection_window_size < self.initial_stream_window_size {
-                return Err(Error::Config(ConfigError::Message(format!(
-                    "Connection window {} smaller than stream window {}",
-                    self.initial_connection_window_size, self.initial_stream_window_size
-                ))));
-            }
-        }
-
-        // 6. Validate buffer sizing
+        // Validate common parameters
         if self.buffer_size < 1024 {
             return Err(Error::Config(ConfigError::Message(format!(
                 "Buffer size {} too small, minimum 1024 bytes",
@@ -171,11 +106,120 @@ impl NetworkConfig {
             ))));
         }
 
+        // Validate per-connection type parameters
+        self.control.validate("control")?;
+        self.data.validate("data")?;
+        self.bulk.validate("bulk")?;
+
         Ok(())
     }
 }
 
-// Default value implementations
+impl ConnectionParams {
+    /// Type-specific validation with context for error messages
+    fn validate(
+        &self,
+        conn_type: &str,
+    ) -> Result<()> {
+        // Timeout validation
+        if self.connect_timeout_in_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{conn_type} connection timeout must be > 0",
+            ))));
+        }
+
+        if self.request_timeout_in_ms != 0
+            && self.request_timeout_in_ms <= self.connect_timeout_in_ms
+        {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{} request timeout {}ms must exceed connect timeout {}ms",
+                conn_type, self.request_timeout_in_ms, self.connect_timeout_in_ms
+            ))));
+        }
+
+        // HTTP2 keepalive validation
+        if self.http2_keep_alive_timeout_in_secs >= self.http2_keep_alive_interval_in_secs {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{} keepalive timeout {}s must be < interval {}s",
+                conn_type,
+                self.http2_keep_alive_timeout_in_secs,
+                self.http2_keep_alive_interval_in_secs
+            ))));
+        }
+
+        // Window size validation when not using adaptive windows
+        if !self.adaptive_window {
+            const MIN_WINDOW: u32 = 65535; // HTTP2 spec minimum
+            if self.stream_window_size < MIN_WINDOW {
+                return Err(Error::Config(ConfigError::Message(format!(
+                    "{} stream window size {} below minimum {}",
+                    conn_type, self.stream_window_size, MIN_WINDOW
+                ))));
+            }
+
+            if self.connection_window_size < self.stream_window_size {
+                return Err(Error::Config(ConfigError::Message(format!(
+                    "{} connection window {} smaller than stream window {}",
+                    conn_type, self.connection_window_size, self.stream_window_size
+                ))));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// Default configuration profiles for each connection type
+
+fn default_control_params() -> ConnectionParams {
+    ConnectionParams {
+        connect_timeout_in_ms: 20,             // Fast failure for leader elections
+        request_timeout_in_ms: 100,            // Strict heartbeat timing
+        concurrency_limit: 1024,               // Moderate concurrency
+        max_concurrent_streams: 100,           // Stream limit for control operations
+        tcp_keepalive_in_secs: 300,            // 5 minute TCP keepalive
+        http2_keep_alive_interval_in_secs: 30, // Frequent pings
+        http2_keep_alive_timeout_in_secs: 5,   // Short timeout
+        max_frame_size: default_max_frame_size(),
+        connection_window_size: 1_048_576, // 1MB connection window
+        stream_window_size: 262_144,       // 256KB stream window
+        adaptive_window: false,            // Predictable behavior
+    }
+}
+
+fn default_data_params() -> ConnectionParams {
+    ConnectionParams {
+        connect_timeout_in_ms: 50,              // Balance speed and reliability
+        request_timeout_in_ms: 500,             // Accommodate log batches
+        concurrency_limit: 8192,                // High concurrency for parallel logs
+        max_concurrent_streams: 500,            // More streams for pipelining
+        tcp_keepalive_in_secs: 600,             // 10 minute TCP keepalive
+        http2_keep_alive_interval_in_secs: 120, // Moderate ping interval
+        http2_keep_alive_timeout_in_secs: 30,   // Longer grace period
+        max_frame_size: default_max_frame_size(),
+        connection_window_size: 6_291_456, // 6MB connection window
+        stream_window_size: 1_048_576,     // 1MB stream window
+        adaptive_window: true,             // Optimize for varying loads
+    }
+}
+
+fn default_bulk_params() -> ConnectionParams {
+    ConnectionParams {
+        connect_timeout_in_ms: 500000,  // Allow for slow bulk connections
+        request_timeout_in_ms: 5000000, // Disable request timeout
+        concurrency_limit: 4,           // Limit parallel bulk transfers
+        max_concurrent_streams: 2,      // Minimal stream concurrency
+        tcp_keepalive_in_secs: 3600,    // Long-lived connections
+        http2_keep_alive_interval_in_secs: 600, // 10 minute pings
+        http2_keep_alive_timeout_in_secs: 60, // 1 minute timeout
+        max_frame_size: 16_777_215,     // Max allowed frame size
+        connection_window_size: 67_108_864, // 64MB connection window
+        stream_window_size: 16_777_216, // 16MB stream window
+        adaptive_window: false,         // Stable throughput
+    }
+}
+
+// Preserve existing default helpers for fallback
 fn default_connect_timeout() -> u64 {
     20
 }
@@ -183,7 +227,7 @@ fn default_request_timeout() -> u64 {
     100
 }
 fn default_concurrency_limit() -> usize {
-    8192
+    256
 }
 fn default_max_streams() -> u32 {
     500
@@ -201,13 +245,13 @@ fn default_h2_keepalive_timeout() -> u64 {
     20
 }
 fn default_max_frame_size() -> u32 {
-    16777215
+    16_777_215
 }
 fn default_conn_window_size() -> u32 {
-    12_582_912
+    20_971_520 // 20MB
 }
 fn default_stream_window_size() -> u32 {
-    2_097_152
+    10_485_760 // 10MB
 }
 fn default_buffer_size() -> usize {
     65_536

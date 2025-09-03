@@ -1,45 +1,60 @@
 use std::sync::Arc;
 
+use tempfile::tempdir;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
+use tracing_test::traced_test;
 
 use super::follower_state::FollowerState;
 use super::HardState;
-use crate::alias::POF;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::proto::ErrorCode;
-use crate::proto::LogId;
-use crate::proto::MetadataRequest;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
-use crate::proto::VotedFor;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::cluster::cluster_conf_update_response;
+use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::common::LogId;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::election::VotedFor;
+use crate::proto::error::ErrorCode;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::mock_peer_channels;
 use crate::test_utils::mock_raft_context;
+use crate::test_utils::node_config;
 use crate::test_utils::setup_raft_components;
+use crate::test_utils::MockBuilder;
+use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::AppendResponseWithUpdates;
+use crate::ConsensusError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
+use crate::MembershipError;
 use crate::MockElectionCore;
 use crate::MockMembership;
+use crate::MockPurgeExecutor;
 use crate::MockReplicationCore;
+use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
+use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RaftTypeConfig;
 use crate::RoleEvent;
+use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::SystemError;
+use crate::LEARNER;
 
 /// # Case 1: assume it is fresh cluster start
 ///
@@ -53,14 +68,20 @@ use crate::SystemError;
 /// 7. match_index = None
 /// 8. noop_log_id = None
 /// 9. raft_log len is 0
-#[test]
-fn test_new_with_fresh_start() {
+#[tokio::test]
+#[traced_test]
+async fn test_new_with_fresh_start() {
     let components = setup_raft_components("/tmp/test_new_with_fresh_start", None, false);
     let node_id = 1;
-    let settings = components.arc_settings.clone();
+    let node_config = components.arc_node_config.clone();
     let hard_state_from_db = None;
     let last_applied_index_option = None;
-    let state = FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
+    let state = FollowerState::<MockTypeConfig>::new(
+        node_id,
+        node_config,
+        hard_state_from_db,
+        last_applied_index_option,
+    );
 
     assert_eq!(state.commit_index(), 0);
     assert_eq!(state.current_term(), 1);
@@ -85,8 +106,9 @@ fn test_new_with_fresh_start() {
 /// 5. role is Follower
 /// 8. noop_log_id = None
 /// 9. raft_log len is 10
-#[test]
-fn test_new_with_restart() {
+#[tokio::test]
+#[traced_test]
+async fn test_new_with_restart() {
     let voted_for = VotedFor {
         voted_for_id: 3,
         voted_for_term: 2,
@@ -95,11 +117,15 @@ fn test_new_with_restart() {
     {
         let components = setup_raft_components("/tmp/test_new_with_restart", None, false);
         let node_id = 1;
-        let settings = components.arc_settings.clone();
+        let node_config = components.arc_node_config.clone();
         let hard_state_from_db = None;
         let last_applied_index_option = None;
-        let mut state =
-            FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
+        let mut state = FollowerState::<MockTypeConfig>::new(
+            node_id,
+            node_config,
+            hard_state_from_db,
+            last_applied_index_option,
+        );
 
         state.update_current_term(1);
         state.update_commit_index(5).expect("should succeed");
@@ -109,7 +135,7 @@ fn test_new_with_restart() {
     // Restart
     {
         let components = setup_raft_components("/tmp/test_new_with_restart", None, true);
-        let settings = components.arc_settings.clone();
+        let node_config = components.arc_node_config.clone();
         let node_id = 1;
         let hard_state_from_db = Some(HardState {
             current_term: 2,
@@ -119,8 +145,12 @@ fn test_new_with_restart() {
             }),
         });
         let last_applied_index_option = Some(2);
-        let state =
-            FollowerState::<RaftTypeConfig>::new(node_id, settings, hard_state_from_db, last_applied_index_option);
+        let state = FollowerState::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            node_id,
+            node_config,
+            hard_state_from_db,
+            last_applied_index_option,
+        );
         assert_eq!(state.commit_index(), 2);
         assert_eq!(state.current_term(), 2);
         assert_eq!(state.voted_for().unwrap(), Some(voted_for));
@@ -130,27 +160,26 @@ fn test_new_with_restart() {
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
+#[traced_test]
 async fn test_tick() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_tick", graceful_rx, None);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state.tick(&role_tx, &event_tx, peer_channels, &context).await.is_ok());
-    match role_rx.recv().await {
-        Some(RoleEvent::BecomeCandidate) => assert!(true),
-        _ => assert!(false),
-    }
+    assert!(state.tick(&role_tx, &event_tx, &context).await.is_ok());
+    let r = role_rx.recv().await.unwrap();
+    assert!(matches!(r, RoleEvent::BecomeCandidate));
 }
 
 fn setup_handle_raft_event_case1_params(
     resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>
-) -> (RaftEvent, Arc<POF<MockTypeConfig>>) {
-    let raft_event = crate::RaftEvent::ReceiveVoteRequest(
+) -> RaftEvent {
+    crate::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term: 1,
             candidate_id: 1,
@@ -158,9 +187,7 @@ fn setup_handle_raft_event_case1_params(
             last_log_term: 0,
         },
         resp_tx,
-    );
-    let peer_channels = Arc::new(mock_peer_channels());
-    (raft_event, peer_channels)
+    )
 }
 /// # Case 1.1: Receive Vote Request Event
 ///
@@ -172,39 +199,33 @@ fn setup_handle_raft_event_case1_params(
 /// 2. Role should not step to Follower
 /// 3. Term should not be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_1", graceful_rx, None);
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler
-        .expect_handle_vote_request()
-        .times(1)
-        .returning(|_, _, _, _| {
-            Ok(StateUpdate {
-                new_voted_for: None,
-                term_update: None,
-            })
-        });
-    context.election_handler = election_handler;
+    election_handler.expect_handle_vote_request().times(1).returning(|_, _, _, _| {
+        Ok(StateUpdate {
+            new_voted_for: None,
+            term_update: None,
+        })
+    });
+    context.handlers.election_handler = election_handler;
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let term_before = state.current_term();
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+    let raft_event = setup_handle_raft_event_case1_params(resp_tx);
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Receive response with vote_granted = false
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(!r.vote_granted),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!r.vote_granted);
 
     // No role event receives
     assert!(role_rx.try_recv().is_err());
@@ -223,6 +244,7 @@ async fn test_handle_raft_event_case1_1() {
 /// 2. Follower should not step to Follower again
 /// 3. Term should be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_2", graceful_rx, None);
@@ -242,25 +264,21 @@ async fn test_handle_raft_event_case1_2() {
                 term_update: Some(updated_term),
             })
         });
-    context.election_handler = election_handler;
+    context.handlers.election_handler = election_handler;
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+    let raft_event = setup_handle_raft_event_case1_params(resp_tx);
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Receive response with vote_granted = true
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(r.vote_granted),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert!(r.vote_granted);
     // Follower should not step to Follower again
     assert!(role_rx.try_recv().is_err());
 
@@ -279,37 +297,31 @@ async fn test_handle_raft_event_case1_2() {
 /// 3. Role should not step to Follower
 /// 4. Term should not be updated
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case1_3() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case1_3", graceful_rx, None);
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler
-        .expect_handle_vote_request()
-        .times(1)
-        .returning(|_, _, _, _| {
-            Err(Error::System(SystemError::Network(NetworkError::SingalSendFailed(
-                "".to_string(),
-            ))))
-        });
-    context.election_handler = election_handler;
+    election_handler.expect_handle_vote_request().times(1).returning(|_, _, _, _| {
+        Err(Error::System(SystemError::Network(
+            NetworkError::SingalSendFailed("".to_string()),
+        )))
+    });
+    context.handlers.election_handler = election_handler;
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let term_before = state.current_term();
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, role_rx) = mpsc::unbounded_channel();
-    let (raft_event, peer_channels) = setup_handle_raft_event_case1_params(resp_tx);
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = setup_handle_raft_event_case1_params(resp_tx);
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert!(!r.vote_granted),
-        _ => assert!(false),
-    }
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!r.vote_granted);
 
     // Term should not be updated
     assert_eq!(state.current_term(), term_before);
@@ -317,70 +329,336 @@ async fn test_handle_raft_event_case1_3() {
 
 /// # Case 2: Receive ClusterConf Event
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = MockMembership::new();
-    membership
-        .expect_retrieve_cluster_membership_config()
-        .times(1)
-        .returning(|| ClusterMembership { nodes: vec![] });
+    membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
+        ClusterMembership {
+            version: 1,
+            nodes: vec![],
+        }
+    });
     context.membership = Arc::new(membership);
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
-    if let Ok(Ok(m)) = resp_rx.recv().await {
-        assert_eq!(m.nodes, vec![]);
-    } else {
-        assert!(false);
-    }
+    let m = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(m.nodes, vec![]);
 }
 
-/// # Case 3: Receive ClusterConfUpdate Event
+/// # Case3_1: Successful configuration update
 #[tokio::test]
-async fn test_handle_raft_event_case3() {
+#[traced_test]
+async fn test_handle_raft_event_case3_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case3", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_1", graceful_rx, None);
 
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    // Mock membership to return success
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: true,
+                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let raft_event = crate::RaftEvent::ClusterConfUpdate(
-        ClusteMembershipChangeRequest {
-            id: 1,
+        ClusterConfChangeRequest {
+            id: 2, // Leader ID
             term: 1,
             version: 1,
-            cluster_membership: None,
+            change: None,
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
 
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::None as i32
+    );
+}
+
+/// # Case3_2: Reject configuration change from non-leader
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case3_2() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_2", graceful_rx, None);
+
+    // Mock membership to return NOT_LEADER error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::NotLeader.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader_id().returning(|| Some(2)); // Actual leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 3, // Non-leader ID
+            term: 1,
+            version: 1,
+            change: None,
         },
-        Err(_) => assert!(false),
-    }
+        resp_tx,
+    );
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::NotLeader as i32
+    );
+}
+
+/// # Case3_3: Reject configuration change with version conflict
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case3_3() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_3", graceful_rx, None);
+
+    // Mock membership to return VERSION_CONFLICT error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 5, // Current version
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::VersionConflict.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 5); // Current version is 5
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 2, // Leader ID
+            term: 1,
+            version: 4, // Stale version
+            change: None,
+        },
+        resp_tx,
+    );
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::VersionConflict as i32
+    );
+    assert_eq!(response.version, 5);
+}
+
+/// # Case3_4: Reject configuration change with outdated term
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case3_4() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_4", graceful_rx, None);
+
+    // Mock membership to return TERM_OUTDATED error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 5, // Current term
+                version: 1,
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::TermOutdated.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(5); // Follower has higher term
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 2,   // Leader ID
+            term: 4, // Stale term
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::TermOutdated as i32
+    );
+    assert_eq!(response.term, 5);
+}
+
+/// # Case3_5: Handle internal error during configuration update
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case3_5() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_5", graceful_rx, None);
+
+    // Mock membership to return internal error
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Membership(
+                MembershipError::ConfigChangeUpdateFailed("test".to_string()),
+            )))
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 2, // Leader ID
+            term: 1,
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::InternalError as i32
+    );
+}
+
+/// # Case3_6: Reject configuration change when no leader is known
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case3_6() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case3_6", graceful_rx, None);
+
+    // Mock membership to return NOT_LEADER error with no known leader
+    let mut membership = MockMembership::new();
+    membership
+        .expect_update_cluster_conf_from_leader()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(ClusterConfUpdateResponse {
+                id: 1,
+                term: 1,
+                version: 1,
+                success: false,
+                error_code: cluster_conf_update_response::ErrorCode::NotLeader.into(),
+            })
+        });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership.expect_current_leader_id().returning(|| None); // No known leader
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Prepare function params
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+        ClusterConfChangeRequest {
+            id: 3, // Non-leader ID
+            term: 1,
+            version: 1,
+            change: None,
+        },
+        resp_tx,
+    );
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.error_code,
+        cluster_conf_update_response::ErrorCode::NotLeader as i32
+    );
 }
 
 /// # Case 4.1: As follower, if I receive append request from Leader,
@@ -397,6 +675,7 @@ async fn test_handle_raft_event_case3() {
 /// 5. send out AppendEntriesResponse with success=true
 /// 6. `handle_raft_event` fun returns Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_1() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -407,21 +686,19 @@ async fn test_handle_raft_event_case4_1() {
 
     // Mock replication handler
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_handle_append_entries()
-        .returning(move |_, _, _| {
-            Ok(AppendResponseWithUpdates {
-                response: AppendEntriesResponse::success(
-                    1,
-                    new_leader_term,
-                    Some(LogId {
-                        term: new_leader_term,
-                        index: 1,
-                    }),
-                ),
-                commit_index_update: Some(expect_new_commit),
-            })
-        });
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(
+                1,
+                new_leader_term,
+                Some(LogId {
+                    term: new_leader_term,
+                    index: 1,
+                }),
+            ),
+            commit_index_update: Some(expect_new_commit),
+        })
+    });
 
     let mut membership = MockMembership::new();
 
@@ -436,10 +713,11 @@ async fn test_handle_raft_event_case4_1() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.update_current_term(follower_term);
 
     // Prepare Append entries request
@@ -453,22 +731,24 @@ async fn test_handle_raft_event_case4_1() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
     // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validation criterias
     // 2. I should not receive BecomeFollower event
     // 4. I should send out new commit signal
-    assert!(matches!(role_rx.try_recv().unwrap(), RoleEvent::NotifyNewCommitIndex {
-        new_commit_index: _
-    }));
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::NotifyNewCommitIndex(NewCommitData {
+            new_commit_index: _,
+            role: _,
+            current_term: _
+        })
+    ));
 
     // Validation criterias
     // 3. I should update term
@@ -476,10 +756,8 @@ async fn test_handle_raft_event_case4_1() {
     assert_eq!(state.commit_index(), expect_new_commit);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_success()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.expect("should succeed").unwrap();
+    assert!(response.is_success());
 }
 
 /// # Case 4.2: As follower, if I receive append request from Leader,
@@ -492,6 +770,7 @@ async fn test_handle_raft_event_case4_1() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_2() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -517,10 +796,11 @@ async fn test_handle_raft_event_case4_2() {
         .times(0);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.update_current_term(follower_term);
 
     // Prepare Append entries request
@@ -534,15 +814,12 @@ async fn test_handle_raft_event_case4_2() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
     // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validation criterias
     // 2. I should not receive any event
@@ -553,10 +830,8 @@ async fn test_handle_raft_event_case4_2() {
     assert_eq!(state.current_term(), follower_term);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(response.is_higher_term()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.expect("should succeed").unwrap();
+    assert!(response.is_higher_term());
 }
 
 /// # Case 4.3: As follower, if I receive append request from Leader,
@@ -572,6 +847,7 @@ async fn test_handle_raft_event_case4_2() {
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case4_3() {
     // Prepare Follower State
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -598,10 +874,11 @@ async fn test_handle_raft_event_case4_3() {
         .times(1);
 
     context.membership = Arc::new(membership);
-    context.replication_handler = replication_handler;
+    context.handlers.replication_handler = replication_handler;
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.update_current_term(follower_term);
 
     // Prepare Append entries request
@@ -615,15 +892,12 @@ async fn test_handle_raft_event_case4_3() {
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     // Validation criterias: 6. `handle_raft_event` fun returns Ok(())
     // Handle raft event
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_err());
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criterias
     // 2. I should not receive any event
@@ -634,76 +908,66 @@ async fn test_handle_raft_event_case4_3() {
     assert_eq!(state.current_term(), new_leader_term);
 
     // 5. send out AppendEntriesResponse with success=true
-    match resp_rx.recv().await.expect("should succeed") {
-        Ok(response) => assert!(!response.is_success()),
-        Err(_) => assert!(false),
-    }
+    let response = resp_rx.recv().await.expect("should succeed").unwrap();
+    assert!(!response.is_success());
 }
 
 /// # Case 5: Test handle client propose request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case5() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case5", graceful_rx, None);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     // Handle raft event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientPropose(
-        ClientProposeRequest {
+        ClientWriteRequest {
             client_id: 1,
             commands: vec![],
         },
         resp_tx,
     );
-    let peer_channels = Arc::new(mock_peer_channels());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(Ok(r)) => assert_eq!(r.error, ErrorCode::NotLeader as i32),
-        _ => assert!(false),
-    }
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(r.error, ErrorCode::NotLeader as i32);
 }
 
 /// # Case 6.1: test ClientReadRequest with linear request
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_1() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
-        commands: vec![],
+        keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(_) => assert!(false),
-            Err(s) => assert_eq!(s.code(), Code::PermissionDenied),
-        },
-        Err(_) => assert!(false),
-    }
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let s = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(s.code(), Code::PermissionDenied);
 }
 
 /// # Case 6.2: test ClientReadRequest with request(linear=false)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_raft_event_case6_2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case6_2", graceful_rx, None);
@@ -712,30 +976,709 @@ async fn test_handle_raft_event_case6_2() {
         .expect_read_from_state_machine()
         .times(1)
         .returning(|_| Some(vec![]));
-    context.state_machine_handler = Arc::new(state_machine_handler);
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // New state
-    let mut state = FollowerState::<MockTypeConfig>::new(1, context.settings.clone(), None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: false,
-        commands: vec![],
+        keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let peer_channels = Arc::new(mock_peer_channels());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state
-        .handle_raft_event(raft_event, peer_channels, &context, role_tx)
-        .await
-        .is_ok());
 
-    match resp_rx.recv().await {
-        Ok(r) => match r {
-            Ok(r) => assert_eq!(r.error, ErrorCode::Success as i32),
-            Err(_) => assert!(false),
-        },
-        Err(_) => assert!(false),
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let r = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(r.error, ErrorCode::Success as i32);
+}
+
+/// # Case8_1: Test purge request without current leader
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_1() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_8");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to validate purge request
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|_, _, _| Ok(false));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock membership with no current leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| None);
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let purge_request = PurgeLogRequest {
+        term: 3,
+        leader_id: 2,
+        leader_commit: 100,
+        last_included: Some(LogId { term: 3, index: 80 }),
+        snapshot_checksum: vec![],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should handle no leader scenario");
+
+    // Validate response indicates failure
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case8_2: Test successful log cleanup with valid purge request
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_2() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_2");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to validate purge request
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|_, _, _| Ok(true));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock purge executor to succeed
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor.expect_execute_purge().times(1).returning(|_| Ok(()));
+    context.handlers.purge_executor = Arc::new(purge_executor);
+
+    // Mock membership with current leader
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().returning(|| Some(2));
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state
+    let mut state = FollowerState::<MockTypeConfig>::new(
+        1,
+        context.node_config.clone(),
+        None,
+        Some(100), // last_applied_index
+    );
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150; // commit_index > purge_index
+
+    // Create valid purge request
+    let purge_request = PurgeLogRequest {
+        term: 3,
+        leader_id: 2,
+        leader_commit: 150,
+        last_included: Some(LogId {
+            term: 3,
+            index: 100,
+        }),
+        snapshot_checksum: vec![1, 2, 3],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should succeed");
+
+    // Validate response
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(response.success);
+    assert_eq!(
+        response.last_purged,
+        Some(LogId {
+            term: 3,
+            index: 100
+        })
+    );
+    assert_eq!(
+        state.last_purged_index,
+        Some(LogId {
+            term: 3,
+            index: 100
+        })
+    );
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case8_3: Test purge request fails validation
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_3() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_3");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to fail validation
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|_, _, _| Err(SnapshotError::OperationFailed("test".to_string()).into()));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().return_const(1);
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(3);
+
+    let purge_request = PurgeLogRequest {
+        term: 3,
+        leader_id: 2,
+        leader_commit: 100,
+        last_included: Some(LogId { term: 3, index: 80 }),
+        snapshot_checksum: vec![],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should handle validation error");
+
+    // Validate response indicates failure
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(state.last_purged_index, None);
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case8_4: Test purge request with invalid leader term
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_4() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_4");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to validate purge request
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|current_term, _, req| {
+            // Leader term (2) is lower than current term (3)
+            if req.term < current_term {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().return_const(1);
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state with higher term
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(3); // Current term > leader term
+
+    let purge_request = PurgeLogRequest {
+        term: 2, // Lower than follower's term
+        leader_id: 2,
+        leader_commit: 100,
+        last_included: Some(LogId { term: 2, index: 80 }),
+        snapshot_checksum: vec![],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should handle invalid term");
+
+    // Validate response indicates failure
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(state.last_purged_index, None);
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case8_5: Test purge request fails can_purge_logs check
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_5() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_5");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to validate purge request
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|_, _, _| Ok(true));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().return_const(1);
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state where commit index < purge index
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(3);
+    state.shared_state.commit_index = 90; // commit_index < purge_index (100)
+    state.last_purged_index = Some(LogId { term: 2, index: 80 });
+
+    let purge_request = PurgeLogRequest {
+        term: 3,
+        leader_id: 2,
+        leader_commit: 100,
+        last_included: Some(LogId {
+            term: 3,
+            index: 100,
+        }),
+        snapshot_checksum: vec![],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should skip purge due to safety check");
+
+    // Validate response indicates failure
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(state.last_purged_index, Some(LogId { term: 2, index: 80 })); // Unchanged
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case8_6: Test purge request with non-monotonic purge index
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_6() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_6");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to validate purge request
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|_, _, _| Ok(true));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().return_const(1);
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state where last_purged_index > requested purge index
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150;
+    state.last_purged_index = Some(LogId { term: 3, index: 90 }); // Higher than requested
+
+    let purge_request = PurgeLogRequest {
+        term: 3,
+        leader_id: 2,
+        leader_commit: 150,
+        last_included: Some(LogId { term: 3, index: 80 }), // Lower than current
+        snapshot_checksum: vec![],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should skip purge due to non-monotonic request");
+
+    // Validate response indicates failure
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(state.last_purged_index, Some(LogId { term: 3, index: 90 })); // Unchanged
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// # Case8_7: Test purge execution failure
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case8_7() {
+    // Setup Context
+    let temp_dir = tempfile::tempdir().unwrap();
+    let case_path = temp_dir.path().join("test_handle_raft_event_case8_7");
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
+
+    // Mock state machine handler to validate purge request
+    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+    state_machine_handler
+        .expect_validate_purge_request()
+        .returning(|_, _, _| Ok(true));
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    // Mock purge executor to fail
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor
+        .expect_execute_purge()
+        .times(1)
+        .returning(|_| Err(SnapshotError::OperationFailed("test".to_string()).into()));
+    context.handlers.purge_executor = Arc::new(purge_executor);
+
+    // Mock membership
+    let mut membership = MockMembership::new();
+    membership.expect_current_leader_id().return_const(1);
+    context.membership = Arc::new(membership);
+
+    // Prepare follower state
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(3);
+    state.shared_state.commit_index = 150;
+    state.last_purged_index = Some(LogId { term: 2, index: 80 });
+
+    let purge_request = PurgeLogRequest {
+        term: 3,
+        leader_id: 2,
+        leader_commit: 150,
+        last_included: Some(LogId {
+            term: 3,
+            index: 100,
+        }),
+        snapshot_checksum: vec![],
+    };
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Execute
+    state
+        .handle_raft_event(raft_event, &context, role_tx)
+        .await
+        .expect("Should handle purge failure");
+
+    // Validate response indicates failure
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.success);
+    assert_eq!(state.last_purged_index, Some(LogId { term: 2, index: 80 })); // Unchanged
+
+    // No role change
+    assert!(role_rx.try_recv().is_err());
+}
+
+/// Test handling JoinCluster event by CandidateState
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case10() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case10", graceful_rx, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Step 2: Prepare the event
+    let request = JoinRequest {
+        node_id: 2,
+        node_role: LEARNER,
+        address: "127.0.0.1:9090".to_string(),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::JoinCluster(request, resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
+
+    // Step 4: Verify the response
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return error"
+    );
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await.expect("Response should be received");
+    assert!(response.is_err(), "Expected an error response");
+    let status = response.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(status.code(), Code::PermissionDenied);
+}
+
+/// Test handling DiscoverLeader event by CandidateState
+#[tokio::test]
+#[traced_test]
+async fn test_handle_raft_event_case11() {
+    // Step 1: Setup the test environment
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context("/tmp/test_handle_raft_event_case11", graceful_rx, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Step 2: Prepare the event
+    let request = LeaderDiscoveryRequest {
+        node_id: 2,
+        requester_address: "127.0.0.1:9090".to_string(),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+
+    // Step 3: Call handle_raft_event
+    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
+
+    // Step 4: Verify the response
+    assert!(result.is_ok(), "Expected handle_raft_event to return Ok");
+
+    // Step 5: Check the response sent through the channel
+    let response = resp_rx.recv().await.expect("Response should be received");
+    assert!(response.is_err(), "Expected an error response");
+    let status = response.unwrap_err();
+
+    // Step 6: Verify error details
+    assert_eq!(status.code(), Code::PermissionDenied);
+}
+
+/// # Case 1: Valid purge conditions with gap enforcement
+#[test]
+fn test_can_purge_logs_case1() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    // Setup state matching Raft paper's log compaction rules
+    state.shared_state.commit_index = 100; // Last committed entry at 100
+
+    // Test valid purge range (90 < 99 < 100)
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }), // last_purge_index
+        LogId { index: 99, term: 1 }        // last_included_in_request
+    ));
+
+    // Edge case: 99 == commit_index - 1 (per gap rule)
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }),
+        LogId { index: 99, term: 1 }
+    ));
+
+    // Violate gap rule: 100 not < 100
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }),
+        LogId {
+            index: 100,
+            term: 1
+        }
+    ));
+}
+
+// # Case 2: Reject uncommitted index (Raft §5.4.2)
+#[test]
+fn test_can_purge_logs_case2() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 50;
+
+    // Leader tries to purge beyond commit index
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 40, term: 1 }),
+        LogId { index: 51, term: 1 } // 51 > commit_index(50)
+    ));
+
+    // Boundary check: 50 == commit_index (violates <)
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 40, term: 1 }),
+        LogId { index: 50, term: 1 }
+    ));
+}
+
+/// # Case 3: Ensure purge monotonicity (Raft §7.2)
+#[test]
+fn test_can_purge_logs_case3() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 200;
+
+    // Valid sequence: 100 → 150 → 199
+    assert!(state.can_purge_logs(
+        Some(LogId {
+            index: 100,
+            term: 1
+        }),
+        LogId {
+            index: 150,
+            term: 1
+        }
+    ));
+
+    // Invalid: Attempt to purge backwards (150 → 120)
+    assert!(!state.can_purge_logs(
+        Some(LogId {
+            index: 150,
+            term: 1
+        }),
+        LogId {
+            index: 120,
+            term: 1
+        }
+    ));
+
+    // Same index purge attempt
+    assert!(!state.can_purge_logs(
+        Some(LogId {
+            index: 150,
+            term: 1
+        }),
+        LogId {
+            index: 150,
+            term: 1
+        }
+    ));
+}
+
+/// # Case 4: Handle initial purge state (no previous purge)
+#[test]
+fn test_can_purge_logs_case4() {
+    let dir = tempdir().unwrap();
+    let node_config = Arc::new(node_config(dir.path().to_str().unwrap()));
+    let mut state = FollowerState::<MockTypeConfig>::new(1, node_config, None, None);
+
+    state.shared_state.commit_index = 100;
+
+    // First ever purge (last_purge_index = None)
+    assert!(state.can_purge_logs(
+        None, // No previous purge
+        LogId { index: 99, term: 1 }
+    ));
+
+    // First purge must still obey commit_index gap
+    assert!(!state.can_purge_logs(
+        None,
+        LogId {
+            index: 100,
+            term: 1
+        } // 100 not < 100
+    ));
+}
+
+#[cfg(test)]
+mod role_violation_tests {
+    use super::*;
+
+    /// Test handling role violation events by FollowerState
+    #[tokio::test]
+    async fn test_role_violation_events() {
+        // Step 1: Setup the test environment
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = mock_raft_context(
+            "/tmp/test_follower_role_violation_events",
+            graceful_rx,
+            None,
+        );
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // Step 2: Prepare the CreateSnapshotEvent
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let raft_event = RaftEvent::CreateSnapshotEvent;
+
+        // [Test CreateSnapshotEvent]
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
+
+        // Verify the error response
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
+
+        // [Test SnapshotCreated]
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let raft_event = RaftEvent::SnapshotCreated(Err(Error::Fatal("test".to_string())));
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
+
+        // Verify the error response
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
+
+        // [Test LogPurgeCompleted]
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
+        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
+
+        // Verify the error response
+        assert!(matches!(
+            e,
+            Error::Consensus(ConsensusError::RoleViolation { .. })
+        ));
     }
 }

@@ -1,0 +1,63 @@
+[cluster]
+node_id = 5
+listen_address = "0.0.0.0:9085"
+initial_cluster = [
+    { id = 1, address = "0.0.0.0:9081", role = 1, status = 2 },
+    { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },
+    { id = 3, address = "0.0.0.0:9083", role = 1, status = 2 },
+    { id = 4, address = "0.0.0.0:9084", role = 3, status = 0 },
+    { id = 5, address = "0.0.0.0:9085", role = 3, status = 0 },
+]
+db_root_dir = "./db"
+log_dir = "./logs"
+
+
+[raft]
+general_raft_timeout_duration_in_ms = 100
+
+[raft.commit_handler]
+batch_size = 5000
+
+[raft.replication]
+rpc_append_entries_in_batch_threshold = 5000
+
+[raft.persistence]
+strategy = "MemFirst"
+# strategy = "DiskFirst"
+flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+# flush_policy = "Immediate"
+
+
+[retry.join_cluster]
+max_retries = 3      # Maximum number of retries (recommended: 3)
+timeout_ms = 500     # Single request timeout (recommended: 500-1000ms)
+base_delay_ms = 3000 # Initial backoff delay (recommended: 3000ms)
+max_delay_ms = 60000 # Maximum backoff delay (recommended: <=1m)
+
+[raft.snapshot]
+enable = false
+max_log_entries_before_snapshot = 10000
+snapshot_cool_down_since_last_check = { secs = 60 }
+snapshots_dir = "./snapshots/"
+retained_log_entries = 3
+
+[network.control]
+concurrency_limit = 8192                #// Moderate concurrency
+max_concurrent_streams = 8192           #// Stream limit for control operations
+tcp_keepalive_in_secs = 3600            #// 5 minute TCP keepalive
+http2_keep_alive_interval_in_secs = 300 #// Frequent pings
+http2_keep_alive_timeout_in_secs = 20   #// Short timeout
+max_frame_size = 16_777_215
+connection_window_size = 2_097_152      #// 2MB connection window
+
+
+[network.data]
+connect_timeout_in_ms = 20              #// Balance speed and reliability
+request_timeout_in_ms = 200             #// Accommodate log batches
+concurrency_limit = 8192                #// High concurrency for parallel logs
+max_concurrent_streams = 500            #// More streams for pipelining
+tcp_keepalive_in_secs = 3600            #// 10 minute TCP keepalive
+http2_keep_alive_interval_in_secs = 300 #// Moderate ping interval
+http2_keep_alive_timeout_in_secs = 30   #// Longer grace period
+max_frame_size = 16_777_215
+connection_window_size = 6_291_456      #// 6MB connection window

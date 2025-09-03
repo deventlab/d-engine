@@ -1,3 +1,16 @@
+//! A oneshot channel implementation that can optionally be cloned in test environments.
+//!
+//! Unlike `StreamResponseSender` which is specialized for gRPC streaming responses
+//! (`Result<tonic::Streaming<SnapshotChunk>, Status>`), this provides a generic oneshot
+//! channel for any `T: Send`:
+//! - Production: Regular oneshot semantics (non-cloneable)
+//! - Tests: Uses broadcast channel to allow cloning senders
+//!
+//! Key differences from `StreamResponseSender`:
+//! 1. Generic vs specialized (gRPC streaming)
+//! 2. Simpler error handling
+//! 3. Same test-friendly cloning pattern
+
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -7,6 +20,9 @@ use std::task::Poll;
 #[cfg(test)]
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
+use tonic::Status;
+
+use crate::proto::storage::SnapshotChunk;
 
 pub trait RaftOneshot<T: Send> {
     type Sender: Send + Sync;
@@ -15,16 +31,17 @@ pub trait RaftOneshot<T: Send> {
     fn new() -> (Self::Sender, Self::Receiver);
 }
 
-#[derive(Clone)]
 pub(crate) struct MaybeCloneOneshot;
 
-pub(crate) struct MaybeCloneOneshotSender<T: Send + Clone> {
+#[allow(dead_code)]
+pub(crate) struct MaybeCloneOneshotSender<T: Send> {
     inner: oneshot::Sender<T>,
 
     #[cfg(test)]
-    test_inner: broadcast::Sender<T>,
+    test_inner: Option<broadcast::Sender<T>>, // None for non-cloneable types
 }
-impl<T: Send + Clone> Debug for MaybeCloneOneshotSender<T> {
+
+impl<T: Send> Debug for MaybeCloneOneshotSender<T> {
     fn fmt(
         &self,
         f: &mut std::fmt::Formatter<'_>,
@@ -32,35 +49,48 @@ impl<T: Send + Clone> Debug for MaybeCloneOneshotSender<T> {
         f.debug_struct("MaybeCloneOneshotSender").finish()
     }
 }
-pub(crate) struct MaybeCloneOneshotReceiver<T: Send + Clone> {
+
+#[allow(dead_code)]
+pub(crate) struct MaybeCloneOneshotReceiver<T: Send> {
     inner: oneshot::Receiver<T>,
 
     #[cfg(test)]
-    test_inner: broadcast::Receiver<T>,
+    test_inner: Option<broadcast::Receiver<T>>, // None for non-cloneable types
+}
+#[cfg(test)]
+impl<T: Send> MaybeCloneOneshotSender<T> {
+    pub fn send(
+        &self,
+        value: T,
+    ) -> Result<usize, broadcast::error::SendError<T>> {
+        if let Some(tx) = &self.test_inner {
+            tx.send(value)
+        } else {
+            // Fallback for non-cloneable types
+            panic!("Cannot broadcast non-cloneable type in tests");
+        }
+    }
 }
 
-impl<T: Send + Clone> MaybeCloneOneshotSender<T> {
-    #[cfg(not(test))]
+#[cfg(not(test))]
+impl<T: Send> MaybeCloneOneshotSender<T> {
     pub fn send(
         self,
         value: T,
     ) -> Result<(), T> {
         self.inner.send(value)
     }
-
-    #[cfg(test)]
-    pub fn send(
-        &self,
-        value: T,
-    ) -> Result<usize, tokio::sync::broadcast::error::SendError<T>> {
-        self.test_inner.send(value)
-    }
 }
 
 impl<T: Send + Clone> MaybeCloneOneshotReceiver<T> {
     #[cfg(test)]
     pub async fn recv(&mut self) -> Result<T, broadcast::error::RecvError> {
-        self.test_inner.recv().await
+        if let Some(ref mut rx) = &mut self.test_inner {
+            rx.recv().await
+        } else {
+            // Fallback for non-cloneable types
+            panic!("Cannot broadcast non-cloneable type in tests");
+        }
     }
 }
 
@@ -86,15 +116,24 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
         let this = self.get_mut();
 
         // Using the recv method of tokio::sync::broadcast::Receiver
-        match this.test_inner.try_recv() {
-            Ok(value) => Poll::Ready(Ok(value)),
-            Err(broadcast::error::TryRecvError::Empty) => {
-                // Register a Waker to wake up the task when data arrives
-                cx.waker().wake_by_ref();
-                Poll::Pending
+        if let Some(ref mut rx) = &mut this.test_inner {
+            match rx.try_recv() {
+                Ok(value) => Poll::Ready(Ok(value)),
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    // Register a Waker to wake up the task when data arrives
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    Poll::Ready(Err(broadcast::error::RecvError::Closed))
+                }
+                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                    Poll::Ready(Err(broadcast::error::RecvError::Lagged(n)))
+                }
             }
-            Err(broadcast::error::TryRecvError::Closed) => Poll::Ready(Err(broadcast::error::RecvError::Closed)),
-            Err(broadcast::error::TryRecvError::Lagged(n)) => Poll::Ready(Err(broadcast::error::RecvError::Lagged(n))),
+        } else {
+            // Fallback for non-cloneable types
+            panic!("Cannot broadcast non-cloneable type in tests");
         }
     }
 }
@@ -113,34 +152,93 @@ impl<T: Send + Clone> Clone for MaybeCloneOneshotSender<T> {
 impl<T: Send + Clone> Clone for MaybeCloneOneshotReceiver<T> {
     fn clone(&self) -> Self {
         let (_, receiver) = oneshot::channel();
+
         Self {
             inner: receiver,
-            test_inner: self.test_inner.resubscribe(),
+            test_inner: Some(self.test_inner.as_ref().unwrap().resubscribe()),
         }
     }
 }
-
+#[cfg(test)]
 impl<T: Send + Clone> RaftOneshot<T> for MaybeCloneOneshot {
     type Sender = MaybeCloneOneshotSender<T>;
     type Receiver = MaybeCloneOneshotReceiver<T>;
 
     fn new() -> (Self::Sender, Self::Receiver) {
         let (tx, rx) = oneshot::channel();
+        let (test_tx, test_rx) = broadcast::channel(1);
+        (
+            MaybeCloneOneshotSender {
+                inner: tx,
+                test_inner: Some(test_tx),
+            },
+            MaybeCloneOneshotReceiver {
+                inner: rx,
+                test_inner: Some(test_rx),
+            },
+        )
+    }
+}
 
-        #[cfg(test)]
-        let (test_tx, test_rx) = broadcast::channel::<T>(1);
+#[cfg(not(test))]
+impl<T: Send> RaftOneshot<T> for MaybeCloneOneshot {
+    type Sender = MaybeCloneOneshotSender<T>;
+    type Receiver = MaybeCloneOneshotReceiver<T>;
 
+    fn new() -> (Self::Sender, Self::Receiver) {
+        let (tx, rx) = oneshot::channel();
         (
             MaybeCloneOneshotSender {
                 inner: tx,
                 #[cfg(test)]
-                test_inner: test_tx,
+                test_inner: None,
             },
             MaybeCloneOneshotReceiver {
                 inner: rx,
                 #[cfg(test)]
-                test_inner: test_rx,
+                test_inner: None,
             },
         )
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamResponseSender {
+    inner: oneshot::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
+
+    #[cfg(test)]
+    test_inner:
+        Option<broadcast::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>>,
+}
+
+impl StreamResponseSender {
+    pub fn new() -> (
+        Self,
+        oneshot::Receiver<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
+    ) {
+        let (inner_tx, inner_rx) = oneshot::channel();
+        (
+            Self {
+                inner: inner_tx,
+                #[cfg(test)]
+                test_inner: None,
+            },
+            inner_rx,
+        )
+    }
+
+    pub fn send(
+        self,
+        value: std::result::Result<tonic::Streaming<SnapshotChunk>, Status>,
+    ) -> Result<(), Box<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>> {
+        #[cfg(not(test))]
+        return self.inner.send(value).map_err(Box::new);
+
+        #[cfg(test)]
+        if let Some(tx) = self.test_inner {
+            tx.send(value).map(|_| ()).map_err(|e| Box::new(e.0))
+        } else {
+            self.inner.send(value).map_err(Box::new)
+        }
     }
 }

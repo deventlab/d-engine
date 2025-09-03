@@ -7,27 +7,46 @@
 //! system responsiveness.
 pub mod grpc;
 
+mod connection_cache;
+mod health_checker;
+mod health_monitor;
+
+pub(crate) use connection_cache::*;
+pub(crate) use health_checker::*;
+pub(crate) use health_monitor::*;
+
+#[cfg(test)]
+mod connection_cache_test;
+#[cfg(test)]
+mod health_checker_test;
+#[cfg(test)]
+mod health_monitor_test;
+
 // Trait definition of the current module
 // -----------------------------------------------------------------------------
 // Core model in Raft: Transport Definition
 //
+#[cfg(test)]
+mod network_test;
 
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterConfUpdateResponse;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
+use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotChunk;
 use crate::BackoffPolicy;
-use crate::ChannelWithAddress;
-use crate::ChannelWithAddressAndRole;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
+use crate::TypeConfig;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
@@ -37,16 +56,40 @@ pub(crate) struct AppendResults {
     pub commit_quorum_achieved: bool,
     /// Updates to each peer's match_index and next_index
     pub peer_updates: HashMap<u32, PeerUpdate>,
+    /// Learner log catch-up progress
+    pub learner_progress: HashMap<u32, Option<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PeerUpdate {
-    pub match_index: u64,
+    pub match_index: Option<u64>,
     pub next_index: u64,
     /// if peer response success
     pub success: bool,
 }
 
+impl PeerUpdate {
+    #[allow(unused)]
+    pub fn success(
+        match_index: u64,
+        next_index: u64,
+    ) -> Self {
+        PeerUpdate {
+            match_index: Some(match_index),
+            next_index,
+            success: true,
+        }
+    }
+
+    #[allow(unused)]
+    pub fn failed() -> Self {
+        Self {
+            match_index: None,
+            next_index: 1,
+            success: false,
+        }
+    }
+}
 #[derive(Debug)]
 pub struct AppendResult {
     pub peer_ids: HashSet<u32>,
@@ -57,6 +100,7 @@ pub struct VoteResult {
     pub peer_ids: HashSet<u32>,
     pub responses: Vec<Result<VoteResponse>>,
 }
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ClusterUpdateResult {
     pub peer_ids: HashSet<u32>,
@@ -65,97 +109,197 @@ pub struct ClusterUpdateResult {
 
 #[cfg_attr(test, automock)]
 #[async_trait]
-pub trait Transport: Send + Sync + 'static {
-    /// Propagates cluster membership changes to all voting peers using Raft's joint consensus
-    /// mechanism.
+pub trait Transport<T>: Send + Sync + 'static
+where
+    T: TypeConfig,
+{
+    /// Propagates cluster configuration changes to voting members using Raft's joint consensus.
     ///
-    /// Implements the membership change protocol from Raft §6. This must only be called by the
-    /// leader.
-    ///
-    /// # Arguments
-    /// * `peers` - List of cluster peers (excluding self) to receive configuration updates
-    /// * `req` - Configuration change request with joint consensus details
-    /// * `retry` - Backoff policy for transient network failures
-    ///
-    /// # Errors
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is
-    ///   empty
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background
-    ///   task failures
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC
-    ///   transport errors
-    /// - Returns [`Error::Consensus(ConsensusError::NotLeader)`] if local node isn't leader
-    ///
-    /// # Behavior
-    /// - Skips self-references (peer ID matching local node ID)
-    /// - Deduplicates peer list entries
-    /// - Uses compressed gRPC streams for efficient large config updates
-    /// - Maintains response order matching input peer list
-    async fn send_cluster_update(
-        &self,
-        peers: Vec<ChannelWithAddressAndRole>,
-        req: ClusteMembershipChangeRequest,
-        retry: &RetryPolicies,
-    ) -> Result<ClusterUpdateResult>;
-
-    /// Sends AppendEntries RPCs to multiple peers concurrently with retry mechanisms.
-    ///
-    /// This transport-layer function handles:
-    /// 1. Request distribution to multiple cluster peers
-    /// 2. Network retries with exponential backoff
-    /// 3. Timeout handling for individual requests
-    /// 4. Response collection and aggregation
+    /// # Protocol
+    /// - Implements membership change protocol from Raft §6
+    /// - Leader-exclusive operation
+    /// - Automatically filters self-references and duplicates
     ///
     /// # Parameters
-    /// - `requests_with_peer_address`: A list of tuples containing the peer ID, communication
-    ///   channel, and the specific AppendEntries request
-    /// to be sent to each peer. Each tuple consists of:
-    ///     - `peer_id`: The unique identifier of the peer.
-    ///     - `channel`: The communication channel (e.g., network connection) to the peer.
-    ///     - `request`: The AppendEntries request tailored for the specific peer, as the log
-    ///       entries to be synced
-    ///   may differ for each peer based on their current log state.
-    ///
-    /// - `retry`: Retry configuration parameters
-    ///
-    /// # Returns
-    /// - `Result<AppendResult>`: Aggregated responses from peers
-    async fn send_append_requests(
-        &self,
-        requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
-        retry: &RetryPolicies,
-    ) -> Result<AppendResult>;
-
-    /// Conducts leader election by sending VoteRequest RPCs to candidate/follower nodes.
-    ///
-    /// Implements the leader election mechanism from Raft §5.2. Must be called by candidates.
-    ///
-    /// # Arguments
-    /// * `peers` - Voting-eligible cluster members (excluding learners and self)
-    /// * `req` - Vote request containing candidate's term and log metadata
-    /// * `retry` - Election-specific retry strategy
+    /// - `req`: Configuration change details with transition state
+    /// - `retry`: Network retry policy with exponential backoff
+    /// - `membership`: Cluster membership for channel resolution
     ///
     /// # Errors
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::EmptyPeerList))`] if `peers` is
-    ///   empty
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TaskFailed))`] for background
-    ///   task failures
-    /// - Returns [`Error::System(SystemError::Network(NetworkError::TonicError))`] for gRPC
-    ///   transport errors
-    /// - Returns [`Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm))`] via
-    ///   response parsing
+    /// - `NetworkError::EmptyPeerList` if no peers provided
+    /// - `NetworkError::TaskFailed` for background execution failures
+    /// - `ConsensusError::NotLeader` if executed by non-leader
     ///
-    /// # Protocol Behavior
-    /// - Filters out self-references and duplicates
-    /// - Maintains compressed gRPC channel connections
-    /// - Aggregates responses while preserving peer order
-    /// - Continues processing even with partial failures
+    /// # Implementation
+    /// - Uses compressed gRPC streams for efficiency
+    /// - Maintains response order matching input peers
+    /// - Concurrent request processing with ordered aggregation
+    #[allow(dead_code)]
+    async fn send_cluster_update(
+        &self,
+        req: ClusterConfChangeRequest,
+        retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<ClusterUpdateResult>;
+
+    /// Replicates log entries to followers and learners.
+    ///
+    /// # Protocol
+    /// - Implements log replication from Raft §5.3
+    /// - Leader-exclusive operation
+    /// - Handles log consistency checks automatically
+    ///
+    /// # Parameters
+    /// - `requests`: Vector of (peer_id, AppendEntriesRequest)
+    /// - `retry`: Network retry configuration
+    /// - `membership`: Cluster membership for channel resolution
+    ///
+    /// # Returns
+    /// - On success: `Ok(AppendResult)` containing aggregated responses
+    /// - On failure: `Err(NetworkError)` for unrecoverable errors
+    ///
+    /// ## **Error Conditions**: Top-level `Err` is returned ONLY when:
+    /// - Input `requests_with_peer_address` is empty (`NetworkError::EmptyPeerList`)
+    /// - Critical failures prevent spawning async tasks (not shown in current impl)
+    ///
+    /// # Errors
+    /// - `NetworkError::EmptyPeerList` for empty input
+    /// - `NetworkError::TaskFailed` for partial execution failures
+    ///
+    /// # Guarantees
+    /// - At-least-once delivery semantics
+    /// - Automatic deduplication of peer entries
+    /// - Non-blocking error handling
+    async fn send_append_requests(
+        &self,
+        requests: Vec<(u32, AppendEntriesRequest)>,
+        retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<AppendResult>;
+
+    /// Initiates leader election by requesting votes from cluster peers.
+    ///
+    /// # Protocol
+    /// - Implements leader election from Raft §5.2
+    /// - Candidate-exclusive operation
+    /// - Validates log completeness requirements
+    ///
+    /// # Parameters
+    /// - `req`: Election metadata with candidate's term and log state
+    /// - `retry`: Election-specific retry strategy
+    /// - `membership`: Cluster membership for channel resolution
+    ///
+    /// # Errors
+    /// - `NetworkError::EmptyPeerList` for empty peer list
+    /// - `NetworkError::TaskFailed` for RPC execution failures
+    ///
+    /// # Safety
+    /// - Automatic term validation in responses
+    /// - Strict candidate state enforcement
+    /// - Non-blocking partial failure handling
     async fn send_vote_requests(
         &self,
-        peers: Vec<ChannelWithAddressAndRole>,
         req: VoteRequest,
         retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<VoteResult>;
+
+    /// Orchestrates log compaction across cluster peers after snapshot creation.
+    ///
+    /// # Protocol
+    /// - Implements log truncation from Raft §7
+    /// - Leader-exclusive operation
+    /// - Requires valid snapshot checksum
+    ///
+    /// # Parameters
+    /// - `req`: Snapshot metadata with truncation index
+    /// - `retry`: Purge-specific retry configuration
+    /// - `membership`: Cluster membership for channel resolution
+    ///
+    /// # Errors
+    /// - `NetworkError::EmptyPeerList` for empty peer list
+    /// - `NetworkError::TaskFailed` for background execution errors
+    ///
+    /// # Guarantees
+    /// - At-least-once delivery
+    /// - Automatic progress tracking
+    /// - Crash-safe persistence requirements
+    async fn send_purge_requests(
+        &self,
+        req: PurgeLogRequest,
+        retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<Vec<Result<PurgeLogResponse>>>;
+
+    /// Initiates cluster join process for a learner node
+    ///
+    /// # Protocol
+    /// - Implements cluster join protocol from Raft §6
+    /// - Learner-exclusive operation
+    /// - Requires leader connection
+    ///
+    /// # Parameters
+    /// - `leader_channel`: Pre-established gRPC channel to cluster leader
+    /// - `request`: Join request with node metadata
+    /// - `retry`: Join-specific retry configuration
+    /// - `membership`: Cluster membership for channel resolution
+    ///
+    /// # Errors
+    /// - NetworkError::JoinFailed: On unrecoverable join failure
+    /// - NetworkError::NotLeader: If contacted node isn't leader
+    ///
+    /// # Guarantees
+    /// - At-least-once delivery
+    /// - Automatic leader discovery
+    /// - Idempotent operation
+    async fn join_cluster(
+        &self,
+        leader_id: u32,
+        request: crate::proto::cluster::JoinRequest,
+        retry: BackoffPolicy,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<crate::proto::cluster::JoinResponse>;
+
+    /// Discovers current cluster leader
+    ///
+    /// # Protocol
+    /// - Broadcast-based leader discovery
+    /// - Handles redirection to current leader
+    ///
+    /// # Parameters
+    /// - `bootstrap_endpoints`: Initial cluster endpoints
+    /// - `request`: Discovery request with node metadata
+    ///
+    /// # Errors
+    /// - `NetworkError::DiscoveryTimeout`: When no response received
+    async fn discover_leader(
+        &self,
+        request: crate::proto::cluster::LeaderDiscoveryRequest,
+        rpc_enable_compression: bool,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<Vec<crate::proto::cluster::LeaderDiscoveryResponse>>;
+
+    /// Requests and streams a snapshot from the current leader.
+    ///
+    /// # Parameters
+    /// - `leader_id`: Current leader node ID
+    /// - `retry`: Retry configuration (currently unused in implementation)
+    /// - `membership`: Cluster membership for channel resolution
+    ///
+    /// # Returns
+    /// Streaming of snapshot chunks from the leader
+    ///
+    /// # Errors
+    /// Returns `NetworkError` if:
+    /// - Connection to leader fails
+    /// - gRPC call fails
+    async fn request_snapshot_from_leader(
+        &self,
+        leader_id: u32,
+        ack_tx: tokio::sync::mpsc::Receiver<crate::proto::storage::SnapshotAck>,
+        retry: &crate::InstallSnapshotBackoffPolicy,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<Box<tonic::Streaming<SnapshotChunk>>>;
 }
 
 // Module level utils
@@ -173,13 +317,16 @@ use tracing::warn;
 use crate::Error;
 
 /// As soon as task has return we should return from this function
-pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, U>(
+pub(crate) async fn grpc_task_with_timeout_and_exponential_backoff<F, T, U>(
+    task_name: &'static str,
     mut task: F,
     policy: BackoffPolicy,
 ) -> std::result::Result<tonic::Response<U>, Error>
 where
     F: FnMut() -> T,
-    T: std::future::Future<Output = std::result::Result<tonic::Response<U>, tonic::Status>> + Send + 'static,
+    T: std::future::Future<Output = std::result::Result<tonic::Response<U>, tonic::Status>>
+        + Send
+        + 'static,
 {
     // let max_retries = 5;
     let mut retries = 0;
@@ -188,9 +335,10 @@ where
     let max_delay = Duration::from_millis(policy.max_delay_ms);
     let max_retries = policy.max_retries;
 
-    let mut last_error = NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
+    let mut last_error =
+        NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
-        debug!("Attempt {} of {}", retries + 1, max_retries);
+        debug!("[{task_name}] Attempt {} of {}", retries + 1, max_retries);
         match timeout(timeout_duration, task()).await {
             Ok(Ok(r)) => {
                 return Ok(r); // Exit on success
@@ -198,29 +346,32 @@ where
             Ok(Err(status)) => {
                 last_error = match status.code() {
                     Code::Unavailable => {
-                        warn!("Service unavailable: {}", status.message());
-                        NetworkError::ServiceUnavailable(format!("Service unavailable: {}", status.message()))
+                        warn!("[{task_name}] Service unavailable: {}", status.message());
+                        NetworkError::ServiceUnavailable(format!(
+                            "Service unavailable: {}",
+                            status.message()
+                        ))
                     }
                     _ => {
-                        warn!("RPC error: {}", status);
-                        NetworkError::TonicStatusError(status)
+                        warn!("[{task_name}] RPC error: {}", status);
+                        NetworkError::TonicStatusError(Box::new(status))
                     }
                 };
             }
             Err(_e) => {
-                warn!("Task timed out after {:?}", timeout_duration);
+                warn!("[{task_name}] Task timed out after {:?}", timeout_duration);
                 last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };
 
         if retries < max_retries - 1 {
-            debug!("Retrying in {:?}...", current_delay);
+            debug!("[{task_name}] Retrying in {:?}...", current_delay);
             sleep(current_delay).await;
 
             // Exponential backoff (double the delay each time)
             current_delay = (current_delay * 2).min(max_delay);
         } else {
-            warn!("Task failed after {} retries", retries);
+            warn!("[{task_name}] Task failed after {} retries", retries);
             //bug: no need to return if the it is not a business logic error
             // return Err(Error::RetryTaskFailed("Task failed after max
             // retries".to_string())); // Return the last error after max
@@ -228,66 +379,6 @@ where
         }
         retries += 1;
     }
-    warn!("Task failed after {} retries", max_retries);
+    warn!("[{task_name}] Task failed after {} retries", max_retries);
     Err(last_error.into()) // Fallback error message if no task returns Ok
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::proto::ClusterConfUpdateResponse;
-
-    async fn async_ok(number: u64) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
-        sleep(Duration::from_millis(number)).await;
-        let c = ClusterConfUpdateResponse {
-            id: 1,
-            term: 1,
-            version: 1,
-            success: true,
-        };
-        let response: tonic::Response<ClusterConfUpdateResponse> = tonic::Response::new(c);
-        Ok(response)
-    }
-
-    async fn async_err() -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
-        sleep(Duration::from_millis(100)).await;
-        Err(tonic::Status::aborted("message"))
-    }
-
-    #[tokio::test]
-    async fn test_rpc_task_with_exponential_backoff() {
-        tokio::time::pause();
-
-        // Case 1: when ok task return ok
-        let policy = BackoffPolicy {
-            max_retries: 3,
-            timeout_ms: 100,
-            base_delay_ms: 1000,
-            max_delay_ms: 3000,
-        };
-
-        assert!(
-            task_with_timeout_and_exponential_backoff(|| async { async_ok(3).await }, policy,)
-                .await
-                .is_ok()
-        );
-
-        // Case 2: when err task return error
-        assert!(task_with_timeout_and_exponential_backoff(async_err, policy)
-            .await
-            .is_err());
-
-        // Case 3: when ok task always failed on timeout error
-        let policy = BackoffPolicy {
-            max_retries: 3,
-            timeout_ms: 1,
-            base_delay_ms: 1,
-            max_delay_ms: 3,
-        };
-        assert!(
-            task_with_timeout_and_exponential_backoff(|| async { async_ok(3).await }, policy)
-                .await
-                .is_err()
-        );
-    }
 }

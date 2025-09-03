@@ -1,0 +1,5 @@
+{
+    "github.copilot.advanced": {
+        "openrouter.key": "${env:OPENROUTER_API_KEY}"
+    }
+}

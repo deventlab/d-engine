@@ -1,0 +1,36 @@
+syntax = "proto3";
+package raft.replication;
+
+import "proto/common.proto";
+
+message AppendEntriesRequest {
+  uint64 term = 1;
+  uint32 leaderId = 2;
+  uint64 prevLogIndex = 3;
+  uint64 prevLogTerm = 4;
+  repeated common.Entry entries = 5;  
+  uint64 leaderCommitIndex = 6;
+}
+
+message AppendEntriesResponse {
+  uint32 nodeId = 1;
+  uint64 term = 2;
+  oneof result {
+    SuccessResult success = 3;
+    ConflictResult conflict = 4;
+    uint64 higher_term = 5;
+  }
+}
+
+message SuccessResult {
+  raft.common.LogId last_match = 1;
+}
+
+message ConflictResult {
+  optional uint64 conflict_term = 1;
+  optional uint64 conflict_index = 2;
+}
+
+service RaftReplicationService {
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+}

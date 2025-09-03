@@ -7,24 +7,21 @@
 //! - Component-wise validation
 mod cluster;
 use std::fmt::Debug;
-mod monitoring;
+use std::path::Path;
 mod network;
 mod raft;
 mod retry;
 mod tls;
 pub use cluster::*;
-pub use monitoring::*;
+use config::ConfigError;
 pub use network::*;
 pub use raft::*;
 pub use retry::*;
 pub use tls::*;
-
 #[cfg(test)]
 mod config_test;
 #[cfg(test)]
 mod raft_test;
-
-//---
 use std::env;
 
 use config::Config;
@@ -33,6 +30,8 @@ use config::File;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::proto::common::NodeStatus;
+use crate::Error;
 use crate::Result;
 
 /// Main configuration container for Raft consensus engine components
@@ -45,8 +44,6 @@ use crate::Result;
 pub struct RaftNodeConfig {
     /// Cluster topology and node configuration
     pub cluster: ClusterConfig,
-    /// Metrics and monitoring settings
-    pub monitoring: MonitoringConfig,
     /// Network communication parameters
     pub network: NetworkConfig,
     /// Core Raft algorithm parameters
@@ -61,9 +58,7 @@ impl Debug for RaftNodeConfig {
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("RaftNodeConfig")
-            .field("cluster", &self.cluster)
-            .finish()
+        f.debug_struct("RaftNodeConfig").field("cluster", &self.cluster).finish()
     }
 }
 impl RaftNodeConfig {
@@ -163,11 +158,61 @@ impl RaftNodeConfig {
     /// - Retry policy conflicts
     pub fn validate(&self) -> Result<()> {
         self.cluster.validate()?;
-        self.monitoring.validate()?;
         self.raft.validate()?;
         self.network.validate()?;
         self.tls.validate()?;
         self.retry.validate()?;
         Ok(())
     }
+
+    pub fn is_joining(&self) -> bool {
+        self.cluster
+            .initial_cluster
+            .iter()
+            .find(|n| n.id == self.cluster.node_id)
+            .map(|n| n.status == NodeStatus::Joining as i32)
+            .unwrap_or(false)
+    }
+}
+
+/// Ensures directory path is valid and writable
+pub(super) fn validate_directory(
+    path: &Path,
+    name: &str,
+) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::Config(ConfigError::Message(format!(
+            "{name} path cannot be empty"
+        ))));
+    }
+
+    #[cfg(not(test))]
+    {
+        use std::fs;
+        // Check directory existence or create ability
+        if !path.exists() {
+            fs::create_dir_all(path).map_err(|e| {
+                Error::Config(ConfigError::Message(format!(
+                    "Failed to create {} directory at {}: {}",
+                    name,
+                    path.display(),
+                    e
+                )))
+            })?;
+        }
+
+        // Check write permissions
+        let test_file = path.join(".permission_test");
+        fs::write(&test_file, b"test").map_err(|e| {
+            Error::Config(ConfigError::Message(format!(
+                "No write permission in {} directory {}: {}",
+                name,
+                path.display(),
+                e
+            )))
+        })?;
+        fs::remove_file(&test_file).ok();
+    }
+
+    Ok(())
 }

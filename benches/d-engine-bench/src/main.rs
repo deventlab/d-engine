@@ -91,7 +91,7 @@ impl ClientPool {
         self.clients[(idx % len) as usize].clone()
     }
 }
-
+#[allow(dead_code)]
 fn generate_key(
     sequential: bool,
     size: usize,
@@ -197,6 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize the connection pool
     let endpoints = cli.endpoints.clone();
+    println!("Initializing client connection with: {:?}", &endpoints);
     let client_pool = ClientPool::new(endpoints, cli.conns)
         .await
         .expect("Failed to create client pool");
@@ -230,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
                         let value = generate_value(cli.value_size);
                         if let Err(e) = client.kv().put(&key, &value).await {
-                            eprintln!("Put error: {:?}", e);
+                            eprintln!("Put error: {e:?}");
                             continue;
                         }
                     }
@@ -238,10 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
                         match client.kv().get(key, *consistency == "l").await {
                             Err(e) => {
-                                eprintln!("Get error: {:?}", e);
+                                eprintln!("Get error: {e:?}");
                                 continue;
                             }
-                            Ok(v) => {
+                            Ok(_v) => {
                                 // println!("Get: {:?}", v);
                             }
                         }

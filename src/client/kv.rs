@@ -10,12 +10,13 @@ use tracing::debug;
 use tracing::error;
 
 use super::ClientInner;
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::ClientCommand;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClientResult;
-use crate::proto::ErrorCode;
+use crate::proto::client::raft_client_service_client::RaftClientServiceClient;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientResult;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::WriteCommand;
+use crate::proto::error::ErrorCode;
+use crate::scoped_timer::ScopedTimer;
 use crate::ClientApiError;
 
 /// Key-value store client interface
@@ -32,31 +33,33 @@ impl KvClient {
         Self { client_inner }
     }
 
-    // Stores a value with strong consistency
+    /// Stores a value with strong consistency
     ///
     /// # Errors
-    /// - [`Error::FailedToSendWriteRequestError`] on network failures
-    /// - [`Error::InvalidResponse`] for malformed server responses
+    /// - [`crate::ClientApiError::Network`] on network failures
+    /// - [`crate::ClientApiError::InvalidResponse`] for malformed server responses
     pub async fn put(
         &self,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> std::result::Result<(), ClientApiError> {
+        let _timer = ScopedTimer::new("client::put");
+
         let client_inner = self.client_inner.load();
 
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = ClientCommand::insert(key, value);
+        let client_command_insert = WriteCommand::insert(key, value);
         commands.push(client_command_insert);
 
-        let request = ClientProposeRequest {
+        let request = ClientWriteRequest {
             client_id: client_inner.client_id,
             commands,
         };
 
         let mut client = self.make_leader_client().await?;
         // Send write request
-        match client.handle_client_propose(request).await {
+        match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:KvClient:write] response: {:?}", response);
                 let client_response = response.get_ref();
@@ -87,10 +90,10 @@ impl KvClient {
         let client_inner = self.client_inner.load();
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = ClientCommand::delete(key);
+        let client_command_insert = WriteCommand::delete(key);
         commands.push(client_command_insert);
 
-        let request = ClientProposeRequest {
+        let request = ClientWriteRequest {
             client_id: client_inner.client_id,
             commands,
         };
@@ -98,7 +101,7 @@ impl KvClient {
         let mut client = self.make_leader_client().await?;
 
         // Send delete request
-        match client.handle_client_propose(request).await {
+        match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:KvClient:delete] response: {:?}", response);
                 let client_response = response.get_ref();
@@ -151,10 +154,10 @@ impl KvClient {
     ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         let client_inner = self.client_inner.load();
         // Convert keys to commands
-        let commands: Vec<ClientCommand> = keys.into_iter().map(|k| ClientCommand::get(k.as_ref())).collect();
+        let keys: Vec<Vec<u8>> = keys.into_iter().map(|k| k.as_ref().to_vec()).collect();
 
         // Validate at least one key
-        if commands.is_empty() {
+        if keys.is_empty() {
             return Err(ErrorCode::InvalidRequest.into());
         }
 
@@ -169,7 +172,7 @@ impl KvClient {
         let request = ClientReadRequest {
             client_id: client_inner.client_id,
             linear,
-            commands,
+            keys,
         };
 
         // Execute request
@@ -185,11 +188,13 @@ impl KvClient {
         }
     }
 
-    async fn make_leader_client(&self) -> std::result::Result<RpcServiceClient<Channel>, ClientApiError> {
+    async fn make_leader_client(
+        &self
+    ) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         let channel = client_inner.pool.get_leader();
-        let mut client = RpcServiceClient::new(channel);
+        let mut client = RaftClientServiceClient::new(channel);
         if client_inner.pool.config.enable_compression {
             client = client
                 .send_compressed(CompressionEncoding::Gzip)
@@ -199,7 +204,9 @@ impl KvClient {
         Ok(client)
     }
 
-    async fn make_client(&self) -> std::result::Result<RpcServiceClient<Channel>, ClientApiError> {
+    pub(super) async fn make_client(
+        &self
+    ) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
         let client_inner = self.client_inner.load();
 
         // Balance from read clients
@@ -207,7 +214,7 @@ impl KvClient {
         let channels = client_inner.pool.get_all_channels();
         let i = rng.gen_range(0..channels.len());
 
-        let mut client = RpcServiceClient::new(channels[i].clone());
+        let mut client = RaftClientServiceClient::new(channels[i].clone());
 
         if client_inner.pool.config.enable_compression {
             client = client

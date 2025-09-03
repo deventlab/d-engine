@@ -1,0 +1,129 @@
+syntax = "proto3";
+package raft.cluster;
+
+import "proto/common.proto";
+import "proto/storage.proto";
+
+
+//Configuration change request specifies the operation type
+message ClusterConfChangeRequest {
+    // the request sender id, (might be fake leader or real leader)
+    uint32 id = 1;
+
+    // leader term
+    uint64 term = 2;
+
+    // so follower can redirect clients
+    // when receiver receives the configure, they need compare the version
+    // value is timestamp by default.
+    uint64 version = 3;
+
+    raft.common.MembershipChange change = 4;
+  }
+
+  message ClusterConfUpdateResponse {
+    enum ErrorCode {
+      NONE = 0;
+      NOT_LEADER = 1;          // Request sent to non-leader
+      VERSION_CONFLICT = 2;    // Stale configuration version
+      TERM_OUTDATED = 3;       // Stale leader term
+      INVALID_CHANGE = 4;      // Malformed change request
+      INTERNAL_ERROR = 5;      // Server-side processing error
+    }
+
+    // record down the response owner id
+    uint32 id = 1;
+    uint64 term = 2;
+    uint64 version = 3;
+    bool success = 4;
+    ErrorCode error_code = 5;
+  }
+
+message MetadataRequest {
+}
+
+message ClusterMembership {
+    uint64 version = 1;
+    repeated NodeMeta nodes = 2;
+}
+
+message NodeMeta {
+    uint32 id = 1;
+    string address = 2; //"ip:port"
+    int32 role = 3;
+    raft.common.NodeStatus status = 4; // Add new status fields (such as active/draining)
+}
+
+// Request from new node to join the cluster
+message JoinRequest {
+  // Unique ID for the new node
+  uint32 node_id = 1;
+
+  // Role for the new node
+  int32 node_role = 2;
+
+  // Network address of the new node
+  string address = 3;
+}
+
+enum ConfigState {
+  // Stable state - cluster uses a single configuration
+  STABLE = 0;
+
+  // Configuration Transition State - The cluster is applying configuration changes
+  CONFIG_TRANSITION = 1;
+
+  // Election State - The cluster is in the process of leader election
+  ELECTION_IN_PROGRESS = 2;
+}
+
+
+message JoinResponse {
+  // Returns true if joining is successful, false otherwise
+  bool success = 1;
+
+  // Error message (if any)
+  string error = 2;
+
+  // Current cluster configuration (including all nodes and roles)
+  ClusterMembership config = 3;
+
+  // Current cluster configuration version (new nodes must save this version number and bring it with subsequent requests)
+  uint64 config_version = 4;
+
+  // If the new node needs to receive a snapshot, this field contains the snapshot metadata
+  // If no snapshot is needed, this field is empty
+  optional raft.storage.SnapshotMetadata snapshot_metadata = 5;
+
+  // The ID of the current leader (if it exists), the new node can connect to the leader to get the snapshot
+  uint32 leader_id = 6;
+}
+
+
+// New messages
+message LeaderDiscoveryRequest {
+    // Requester's node ID
+    uint32 node_id = 1;
+    // Requester's address
+    string requester_address = 2;
+}
+
+message LeaderDiscoveryResponse {
+    // Current leader's node ID (0 if unknown)
+    uint32 leader_id = 1;
+    // Current leader's address (empty if unknown)
+    string leader_address = 2;
+    // Current term
+    uint64 term = 3;
+}
+
+service ClusterManagementService {
+  rpc UpdateClusterConf (ClusterConfChangeRequest) returns (ClusterConfUpdateResponse);
+  rpc GetClusterMetadata (MetadataRequest) returns (ClusterMembership);
+
+  // Request to join the cluster as a new learner node
+  rpc JoinCluster(JoinRequest) returns (JoinResponse);
+
+  // New RPC for leader discovery
+  rpc DiscoverLeader(LeaderDiscoveryRequest) returns (LeaderDiscoveryResponse);
+}

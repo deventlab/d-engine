@@ -21,9 +21,5 @@ fn test_valid_config() {
         ..Default::default()
     };
 
-    if let Err(_) = config.validate() {
-        assert!(false);
-    } else {
-        assert!(true);
-    }
+    assert!(config.validate().is_ok());
 }

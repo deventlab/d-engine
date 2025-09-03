@@ -1,0 +1,13 @@
+services:
+  soak-tester:
+    image: d-engine-soak-tester:latest
+    environment:
+      ENDPOINTS: http://192.168.0.13:9083/,http://192.168.0.12:9082/,http://192.168.0.11:9081/
+      AMOUNT: 100
+    networks:
+      docker_mynetwork:
+        ipv4_address: 192.168.0.100
+
+networks:
+  docker_mynetwork:
+    external: true

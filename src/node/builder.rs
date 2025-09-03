@@ -2,36 +2,35 @@
 //! Raft cluster.
 //!
 //! The [`NodeBuilder`] provides a fluent interface to configure and assemble
-//! components required by the Raft node, including storage layers (log, state
-//! machine, membership), transport, and asynchronous handlers.
+//! components required by the Raft node, including storage engines, state machines,
+//! transport layers, membership management, and asynchronous handlers.
 //!
 //! ## Key Design Points
-//! - **Default Components**: Initializes with production-ready defaults (Sled-based storage, gRPC
-//!   transport).
-//! - **Customization**: Allows overriding defaults via setter methods (e.g., `raft_log()`,
-//!   `transport()`).
+//! - **Explicit Component Initialization**: Requires explicit configuration of storage engines and state machines (no implicit defaults).
+//! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`, `state_machine()`, `transport()`).
 //! - **Lifecycle Management**:
-//!   - `build()`: Assembles the [`Node`] and spawns background tasks (e.g., [`CommitHandler`]).
-//!   - `start_metrics_server()`/`start_rpc_server()`: Launches auxiliary services.
+//!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`], replication, election).
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
+//!   - `start_rpc_server()`: Spawns the gRPC server for cluster communication.
 //!
 //! ## Example
 //! ```ignore
-//! 
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
-//! let node = NodeBuilder::new(node_config, shutdown_rx)
-//!     .raft_log(custom_raft_log)  // Optional override
+//! let node = NodeBuilder::new(Some("cluster_config.yaml"), shutdown_rx)
+//!     .storage_engine(custom_storage_engine)  // Required component
+//!     .state_machine(custom_state_machine)    // Required component
 //!     .build()
-//!     .start_metrics_server(shutdown_tx.subscribe())
 //!     .start_rpc_server().await
 //!     .ready()
 //!     .unwrap();
 //! ```
 //!
 //! ## Notes
-//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership.
+//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership and thread safety.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
+//! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory config.
 
+use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -43,55 +42,72 @@ use tracing::error;
 use tracing::info;
 
 use super::RaftTypeConfig;
-use crate::alias::COF;
 use crate::alias::MOF;
-use crate::alias::ROF;
 use crate::alias::SMHOF;
-use crate::alias::SMOF;
-use crate::alias::SSOF;
+use crate::alias::SNP;
 use crate::alias::TROF;
+use crate::follower_state::FollowerState;
 use crate::grpc;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::init_sled_raft_log_db;
-use crate::init_sled_state_machine_db;
-use crate::init_sled_state_storage_db;
-use crate::metrics;
+use crate::learner_state::LearnerState;
+use crate::BufferedRaftLog;
 use crate::ClusterConfig;
 use crate::CommitHandler;
+use crate::CommitHandlerDependencies;
 use crate::DefaultCommitHandler;
+use crate::DefaultPurgeExecutor;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::LogSizePolicy;
+use crate::NewCommitData;
 use crate::Node;
 use crate::Raft;
+use crate::RaftConfig;
+use crate::RaftCoreHandlers;
+use crate::RaftLog;
 use crate::RaftMembership;
 use crate::RaftNodeConfig;
-use crate::RaftStateMachine;
+use crate::RaftRole;
+use crate::RaftStorageHandles;
 use crate::ReplicationHandler;
 use crate::Result;
-use crate::SledRaftLog;
-use crate::SledStateStorage;
+use crate::SignalParams;
 use crate::StateMachine;
+use crate::StorageEngine;
 use crate::SystemError;
+
+pub enum NodeMode {
+    Joiner,
+    FullMember,
+}
 
 /// Builder pattern implementation for constructing a Raft node with configurable components.
 /// Provides a fluent interface to set up node configuration, storage, transport, and other
 /// dependencies.
-pub struct NodeBuilder {
+pub struct NodeBuilder<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
     node_id: u32,
+
     pub(super) node_config: RaftNodeConfig,
-    pub(super) raft_log: Option<ROF<RaftTypeConfig>>,
-    pub(super) membership: Option<MOF<RaftTypeConfig>>,
-    pub(super) state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    pub(super) state_storage: Option<SSOF<RaftTypeConfig>>,
-    pub(super) transport: Option<TROF<RaftTypeConfig>>,
-    pub(super) commit_handler: Option<COF<RaftTypeConfig>>,
-    pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig>>>,
+    pub(super) storage_engine: Option<Arc<SE>>,
+    pub(super) membership: Option<MOF<RaftTypeConfig<SE, SM>>>,
+    pub(super) state_machine: Option<Arc<SM>>,
+    pub(super) transport: Option<TROF<RaftTypeConfig<SE, SM>>>,
+    pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig<SE, SM>>>>,
+    pub(super) snapshot_policy: Option<SNP<RaftTypeConfig<SE, SM>>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
 
-    pub(super) node: Option<Arc<Node<RaftTypeConfig>>>,
+    pub(super) node: Option<Arc<Node<RaftTypeConfig<SE, SM>>>>,
 }
 
-impl NodeBuilder {
+impl<SE, SM> NodeBuilder<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
     /// Creates a new NodeBuilder with cluster configuration loaded from file
     ///
     /// # Arguments
@@ -112,6 +128,7 @@ impl NodeBuilder {
                 .with_override_config(p)
                 .expect("Overwrite node_config successfully.");
         }
+
         Self::init(node_config, shutdown_signal)
     }
 
@@ -123,9 +140,9 @@ impl NodeBuilder {
     ///
     /// # Usage
     /// ```ignore
-    /// let builder = NodeBuilder::from_config(my_config, shutdown_rx);
+    /// let builder = NodeBuilder::from_cluster_config(my_config, shutdown_rx);
     /// ```
-    pub fn from_config(
+    pub fn from_cluster_config(
         cluster_config: ClusterConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
@@ -141,70 +158,33 @@ impl NodeBuilder {
     ) -> Self {
         Self {
             node_id: node_config.cluster.node_id,
-            raft_log: None,
+            storage_engine: None,
             state_machine: None,
-            state_storage: None,
             transport: None,
             membership: None,
             node_config,
             shutdown_signal,
-            commit_handler: None,
             state_machine_handler: None,
+            snapshot_policy: None,
             node: None,
         }
     }
 
-    /// Sets a custom Raft log storage implementation
-    pub fn raft_log(
+    /// Sets a custom storage engine implementation
+    pub fn storage_engine(
         mut self,
-        raft_log: ROF<RaftTypeConfig>,
+        storage_engine: Arc<SE>,
     ) -> Self {
-        self.raft_log = Some(raft_log);
+        self.storage_engine = Some(storage_engine);
         self
     }
 
     /// Sets a custom state machine implementation
     pub fn state_machine(
         mut self,
-        state_machine: Arc<SMOF<RaftTypeConfig>>,
+        state_machine: Arc<SM>,
     ) -> Self {
         self.state_machine = Some(state_machine);
-        self
-    }
-
-    /// Sets a custom state storage implementation
-    pub fn state_storage(
-        mut self,
-        state_storage: SSOF<RaftTypeConfig>,
-    ) -> Self {
-        self.state_storage = Some(state_storage);
-        self
-    }
-
-    /// Sets a custom network transport implementation
-    pub fn transport(
-        mut self,
-        transport: TROF<RaftTypeConfig>,
-    ) -> Self {
-        self.transport = Some(transport);
-        self
-    }
-
-    /// Sets a custom commit handler implementation
-    pub fn commit_handler(
-        mut self,
-        commit_handler: COF<RaftTypeConfig>,
-    ) -> Self {
-        self.commit_handler = Some(commit_handler);
-        self
-    }
-
-    /// Sets a custom membership management implementation
-    pub fn membership(
-        mut self,
-        membership: MOF<RaftTypeConfig>,
-    ) -> Self {
-        self.membership = Some(membership);
         self
     }
 
@@ -217,10 +197,19 @@ impl NodeBuilder {
         self
     }
 
+    /// Replaces the raft  configuration
+    pub fn raft_config(
+        mut self,
+        config: RaftConfig,
+    ) -> Self {
+        self.node_config.raft = config;
+        self
+    }
+
     /// Finalizes the builder and constructs the Raft node instance.
     ///
     /// Initializes default implementations for any unconfigured components:
-    /// - Creates sled-based databases for state machine and logs
+    /// - Creates file-based databases for state machine and logs
     /// - Sets up default gRPC transport
     /// - Initializes commit handling subsystem
     /// - Configures membership management
@@ -230,80 +219,158 @@ impl NodeBuilder {
     pub fn build(mut self) -> Self {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
-        let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
+        // let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
-        let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<u64>();
+        let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
-        let state_machine = self.state_machine.take().unwrap_or_else(|| {
-            let state_machine_db =
-                init_sled_state_machine_db(&db_root_dir).expect("init_sled_state_machine_db successfully.");
-            Arc::new(RaftStateMachine::new(node_id, Arc::new(state_machine_db)))
-        });
+        // Handle state machine initialization
+        let state_machine = self.state_machine.take().expect("State machine must be set");
+
+        // Handle storage engine initialization
+        let storage_engine = self.storage_engine.take().expect("Storage engine must be set");
 
         //Retrieve last applied index from state machine
-        let last_applied_index = state_machine.last_entry_index();
+        let last_applied_index = state_machine.last_applied().index;
+        let raft_log = {
+            let (log, receiver) = BufferedRaftLog::new(
+                node_id,
+                node_config.raft.persistence.clone(),
+                storage_engine.clone(),
+            );
 
-        let raft_log = self.raft_log.take().unwrap_or_else(|| {
-            let raft_log_db = init_sled_raft_log_db(&db_root_dir).expect("init_sled_raft_log_db successfully.");
-            SledRaftLog::new(Arc::new(raft_log_db), last_applied_index)
-        });
+            // Start processor and get Arc-wrapped instance
+            log.start(receiver)
+        };
 
-        let state_storage = self.state_storage.take().unwrap_or_else(|| {
-            let state_storage_db =
-                init_sled_state_storage_db(&db_root_dir).expect("init_sled_state_storage_db successfully.");
-            SledStateStorage::new(Arc::new(state_storage_db))
-        });
+        let transport = self.transport.take().unwrap_or(GrpcTransport::new(node_id));
 
-        let transport = self.transport.take().unwrap_or(GrpcTransport { my_id: node_id });
+        let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
+            node_config.raft.snapshot.max_log_entries_before_snapshot,
+            node_config.raft.snapshot.snapshot_cool_down_since_last_check,
+        ));
 
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             Arc::new(DefaultStateMachineHandler::new(
+                node_id,
                 last_applied_index,
                 node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),
+                node_config.raft.snapshot.clone(),
+                snapshot_policy,
             ))
         });
-        let membership = self
-            .membership
-            .take()
-            .unwrap_or_else(|| RaftMembership::new(node_id, node_config.cluster.initial_cluster.clone()));
+        let membership = Arc::new(self.membership.take().unwrap_or_else(|| {
+            RaftMembership::new(
+                node_id,
+                node_config.cluster.initial_cluster.clone(),
+                node_config.clone(),
+            )
+        }));
+
+        let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
+        let event_tx_clone = event_tx.clone(); // used in commit handler
 
-        let settings_arc = Arc::new(node_config);
         let shutdown_signal = self.shutdown_signal.clone();
-        let mut raft_core = Raft::<RaftTypeConfig>::new(
+        let node_config_arc = Arc::new(node_config);
+
+        // Construct my role
+        // Role initialization flow:
+        // 1. Check joining status from node config
+        // 2. Load persisted hard state from storage
+        // 3. Determine initial role based on cluster state
+        // 4. Inject dependencies to role state
+        let last_applied_index = Some(state_machine.last_applied().index);
+        let my_role = if node_config_arc.is_joining() {
+            RaftRole::Learner(Box::new(LearnerState::new(
+                node_id,
+                node_config_arc.clone(),
+            )))
+        } else {
+            RaftRole::Follower(Box::new(FollowerState::new(
+                node_id,
+                node_config_arc.clone(),
+                raft_log.load_hard_state().expect("Failed to load hard state"),
+                last_applied_index,
+            )))
+        };
+        let my_role_i32 = my_role.as_i32();
+        let my_current_term = my_role.current_term();
+        info!(
+            "Start node with role: {} and term: {}",
+            my_role_i32, my_current_term
+        );
+
+        // Construct raft core
+        let mut raft_core = Raft::<RaftTypeConfig<SE, SM>>::new(
             node_id,
-            raft_log,
-            state_machine.clone(),
-            state_storage,
+            my_role,
+            RaftStorageHandles::<RaftTypeConfig<SE, SM>> {
+                raft_log,
+                state_machine: state_machine.clone(),
+            },
             transport,
-            ElectionHandler::new(node_id, event_tx.clone()),
-            ReplicationHandler::new(node_id),
-            state_machine_handler.clone(),
-            Arc::new(membership),
-            settings_arc.clone(),
-            role_tx,
-            role_rx,
-            event_tx,
-            event_rx,
-            shutdown_signal.clone(),
+            RaftCoreHandlers::<RaftTypeConfig<SE, SM>> {
+                election_handler: ElectionHandler::new(node_id),
+                replication_handler: ReplicationHandler::new(node_id),
+                state_machine_handler: state_machine_handler.clone(),
+                purge_executor: Arc::new(purge_executor),
+            },
+            membership.clone(),
+            SignalParams {
+                role_tx,
+                role_rx,
+                event_tx,
+                event_rx,
+                shutdown_signal: shutdown_signal.clone(),
+            },
+            node_config_arc.clone(),
         );
 
         // Register commit event listener
         raft_core.register_new_commit_listener(new_commit_event_tx);
 
         // Start CommitHandler in a single thread
-        let mut commit_handler = DefaultCommitHandler::<RaftTypeConfig>::new(
+        let deps = CommitHandlerDependencies {
             state_machine_handler,
-            raft_core.ctx.raft_log.clone(),
-            new_commit_event_rx,
-            settings_arc.raft.commit_handler.batch_size,
-            settings_arc.raft.commit_handler.process_interval_ms,
+            raft_log: raft_core.ctx.storage.raft_log.clone(),
+            membership: membership.clone(),
+            event_tx: event_tx_clone,
             shutdown_signal,
+        };
+
+        let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(
+            node_id,
+            my_role_i32,
+            my_current_term,
+            deps,
+            node_config_arc.clone(),
+            new_commit_event_rx,
         );
+        self.enable_state_machine_commit_listener(commit_handler);
+
+        let event_tx = raft_core.event_tx.clone();
+        let node = Node::<RaftTypeConfig<SE, SM>> {
+            node_id,
+            raft_core: Arc::new(Mutex::new(raft_core)),
+            membership,
+            event_tx: event_tx.clone(),
+            ready: AtomicBool::new(false),
+            node_config: node_config_arc,
+        };
+
+        self.node = Some(Arc::new(node));
+        self
+    }
+
+    /// When a new commit is detected, convert the log into a state machine log.
+    fn enable_state_machine_commit_listener(
+        &self,
+        mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>,
+    ) {
         tokio::spawn(async move {
             match commit_handler.run().await {
                 Ok(_) => {
@@ -315,32 +382,34 @@ impl NodeBuilder {
                 }
             }
         });
+    }
 
-        let event_tx = raft_core.event_tx.clone();
-        let node = Node::<RaftTypeConfig> {
-            node_id,
-            raft_core: Arc::new(Mutex::new(raft_core)),
-            event_tx: event_tx.clone(),
-            ready: AtomicBool::new(false),
-            settings: settings_arc,
-        };
-
-        self.node = Some(Arc::new(node));
+    /// Sets a custom state machine handler implementation.
+    ///
+    /// This allows developers to provide their own implementation of the state machine handler
+    /// which processes committed log entries and applies them to the state machine.
+    ///
+    /// # Arguments
+    /// * `handler` - custom state machine handler that must implement the `StateMachineHandler`
+    ///   trait
+    ///
+    /// # Notes
+    /// - The handler must be thread-safe as it will be shared across multiple threads
+    /// - If not set, a default implementation will be used during `build()`
+    /// - The handler should properly handle snapshot creation and restoration
+    pub fn with_custom_state_machine_handler(
+        mut self,
+        handler: Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
+    ) -> Self {
+        self.state_machine_handler = Some(handler);
         self
     }
 
-    /// Starts the metrics server for monitoring node operations.
-    ///
-    /// Launches a Prometheus endpoint on the configured port.
-    pub fn start_metrics_server(
-        self,
-        shutdown_signal: watch::Receiver<()>,
+    pub fn set_snapshot_policy(
+        mut self,
+        snapshot_policy: SNP<RaftTypeConfig<SE, SM>>,
     ) -> Self {
-        println!("start metric server!");
-        let port = self.node_config.monitoring.prometheus_port;
-        tokio::spawn(async move {
-            metrics::start_server(port, shutdown_signal).await;
-        });
+        self.snapshot_policy = Some(snapshot_policy);
         self
     }
 
@@ -356,8 +425,10 @@ impl NodeBuilder {
             let listen_address = self.node_config.cluster.listen_address;
             let node_config = self.node_config.clone();
             tokio::spawn(async move {
-                if let Err(e) = grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await {
-                    eprintln!("RPC server stops. {:?}", e);
+                if let Err(e) =
+                    grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
+                {
+                    eprintln!("RPC server stops. {e:?}");
                     error!("RPC server stops. {:?}", e);
                 }
             });
@@ -371,9 +442,10 @@ impl NodeBuilder {
     ///
     /// # Errors
     /// Returns Error::NodeFailedToStartError if build hasn't completed
-    pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig>>> {
-        self.node
-            .ok_or_else(|| SystemError::NodeStartFailed("check node ready failed".to_string()).into())
+    pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
+        self.node.ok_or_else(|| {
+            SystemError::NodeStartFailed("check node ready failed".to_string()).into()
+        })
     }
 
     /// Test constructor with custom database path

@@ -1,126 +1,310 @@
-mod health_checker;
+mod membership_guard;
 mod raft_membership;
-mod rpc_peer_channels;
-
+pub(crate) use membership_guard::*;
 pub use raft_membership::*;
-pub use rpc_peer_channels::*;
 
 #[cfg(test)]
-mod rpc_peer_channels_test;
-
-#[cfg(test)]
-mod health_checker_test;
-
+mod membership_guard_test;
 #[cfg(test)]
 mod raft_membership_test;
 
-use std::sync::Arc;
-
-use dashmap::DashMap;
 #[cfg(test)]
 use mockall::automock;
-///-----------------------------------------------
-/// Membership behavior definition
 use tonic::async_trait;
-///-----------------------------------------------
-/// Membership behavior definition
 use tonic::transport::Channel;
 
-use crate::alias::POF;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterMembership;
-use crate::RaftNodeConfig;
+use crate::proto::cluster::cluster_conf_update_response::ErrorCode;
+use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::common::NodeStatus;
 use crate::Result;
 use crate::TypeConfig;
 
-#[derive(Clone, Debug)]
-pub struct ChannelWithAddress {
-    pub(crate) address: String,
-    pub(crate) channel: Channel,
+// Add connection type management in RpcPeerChannels
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum ConnectionType {
+    Control, // Used for key operations such as elections/heartbeats
+    Data,    // Used for log replication
+    Bulk,    // Used for high-traffic operations such as snapshot transmission
 }
-#[derive(Clone, Debug)]
-pub struct ChannelWithAddressAndRole {
-    pub(crate) id: u32,
-    pub(crate) channel_with_address: ChannelWithAddress,
-    pub(crate) role: i32,
-}
-
-#[cfg_attr(test, automock)]
-pub trait PeerChannelsFactory {
-    fn create(
-        node_id: u32,
-        settings: Arc<RaftNodeConfig>,
-    ) -> Self;
+impl ConnectionType {
+    pub(crate) fn all() -> Vec<ConnectionType> {
+        vec![
+            ConnectionType::Control,
+            ConnectionType::Data,
+            ConnectionType::Bulk,
+        ]
+    }
 }
 
-// #[allow(unused)]
-#[cfg_attr(test, automock)]
-#[async_trait]
-pub trait PeerChannels: Sync + Send + 'static {
-    async fn connect_with_peers(
-        &mut self,
-        my_id: u32,
-    ) -> Result<()>;
-    async fn check_cluster_is_ready(&self) -> Result<()>;
-
-    /// Get all peers channel regardless peer's role
-    fn voting_members(&self) -> DashMap<u32, ChannelWithAddress>;
-}
-
-// #[allow(unused)]
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
-    fn voting_members(
-        &self,
-        peer_channels: Arc<POF<T>>,
-    ) -> Vec<ChannelWithAddressAndRole>;
+    /// All nodes (including itself)
+    #[allow(unused)]
+    async fn members(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
-    fn get_followers_candidates_channel_and_role(
-        &self,
-        channels: &DashMap<u32, ChannelWithAddress>,
-    ) -> Vec<ChannelWithAddressAndRole>;
+    /// All non-self nodes (including Syncing and Active)
+    /// Note:
+    /// Joining node has not start its Raft event processing engine yet.
+    async fn replication_peers(&self) -> Vec<crate::proto::cluster::NodeMeta>;
 
-    fn get_peers_id_with_condition<F>(
+    /// All non-self nodes in Active state
+    async fn voters(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    /// All pending active nodes in Active state
+    #[allow(unused)]
+    async fn nodes_with_status(
+        &self,
+        status: NodeStatus,
+    ) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    async fn get_node_status(
+        &self,
+        node_id: u32,
+    ) -> Option<NodeStatus>;
+
+    async fn check_cluster_is_ready(&self) -> Result<()>;
+
+    async fn get_peers_id_with_condition<F>(
         &self,
         condition: F,
     ) -> Vec<u32>
     where
-        F: Fn(i32) -> bool + 'static;
+        F: Fn(i32) -> bool + Send + Sync + 'static;
 
-    fn mark_leader_id(
+    async fn mark_leader_id(
         &self,
         leader_id: u32,
     ) -> Result<()>;
 
-    fn current_leader(&self) -> Option<u32>;
+    async fn current_leader_id(&self) -> Option<u32>;
 
     /// Reset old leader to follower
-    fn reset_leader(&self) -> Result<()>;
+    async fn reset_leader(&self) -> Result<()>;
 
     /// If node role not found return Error
-    fn update_node_role(
+    async fn update_node_role(
         &self,
         node_id: u32,
         new_role: i32,
     ) -> Result<()>;
 
     /// retrieve latest cluster membership
-    fn retrieve_cluster_membership_config(&self) -> ClusterMembership;
+    async fn retrieve_cluster_membership_config(&self) -> ClusterMembership;
 
     /// invoked when receive requests from Leader
     async fn update_cluster_conf_from_leader(
         &self,
+        my_id: u32,
         my_current_term: u64,
-        cluster_conf_change_req: &ClusteMembershipChangeRequest,
+        current_conf_version: u64,
+        current_leader_id: Option<u32>,
+        cluster_conf_change_req: &ClusterConfChangeRequest,
+    ) -> Result<ClusterConfUpdateResponse>;
+
+    async fn get_cluster_conf_version(&self) -> u64;
+
+    async fn update_conf_version(
+        &self,
+        version: u64,
+    );
+
+    #[allow(unused)]
+    async fn incr_conf_version(&self);
+
+    /// Add a new node as a learner
+    async fn add_learner(
+        &self,
+        node_id: u32,
+        address: String,
     ) -> Result<()>;
 
-    fn get_cluster_conf_version(&self) -> u64;
+    /// Activate node
+    #[allow(unused)]
+    async fn activate_node(
+        &mut self,
+        new_node_id: u32,
+    ) -> Result<()>;
 
-    fn update_cluster_conf_version(
+    /// Update status of a node
+    async fn update_node_status(
         &self,
-        new_version: u64,
+        node_id: u32,
+        status: NodeStatus,
+    ) -> Result<()>;
+
+    /// Check if the node already exists
+    async fn contains_node(
+        &self,
+        node_id: u32,
+    ) -> bool;
+
+    async fn retrieve_node_meta(
+        &self,
+        node_id: u32,
+    ) -> Option<crate::proto::cluster::NodeMeta>;
+
+    /// Elegantly remove nodes
+    async fn remove_node(
+        &self,
+        node_id: u32,
+    ) -> Result<()>;
+
+    /// Forcefully remove faulty nodes
+    #[allow(unused)]
+    async fn force_remove_node(
+        &self,
+        node_id: u32,
+    ) -> Result<()>;
+
+    /// Get all node status
+    #[allow(unused)]
+    async fn get_all_nodes(&self) -> Vec<crate::proto::cluster::NodeMeta>;
+
+    /// Pre-warms connection cache for all replication peers
+    async fn pre_warm_connections(&self) -> Result<()>;
+
+    async fn get_peer_channel(
+        &self,
+        node_id: u32,
+        conn_type: ConnectionType,
+    ) -> Option<Channel>;
+
+    async fn get_address(
+        &self,
+        node_id: u32,
+    ) -> Option<String>;
+
+    /// Apply committed configuration change
+    async fn apply_config_change(
+        &self,
+        change: crate::proto::common::MembershipChange,
+    ) -> Result<()>;
+
+    async fn notify_config_applied(
+        &self,
+        index: u64,
     );
+
+    async fn get_zombie_candidates(&self) -> Vec<u32>;
+
+    /// If new node could rejoin the cluster again
+    async fn can_rejoin(
+        &self,
+        node_id: u32,
+        role: i32,
+    ) -> Result<()>;
+}
+
+impl ClusterConfUpdateResponse {
+    /// Generate a successful response (full success)
+    pub(crate) fn success(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: true,
+            error_code: ErrorCode::None.into(),
+        }
+    }
+
+    /// Generate a failed response (Stale leader term)
+    pub(crate) fn higher_term(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::TermOutdated.into(),
+        }
+    }
+
+    /// Generate a failed response (Request sent to non-leader or an out-dated leader)
+    pub(crate) fn not_leader(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::NotLeader.into(),
+        }
+    }
+
+    /// Generate a failed response (Stale configuration version)
+    pub(crate) fn version_conflict(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::VersionConflict.into(),
+        }
+    }
+
+    /// Generate a failed response (Malformed change request)
+    #[allow(unused)]
+    pub(crate) fn invalid_change(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::InvalidChange.into(),
+        }
+    }
+
+    /// Generate a failed response (Server-side processing error)
+    pub(crate) fn internal_error(
+        node_id: u32,
+        term: u64,
+        version: u64,
+    ) -> Self {
+        Self {
+            id: node_id,
+            term,
+            version,
+            success: false,
+            error_code: ErrorCode::InternalError.into(),
+        }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn is_higher_term(&self) -> bool {
+        self.error_code == <ErrorCode as Into<i32>>::into(ErrorCode::TermOutdated)
+    }
+}
+
+impl NodeStatus {
+    pub fn is_promotable(&self) -> bool {
+        matches!(self, NodeStatus::Syncing)
+    }
+
+    pub fn is_i32_promotable(value: i32) -> bool {
+        matches!(value, v if v == (NodeStatus::Syncing as i32))
+    }
 }

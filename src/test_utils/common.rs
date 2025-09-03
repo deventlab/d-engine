@@ -1,24 +1,60 @@
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+use prost::Message;
 
 use crate::alias::ROF;
-use crate::alias::SMOF;
-use crate::convert::kv;
-use crate::proto::Entry;
+use crate::convert::safe_kv;
+use crate::proto::client::WriteCommand;
+use crate::proto::common::membership_change::Change;
+use crate::proto::common::AddNode;
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::FileStorageEngine;
+use crate::MockStateMachine;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
-use crate::StateMachine;
+use crate::SnapshotConfig;
+
+pub fn create_mixed_entries() -> Vec<Entry> {
+    let config_entry = Entry {
+        index: 1,
+        term: 1,
+        payload: Some(EntryPayload::config(Change::AddNode(AddNode {
+            node_id: 7,
+            address: "127.0.0.1:8080".into(),
+        }))),
+    };
+
+    let app_entry = Entry {
+        index: 2,
+        term: 1,
+        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
+    };
+
+    vec![config_entry, app_entry]
+}
+
+pub fn create_config_entries() -> Vec<Entry> {
+    let entry = Entry {
+        index: 1,
+        term: 1,
+        payload: Some(EntryPayload::config(Change::AddNode(AddNode {
+            node_id: 8,
+            address: "127.0.0.1:8080".into(),
+        }))),
+    };
+    vec![entry]
+}
 
 pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
-    use prost::Message;
-
-    use crate::proto::ClientCommand;
-
     let mut buffer = Vec::new();
 
     let mut commands = Vec::new();
     for id in ids {
-        commands.push(ClientCommand::insert(kv(id), kv(id)));
+        commands.push(WriteCommand::insert(safe_kv(id), safe_kv(id)));
     }
 
     for c in commands {
@@ -29,15 +65,11 @@ pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 }
 
 pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
-    use prost::Message;
-
-    use crate::proto::ClientCommand;
-
     let mut buffer = Vec::new();
 
     let mut commands = Vec::new();
     for id in range {
-        commands.push(ClientCommand::delete(kv(id)));
+        commands.push(WriteCommand::delete(safe_kv(id)));
     }
 
     for c in commands {
@@ -48,8 +80,8 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
 }
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.
-pub(crate) fn simulate_insert_proposal(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
+pub(crate) async fn simulate_insert_command(
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -58,18 +90,17 @@ pub(crate) fn simulate_insert_proposal(
         let log = Entry {
             index: raft_log.pre_allocate_raft_logs_next_index(),
             term,
-            command: generate_insert_commands(vec![id]),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
-        eprint!("error: {:?}", e);
-        assert!(false);
-    }
+    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.flush().await.unwrap();
 }
 
-pub(crate) fn simulate_delete_proposal(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
+#[allow(dead_code)]
+pub(crate) async fn simulate_delete_command(
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
     id_range: RangeInclusive<u64>,
     term: u64,
 ) {
@@ -78,62 +109,34 @@ pub(crate) fn simulate_delete_proposal(
         let log = Entry {
             index: raft_log.pre_allocate_raft_logs_next_index(),
             term,
-            command: generate_delete_commands(id..=id),
+            payload: Some(EntryPayload::command(generate_delete_commands(id..=id))),
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
-        eprint!("error: {:?}", e);
-        assert!(false);
+    if let Err(e) = raft_log.insert_batch(entries).await {
+        panic!("error: {e:?}");
     }
 }
 
-///Dependes on external id to specify the local log entry index.
-/// If duplicated ids are specified, then the only one entry will be inserted.
-pub(crate) fn simulate_state_machine_insert_commands(
-    state_machine: Arc<SMOF<RaftTypeConfig>>,
-    id_range: RangeInclusive<u64>,
-    term: u64,
-) {
-    let mut entries = Vec::new();
-    for id in id_range {
-        let log = Entry {
-            index: id,
-            term,
-            command: generate_delete_commands(id..=id),
-        };
-        entries.push(log);
+pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
+    SnapshotConfig {
+        max_log_entries_before_snapshot: 1,
+        snapshot_cool_down_since_last_check: Duration::from_secs(0),
+        cleanup_retain_count: 2,
+        snapshots_dir,
+        chunk_size: 1024,
+        retained_log_entries: 1,
+        sender_yield_every_n_chunks: 1,
+        receiver_yield_every_n_chunks: 1,
+        max_bandwidth_mbps: 1,
+        push_queue_size: 1,
+        cache_size: 1,
+        max_retries: 1,
+        transfer_timeout_in_sec: 1,
+        retry_interval_in_ms: 1,
+        snapshot_push_backoff_in_ms: 1,
+        snapshot_push_max_retry: 1,
+        push_timeout_in_ms: 100,
+        enable: true,
     }
-    state_machine.apply_chunk(entries).expect("should succeed");
-}
-
-pub(crate) fn prepare_locallog_entry_with_specify_ids_and_term(
-    raft_log: &Arc<ROF<RaftTypeConfig>>,
-    ids: Vec<u64>,
-    term: u64,
-) {
-    use crate::proto::Entry;
-    use crate::RaftLog;
-    let mut entries = Vec::new();
-    for index in ids {
-        let log = Entry {
-            index,
-            term,
-            command: generate_insert_commands(vec![index]),
-        };
-        entries.push(log);
-    }
-    if let Err(e) = raft_log.insert_batch(entries) {
-        eprint!("error: {:?}", e);
-        assert!(false);
-    }
-}
-
-static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
-    env_logger::init();
-});
-
-pub fn enable_logger() {
-    *LOGGER_INIT;
-    println!("setup logger for unit test.");
 }

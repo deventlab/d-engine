@@ -1,0 +1,1124 @@
+{
+    "annotations": {
+        "list": [
+            {
+                "builtIn": 1,
+                "datasource": {
+                    "type": "datasource",
+                    "uid": "grafana"
+                },
+                "enable": true,
+                "hide": true,
+                "iconColor": "rgba(0, 211, 255, 1)",
+                "name": "Annotations & Alerts",
+                "target": {
+                    "limit": 100,
+                    "matchAny": false,
+                    "tags": [],
+                    "type": "dashboard"
+                },
+                "type": "dashboard"
+            }
+        ]
+    },
+    "description": "",
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 0,
+    "id": 1,
+    "links": [],
+    "liveNow": false,
+    "panels": [
+        {
+            "datasource": {
+                "type": "loki",
+                "uid": "P8E80F9AEF21F6940"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 3,
+                "x": 0,
+                "y": 0
+            },
+            "id": 8,
+            "options": {
+                "dedupStrategy": "none",
+                "enableLogDetails": true,
+                "prettifyLogMessage": false,
+                "showCommonLabels": false,
+                "showLabels": false,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "wrapLogMessage": false
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "loki",
+                        "uid": "P8E80F9AEF21F6940"
+                    },
+                    "editorMode": "code",
+                    "expr": "{job=\"dengine\"}\n  | decolorize      \n  |~ \"New Append Timeout Metric.\"      \n  |~ \"INFO\"      \n  | pattern `<timestamp> <level> <component>: <message>. timeout: <timeout>. peer_id: <peer_id>.` \n  | line_format \"peer_{{ .peer_id }} - {{ .timeout }} \"",
+                    "queryType": "range",
+                    "refId": "A"
+                }
+            ],
+            "title": "Append Timeout Setting",
+            "type": "logs"
+        },
+        {
+            "datasource": {
+                "default": false,
+                "type": "loki",
+                "uid": "P8E80F9AEF21F6940"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 3,
+                "x": 3,
+                "y": 0
+            },
+            "id": 7,
+            "options": {
+                "dedupStrategy": "none",
+                "enableLogDetails": true,
+                "prettifyLogMessage": false,
+                "showCommonLabels": false,
+                "showLabels": false,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "wrapLogMessage": false
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "loki",
+                        "uid": "P8E80F9AEF21F6940"
+                    },
+                    "editorMode": "code",
+                    "expr": "{job=\"dengine\"}\n |~ \"INFO\" \n |~ \"New Append Amount Metric\" \n | pattern `<timestamp> <level> <component>. amount: <amount>. peer_id: <peer_id>.` \n | line_format \"peer_{{ .peer_id }}: {{ .amount }} \"",
+                    "queryType": "range",
+                    "refId": "A"
+                }
+            ],
+            "title": "Append Amount Setting",
+            "type": "logs"
+        },
+        {
+            "datasource": {
+                "default": false,
+                "type": "loki",
+                "uid": "P8E80F9AEF21F6940"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 7,
+                "x": 6,
+                "y": 0
+            },
+            "id": 18,
+            "options": {
+                "dedupStrategy": "none",
+                "enableLogDetails": true,
+                "prettifyLogMessage": false,
+                "showCommonLabels": false,
+                "showLabels": false,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "wrapLogMessage": false
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "loki",
+                        "uid": "P8E80F9AEF21F6940"
+                    },
+                    "editorMode": "code",
+                    "expr": "{job=\"dengine\"}\n |~ \"INFO\" \n |~ \"New Election Timeout\" \n | pattern `<timestamp> <level> <component> New Election Timeout: <amount>. peer_id: <peer_id>.` \n | line_format \"peer_{{ .peer_id }}: {{ .amount }} \"",
+                    "queryType": "range",
+                    "refId": "A"
+                }
+            ],
+            "title": "ElectionTimeout",
+            "type": "logs"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "fillOpacity": 80,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "lineWidth": 1,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 5,
+                "x": 13,
+                "y": 0
+            },
+            "id": 6,
+            "options": {
+                "barRadius": 0,
+                "barWidth": 0.97,
+                "fullHighlight": false,
+                "groupWidth": 0.7,
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                },
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "sum(failed_commit_messages)\n",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "Failed Commit Msgs",
+            "type": "barchart"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "fillOpacity": 80,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "lineWidth": 1,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 18,
+                "y": 0
+            },
+            "id": 13,
+            "options": {
+                "barRadius": 0,
+                "barWidth": 0.97,
+                "fullHighlight": false,
+                "groupWidth": 0.7,
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                },
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "sum(message_size_sum) / count(message_size_sum)",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "message_size",
+            "type": "barchart"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 13,
+                "x": 0,
+                "y": 5
+            },
+            "id": 14,
+            "options": {
+                "minVizHeight": 75,
+                "minVizWidth": 75,
+                "orientation": "auto",
+                "reduceOptions": {
+                    "calcs": ["lastNotNull"],
+                    "fields": "",
+                    "values": false
+                },
+                "showThresholdLabels": false,
+                "showThresholdMarkers": true,
+                "sizing": "auto"
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "sum(committed_log) by (id)",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "committed_log",
+            "type": "gauge"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "fillOpacity": 80,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "lineWidth": 1,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 11,
+                "w": 11,
+                "x": 13,
+                "y": 5
+            },
+            "id": 15,
+            "options": {
+                "barRadius": 0,
+                "barWidth": 0.97,
+                "fullHighlight": false,
+                "groupWidth": 0.7,
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                },
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "sum(message_commit_latency_metric_sum) / count(message_commit_latency_metric_sum)",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "message latency",
+            "type": "barchart"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "continuous-GrYlRd"
+                    },
+                    "fieldMinMax": false,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 1
+                            }
+                        ]
+                    },
+                    "unit": "none"
+                },
+                "overrides": [
+                    {
+                        "matcher": {
+                            "id": "byValue",
+                            "options": {
+                                "op": "gte",
+                                "reducer": "allIsZero",
+                                "value": 0
+                            }
+                        },
+                        "properties": []
+                    }
+                ]
+            },
+            "gridPos": {
+                "h": 68,
+                "w": 13,
+                "x": 0,
+                "y": 10
+            },
+            "id": 12,
+            "options": {
+                "displayMode": "gradient",
+                "maxVizHeight": 300,
+                "minVizHeight": 16,
+                "minVizWidth": 8,
+                "namePlacement": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {
+                    "calcs": ["max"],
+                    "fields": "",
+                    "values": false
+                },
+                "showUnfilled": true,
+                "sizing": "auto",
+                "valueMode": "color"
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "exemplar": false,
+                    "expr": "avg by (function) (\n  rate(function_calls_duration_seconds_sum{function=~\"$function\"}[1m])\n  /\n  clamp_min(rate(function_calls_duration_seconds_count{function=~\"$function\"}[1m]), 0.001)\n)* 1000 ",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "Fun Duration(ms)",
+            "type": "bargauge"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "barAlignment": 0,
+                        "barWidthFactor": 0.6,
+                        "drawStyle": "line",
+                        "fillOpacity": 0,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "insertNulls": false,
+                        "lineInterpolation": "smooth",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "showPoints": "auto",
+                        "spanNulls": false,
+                        "stacking": {
+                            "group": "A",
+                            "mode": "none"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 12,
+                "w": 11,
+                "x": 13,
+                "y": 16
+            },
+            "id": 16,
+            "options": {
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "hidden",
+                    "placement": "right",
+                    "showLegend": false
+                },
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                }
+            },
+            "pluginVersion": "11.2.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "sum(rate(function_calls_duration_seconds_sum{function=~\"$function\"}[5m])) by (function)\n/\nsum(rate(function_calls_duration_seconds_count{function=~\"$function\"}[5m])) by (function)\n* 1000",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "Fun Average Duration",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "barAlignment": 0,
+                        "barWidthFactor": 0.6,
+                        "drawStyle": "line",
+                        "fillOpacity": 0,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "insertNulls": false,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "showPoints": "auto",
+                        "spanNulls": false,
+                        "stacking": {
+                            "group": "A",
+                            "mode": "none"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green"
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 11,
+                "x": 13,
+                "y": 28
+            },
+            "id": 11,
+            "options": {
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "hidden",
+                    "placement": "right",
+                    "showLegend": false
+                },
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                }
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "histogram_quantile(0.99, sum(rate(slow_res_duration_metric_bucket[5m])) by (le, peer_id))",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "slow_res_duration_metric",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "fillOpacity": 80,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "lineWidth": 1,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green"
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 11,
+                "x": 13,
+                "y": 36
+            },
+            "id": 10,
+            "options": {
+                "barRadius": 0,
+                "barWidth": 0.97,
+                "fullHighlight": false,
+                "groupWidth": 0.7,
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                },
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "editorMode": "code",
+                    "expr": "unsynced_msg_metric",
+                    "instant": false,
+                    "legendFormat": "__auto",
+                    "range": true,
+                    "refId": "A"
+                }
+            ],
+            "title": "unsynced_msg_metric",
+            "type": "barchart"
+        },
+        {
+            "datasource": {
+                "default": false,
+                "type": "loki",
+                "uid": "P8E80F9AEF21F6940"
+            },
+            "gridPos": {
+                "h": 29,
+                "w": 11,
+                "x": 13,
+                "y": 44
+            },
+            "id": 17,
+            "options": {
+                "dedupStrategy": "none",
+                "enableLogDetails": true,
+                "prettifyLogMessage": false,
+                "showCommonLabels": false,
+                "showLabels": false,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "wrapLogMessage": false
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "loki",
+                        "uid": "P8E80F9AEF21F6940"
+                    },
+                    "editorMode": "code",
+                    "expr": "{job=\"dengine\"}\n |~ \"ERROR\" \n ",
+                    "queryType": "range",
+                    "refId": "A"
+                }
+            ],
+            "title": "Cluster Errors",
+            "type": "logs"
+        }
+    ],
+    "refresh": "5s",
+    "revision": 1,
+    "schemaVersion": 39,
+    "tags": ["autometrics"],
+    "templating": {
+        "list": [
+            {
+                "allValue": "__none__",
+                "current": {
+                    "selected": false,
+                    "text": [
+                        "adjust",
+                        "adjust_performance",
+                        "append_dynamic_entries",
+                        "apply_committed_local_logs_in_batch",
+                        "apply_to_state_machine_up_to_commit_index",
+                        "become_leader",
+                        "become_leader_post_actions",
+                        "calculate_majority_matched_index",
+                        "calculate_majority_number",
+                        "calculate_rpc_timeout_and_traffic",
+                        "catch_up_state",
+                        "check_vote_request_is_legal",
+                        "db_size",
+                        "decrease_amount",
+                        "decrease_frequence",
+                        "election_timeout",
+                        "filter_out_conflicts_and_append_log_logs",
+                        "get",
+                        "get_average_response_time",
+                        "get_commit_index",
+                        "get_last_local_log",
+                        "get_last_local_log_entry_id",
+                        "get_last_synced_commit_index",
+                        "get_local_log",
+                        "get_local_log_entry_between",
+                        "get_local_log_entry_by_index",
+                        "get_local_log_entry_term_by_index",
+                        "get_next_index",
+                        "get_node_role",
+                        "get_peer_distance",
+                        "get_peer_timeouts",
+                        "get_range",
+                        "handle_append_entries_result",
+                        "handle_append_entries_success",
+                        "if_mark_follower_or_candidate_as_learner",
+                        "if_node_could_grant_the_vote_request",
+                        "if_node_log_is_less_than_requester",
+                        "if_update_commit_index",
+                        "increase_amount",
+                        "increase_current_term",
+                        "increase_frequence",
+                        "init_leader_state",
+                        "init_metadata",
+                        "inner_get_local_log_entry_by_key",
+                        "is_candidate",
+                        "is_follower",
+                        "is_history_record",
+                        "is_leader",
+                        "is_not_leader_and_learner",
+                        "is_slow_response",
+                        "last_entry",
+                        "listen_on_result",
+                        "load_inner_from_db",
+                        "load_local_log_from_db",
+                        "new",
+                        "receive_majority_votes",
+                        "record_peer_distance",
+                        "record_peer_timeout_event",
+                        "record_slow_response_time",
+                        "respond_append_entries_req",
+                        "response_vote_req",
+                        "retrieve_election_timeout",
+                        "retrieve_entries_for_this_follower",
+                        "retrieve_previous_log_index",
+                        "retrieve_previous_log_term",
+                        "retrieve_rpc_timeout_and_append_amount_for_peer",
+                        "retrieve_system_load",
+                        "schedule_rpc_vote_request",
+                        "send_append_request",
+                        "send_dynamic_entries",
+                        "send_rpc_request_vote_to_peer",
+                        "send_rpc_request_vote_to_peers",
+                        "start_election",
+                        "update_average_response_time",
+                        "update_commit_index",
+                        "update_last_synced_commit_index",
+                        "update_node_role",
+                        "update_vote_for",
+                        "upon_receive_append_request",
+                        "vote_myself"
+                    ],
+                    "value": [
+                        "adjust",
+                        "adjust_performance",
+                        "append_dynamic_entries",
+                        "apply_committed_local_logs_in_batch",
+                        "apply_to_state_machine_up_to_commit_index",
+                        "become_leader",
+                        "become_leader_post_actions",
+                        "calculate_majority_matched_index",
+                        "calculate_majority_number",
+                        "calculate_rpc_timeout_and_traffic",
+                        "catch_up_state",
+                        "check_vote_request_is_legal",
+                        "db_size",
+                        "decrease_amount",
+                        "decrease_frequence",
+                        "election_timeout",
+                        "filter_out_conflicts_and_append_log_logs",
+                        "get",
+                        "get_average_response_time",
+                        "get_commit_index",
+                        "get_from_cache",
+                        "get_last_local_log",
+                        "get_last_local_log_entry_id",
+                        "get_last_synced_commit_index",
+                        "get_local_log",
+                        "get_local_log_entry_between",
+                        "get_local_log_entry_by_index",
+                        "get_local_log_entry_term_by_index",
+                        "get_next_index",
+                        "get_node_role",
+                        "get_peer_distance",
+                        "get_peer_timeouts",
+                        "get_range",
+                        "handle_append_entries_result",
+                        "handle_append_entries_success",
+                        "if_mark_follower_or_candidate_as_learner",
+                        "if_node_could_grant_the_vote_request",
+                        "if_node_log_is_less_than_requester",
+                        "if_update_commit_index",
+                        "increase_amount",
+                        "increase_current_term",
+                        "increase_frequence",
+                        "init_leader_state",
+                        "init_metadata",
+                        "inner_get_local_log_entry_by_key",
+                        "is_candidate",
+                        "is_follower",
+                        "is_history_record",
+                        "is_leader",
+                        "is_not_leader_and_learner",
+                        "is_slow_response",
+                        "last_entry",
+                        "listen_on_result",
+                        "load_inner_from_db",
+                        "load_local_log_from_db",
+                        "new",
+                        "receive_majority_votes",
+                        "record_peer_distance",
+                        "record_peer_timeout_event",
+                        "record_slow_response_time",
+                        "respond_append_entries_req",
+                        "response_vote_req",
+                        "retrieve_election_timeout",
+                        "retrieve_entries_for_this_follower",
+                        "retrieve_previous_log_index",
+                        "retrieve_previous_log_term",
+                        "retrieve_rpc_timeout_and_append_amount_for_peer",
+                        "retrieve_system_load",
+                        "schedule_rpc_vote_request",
+                        "send_append_request",
+                        "send_dynamic_entries",
+                        "send_rpc_request_vote_to_peer",
+                        "send_rpc_request_vote_to_peers",
+                        "start_election",
+                        "update_average_response_time",
+                        "update_commit_index",
+                        "update_last_synced_commit_index",
+                        "update_node_role",
+                        "update_vote_for",
+                        "upon_receive_append_request",
+                        "vote_myself"
+                    ]
+                },
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "PBFA97CFB590B2093"
+                },
+                "definition": "label_values({__name__=~\"function_calls(_count)?(_total)?\"}, function)",
+                "hide": 0,
+                "includeAll": false,
+                "label": "Show Function(s)",
+                "multi": true,
+                "name": "function",
+                "options": [],
+                "query": {
+                    "query": "label_values({__name__=~\"function_calls(_count)?(_total)?\"}, function)",
+                    "refId": "StandardVariableQuery"
+                },
+                "refresh": 1,
+                "regex": "",
+                "skipUrlSync": false,
+                "sort": 1,
+                "tagValuesQuery": "",
+                "tagsQuery": "",
+                "type": "query",
+                "useTags": false
+            }
+        ]
+    },
+    "time": {
+        "from": "now-5m",
+        "to": "now"
+    },
+    "timepicker": {
+        "refresh_intervals": [
+            "5s",
+            "10s",
+            "30s",
+            "1m",
+            "5m",
+            "15m",
+            "30m",
+            "1h",
+            "2h",
+            "1d"
+        ]
+    },
+    "timezone": "",
+    "title": "Master",
+    "uid": "master",
+    "version": 10,
+    "weekStart": ""
+}

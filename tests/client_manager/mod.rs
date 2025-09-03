@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use d_engine::client::Client;
 use d_engine::client::ClientBuilder;
-use d_engine::convert::kv;
-use d_engine::convert::vk;
-use d_engine::proto::ErrorCode;
-use d_engine::proto::NodeMeta;
+use d_engine::convert::safe_kv;
+use d_engine::convert::safe_vk;
+use d_engine::proto::cluster::NodeMeta;
+use d_engine::proto::error::ErrorCode;
 use d_engine::ClientApiError;
 use d_engine::Result;
 use d_engine::LEADER;
@@ -18,7 +18,7 @@ use crate::common::ClientCommands;
 use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
-const RETRY_DELAY_MS: u64 = 50;
+const RETRY_DELAY_MS: u64 = 100;
 
 #[derive(Clone)]
 pub struct ClientManager {
@@ -62,45 +62,56 @@ impl ClientManager {
         loop {
             // Handle subcommands
             match command {
-                ClientCommands::PUT => {
+                ClientCommands::Put => {
                     let value = value.unwrap();
 
                     info!("put {}:{}", key, value);
 
-                    match self.client.kv().put(kv(key), kv(value)).await {
+                    match self.client.kv().put(safe_kv(key), safe_kv(value)).await {
                         Ok(res) => {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
                         }
-                        Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                        Err(e)
+                            if e.code().eq(&(ErrorCode::NotLeader as u32))
+                                && retries < MAX_RETRIES =>
+                        {
                             retries += 1;
                             self.refresh_client().await?;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
-                        Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                        Err(e)
+                            if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                                && retries < MAX_RETRIES =>
+                        {
                             retries += 1;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
                         Err(e) => {
-                            error!("ClientCommands::PUT, ErrorCode = {:?}", e.code());
+                            error!("ClientCommands::Put, ErrorCode = {:?}", e.code());
                             return Err(e);
                         }
                     }
                 }
-                ClientCommands::DELETE => match self.client.kv().delete(kv(key)).await {
+                ClientCommands::Delete => match self.client.kv().delete(safe_kv(key)).await {
                     Ok(res) => {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -110,9 +121,9 @@ impl ClientManager {
                         return Err(e);
                     }
                 },
-                ClientCommands::READ => match self.client.kv().get(kv(key), false).await? {
+                ClientCommands::Read => match self.client.kv().get(safe_kv(key), false).await? {
                     Some(r) => {
-                        let v = vk(&r.value);
+                        let v = safe_vk(&r.value).unwrap();
                         debug!("Success: {:?}", v);
                         return Ok(v);
                     }
@@ -121,10 +132,10 @@ impl ClientManager {
                         return Err(ErrorCode::KeyNotExist.into());
                     }
                 },
-                ClientCommands::LREAD => match self.client.kv().get(kv(key), true).await {
+                ClientCommands::Lread => match self.client.kv().get(safe_kv(key), true).await {
                     Ok(result) => match result {
                         Some(r) => {
-                            let v = vk(&r.value);
+                            let v = safe_vk(&r.value).unwrap();
                             debug!("Success: {:?}", v);
                             return Ok(v);
                         }
@@ -133,13 +144,18 @@ impl ClientManager {
                             return Err(ErrorCode::KeyNotExist.into());
                         }
                     },
-                    Err(e) if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e) if e.code().eq(&(ErrorCode::ConnectionTimeout as u32)) && retries < MAX_RETRIES => {
+                    Err(e)
+                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            && retries < MAX_RETRIES =>
+                    {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -149,10 +165,6 @@ impl ClientManager {
                         return Err(e);
                     }
                 },
-                _ => {
-                    error!("Invalid subcommand");
-                    unreachable!()
-                }
             }
         }
     }
@@ -164,15 +176,13 @@ impl ClientManager {
         expected_value: u64,
         iterations: u64,
     ) {
-        println!("read: {}", key);
+        println!("read: {key}",);
         for _ in 0..iterations {
-            match self.execute_command(ClientCommands::LREAD, key, None).await {
-                Ok(v) => assert_eq!(v, expected_value, "Linearizable read failed for key {}!", key),
-                Err(status) => {
-                    error!("verify_read::status: {:?}", status);
-                    assert!(false);
-                }
-            }
+            assert_eq!(
+                self.execute_command(ClientCommands::Lread, key, None).await.unwrap(),
+                expected_value,
+                "Linearizable read failed for key {key}!",
+            );
         }
     }
 
@@ -181,11 +191,8 @@ impl ClientManager {
     }
     pub async fn list_leader_id(&self) -> Result<u32> {
         let members = self.list_members().await?;
-        let mut ids: Vec<u32> = members
-            .iter()
-            .filter(|meta| meta.role == LEADER)
-            .map(|n| n.id)
-            .collect();
+        let mut ids: Vec<u32> =
+            members.iter().filter(|meta| meta.role == LEADER).map(|n| n.id).collect();
 
         Ok(ids.pop().unwrap_or(0))
     }

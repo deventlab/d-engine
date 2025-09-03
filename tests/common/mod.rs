@@ -3,32 +3,47 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine::alias::ROF;
+use config::Config;
 use d_engine::alias::SMOF;
-use d_engine::alias::SSOF;
+use d_engine::alias::SOF;
+use d_engine::config::BackoffPolicy;
+use d_engine::config::ClusterConfig;
+use d_engine::config::CommitHandlerConfig;
+use d_engine::config::ElectionConfig;
+use d_engine::config::FlushPolicy;
+use d_engine::config::PersistenceConfig;
+use d_engine::config::PersistenceStrategy;
+use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
-use d_engine::convert::kv;
+use d_engine::config::ReplicationConfig;
+use d_engine::config::SnapshotConfig;
+use d_engine::convert::safe_kv;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
-use d_engine::proto::ClientCommand;
-use d_engine::proto::Entry;
-use d_engine::proto::VotedFor;
-use d_engine::storage::RaftLog;
-use d_engine::storage::RaftStateMachine;
-use d_engine::storage::SledRaftLog;
-use d_engine::storage::SledStateStorage;
-use d_engine::storage::StateStorage;
+use d_engine::proto::client::WriteCommand;
+use d_engine::proto::common::Entry;
+use d_engine::proto::common::EntryPayload;
+use d_engine::proto::election::VotedFor;
+use d_engine::storage::FileStateMachine;
+use d_engine::storage::StorageEngine;
 use d_engine::ClientApiError;
+use d_engine::FileStorageEngine;
 use d_engine::HardState;
+use d_engine::LogStore;
+use d_engine::MetaStore;
 use prost::Message;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
+use tokio::sync::watch::Sender;
+use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::debug;
 use tracing::error;
+
+use crate::client_manager::ClientManager;
 
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
@@ -38,19 +53,148 @@ pub const LATENCY_IN_MS: u64 = 50;
 // to make sure the result is consistent
 pub const ITERATIONS: u64 = 10;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ClientCommands {
-    PUT,
-    READ,
-    LREAD,
-    DELETE,
+    Put,
+    Read,
+    Lread,
+    Delete,
 }
 
-pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result<(), ClientApiError> {
+pub struct TestContext {
+    pub graceful_txs: Vec<Sender<()>>,
+    pub node_handles: Vec<JoinHandle<Result<(), ClientApiError>>>,
+}
+
+impl TestContext {
+    pub async fn shutdown(self) -> Result<(), ClientApiError> {
+        for tx in self.graceful_txs {
+            tx.send(()).map_err(|_| {
+                ClientApiError::general_client_error("failed to shutdown".to_string())
+            })?;
+        }
+
+        for handle in self.node_handles {
+            handle.await??;
+        }
+
+        Ok(())
+    }
+}
+
+// static LOGGER_INIT: once_cell::sync::Lazy<()> = once_cell::sync::Lazy::new(|| {
+//     tracing_subscriber::registry()
+//         .with(fmt::layer())
+//         .with(EnvFilter::from_default_env())
+//         .init();
+// });
+
+// pub fn enable_logger() {
+//     *LOGGER_INIT;
+//     println!("setup logger for unit test.");
+// }
+
+pub async fn create_node_config(
+    node_id: u64,
+    port: u16,
+    cluster_ports: &[u16],
+    db_root_dir: &str,
+    log_dir: &str,
+) -> String {
+    let initial_cluster_entries = cluster_ports
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let id = i as u64 + 1;
+            format!(
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ");
+
+    format!(
+        r#"
+        node_id = {node_id}
+        listen_address = '127.0.0.1:{port}'
+        initial_cluster = [
+            {initial_cluster_entries}
+        ]
+        db_root_dir = '{db_root_dir}'
+        log_dir = '{log_dir}'
+        "#
+    )
+}
+
+pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
+    let mut config = RaftNodeConfig::default();
+
+    let settings = Config::builder()
+        .add_source(config::File::from_str(
+            cluster_toml,
+            config::FileFormat::Toml,
+        ))
+        .build()
+        .unwrap();
+
+    let cluster: ClusterConfig = settings.try_deserialize().unwrap();
+
+    println!("Parsed cluster: {cluster:#?}",);
+
+    let raft = RaftConfig {
+        general_raft_timeout_duration_in_ms: 10000,
+        snapshot_rpc_timeout_ms: 300_000,
+        replication: ReplicationConfig {
+            rpc_append_entries_in_batch_threshold: 1,
+            ..Default::default()
+        },
+        commit_handler: CommitHandlerConfig {
+            batch_size_threshold: 1,
+            process_interval_ms: 100,
+            ..Default::default()
+        },
+        snapshot: SnapshotConfig {
+            max_log_entries_before_snapshot: 1,
+            cleanup_retain_count: 2,
+            retained_log_entries: 1,
+            snapshots_dir: cluster.db_root_dir.join("snapshots").join(cluster.node_id.to_string()),
+            ..Default::default()
+        },
+        persistence: PersistenceConfig {
+            strategy: PersistenceStrategy::DiskFirst,
+            flush_policy: FlushPolicy::Immediate,
+            ..Default::default()
+        },
+        election: ElectionConfig {
+            election_timeout_min: 1000,
+            election_timeout_max: 2000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let append_policy = BackoffPolicy {
+        max_retries: 2,
+        timeout_ms: 200,
+        ..Default::default()
+    };
+
+    config.cluster = cluster;
+    config.raft = raft;
+    config.retry.append_entries = append_policy;
+
+    config
+}
+
+#[allow(dead_code)]
+pub async fn start_cluster(
+    nodes_config: Vec<RaftNodeConfig>
+) -> std::result::Result<(), ClientApiError> {
     // Start all nodes
     let mut controllers = vec![];
-    for config_path in nodes_config_paths {
-        let (tx, handle) = start_node(config_path, None, None, None).await?;
+    for config in nodes_config {
+        let (tx, handle) = start_node(config, None, None).await?;
         controllers.push((tx, handle));
     }
 
@@ -65,10 +209,9 @@ pub async fn start_cluster(nodes_config_paths: Vec<&str>) -> std::result::Result
     Ok(())
 }
 pub async fn start_node(
-    config_path: &str,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
+    config: RaftNodeConfig,
+    state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
 ) -> std::result::Result<
     (
         watch::Sender<()>,
@@ -78,43 +221,53 @@ pub async fn start_node(
 > {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    let root_path = get_root_path();
-    let config_path = format!("{}", root_path.join(config_path).display());
-    let node = build_node(&config_path, graceful_rx, state_machine, raft_log, state_storage).await?;
+    let node = build_node(config, graceful_rx, state_machine, storage_engine).await?;
 
     let node_clone = node.clone();
-    let node_id = node.settings.cluster.node_id;
+    let node_id = node.node_config.cluster.node_id;
     let handle = tokio::spawn(async move { run_node(node_id, node_clone).await });
 
     Ok((graceful_tx, handle))
 }
 
 async fn build_node(
-    config_path: &str,
+    config: RaftNodeConfig,
     graceful_rx: watch::Receiver<()>,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig>>>,
-    raft_log: Option<ROF<RaftTypeConfig>>,
-    state_storage: Option<SSOF<RaftTypeConfig>>,
-) -> std::result::Result<Arc<Node<RaftTypeConfig>>, ClientApiError> {
-    // Load configuration from the specified path
-    let config = RaftNodeConfig::default();
-    config
-        .with_override_config(config_path)
-        .expect("Overwrite config successfully.");
-
+    state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+    storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+) -> std::result::Result<
+    Arc<Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
+    ClientApiError,
+> {
     // Prepare raft log entries
-    let mut builder = NodeBuilder::new(Some(config_path), graceful_rx);
-    if let Some(r) = raft_log {
-        // let sled_raft_log = prepare_raft_log(&config_path, last_applied_index);
-        // manipulate_log(&sled_raft_log, ids, term);
-        builder = builder.raft_log(r);
-    }
-    if let Some(sm) = state_machine {
-        builder = builder.state_machine(sm);
-    }
-    if let Some(ss) = state_storage {
-        builder = builder.state_storage(ss);
-    }
+    let mut builder = NodeBuilder::init(config.clone(), graceful_rx);
+
+    // Use provided storage engine or create a new one with temp directory
+    let storage_engine = if let Some(s) = storage_engine {
+        s
+    } else {
+        let storage_path = config.cluster.db_root_dir.clone().join("storage_engine");
+        Arc::new(
+            FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
+        )
+    };
+
+    builder = builder.storage_engine(storage_engine);
+
+    // Use provided state machine or create a new one with temp directory
+    let state_machine = if let Some(sm) = state_machine {
+        sm
+    } else {
+        let state_machine_path = config.cluster.db_root_dir.join("state_machine");
+        Arc::new(
+            FileStateMachine::new(state_machine_path, config.cluster.node_id)
+                .await
+                .expect("Failed to create file state machine"),
+        )
+    };
+
+    builder = builder.state_machine(state_machine);
+
     // Build and start the node
     let node = builder
         .build()
@@ -123,19 +276,21 @@ async fn build_node(
         .ready()
         .expect("Should succeed to start node");
 
+    // Return both the node and the temp directory to keep it alive
     Ok(node)
 }
 
 async fn run_node(
     node_id: u32,
-    node: Arc<Node<RaftTypeConfig>>,
+    node: Arc<Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
 ) -> std::result::Result<(), ClientApiError> {
+    println!("Run node: {node_id}",);
     // Run the node until shutdown
     if let Err(e) = node.run().await {
         error!("Node error: {:?}", e);
     }
 
-    debug!("Exiting program: {:?}", node_id);
+    debug!("Exiting program: {node_id}");
     drop(node);
     Ok(())
 }
@@ -144,74 +299,79 @@ pub fn get_root_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-pub fn prepare_raft_log(
+pub fn prepare_storage_engine(
+    _node_id: u32,
     db_path: &str,
-    last_applied_index: Option<u64>,
-) -> SledRaftLog {
-    let raft_log_db_path = format!("{}/raft_log", db_path);
-    let raft_log_db = sled::Config::default()
-        .path(raft_log_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledRaftLog::new(Arc::new(raft_log_db), last_applied_index)
-}
-pub fn prepare_state_machine(
-    node_id: u32,
-    db_path: &str,
-) -> RaftStateMachine {
-    let state_machine_db_path = format!("{}/state_machine", db_path);
-    let state_machine_db = sled::Config::default()
-        .path(state_machine_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    RaftStateMachine::new(node_id, Arc::new(state_machine_db))
-}
-pub fn prepare_state_storage(db_path: &str) -> SledStateStorage {
-    let state_storage_db_path = format!("{}/state_storage", db_path);
-    let state_storage_db = sled::Config::default()
-        .path(state_storage_db_path)
-        .use_compression(true)
-        .compression_factor(1)
-        .open()
-        .unwrap();
-    SledStateStorage::new(Arc::new(state_storage_db))
+    _last_applied_index: u64,
+) -> Arc<FileStorageEngine> {
+    Arc::new(FileStorageEngine::new(PathBuf::from(format!("{db_path}/raft_log"))).unwrap())
 }
 
-pub fn manipulate_log(
-    raft_log: &dyn RaftLog,
+pub async fn prepare_state_machine(
+    node_id: u32,
+    db_path: &str,
+) -> FileStateMachine {
+    let state_machine_db_path = format!("{db_path}/state_machine",);
+    FileStateMachine::new(PathBuf::from(state_machine_db_path), node_id)
+        .await
+        .unwrap()
+}
+
+pub async fn manipulate_log(
+    storage_engine: &Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     log_ids: Vec<u64>,
     term: u64,
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
+        println!("pre_allocate_raft_logs_next_index: {id}",);
+
         let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index: id,
             term,
-            command: generate_insert_commands(vec![id]),
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries) {
-        eprintln!("manipulate_log error: {:?}", e);
-        assert!(false);
-    }
+    assert!(storage_engine.log_store().persist_entries(entries).await.is_ok());
+    assert!(storage_engine.log_store().flush().is_ok());
 }
-pub fn init_state_storage(
-    state_storage: &dyn StateStorage,
+
+pub fn init_hard_state(
+    storage_engine: &Arc<impl StorageEngine>,
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
-    if let Err(e) = state_storage.save_hard_state(HardState {
-        current_term,
-        voted_for,
-    }) {
-        eprintln!("init_state_storage error: {:?}", e);
-        assert!(false);
-    }
+    assert!(storage_engine
+        .meta_store()
+        .save_hard_state(&HardState {
+            current_term,
+            voted_for,
+        })
+        .is_ok());
+}
+
+pub async fn test_put_get(
+    client_manager: &mut ClientManager,
+    key: u64,
+    value: u64,
+) -> Result<(), ClientApiError> {
+    println!("put {key} {value}");
+    assert!(
+        client_manager
+            .execute_command(ClientCommands::Put, key, Some(value))
+            .await
+            .is_ok(),
+        "Put command failed for key {key} value {value}"
+    );
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    client_manager.verify_read(key, value, ITERATIONS).await;
+    Ok(())
+}
+
+/// Helper function to create bootstrap URLs
+pub fn create_bootstrap_urls(ports: &[u16]) -> Vec<String> {
+    ports.iter().map(|port| format!("http://127.0.0.1:{port}")).collect()
 }
 
 pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
@@ -219,7 +379,7 @@ pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 
     let mut commands = Vec::new();
     for id in ids {
-        commands.push(ClientCommand::insert(kv(id), kv(id)));
+        commands.push(WriteCommand::insert(safe_kv(id), safe_kv(id)));
     }
 
     for c in commands {
@@ -232,18 +392,21 @@ pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
 pub async fn reset(case_name: &str) -> std::result::Result<(), ClientApiError> {
     let root_path = get_root_path();
     // Define path
-    let logs_dir = format!("{}/logs/{}", root_path.display(), case_name);
-    let db_dir = format!("{}/db/{}", root_path.display(), case_name);
+    let logs_dir = format!("{}/logs/{case_name}", root_path.display(),);
+    let db_dir = format!("{}/db/{case_name}", root_path.display(),);
+    let snapshots_dir = format!("{}/snapshots/{case_name}", root_path.display(),);
+
+    debug!(?logs_dir, ?db_dir, ?snapshots_dir, "reset path");
 
     // Make sure the parent directory exists
     fs::create_dir_all(&logs_dir).await?;
     fs::create_dir_all(&db_dir).await?;
+    fs::create_dir_all(&snapshots_dir).await?;
 
     // Clean up the log directory (ignore errors that do not exist)
     let _ = remove_dir_all(Path::new(&logs_dir)).await;
-
-    // Clean up the database directory (ignore errors that do not exist)
     let _ = remove_dir_all(Path::new(&db_dir)).await;
+    let _ = remove_dir_all(Path::new(&snapshots_dir)).await;
 
     Ok(())
 }
@@ -271,11 +434,73 @@ pub async fn check_cluster_is_ready(
     match result {
         Ok(_) => Ok(()),
         Err(_) => {
-            let err_msg = format!(
-                "Node({:?}) did not become ready within {} seconds.",
-                peer_addr, timeout_secs
-            );
+            let err_msg =
+                format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg))
         }
     }
+}
+
+/// Checks whether the given snapshot path exists, is a directory, and contains any files or
+/// subdirectories.
+///
+/// # Arguments
+///
+/// * `snapshot_path` - A string slice that holds the path to the snapshot directory.
+///
+/// # Returns
+///
+/// * `Ok(true)` if the path exists, is a directory, and contains at least one file or subdirectory.
+/// * `Ok(false)` if the path does not exist, is not a directory, or is empty.
+/// * `Err(ClientApiError)` if an error occurs while reading the directory contents.
+pub fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> {
+    let path = Path::new(snapshot_path);
+
+    // Check if path exists first
+    if !path.exists() {
+        println!("Path '{snapshot_path}' does not exist",);
+        return Ok(false);
+    }
+
+    // Check if it's a directory
+    if !path.is_dir() {
+        println!("Path '{snapshot_path}' is not a directory");
+        return Ok(false);
+    }
+
+    // Read directory contents
+    let entries = std::fs::read_dir(path)?;
+    let mut has_contents = false;
+
+    for entry in entries {
+        let entry = entry?;
+        let entry_path = entry.path();
+
+        if entry_path.is_dir() {
+            println!("Found subdirectory: {}", entry_path.display());
+            has_contents = true;
+        } else if entry_path.is_file() {
+            println!("Found file: {}", entry_path.display());
+            has_contents = true;
+        }
+    }
+
+    if !has_contents {
+        println!("Path '{snapshot_path}' is empty (no files or subdirectories)",);
+    }
+
+    Ok(has_contents)
+}
+
+pub async fn get_available_ports(count: usize) -> Vec<u16> {
+    use std::net::TcpListener;
+    let mut ports = Vec::new();
+
+    for _ in 0..count {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        ports.push(port);
+        drop(listener);
+    }
+    ports
 }

@@ -1,17 +1,18 @@
 # Base Formatting Rules
-max_width = 120  # Maximum line width (default: 100)
-tab_spaces = 4   # Indentation with 4 spaces
-edition = "2021" # Rust edition (align with Cargo.toml)
+max_width = 100   # Maximum line width (default: 100)
+hard_tabs = false
+tab_spaces = 4    # Indentation with 4 spaces
+edition = "2021"  # Rust edition (align with Cargo.toml)
 
 # Comment Styling
 wrap_comments = true # Wrap long comments
 comment_width = 100  # Max width for comments
 
 # Function and Expression Formatting
-fn_params_layout = "Vertical"  # Align function arguments vertically
-where_single_line = true       # Keep short `where` clauses on one line
+fn_params_layout = "Vertical" # Align function arguments vertically
+# where_single_line = true       # Keep short `where` clauses on one line
+chain_width = 80               # Chain call width threshold
 overflow_delimited_expr = true # Allow line breaks within delimited expressions
-
 # Import Organization
 reorder_imports = true             # Alphabetically sort imports
 imports_granularity = "Item"       # Each crate is imported on a separate line

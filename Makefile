@@ -5,7 +5,7 @@
 SCRIPT_PATH := scripts/pre-release-checklist.sh
 CARGO_TOOLCHAIN := 1.84.0  # Update to your toolchain
 CRATE_NAME := d_engine          # Update to your crate name
-
+RUST_LOG_LEVEL := d_engine=info
 
 ## Show this help
 help:
@@ -45,8 +45,27 @@ bench: ## Run performance benchmarks
 
 # Documentation Targets
 doc: ## Generate documentation
-	@cargo doc --no-deps --open
+	@cargo doc --all-features --no-deps --open
 
 # Format Verification
 fmt-check: ## Check formatting
 	@cargo fmt --all -- --check
+
+# Format Verification
+fmt-fix: ## Check formatting
+	@cargo fmt --all
+
+# Run Clippy
+clippy: ## Run Clippy
+	@cargo clippy --all-targets --all-features -- -D warnings
+
+# Run Clippy fix
+clippy-fix: ## Run Clippy fix
+	@cargo clippy --fix
+
+# Test suite
+test: ## Run test suite
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo nextest run --no-fail-fast --tests --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo nextest run --no-fail-fast --lib --nocapture
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo test --doc
+	@RUST_LOG=$(RUST_LOG_LEVEL) cargo bench -- --nocapture

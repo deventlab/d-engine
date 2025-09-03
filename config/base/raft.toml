@@ -3,10 +3,11 @@
 # ///     if learner's next_id is far away from leader's commit_index
 # /// be careful on the value, if it is too smal it might create a ‘competition’
 # ///     situation is that leader will keep convert a node between learner and follower
-# /// 
+# ///
 learner_raft_log_gap = 10
 general_raft_timeout_duration_in_ms = 100
-
+# 1hour
+snapshot_rpc_timeout_ms = 3_600_000
 
 [raft.replication]
 # [raft], leader append frequence
@@ -34,5 +35,46 @@ batch_size = 100
 process_interval_ms = 10
 max_entries_per_chunk = 100
 
+[raft.snapshot]
+enable = true
+max_log_entries_before_snapshot = 1000
+
+# in secs
+snapshot_cool_down_since_last_check = { secs = 3600 }
+
+cleanup_retain_count = 2
+snapshots_dir = "./snapshots/"
+# 1KB
+chunk_size = 1024
+# Number of log entries to retain (0 = disable retention)
+retained_log_entries = 1
+sender_yield_every_n_chunks = 1
+receiver_yield_every_n_chunks = 1
+
 [raft.membership]
-cluster_healthcheck_probe_service_name = "rpc_service.RpcService"
+cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"
+
+[raft.auto_join]
+rpc_enable_compression = true
+
+
+[raft.persistence]
+# Persistence strategy:
+#   - "DiskFirst": Strongest durability. Each log entry is written to disk before memory.
+#   - "MemFirst": Highest performance. Entries go to memory first, disk asynchronously.
+strategy = "DiskFirst"
+
+# Flush policy controls when memory logs are flushed to disk:
+#   - "Immediate": Flush every entry immediately to disk (sync write).
+#   - 'Batch { threshold, interval_ms }': Flush when either count or time is exceeded.
+#
+# Example:
+# flush_policy = "Immediate"
+# OR
+# flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
+flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
+
+# Upcoming feature(v0.1.4)
+# Maximum number of log entries to buffer in memory
+# when using async persistence strategies (MemFirst/Batched)
+max_buffered_entries = 10000

@@ -1,0 +1,56 @@
+[cluster]
+node_id = 2
+listen_address = "192.168.0.12:9082"
+initial_cluster = [
+    { id = 1, address = "192.168.0.11:9081", role = 1, status = 2 },
+    { id = 2, address = "192.168.0.12:9082", role = 1, status = 2 },
+    { id = 3, address = "192.168.0.13:9083", role = 1, status = 2 },
+]
+db_root_dir = "./db"
+log_dir = "./logs"
+
+
+[raft]
+general_raft_timeout_duration_in_ms = 100
+
+[raft.commit_handler]
+batch_size = 5000
+
+[raft.replication]
+rpc_append_entries_in_batch_threshold = 5000
+
+[raft.persistence]
+strategy = "MemFirst"
+# strategy = "DiskFirst"
+flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+# flush_policy = "Immediate"
+
+[raft.snapshot]
+enable = true
+max_log_entries_before_snapshot = 10000
+snapshot_cool_down_since_last_check = { secs = 60 }
+snapshots_dir = "./snapshots/"
+retained_log_entries = 3
+
+
+# == Network Control Plane (voting, heartbeat, etc.) ==
+[network.control]
+concurrency_limit = 20                 # Lower control plane concurrency is recommended
+max_concurrent_streams = 128
+tcp_keepalive_in_secs = 60             # Closer to native behavior
+http2_keep_alive_interval_in_secs = 10
+http2_keep_alive_timeout_in_secs = 5
+max_frame_size = 16_777_215            # Default value is acceptable
+connection_window_size = 2_097_152     # 2MB is sufficient (to prevent memory overflow)
+
+# == Network Data Plane (append_entries, etc.) ==
+[network.data]
+connect_timeout_in_ms = 100            # Slow is fine, ensure the connection is established
+request_timeout_in_ms = 300            # Log synchronization may take a long time.
+concurrency_limit = 30                 # High concurrency supports data replication.
+max_concurrent_streams = 256           # Sufficient; higher values may be counterproductive.
+tcp_keepalive_in_secs = 60
+http2_keep_alive_interval_in_secs = 10
+http2_keep_alive_timeout_in_secs = 5
+max_frame_size = 16_777_215
+connection_window_size = 4_194_304     # Increase the buffer size to support batch data.
