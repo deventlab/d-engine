@@ -9,11 +9,17 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - **Learner Join Flow**: Revised learner join process with promotion/fail semantics (#101)
+- **Node Removal**: Automatic Node Removal (#102)
 - **Learner Discovery**: Added auto-discovery support for new learner nodes (#89)
-- **Snapshot Feature**: Restored 'snapshot' feature flag (#79)
+- **Snapshot Feature**: Implemented snapshot feature (#79)
 - **Snapshot Compression**: Refactored compression logic from StateMachine to StateMachineHandler (#122)
 - **Log Conflict Resolution**: Implemented first/last index for term to resolve replication conflicts (#45)
 - **RocksDB Feature Flag**: Made RocksDB adapter optional via feature flag (#125)
+- **Peer Connection Cache**: Enable RPC connection cache (#109)
+
+### Fixes
+
+- **Leaership Confirmation** Retry leadership noop confirmation until timeout (#106)
 
 ### Refactors
 
