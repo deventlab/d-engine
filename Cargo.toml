@@ -77,9 +77,6 @@ memmap2 = "0.9.5"
 lru = "0.15.0"
 
 # Cargo build performance optimization
-# zstd-sys = { version = "=1.6.2", features = [
-#     "pkg-config",
-# ], default-features = false }
 ring = { version = "=0.17.14", features = ["std"] }
 
 # TODO: to replace dashmap

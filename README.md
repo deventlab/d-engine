@@ -30,6 +30,9 @@ Add d-engine to your `Cargo.toml`:
 ```toml
 [dependencies]
 d-engine = "0.1.3"
+
+# or with RocksDB support:
+d-engine = { version = "0.1.3", features = ["rocksdb"] }
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -37,30 +40,54 @@ d-engine = "0.1.3"
 use d-engine::{RaftCore, MemoryStorage, Config};
 
 ```rust
-async fn main() -> Result<()> {
-    // Initializing Shutdown Signal
+use d_engine::{NodeBuilder, FileStorageEngine, FileStateMachine};
+use tokio::sync::watch;
+use std::sync::Arc;
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize graceful shutdown channel
     let (graceful_tx, graceful_rx) = watch::channel(());
 
-    // Build Node
-    let node = NodeBuilder::new(settings, graceful_rx)
+    // Configure storage
+    let path = PathBuf::from("/tmp/db");
+    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage"))?);
+    let state_machine = Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await?);
+
+    // Build and start node
+    let node = NodeBuilder::new(None, graceful_rx)
+        .storage_engine(storage_engine)
+        .state_machine(state_machine)
         .build()
         .start_rpc_server()
         .await
         .ready()
-        .expect("start node failed.");
+        .expect("Failed to start node");
 
-    println!("Application started. Waiting for CTRL+C signal...");
-
-    // Start Node
+    // Run node (blocks until shutdown)
     node.run().await?;
-
-    // Listen on Shutdown Signal
-    // graceful_shutdown(graceful_tx, node).await?;
-
-    println!("Exiting program.");
     Ok(())
 }
 ```
+
+### **Using RocksDB Storage**
+
+Enable the **`rocksdb`** feature and use the RocksDB implementations:
+
+```rust
+use d_engine::{NodeBuilder, RocksDBStorageEngine, RocksDBStateMachine};
+// ... same setup as above
+let storage_engine = Arc::new(RocksDBStorageEngine::new(path.join("storage"))?);
+let state_machine = Arc::new(RocksDBStateMachine::new(path.join("state_machine"))?);
+```
+
+## **Custom Storage Implementations**
+
+d-engine provides flexible storage abstraction layers. Implement your own storage engines and state machines by implementing the respective traits:
+
+- **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
+- **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
 
 Note: For production use, a minimum of 3 nodes is required to ensure fault tolerance.
 
