@@ -10,7 +10,7 @@ use crate::Error;
 use crate::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct TlsConfig {
     /// Enables TLS encryption for network communication
     /// Default: false (disabled)
@@ -70,9 +70,11 @@ impl TlsConfig {
 
         // Handle self-signed certificate generation case
         if self.generate_self_signed_certificates {
-            if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty() {
+            if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty()
+            {
                 return Err(Error::Config(ConfigError::Message(
-                    "Cannot specify certificate paths with generate_self_signed_certificates=true".into(),
+                    "Cannot specify certificate paths with generate_self_signed_certificates=true"
+                        .into(),
                 )));
             }
             return Ok(());
@@ -85,7 +87,10 @@ impl TlsConfig {
 
         // Validate client certificates for mTLS
         if self.enable_mtls {
-            self.validate_cert_file(&self.client_certificate_authority_root_path, "client CA certificate")?;
+            self.validate_cert_file(
+                &self.client_certificate_authority_root_path,
+                "client CA certificate",
+            )?;
         }
 
         Ok(())

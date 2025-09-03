@@ -1,9 +1,13 @@
 # Benchmark Test Automation
-.PHONY: all clean build basic-write high-concurrency-write linear-read serial-read
+.PHONY: all clean build basic-write high-concurrency-write linear-read serial-read soak-test
 
 ENDPOINTS = --endpoints http://127.0.0.1:9081 \
             --endpoints http://127.0.0.1:9082 \
             --endpoints http://127.0.0.1:9083
+
+SOAK_TEST_ENDPOINTS ?= http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.0.1:9081
+SOAK_TEST_TOTAL ?= 100
+SOAK_COMPOSE_FILE ?= docker/docker-compose.yml
 
 all: clean build basic-write high-concurrency-write linear-read serial-read
 
@@ -65,3 +69,11 @@ serial-read:
 		--total 10000 \
 		--key-size 8 \
 		range --consistency s
+
+build-soak-tester:
+	docker build -f docker/Dockerfile -t d-engine-soak-tester .
+
+soak-test: build-soak-tester
+	@docker compose -f $(SOAK_COMPOSE_FILE) down
+	@docker compose -f $(SOAK_COMPOSE_FILE) up -d
+

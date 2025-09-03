@@ -1,9 +1,18 @@
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use tonic::codec::CompressionEncoding;
+use tracing::debug;
+use tracing::error;
+use tracing::instrument;
 
 use super::ClientInner;
-use crate::proto::NodeMeta;
+use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::NodeMeta;
+use crate::ClientApiError;
 use crate::Result;
 
 /// Cluster administration interface
@@ -13,6 +22,15 @@ use crate::Result;
 #[derive(Clone)]
 pub struct ClusterClient {
     client_inner: Arc<ArcSwap<ClientInner>>,
+}
+
+impl Debug for ClusterClient {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("ClusterClient").finish()
+    }
 }
 
 impl ClusterClient {
@@ -32,12 +50,44 @@ impl ClusterClient {
         Ok(client_inner.pool.get_all_members())
     }
 
-    /// [Unimplemented] Adds new node to cluster
-    #[allow(unused)]
-    async fn add_member(
+    /// Join a new node to the cluster
+    ///
+    /// # Parameters
+    /// - `node`: NodeMeta
+    ///
+    /// # Returns
+    /// - `JoinResponse` with cluster configuration if successful
+    #[instrument(skip(self))]
+    pub async fn join_cluster(
         &self,
-        _node: NodeMeta,
-    ) -> Result<()> {
-        unimplemented!("Node management coming in v0.2")
+        node: NodeMeta,
+    ) -> std::result::Result<JoinResponse, ClientApiError> {
+        let client_inner = self.client_inner.load();
+        let channel = client_inner.pool.get_leader();
+
+        let mut client = ClusterManagementServiceClient::new(channel);
+        if client_inner.pool.config.enable_compression {
+            client = client
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+        }
+
+        let request = tonic::Request::new(JoinRequest {
+            node_id: node.id,
+            node_role: node.role,
+            address: node.address,
+        });
+        let response = match client.join_cluster(request).await {
+            Ok(response) => {
+                debug!("[:ClusterClient:join_cluster] response: {:?}", response);
+                response.into_inner()
+            }
+            Err(status) => {
+                error!("[:ClusterClient:join_cluster] status: {:?}", status);
+                return Err(status.into());
+            }
+        };
+
+        Ok(response)
     }
 }

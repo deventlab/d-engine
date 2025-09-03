@@ -5,7 +5,6 @@ use tokio::time::Instant;
 #[derive(Clone, Debug)]
 pub struct ElectionTimer {
     pub next_deadline: Instant,
-    pub tick_interval: Duration,
     pub timeout_range: (u64, u64),
 }
 
@@ -13,10 +12,8 @@ impl ElectionTimer {
     /// @param: timeout_range: (ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
     pub fn new(timeout_range: (u64, u64)) -> Self {
         let (min, max) = timeout_range;
-        let tick_interval = Self::random_duration(min, max);
         Self {
-            next_deadline: Instant::now() + tick_interval,
-            tick_interval,
+            next_deadline: Instant::now() + Self::random_duration(min, max),
             timeout_range,
         }
     }
@@ -35,20 +32,8 @@ impl ElectionTimer {
         Duration::from_millis(timeout)
     }
 
-    pub fn remaining(&self) -> Duration {
-        if self.is_expired() {
-            Duration::from_millis(0)
-        } else {
-            self.next_deadline.saturating_duration_since(Instant::now())
-        }
-    }
-
     pub fn next_deadline(&self) -> Instant {
         self.next_deadline
-    }
-
-    pub fn tick_interval(&self) -> Duration {
-        self.tick_interval
     }
 
     pub fn is_expired(&self) -> bool {

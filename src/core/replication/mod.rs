@@ -29,39 +29,27 @@ use tonic::Status;
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
 use crate::alias::ROF;
-use crate::alias::TROF;
-use crate::proto::append_entries_response;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientCommand;
-use crate::proto::ClientResponse;
-use crate::proto::ConflictResult;
-use crate::proto::Entry;
-use crate::proto::LogId;
-use crate::proto::SuccessResult;
+use crate::proto::client::ClientResponse;
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::proto::common::LogId;
+use crate::proto::replication::append_entries_response;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::replication::ConflictResult;
+use crate::proto::replication::SuccessResult;
 use crate::AppendResults;
-use crate::ChannelWithAddressAndRole;
 use crate::MaybeCloneOneshotSender;
-use crate::RaftConfig;
 use crate::Result;
-use crate::RetryPolicies;
 use crate::TypeConfig;
 
-/// Client request with response channel
+/// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]
-pub struct ClientRequestWithSignal {
+pub struct RaftRequestWithSignal {
+    #[allow(unused)]
     pub id: String,
-    pub commands: Vec<ClientCommand>,
+    pub payloads: Vec<EntryPayload>,
     pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-}
-
-/// Replication state updates from Leader perspective
-#[derive(Debug)]
-pub struct LeaderStateUpdate {
-    /// (peer_id -> (next_index, match_index))
-    pub peer_index_updates: HashMap<u32, (u64, u64)>,
-    // New commit index, if thre is
-    pub new_commit_index: Option<u64>,
 }
 
 /// AppendEntries response with possible state changes
@@ -75,30 +63,55 @@ pub struct AppendResponseWithUpdates {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
-where T: TypeConfig
+where
+    T: TypeConfig,
 {
-    /// As Leader, send replications to peers.
-    /// (combined regular heartbeat and client proposals)
+    /// As Leader, send replications to peers (combines regular heartbeats and client proposals).
     ///
-    /// Each time handle_client_proposal_in_batch is called, perform peer
-    /// synchronization check
-    /// 1. Verify if any peer's next_id <= leader's commit_index
-    /// 2. For non-synced peers meeting this condition: a. Retrieve all unsynced log entries b.
-    ///    Buffer these entries before processing real entries
-    /// 3. Ensure unsynced entries are prepended to the entries queue before actual entries get
-    ///    pushed
+    /// Performs peer synchronization checks:
+    /// 1. Verifies if any peer's next_id <= leader's commit_index
+    /// 2. For non-synced peers: retrieves unsynced logs and buffers them
+    /// 3. Prepends unsynced entries to the entries queue
     ///
-    /// Leader state will be updated by LeaderState only(follows SRP).
-    async fn handle_client_proposal_in_batch(
+    /// # Returns
+    /// - `Ok(AppendResults)` with aggregated replication outcomes
+    /// - `Err` for unrecoverable errors
+    ///
+    /// # Return Result Semantics
+    /// 1. **Insufficient Quorum**:   Returns `Ok(AppendResults)` with `commit_quorum_achieved =
+    ///    false` when:
+    ///    - Responses received from all nodes but majority acceptance not achieved
+    ///    - Partial timeouts reduce successful responses below majority
+    ///
+    /// 2. **Timeout Handling**:
+    ///    - Partial timeouts: Returns `Ok` with `commit_quorum_achieved = false`
+    ///    - Complete timeout: Returns `Ok` with `commit_quorum_achieved = false`
+    ///    - Timeout peers are EXCLUDED from `peer_updates`
+    ///
+    /// 3. **Error Conditions**:   Returns `Err` ONLY for:
+    ///    - Empty voting members (`ReplicationError::NoPeerFound`)
+    ///    - Log generation failures (`generate_new_entries` errors)
+    ///    - Higher term detected in peer response (`ReplicationError::HigherTerm`)
+    ///    - Critical response handling errors
+    ///
+    /// # Guarantees
+    /// - Only peers with successful responses appear in `peer_updates`
+    /// - Timeouts never cause top-level `Err` (handled as failed responses)
+    /// - Leader self-vote always counted in quorum calculation
+    ///
+    /// # Note
+    /// - Leader state should be updated by LeaderState only(follows SRP).
+    ///
+    /// # Quorum
+    /// - If there are no voters (not even the leader), quorum is not possible.
+    /// - If the leader is the only voter, quorum is always achieved.
+    /// - If all nodes are learners, quorum is not achieved.
+    async fn handle_raft_request_in_batch(
         &self,
-        commands: Vec<ClientCommand>,
+        entry_payloads: Vec<EntryPayload>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
-        replication_members: &Vec<ChannelWithAddressAndRole>,
-        raft_log: &Arc<ROF<T>>,
-        transport: &Arc<TROF<T>>,
-        raft: &RaftConfig,
-        retry: &RetryPolicies,
+        ctx: &crate::RaftContext<T>,
     ) -> Result<AppendResults>;
 
     /// Handles successful AppendEntries responses
@@ -122,6 +135,7 @@ where T: TypeConfig
         peer_id: u32,
         conflict_result: ConflictResult,
         raft_log: &Arc<ROF<T>>,
+        current_next_index: u64,
     ) -> Result<crate::PeerUpdate>;
 
     /// Determines follower commit index advancement
@@ -218,7 +232,9 @@ impl AppendEntriesResponse {
         Self {
             node_id,
             term,
-            result: Some(append_entries_response::Result::Success(SuccessResult { last_match })),
+            result: Some(append_entries_response::Result::Success(SuccessResult {
+                last_match,
+            })),
         }
     }
 
@@ -253,22 +269,25 @@ impl AppendEntriesResponse {
 
     /// Check if it is a success response
     pub fn is_success(&self) -> bool {
-        match &self.result {
-            Some(append_entries_response::Result::Success(_)) => true,
-            _ => false,
-        }
+        matches!(
+            &self.result,
+            Some(append_entries_response::Result::Success(_))
+        )
     }
 
     /// Check if it is a conflict response
     pub fn is_conflict(&self) -> bool {
-        match &self.result {
-            Some(append_entries_response::Result::Conflict(_conflict)) => true,
-            _ => false,
-        }
+        matches!(
+            &self.result,
+            Some(append_entries_response::Result::Conflict(_conflict))
+        )
     }
 
     /// Check if it is a response of a higher Term
     pub fn is_higher_term(&self) -> bool {
-        matches!(&self.result, Some(append_entries_response::Result::HigherTerm(_)))
+        matches!(
+            &self.result,
+            Some(append_entries_response::Result::HigherTerm(_))
+        )
     }
 }

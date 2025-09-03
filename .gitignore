@@ -24,3 +24,23 @@ certs
 tests/db
 tests/logs
 config/local.toml
+.vscode
+.vscode/settings.json
+
+snapshots
+.cargo
+
+# Docker Related
+docker/.env
+docker/output/
+docker/jepsen/sshkeys/
+docker/jepsen/store/
+
+# Monitoring Data (Optional)
+docker/monitoring/grafana/data/
+docker/monitoring/prometheus/data/
+
+.clj-kondo
+.lsp
+.zed
+lcov.info

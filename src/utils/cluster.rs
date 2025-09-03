@@ -3,24 +3,28 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use dashmap::DashSet;
+use metrics::gauge;
 use tracing::error;
 
-use crate::proto::Entry;
+use crate::proto::common::Entry;
 use crate::CANDIDATE;
-use crate::CLUSTER_FATAL_ERROR;
 use crate::FOLLOWER;
 use crate::LEADER;
 use crate::LEARNER;
 
-pub(crate) fn collect_ids(entries: &Vec<Entry>) -> Vec<u64> {
+pub(crate) fn collect_ids(entries: &[Entry]) -> Vec<u64> {
     entries.iter().map(|e| e.index).collect()
 }
 
 pub(crate) fn is_majority(
     num: usize,
-    count: usize,
+    total: usize,
 ) -> bool {
-    num > count / 2
+    num > (total / 2)
+}
+
+pub fn majority_count(total_nodes: usize) -> usize {
+    (total_nodes / 2) + 1
 }
 
 pub(crate) fn find_nearest_lower_number(
@@ -40,9 +44,14 @@ pub(crate) fn record_down_cluster_error(event_id: u64) {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs_f64();
-    CLUSTER_FATAL_ERROR
-        .with_label_values(&[&event_id.to_string()])
-        .set(timestamp);
+
+    let event_type = event_id.to_string();
+
+    gauge!(
+        "cluster_fatal_error_metric",
+        "event_type" => event_type
+    )
+    .set(timestamp);
 }
 
 /// Format error logging

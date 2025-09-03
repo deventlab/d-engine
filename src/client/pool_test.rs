@@ -2,55 +2,34 @@ use std::time::Duration;
 use std::vec;
 
 use tokio::sync::oneshot;
-use tonic::transport::Channel;
-use tracing::error;
+use tracing_test::traced_test;
 
-use crate::proto::ClusterMembership;
-use crate::proto::ErrorCode;
-use crate::proto::NodeMeta;
-use crate::test_utils::enable_logger;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::common::NodeStatus;
+use crate::proto::error::ErrorCode;
 use crate::test_utils::MockNode;
-use crate::test_utils::MockRpcService;
-use crate::test_utils::MOCK_CLIENT_PORT_BASE;
 use crate::time::get_now_as_u32;
 use crate::ClientConfig;
 use crate::ConnectionPool;
 use crate::FOLLOWER;
 use crate::LEADER;
 
-async fn mock_listener(
-    port: u64,
-    rx: oneshot::Receiver<()>,
-    expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
-) {
-    let mut mock_service = MockRpcService::default();
-    mock_service.expected_metadata_response = Some(expected_metadata_response.unwrap_or_else(|| {
-        Ok(ClusterMembership {
-            nodes: vec![NodeMeta {
-                id: 1,
-                role: LEADER,
-                ip: "127.0.0.1".to_string(),
-                port: port as u32,
-            }],
-        })
-    }));
-    let r = MockNode::mock_listener(mock_service, port, rx, true).await;
-    assert!(r.is_ok());
-}
 #[tokio::test]
+#[traced_test]
 async fn test_parse_cluster_metadata_success() {
     let nodes = vec![
         NodeMeta {
             id: 1,
             role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: 50051,
+            address: "127.0.0.1:50051".to_string(),
+            status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 2,
             role: FOLLOWER,
-            ip: "127.0.0.1".to_string(),
-            port: 50052,
+            address: "127.0.0.1:50052".to_string(),
+            status: NodeStatus::Active.into(),
         },
     ];
 
@@ -60,27 +39,32 @@ async fn test_parse_cluster_metadata_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_parse_cluster_metadata_no_leader() {
     let nodes = vec![NodeMeta {
         id: 1,
         role: FOLLOWER,
-        ip: "127.0.0.1".to_string(),
-        port: 50051,
+        address: "127.0.0.1:50051".to_string(),
+        status: NodeStatus::Active.into(),
     }];
 
     let result = ConnectionPool::parse_cluster_metadata(&nodes);
-    if let Some(e) = result.err() {
-        assert_eq!(e.code(), ErrorCode::NotLeader as u32);
-    } else {
-        assert!(false);
-    }
+    let e = result.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::NotLeader as u32);
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_load_cluster_metadata_success() {
     let (_tx, rx) = oneshot::channel::<()>();
-    let port = MOCK_CLIENT_PORT_BASE + 1;
-    mock_listener(port, rx, None).await;
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+    )
+    .await
+    .unwrap();
 
     let endpoints = vec![format!("http://localhost:{}", port)];
     let config = ClientConfig::default();
@@ -92,6 +76,7 @@ async fn test_load_cluster_metadata_success() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_create_channel_success() {
     let config = ClientConfig {
         id: get_now_as_u32(),
@@ -105,49 +90,61 @@ async fn test_create_channel_success() {
     };
 
     // Test with an invalid address to verify timeout behavior
-    let result = ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
+    let result =
+        ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_connection_pool_creation() {
-    enable_logger();
     let (_tx, rx) = oneshot::channel::<()>();
-    let port = MOCK_CLIENT_PORT_BASE + 3;
-    mock_listener(port, rx, None).await;
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+    )
+    .await
+    .unwrap();
 
     let endpoints = vec![format!("http://localhost:{}", port)];
     let config = ClientConfig::default();
 
-    let pool = match ConnectionPool::create(endpoints, config).await {
-        Ok(p) => p,
-        Err(e) => {
-            error!("{:?}", e);
-            assert!(false);
-            panic!("f");
-        }
-    };
-    // assert!(pool.is_ok());
-    // let pool = pool.unwrap();
+    let pool = ConnectionPool::create(endpoints, config)
+        .await
+        .expect("Should create connection pool");
 
     // Verify we have at least the leader connection
     assert!(!pool.get_all_channels().is_empty());
-    // Check follower count matches test setup (adjust based on your mock data)
     assert_eq!(pool.follower_conns.len(), 0);
 }
 #[tokio::test]
+#[traced_test]
 async fn test_get_all_channels() {
     let (_tx1, rx1) = oneshot::channel::<()>();
     let (_tx2, rx2) = oneshot::channel::<()>();
-    let port1 = MOCK_CLIENT_PORT_BASE + 4;
-    let port2 = MOCK_CLIENT_PORT_BASE + 5;
-    mock_listener(port1, rx1, None).await;
-    mock_listener(port2, rx2, None).await;
-    let addr1 = format!("http://localhost:{}", port1);
-    let addr2 = format!("http://localhost:{}", port2);
+    let (_channel, port1) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx1,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+    )
+    .await
+    .unwrap();
+    let (_channel, port2) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx2,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+    )
+    .await
+    .unwrap();
+    let addr1 = format!("http://localhost:{port1}",);
+    let addr2 = format!("http://localhost:{port2}",);
     let pool = ConnectionPool {
-        leader_conn: Channel::from_shared(addr1.clone()).unwrap().connect().await.unwrap(),
-        follower_conns: vec![Channel::from_shared(addr2.clone()).unwrap().connect().await.unwrap()],
+        leader_conn: MockNode::mock_channel_with_port(port1).await,
+        follower_conns: vec![MockNode::mock_channel_with_port(port2).await],
         config: ClientConfig::default(),
         members: vec![], // this value will not affect the unit test result
         endpoints: vec![addr1, addr2],
@@ -158,32 +155,36 @@ async fn test_get_all_channels() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_refresh_successful_leader_change() {
-    enable_logger();
     let leader_id = 1;
     let new_leader_id = 2;
 
     let (_tx, rx) = oneshot::channel::<()>();
-    let port = MOCK_CLIENT_PORT_BASE + 6;
-    let metadata = ClusterMembership {
-        nodes: vec![NodeMeta {
-            id: leader_id,
-            role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: port as u32,
-        }],
-    };
-    mock_listener(port, rx, Some(Ok(metadata))).await;
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(move |port| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: leader_id,
+                    role: LEADER,
+                    address: format!("127.0.0.1:{port}",),
+                    status: NodeStatus::Active.into(),
+                }],
+            })
+        })),
+    )
+    .await
+    .unwrap();
 
-    let endpoints = vec![format!("http://localhost:{}", port)];
+    let endpoints = vec![format!("http://localhost:{port}")];
     let config = ClientConfig::default();
 
     let mut pool = match ConnectionPool::create(endpoints, config).await {
         Ok(p) => p,
         Err(e) => {
-            error!("{:?}", e);
-            assert!(false);
-            panic!("f");
+            panic!("error: {e:?}");
         }
     };
     // Verify we have at least the leader connection
@@ -193,18 +194,24 @@ async fn test_refresh_successful_leader_change() {
 
     // Now let's refresh the connections
     let (_tx, rx) = oneshot::channel::<()>();
-    let port = MOCK_CLIENT_PORT_BASE + 7;
-    let metadata = ClusterMembership {
-        nodes: vec![NodeMeta {
-            id: new_leader_id,
-            role: LEADER,
-            ip: "127.0.0.1".to_string(),
-            port: port as u32,
-        }],
-    };
-    mock_listener(port, rx, Some(Ok(metadata))).await;
+
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(move |port| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: new_leader_id,
+                    role: LEADER,
+                    address: format!("127.0.0.1:{port}",),
+                    status: NodeStatus::Active.into(),
+                }],
+            })
+        })),
+    )
+    .await
+    .unwrap();
     let endpoints = vec![format!("http://localhost:{}", port)];
     pool.refresh(Some(endpoints)).await.expect("success");
-    println!("-------- {:?}", pool.members);
     assert!(pool.members[0].id == new_leader_id);
 }

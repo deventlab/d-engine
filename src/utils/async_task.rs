@@ -19,25 +19,26 @@ where
     F: Fn() -> T,                               // The type of the async function
     T: std::future::Future<Output = Result<P>>, // The future returned by the async function
 {
-    // let max_retries = 5;
     let mut retries = 0;
     let mut current_delay = Duration::from_millis(policy.base_delay_ms);
     let timeout_duration = Duration::from_millis(policy.timeout_ms);
     let max_delay = Duration::from_millis(policy.max_delay_ms);
     let max_retries = policy.max_retries;
 
-    let mut last_error = NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
+    let mut last_error =
+        NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
         match timeout(timeout_duration, task()).await {
             Ok(Ok(r)) => {
                 return Ok(r); // Exit on success
             }
             Ok(Err(error)) => {
-                warn!("failed with error: {:?}", &error);
-                last_error = NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
+                warn!(?error, "failed with error.");
+                last_error =
+                    NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
             }
             Err(error) => {
-                warn!("Task timed out after {:?}", timeout_duration);
+                warn!(?timeout_duration, ?error, "Task timed out");
                 last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };
@@ -71,7 +72,10 @@ pub(crate) async fn spawn_task<F, Fut>(
     let name = name.to_string();
     let handle = tokio::spawn(async move {
         if let Err(e) = task_fn().await {
-            error!("spawned task: {name} stopped or encountered an error: {:?}", e);
+            error!(
+                "spawned task: {name} stopped or encountered an error: {:?}",
+                e
+            );
         }
     });
 

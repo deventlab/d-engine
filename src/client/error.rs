@@ -6,7 +6,7 @@ use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;
 
-use crate::proto::ErrorCode;
+use crate::proto::error::ErrorCode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientApiError {
@@ -95,6 +95,8 @@ pub enum BusinessErrorType {
     RateLimited,
     ClusterUnavailable,
     ProposeFailed,
+    RetryRequired,
+    StaleTerm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,13 +120,13 @@ impl From<tonic::transport::Error> for ClientApiError {
             {
                 (
                     NetworkErrorType::Timeout,
-                    format!("Connection timeout: {}", e),
+                    format!("Connection timeout: {e}"),
                     Some(3000), // Retry after 3 seconds
                 )
             }
             e if e.to_string().contains("invalid uri") => (
                 NetworkErrorType::InvalidAddress,
-                format!("Invalid address: {}", e),
+                format!("Invalid address: {e}"),
                 None,
             ),
             _ => (
@@ -209,7 +211,7 @@ impl From<Status> for ClientApiError {
             _ => Self::Business {
                 code: ErrorCode::Uncategorized as u32,
                 kind: BusinessErrorType::InvalidRequest,
-                message: format!("Unhandled status code: {:?}", code),
+                message: format!("Unhandled status code: {code:?}"),
                 required_action: None,
             },
         }
@@ -365,15 +367,26 @@ impl From<ErrorCode> for ClientApiError {
                 message: "Propose failed".to_string(),
                 required_action: Some("try again later".to_string()),
             },
-
-            // Unclassified error
             ErrorCode::Uncategorized => ClientApiError::Business {
                 code: code as u32,
                 kind: BusinessErrorType::InvalidRequest,
                 message: "Uncategorized error".to_string(),
                 required_action: None,
             },
+            ErrorCode::TermOutdated => ClientApiError::Business {
+                code: code as u32,
+                kind: BusinessErrorType::StaleTerm,
+                message: "Stale term error".to_string(),
+                required_action: None,
+            },
+            ErrorCode::RetryRequired => ClientApiError::Business {
+                code: code as u32,
+                kind: BusinessErrorType::RetryRequired,
+                message: "Retry required. Please try again.".to_string(),
+                required_action: None,
+            },
 
+            // Unclassified error
             ErrorCode::General => ClientApiError::General {
                 code: code as u32,
                 kind: GeneralErrorType::General,

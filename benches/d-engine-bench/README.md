@@ -101,7 +101,7 @@ p99       1687
     
 2. **Find Saturation**
     
-    Gradually increase `--conns` and `--clients` until latency spikes
+    Gradually increase `--conns` and `--clients` until latency spikes
     
 3. **Consistency Tradeoffs**
     
@@ -116,7 +116,7 @@ p99       1687
 
 ## Reference Data
 
-Pre-generated reports in `reports/`:
+Pre-generated reports in `reports/`:
 
 ```bash
 # View latest reportcat reports/$(ls -t reports/ | head -1)

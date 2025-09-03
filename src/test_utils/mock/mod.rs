@@ -41,71 +41,62 @@
 mod mock_builder;
 mod mock_rpc;
 mod mock_rpc_service;
-
-use std::path::PathBuf;
+mod mock_storage_engine;
 
 pub use mock_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
+pub use mock_storage_engine::*;
 use tokio::sync::watch;
 
-use super::settings;
-//------------------------------------------------------
-use super::{enable_logger, MockTypeConfig};
-use crate::proto::NodeMeta;
+use super::node_config;
+use super::MockTypeConfig;
+use crate::proto::cluster::NodeMeta;
 use crate::Node;
 use crate::Raft;
 use crate::RaftContext;
-use crate::RaftNodeConfig;
 
-pub fn mock_node(
+pub(crate) fn mock_node(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Node<MockTypeConfig> {
-    enable_logger();
-
-    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-    settings.cluster.db_root_dir = PathBuf::from(db_path);
-    if peers_meta_option.is_some() {
-        settings.cluster.initial_cluster = peers_meta_option.unwrap();
+    let mut node_config = node_config(db_path);
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
     // Initializing Shutdown Signal
     // let (graceful_tx, graceful_rx) = watch::channel(());
-    MockBuilder::new(shutdown_signal).with_settings(settings).build_node()
+    MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_node()
 }
 
-pub fn mock_raft(
+pub(crate) fn mock_raft(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Raft<MockTypeConfig> {
-    enable_logger();
-
-    let mut settings = settings(db_path);
+    let mut node_config = node_config(db_path);
     // Set batch_threshold=0, means the replication will be triggered immediatelly.
-    settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;
-    if peers_meta_option.is_some() {
-        settings.cluster.initial_cluster = peers_meta_option.unwrap();
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 0;
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
 
-    MockBuilder::new(shutdown_signal).with_settings(settings).build_raft()
+    MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_raft()
 }
 
-pub fn mock_raft_context(
+pub(crate) fn mock_raft_context(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> RaftContext<MockTypeConfig> {
-    enable_logger();
-
-    let mut settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
-    settings.cluster.db_root_dir = PathBuf::from(db_path);
-    if peers_meta_option.is_some() {
-        settings.cluster.initial_cluster = peers_meta_option.unwrap();
+    let mut node_config = node_config(db_path);
+    if let Some(peers_meta) = peers_meta_option {
+        node_config.cluster.initial_cluster = peers_meta;
     }
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;
+    // Reduce timeout for test
+    node_config.retry.auto_discovery.timeout_ms = 10;
 
-    MockBuilder::new(shutdown_signal)
-        .with_settings(settings)
-        .build_context()
+    MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_context()
 }

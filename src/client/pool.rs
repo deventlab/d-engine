@@ -6,10 +6,11 @@ use tracing::error;
 use tracing::info;
 
 use super::ClientApiError;
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::ErrorCode;
-use crate::proto::MetadataRequest;
-use crate::proto::NodeMeta;
+use crate::net::address_str;
+use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::error::ErrorCode;
 use crate::ClientConfig;
 
 /// Manages connections to cluster nodes
@@ -37,7 +38,8 @@ impl ConnectionPool {
         endpoints: Vec<String>,
         config: ClientConfig,
     ) -> std::result::Result<Self, ClientApiError> {
-        let (leader_conn, follower_conns, members) = Self::build_connections(&endpoints, &config).await?;
+        let (leader_conn, follower_conns, members) =
+            Self::build_connections(&endpoints, &config).await?;
 
         Ok(Self {
             leader_conn,
@@ -54,6 +56,7 @@ impl ConnectionPool {
     /// 1. Discovers fresh cluster metadata from provided endpoints
     /// 2. Re-establishes leader connection using latest config
     /// 3. Rebuilds follower connections pool
+    #[allow(dead_code)]
     pub(crate) async fn refresh(
         &mut self,
         new_endpoints: Option<Vec<String>>,
@@ -61,7 +64,8 @@ impl ConnectionPool {
         if let Some(endpoints) = new_endpoints {
             self.endpoints = endpoints;
         }
-        let (leader_conn, follower_conns, members) = Self::build_connections(&self.endpoints, &self.config).await?;
+        let (leader_conn, follower_conns, members) =
+            Self::build_connections(&self.endpoints, &self.config).await?;
 
         // Atomic update of fields
         self.leader_conn = leader_conn;
@@ -79,21 +83,23 @@ impl ConnectionPool {
         // 1. Load cluster metadata
         let members = Self::load_cluster_metadata(endpoints, config).await?;
         info!("Cluster members discovered: {:?}", members);
+        println!("Cluster members discovered: {members:?}",);
 
         // 2. Parse leader and follower addresses
         let (leader_addr, follower_addrs) = Self::parse_cluster_metadata(&members)?;
 
         // 3. Establish all connections in parallel
         let leader_future = Self::create_channel(leader_addr, config);
-        let follower_futures = follower_addrs
-            .into_iter()
-            .map(|addr| Self::create_channel(addr, config));
+        let follower_futures =
+            follower_addrs.into_iter().map(|addr| Self::create_channel(addr, config));
 
-        let (leader_conn, follower_conns) = tokio::join!(leader_future, futures::future::join_all(follower_futures));
+        let (leader_conn, follower_conns) =
+            tokio::join!(leader_future, futures::future::join_all(follower_futures));
 
         // 4. Filter valid connections
         let leader_conn = leader_conn?;
-        let follower_conns = follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
+        let follower_conns =
+            follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
 
         Ok((leader_conn, follower_conns, members))
     }
@@ -138,15 +144,13 @@ impl ConnectionPool {
         for addr in endpoints {
             match Self::create_channel(addr.clone(), config).await {
                 Ok(channel) => {
-                    let mut client = RpcServiceClient::new(channel);
+                    let mut client = ClusterManagementServiceClient::new(channel);
                     if config.enable_compression {
                         client = client
                             .send_compressed(CompressionEncoding::Gzip)
                             .accept_compressed(CompressionEncoding::Gzip);
                     }
-                    match client
-                        .get_cluster_metadata(tonic::Request::new(MetadataRequest {}))
-                        .await
+                    match client.get_cluster_metadata(tonic::Request::new(MetadataRequest {})).await
                     {
                         Ok(response) => return Ok(response.into_inner().nodes),
                         Err(e) => {
@@ -157,7 +161,10 @@ impl ConnectionPool {
                     }
                 }
                 Err(e) => {
-                    error!("load_cluster_metadata from addr: {:?}, failed: {:?}", &addr, e);
+                    error!(
+                        "load_cluster_metadata from addr: {:?}, failed: {:?}",
+                        &addr, e
+                    );
                     continue;
                 } // Connection failed, try next
             }
@@ -167,13 +174,13 @@ impl ConnectionPool {
 
     /// Extract leader address from metadata
     pub(super) fn parse_cluster_metadata(
-        nodes: &Vec<NodeMeta>
+        nodes: &[NodeMeta]
     ) -> std::result::Result<(String, Vec<String>), ClientApiError> {
         let mut leader_addr = None;
         let mut followers = Vec::new();
 
         for node in nodes {
-            let addr = format!("http://{}:{}", node.ip, node.port);
+            let addr = address_str(&node.address);
             debug!("parse_cluster_metadata, addr: {:?}", &addr);
             if node.role == crate::LEADER {
                 leader_addr = Some(addr);
@@ -182,8 +189,6 @@ impl ConnectionPool {
             }
         }
 
-        leader_addr
-            .map(|addr| (addr, followers))
-            .ok_or(ErrorCode::NotLeader.into())
+        leader_addr.map(|addr| (addr, followers)).ok_or(ErrorCode::NotLeader.into())
     }
 }

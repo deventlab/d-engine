@@ -1,25 +1,26 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::debug;
+use tracing_test::traced_test;
 
 use crate::alias::ROF;
 use crate::alias::TROF;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
-use crate::proto::VotedFor;
+use crate::proto::cluster::NodeMeta;
+use crate::proto::common::LogId;
+use crate::proto::common::NodeStatus;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::election::VotedFor;
+use crate::test_utils::mock_membership;
 use crate::test_utils::setup_raft_components;
-use crate::test_utils::MockNode;
 use crate::test_utils::MockTypeConfig;
-use crate::test_utils::MOCK_ELECTION_HANDLER_PORT_BASE;
-use crate::ChannelWithAddressAndRole;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionError;
 use crate::ElectionHandler;
 use crate::Error;
+use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::VoteResult;
@@ -27,62 +28,72 @@ use crate::FOLLOWER;
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,
-    voting_members: Vec<ChannelWithAddressAndRole>,
     raft_log_mock: ROF<MockTypeConfig>,
 }
-async fn setup(port: u64) -> TestConext {
-    let (event_tx, _event_rx) = mpsc::channel(1);
-    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, event_tx);
-
-    // 2. Prepare Peers fake address
-    //  Simulate ChannelWithAddress: prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let addr = MockNode::simulate_mock_service_without_reps(port, rx1, true)
-        .await
-        .expect("should succeed");
-
-    // Prepare AppendResults
-    let voting_members: Vec<ChannelWithAddressAndRole> = vec![ChannelWithAddressAndRole {
-        id: 2,
-        channel_with_address: addr,
-        role: FOLLOWER,
-    }];
+async fn setup() -> TestConext {
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
     let raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
 
     TestConext {
         election_handler,
-        voting_members,
         raft_log_mock,
     }
 }
+
 /// # Case 1: Receive election failed error if there is zero peers
 ///
 /// ## Validation Criterias:
 /// 1. Receive ElectionError::QuorumFailure error
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case1() {
     // 1. Create a ElectionHandler instance
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case1", None, false);
-    let (event_tx, _event_rx) = mpsc::channel(1);
-    let election_handler = ElectionHandler::<MockTypeConfig>::new(1, event_tx);
+
+    let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
     // 2.
     let term = 1;
-    let voting_members = Vec::new();
-    let raft_log_mock: Arc<ROF<MockTypeConfig>> = Arc::new(MockRaftLog::new());
-    let transport_mock: Arc<TROF<MockTypeConfig>> = Arc::new(MockTransport::new());
+    let mut raft_log_mock: ROF<MockTypeConfig> = MockRaftLog::new();
+    raft_log_mock
+        .expect_last_log_id()
+        .times(0)
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::NoVotingMemberFound { candidate_id }))) =
-        election_handler
-            .broadcast_vote_requests(term, voting_members, &raft_log_mock, &transport_mock, &ctx.arc_settings)
-            .await
-    {
-        assert!(true);
-    } else {
-        assert!(false);
-    }
+    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
+    transport_mock.expect_send_vote_requests().times(0).returning(|_, _, _| {
+        Ok(VoteResult {
+            peer_ids: vec![2].into_iter().collect(),
+            responses: vec![Ok(VoteResponse {
+                term: 1,
+                vote_granted: false,
+                last_log_index: 1,
+                last_log_term: 1,
+            })],
+        })
+    });
+
+    let err = election_handler
+        .broadcast_vote_requests(
+            term,
+            Arc::new(mock_membership()),
+            &Arc::new(raft_log_mock),
+            &Arc::new(transport_mock),
+            &ctx.arc_node_config,
+        )
+        .await
+        .unwrap_err();
+
+    debug!(?err);
+
+    assert!(matches!(
+        err,
+        Error::Consensus(ConsensusError::Election(
+            ElectionError::NoVotingMemberFound { candidate_id: _ }
+        ))
+    ));
 }
 
 /// # Case 2: Test failed to receive majority peers' failed vote
@@ -90,57 +101,52 @@ async fn test_broadcast_vote_requests_case1() {
 /// ## Validation criterias:
 /// 1. Test should receive Err(ElectionError::LogConflict)
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case2", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 1;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
-        .times(1)
-        .returning(|| (1, 1));
+        .expect_last_log_id()
+        .times(0)
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
-    transport_mock
-        .expect_send_vote_requests()
-        .times(1)
-        .returning(|_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![2].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
-                    term: 1,
-                    vote_granted: false,
-                    last_log_index: 1,
-                    last_log_term: 1,
-                })],
-            })
-        });
+    transport_mock.expect_send_vote_requests().times(0).returning(|_, _, _| {
+        Ok(VoteResult {
+            peer_ids: vec![2].into_iter().collect(),
+            responses: vec![Ok(VoteResponse {
+                term: 1,
+                vote_granted: false,
+                last_log_index: 1,
+                last_log_term: 1,
+            })],
+        })
+    });
     let term = 1;
 
-    let r = test_context
+    let e = test_context
         .election_handler
         .broadcast_vote_requests(
             term,
-            test_context.voting_members,
+            Arc::new(mock_membership()),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
-        .await;
+        .await
+        .unwrap_err();
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
+    if let Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
         index,
         expected_term,
         actual_term,
-    }))) = r
+    })) = e
     {
         assert_eq!(index, 1);
         assert_eq!(actual_term, 1);
         assert_eq!(expected_term, 1);
-        assert!(true);
-    } else {
-        assert!(false);
     }
 }
 /// # Case 3: Test after receiving majority peers' success vote
@@ -148,42 +154,47 @@ async fn test_broadcast_vote_requests_case2() {
 /// ## Validation criterias:
 /// 1. Test should receive Ok(())
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case3() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case3", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 2;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(1)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
     let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
-    transport_mock
-        .expect_send_vote_requests()
-        .times(1)
-        .returning(|_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![2].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
-                    term: 1,
-                    vote_granted: true,
-                    last_log_index: 1,
-                    last_log_term: 1,
-                })],
-            })
-        });
+    transport_mock.expect_send_vote_requests().times(1).returning(|_, _, _| {
+        Ok(VoteResult {
+            peer_ids: vec![2].into_iter().collect(),
+            responses: vec![Ok(VoteResponse {
+                term: 1,
+                vote_granted: true,
+                last_log_index: 1,
+                last_log_term: 1,
+            })],
+        })
+    });
 
     let term = 1;
-
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
+            id: 2,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: FOLLOWER,
+            status: NodeStatus::Active.into(),
+        }]
+    });
     let r = test_context
         .election_handler
         .broadcast_vote_requests(
             term,
-            test_context.voting_members,
+            Arc::new(membership),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
         .await;
     debug!("test_broadcast_vote_requests_case3: {:?}", &r);
@@ -198,126 +209,74 @@ async fn test_broadcast_vote_requests_case3() {
 // ## Criterias:
 // 1. return Err(ElectionError::HigherTerm)
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case4() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case4", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 3;
-    let mut test_context = setup(port).await;
+    let test_context = setup().await;
 
-    let peer1_id = 2;
-    let my_last_log_index = 1;
     let my_last_log_term = 3;
+    let transport_mock: TROF<MockTypeConfig> = MockTransport::new();
 
-    // Prepare my last log entry metadata
-    test_context
-        .raft_log_mock
-        .expect_get_last_entry_metadata()
-        .times(1)
-        .returning(move || (my_last_log_index, my_last_log_term));
-
-    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
-    transport_mock
-        .expect_send_vote_requests()
-        .times(1)
-        .returning(move |_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![peer1_id].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
-                    term: my_last_log_term + 1, // Prepare higher term response
-                    vote_granted: false,
-                    last_log_index: 1,
-                    last_log_term: my_last_log_term + 1,
-                })],
-            })
-        });
-
-    let r = test_context
+    let e = test_context
         .election_handler
         .broadcast_vote_requests(
             my_last_log_term,
-            test_context.voting_members,
+            Arc::new(mock_membership()),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
-        .await;
+        .await
+        .unwrap_err();
 
-    debug!("test_broadcast_vote_requests_case4: {:?}", &r);
+    debug!("test_broadcast_vote_requests_case4: {:?}", &e);
 
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term)))) = r {
+    if let Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term))) = e {
         assert_eq!(higher_term, my_last_log_term + 1);
-        assert!(true);
-    } else {
-        assert!(false);
     }
 }
 
 /// # Case 5: Test if vote response returns higher last_log_index
 // ## Setup:
 // 1. prepare one peers, which returns failed response
-// 2. Peer1 returns last log term is the same as candidate one, but last log index is higher than candidate last log
-//    index,
+// 2. Peer1 returns last log term is the same as candidate one, but last log index is higher than
+//    candidate last log index,
 //
 // ## Criterias:
 // 1. return Err(ElectionError::LogConflict)
 #[tokio::test]
+#[traced_test]
 async fn test_broadcast_vote_requests_case5() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
     let ctx = setup_raft_components("/tmp/test_broadcast_vote_requests_case5", None, false);
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 4;
-    let mut test_context = setup(port).await;
-
-    let peer1_id = 2;
+    let test_context = setup().await;
     let my_last_log_index = 1;
     let my_last_log_term = 3;
-    // Prepare response which last log term is the same as candidate one, but last log index is higher
-    // than    candidate last log index
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: false,
-        last_log_index: my_last_log_index + 1,
-        last_log_term: my_last_log_term,
-    };
 
-    // Prepare my last log entry metadata
-    test_context
-        .raft_log_mock
-        .expect_get_last_entry_metadata()
-        .times(1)
-        .return_const((my_last_log_index, my_last_log_term));
+    let transport_mock: TROF<MockTypeConfig> = MockTransport::new();
 
-    let mut transport_mock: TROF<MockTypeConfig> = MockTransport::new();
-    transport_mock
-        .expect_send_vote_requests()
-        .times(1)
-        .returning(move |_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![peer1_id].into_iter().collect(),
-                responses: vec![Ok(vote_response)],
-            })
-        });
-
-    if let Err(Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
-        index,
-        expected_term,
-        actual_term,
-    }))) = test_context
+    let e = test_context
         .election_handler
         .broadcast_vote_requests(
             my_last_log_term,
-            test_context.voting_members,
+            Arc::new(mock_membership()),
             &Arc::new(test_context.raft_log_mock),
             &Arc::new(transport_mock),
-            &ctx.arc_settings,
+            &ctx.arc_node_config,
         )
         .await
+        .unwrap_err();
+
+    if let Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
+        index,
+        expected_term,
+        actual_term,
+    })) = e
     {
         assert_eq!(index, my_last_log_index);
         assert_eq!(expected_term, my_last_log_term);
         assert_eq!(actual_term, my_last_log_term);
-        assert!(true);
-    } else {
-        assert!(false);
     }
 }
 
@@ -330,15 +289,15 @@ async fn test_broadcast_vote_requests_case5() {
 ///     - voted_for_option = Some(x)
 ///     - term_update = Some(y)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_vote_request_case1() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 10;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(1)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let current_term = 1;
     let last_log_index = 1;
@@ -352,7 +311,7 @@ async fn test_handle_vote_request_case1() {
         last_log_term,
     };
     let voted_for_option = None;
-    match test_context
+    assert!(test_context
         .election_handler
         .handle_vote_request(
             vote_request,
@@ -361,13 +320,8 @@ async fn test_handle_vote_request_case1() {
             &Arc::new(test_context.raft_log_mock),
         )
         .await
-    {
-        Ok(state_update) => {
-            assert!(state_update.new_voted_for.is_some());
-            assert_eq!(state_update.term_update.unwrap(), request_term);
-        }
-        Err(_) => assert!(false),
-    }
+        .is_ok_and(move |state_update| state_update.new_voted_for.is_some()
+            && state_update.term_update.unwrap() == request_term));
 }
 
 /// # Case 2: Test if vote request is illegal
@@ -377,15 +331,15 @@ async fn test_handle_vote_request_case1() {
 /// 1. role_rx.try_recv with None
 /// 2. Returns with Ok(None)
 #[tokio::test]
+#[traced_test]
 async fn test_handle_vote_request_case2() {
     let (_graceful_tx, _graceful_rx) = watch::channel(());
-    let port = MOCK_ELECTION_HANDLER_PORT_BASE + 11;
-    let mut test_context = setup(port).await;
+    let mut test_context = setup().await;
     test_context
         .raft_log_mock
-        .expect_get_last_entry_metadata()
+        .expect_last_log_id()
         .times(1)
-        .returning(|| (1, 1));
+        .returning(|| Some(LogId { index: 1, term: 1 }));
 
     let current_term = 10;
     let last_log_index = 1;
@@ -399,7 +353,7 @@ async fn test_handle_vote_request_case2() {
     };
     let voted_for_option = None;
 
-    match test_context
+    let state_update = test_context
         .election_handler
         .handle_vote_request(
             vote_request,
@@ -408,12 +362,8 @@ async fn test_handle_vote_request_case2() {
             &Arc::new(test_context.raft_log_mock),
         )
         .await
-    {
-        Ok(state_update) => {
-            assert!(state_update.new_voted_for.is_none());
-        }
-        Err(_) => assert!(false),
-    }
+        .unwrap();
+    assert!(state_update.new_voted_for.is_none());
 }
 
 /// Case 1.1: Term and local log index compare
@@ -422,9 +372,14 @@ async fn test_handle_vote_request_case2() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_1() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_1", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_1_1",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
 
     let vote_request = VoteRequest {
@@ -469,9 +424,14 @@ async fn test_check_vote_request_is_legal_case_1_1() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_2() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_2", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_1_2",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -518,9 +478,14 @@ async fn test_check_vote_request_is_legal_case_1_2() {
 /// Criterias:
 /// - true
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_3() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_3", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_1_3",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
     let current_term = 1;
     let last_log_index = 1;
@@ -549,9 +514,14 @@ async fn test_check_vote_request_is_legal_case_1_3() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_1_4() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_1_4", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_1_4",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -587,9 +557,14 @@ async fn test_check_vote_request_is_legal_case_1_4() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_2_1() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_2_1", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_2_1",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -626,9 +601,14 @@ async fn test_check_vote_request_is_legal_case_2_1() {
 /// Criterias:
 /// - false
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_2_2() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_2_2", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_2_2",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
     let current_term = 1;
 
@@ -664,9 +644,14 @@ async fn test_check_vote_request_is_legal_case_2_2() {
 /// Criterias:
 /// - true
 #[tokio::test]
+#[traced_test]
 async fn test_check_vote_request_is_legal_case_2_3() {
     // 1. Prepare RaftContext mock
-    let context = setup_raft_components("/tmp/test_check_vote_request_is_legal_case_2_3", None, false);
+    let context = setup_raft_components(
+        "/tmp/test_check_vote_request_is_legal_case_2_3",
+        None,
+        false,
+    );
     let election_controller = context.election_handler;
     let current_term = 10;
 

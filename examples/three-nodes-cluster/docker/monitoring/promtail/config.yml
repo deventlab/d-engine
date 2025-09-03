@@ -1,0 +1,12 @@
+positions:
+  filename: /app/logs/positions.yaml
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+scrape_configs:
+  - job_name: dengine
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: dengine
+          __path__: /app/logs/*.log

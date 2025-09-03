@@ -1,46 +1,40 @@
 [package]
 name = "d-engine"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 resolver = "2" # Workspace-level unified configuration
-authors = [
-    "Joshua Chi <joshokn@gmail.com>",
-]
-categories = [
-    "concurrency",
-    "asynchronous",
-    "algorithms",
-    "database"
-]
+authors = ["Joshua Chi <joshokn@gmail.com>"]
+categories = ["concurrency", "asynchronous", "algorithms", "database"]
 keywords = [
     "raft",
     "consensus",
     "distributed-systems",
     "storage",
-    "fault-tolerance"
+    "fault-tolerance",
 ]
 description = "A lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems."
 homepage = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/deventlab/d-engine"
 
+[features]
+default = [] # Optional: Include "rocks" in default if desired
+rocksdb = [
+    "dep:rocksdb",
+] # Enable rocksdb dependency when "rocks" feature is active
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 prost = { version = "0.13", default-features = false }
 bincode = "1.3"
-# network
-h2 = "0.4.8"
-tonic = { version = "0.12", features = ["gzip", "tls"] }
+tonic = { version = "0.12.3", features = ["gzip", "tls"] }
 tonic-health = "0.12.3"
-warp = "0.3.7"
 # certification
 rcgen = { version = "0.13", features = ["pem"] }
-# compress 
+# compress
 flate2 = { version = "1.0", default-features = false, features = ["zlib"] }
 # Async
 tokio = { version = "1.4", features = [
-    # "rt-multi-thread",
     "macros",
     "time",
     "signal",
@@ -50,43 +44,68 @@ tokio = { version = "1.4", features = [
 tokio-stream = "0.1.16"
 # use tokio_util::sync::CancellationToken;
 tokio-util = "0.7.11"
+
 futures = "0.3.30"
-# DB
-sled = { version = "0.34.7", features = [
-    "compression",
-], default-features = false }
+rocksdb = { version = "0.24.0", optional = true }
+
 # Monitoring
-prometheus = { version = "0.13", default-features = false }
+metrics = { version = "0.24", features = [] }
 # log
 tracing = { version = "0.1.41" }
 parking_lot = "0.12.3"
 rand = "0.8.5"
 thiserror = "1.0"
-config = { version ="0.14.0", default-features = false, features = ["toml"] }
-autometrics = { version = "2.0.0", default-features = false, features = ["prometheus-exporter"] }
-lazy_static = "1.4"
+config = { version = "0.14.0", default-features = false, features = ["toml"] }
 nanoid = "0.4.0"
-# using Dashset 
+# using Dashset
 dashmap = "5.5.3"
 arc-swap = "1.7.1"
+bytes = "1.10"
+tempfile = "3.19.1"
+crc32fast = "1.4.2"
+sha2 = "0.10.9"
+async-stream = "0.3.6"
+
+# Compress/decompress data stream
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+
+# Packing/unpacking TAR archives
+tokio-tar = "0.3"
+http-body = "1.0"
+http-body-util = "0.1.3"
+memmap2 = "0.9.5"
+lru = "0.15.0"
+
+# Cargo build performance optimization
+# zstd-sys = { version = "=1.6.2", features = [
+#     "pkg-config",
+# ], default-features = false }
+ring = { version = "=0.17.14", features = ["std"] }
+
+# TODO: to replace dashmap
+crossbeam-skiplist = "0.1"
 
 [dev-dependencies]
 mockall = "0.12.1"
-env_logger = "0.11.6"
+tracing-subscriber = "0.3.20"
 once_cell = "1.20.2"
 tokio = { version = "1", features = ["test-util", "process"] }
 serial_test = "3.2.0"
+hyper = "1.6.0"
 temp-env = "0.3.6"
-tempfile = "3.19.1"
+nix = { version = "0.30.1", features = ["fs"] }
+tracing-test = "0.2"
+uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 tonic-build = "0.12"
 vergen = { version = "8.1", features = ["git", "gitcl"] }
 
 [profile.dev]
-opt-level = 1 # Main code is low-optimized to speed up compilation
+opt-level = 1      # Main code is low-optimized to speed up compilation
 incremental = true # Enable incremental compilation (enabled by default, requires confirmation)
-codegen-units = 4 # Appropriately reduce parallel units to reduce memory usage
+codegen-units = 16 # Appropriately reduce parallel units to reduce memory usage
+lto = false
 
 [profile.dev.package."*"]
 opt-level = 3 # All dependency optimization levels
@@ -95,7 +114,17 @@ opt-level = 3 # All dependency optimization levels
 incremental = true
 debug = false
 # opt-level = 3
-opt-level = 'z' # Optimized for minimum size
+opt-level = 'z'        # Optimized for minimum size
 overflow-checks = true
-lto = true # Eliminate redundant code and reduce size
-codegen-units = 1 # Reduce parallel code generation units to improve optimization effect
+lto = true             # Eliminate redundant code and reduce size
+codegen-units = 1      # Reduce parallel code generation units to improve optimization effect
+
+
+[profile.test]
+incremental = true
+codegen-units = 16           # Take advantage of M2 multi-core
+split-debuginfo = "unpacked" # macOS-specific optimization
+debug = 1                    # Reduce debug information
+
+[profile.test.build-override]
+opt-level = 3 # Full optimization of dependencies

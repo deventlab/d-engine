@@ -1,30 +1,41 @@
+use std::fmt::Debug;
+
 use crate::grpc::grpc_transport::GrpcTransport;
+use crate::BufferedRaftLog;
 use crate::DefaultCommitHandler;
+use crate::DefaultPurgeExecutor;
 use crate::DefaultStateMachineHandler;
 use crate::ElectionHandler;
+use crate::LogSizePolicy;
 use crate::RaftMembership;
-use crate::RaftStateMachine;
 use crate::ReplicationHandler;
-use crate::RpcPeerChannels;
-use crate::SledRaftLog;
-use crate::SledStateStorage;
+use crate::StateMachine;
+use crate::StorageEngine;
 use crate::TypeConfig;
 
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
-pub struct RaftTypeConfig;
+#[derive(Debug)]
+pub struct RaftTypeConfig<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
+    _marker: std::marker::PhantomData<(SE, SM)>,
+}
 
-impl TypeConfig for RaftTypeConfig {
-    type R = SledRaftLog;
+impl<SE, SM> TypeConfig for RaftTypeConfig<SE, SM>
+where
+    SE: StorageEngine + Debug,
+    SM: StateMachine + Debug,
+{
+    type SE = SE;
 
-    type TR = GrpcTransport;
+    type SM = SM;
 
-    type SM = RaftStateMachine;
+    type R = BufferedRaftLog<Self>;
 
-    type SS = SledStateStorage;
+    type TR = GrpcTransport<Self>;
 
     type M = RaftMembership<Self>;
-
-    type P = RpcPeerChannels;
 
     type REP = ReplicationHandler<Self>;
 
@@ -33,4 +44,8 @@ impl TypeConfig for RaftTypeConfig {
     type C = DefaultCommitHandler<Self>;
 
     type SMH = DefaultStateMachineHandler<Self>;
+
+    type SNP = LogSizePolicy;
+
+    type PE = DefaultPurgeExecutor<Self>;
 }

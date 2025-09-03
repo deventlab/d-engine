@@ -2,12 +2,15 @@
 //! We also want to refactor all the APIs based its similar parttern.
 
 use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::sync::Arc;
 
-use autometrics::autometrics;
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
+use tokio::sync::mpsc;
 use tokio::task;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
 use tracing::debug;
@@ -15,40 +18,66 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::proto::rpc_service_client::RpcServiceClient;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::VoteRequest;
-use crate::task_with_timeout_and_exponential_backoff;
+use crate::alias::MOF;
+use crate::grpc_task_with_timeout_and_exponential_backoff;
+use crate::proto::cluster::cluster_management_service_client::ClusterManagementServiceClient;
+use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
+use crate::proto::election::raft_election_service_client::RaftElectionServiceClient;
+use crate::proto::election::VoteRequest;
+use crate::proto::replication::raft_replication_service_client::RaftReplicationServiceClient;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::storage::snapshot_service_client::SnapshotServiceClient;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
+use crate::proto::storage::SnapshotChunk;
+use crate::scoped_timer::ScopedTimer;
 use crate::AppendResult;
-use crate::ChannelWithAddress;
-use crate::ChannelWithAddressAndRole;
+use crate::BackoffPolicy;
 use crate::ClusterUpdateResult;
+use crate::ConnectionType;
 use crate::Error;
+use crate::InstallSnapshotBackoffPolicy;
+use crate::Membership;
 use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::Transport;
+use crate::TypeConfig;
 use crate::VoteResult;
-use crate::API_SLO;
 
 #[derive(Debug)]
-pub struct GrpcTransport {
+pub struct GrpcTransport<T>
+where
+    T: TypeConfig,
+{
     pub(crate) my_id: u32,
+
+    // -- Type System Marker --
+    /// Phantom data for type parameter anchoring
+    _marker: PhantomData<T>,
 }
 
 #[async_trait]
-impl Transport for GrpcTransport {
-    #[autometrics(objective = API_SLO)]
+impl<T> Transport<T> for GrpcTransport<T>
+where
+    T: TypeConfig,
+{
     async fn send_cluster_update(
         &self,
-        peers: Vec<ChannelWithAddressAndRole>,
-        req: ClusteMembershipChangeRequest,
+        req: ClusterConfChangeRequest,
         retry: &RetryPolicies,
+        membership: Arc<MOF<T>>,
     ) -> Result<ClusterUpdateResult> {
-        debug!("-------- send cluster_membership requests --------");
+        debug!("Sending cluster configuration update requests");
+
+        // Get voting members (control plane operation)
+        let peers = membership.voters().await;
         if peers.is_empty() {
-            warn!("peers is empty.");
+            warn!("No voting members available for cluster update");
             return Err(NetworkError::EmptyPeerList {
                 request_type: "send_cluster_update",
             }
@@ -57,47 +86,58 @@ impl Transport for GrpcTransport {
 
         let mut tasks = FuturesUnordered::new();
         let mut peer_ids = HashSet::new();
+
         for peer in peers {
             let peer_id = peer.id;
-
-            if peer_id == self.my_id {
-                error!(
-                    "myself({}) should not be passed into the send_cluster_update",
-                    self.my_id
-                );
-                continue;
+            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
+                continue; // Skip self and duplicates
             }
-
-            if peer_ids.contains(&peer_id) {
-                error!("found duplicated peer which we have send append requests already");
-                continue;
-            }
-
             peer_ids.insert(peer_id);
 
-            let channel = peer.channel_with_address.channel;
-            let req = req.clone();
+            // Real-time connection fetch for control operations
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
+            {
+                Some(chan) => chan,
+                None => {
+                    error!("Failed to get control channel for peer {}", peer_id);
+                    continue;
+                }
+            };
 
+            let req_clone = req.clone();
             let closure = move || {
                 let channel = channel.clone();
-                let mut client = RpcServiceClient::new(channel)
+                let mut client = ClusterManagementServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
-                let req = req.clone();
+                let req = req_clone.clone();
                 async move { client.update_cluster_conf(tonic::Request::new(req)).await }
             };
 
-            let membership_backoff_policy = retry.membership;
+            let policy = retry.membership;
+            let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match task_with_timeout_and_exponential_backoff(closure, membership_backoff_policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "update_cluster_conf",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
-                        debug!("sync_cluster_conf response: {:?}", response);
+                        debug!(
+                            "[send_cluster_update | {my_id}->{peer_id}] sync_cluster_conf response: {:?}",
+                            response
+                        );
                         let res = response.into_inner();
 
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("Received RPC error: {}", e);
+                        warn!(
+                            "[send_cluster_update | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -116,68 +156,93 @@ impl Transport for GrpcTransport {
             }
         }
 
-        Ok(ClusterUpdateResult { peer_ids, responses })
+        Ok(ClusterUpdateResult {
+            peer_ids,
+            responses,
+        })
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all,fields(
+        total_peers = requests.len(),
+        avg_request_size = "N/A", // PLACEHOLDER
+    ))]
     async fn send_append_requests(
         &self,
-        requests_with_peer_address: Vec<(u32, ChannelWithAddress, AppendEntriesRequest)>,
+        requests: Vec<(u32, AppendEntriesRequest)>,
         retry: &RetryPolicies,
+        membership: Arc<MOF<T>>,
     ) -> Result<AppendResult> {
-        debug!("-------- send append entries requests --------");
-        if requests_with_peer_address.is_empty() {
-            warn!("peers is empty.");
+        let _timer = ScopedTimer::new("send_append_requests");
+
+        debug!("Sending append entries requests");
+        if requests.is_empty() {
+            warn!("No append requests to process");
             return Err(NetworkError::EmptyPeerList {
-                request_type: "send_vote_requests",
+                request_type: "send_append_requests",
             }
             .into());
         }
-
         let mut tasks = FuturesUnordered::new();
         let mut peer_ids = HashSet::new();
 
-        for (peer_id, channel_with_address, req) in requests_with_peer_address {
-            debug!("start sending append entry request to peer: {}", peer_id);
-            if peer_id == self.my_id {
-                error!(
-                    "myself({}) should not be passed into the send_append_requests",
-                    self.my_id
-                );
-                continue;
-            }
+        // // Calculate the real value in advance
+        // let avg_request_size = requests
+        //     .iter()
+        //     .map(|(_, r)| r.entries.len())
+        //     .sum::<usize>()
+        //     .saturating_div(requests.len().max(1)); // Prevent zero division
 
-            if peer_ids.contains(&peer_id) {
-                error!("found duplicated peer which we have send append requests already");
-                continue;
-            }
+        // // Update log fields
+        // tracing::Span::current().record("avg_request_size", avg_request_size);
 
+        for (peer_id, req) in requests {
+            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
+                continue; // Skip self and duplicates
+            }
             peer_ids.insert(peer_id);
 
-            let channel = channel_with_address.channel;
-            // let req = req.clone();
-            debug!("[{} -> {}: send_append_requests, req: {:?}", self.my_id, peer_id, &req);
+            // Real-time connection fetch for data operations
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Data).await {
+                Some(chan) => chan,
+                None => {
+                    error!("Failed to get data channel for peer {}", peer_id);
+                    continue;
+                }
+            };
 
             let closure = move || {
                 let channel = channel.clone();
-                let mut client = RpcServiceClient::new(channel)
+                let mut client = RaftReplicationServiceClient::new(channel)
                     .send_compressed(CompressionEncoding::Gzip)
                     .accept_compressed(CompressionEncoding::Gzip);
                 let req = req.clone();
                 async move { client.append_entries(tonic::Request::new(req)).await }
             };
 
-            let append_entries_backoff_policy = retry.append_entries;
+            let policy = retry.append_entries;
+            let my_id = self.my_id;
             let task_handle = task::spawn(async move {
-                match task_with_timeout_and_exponential_backoff(closure, append_entries_backoff_policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "append_entries",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
-                        debug!("append entries response: {:?}", response);
+                        debug!(
+                            "[send_append_requests| {my_id}->{peer_id}] response: {:?}",
+                            response
+                        );
                         let res = response.into_inner();
 
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("append entries response received RPC error: {}", e);
+                        warn!(
+                            "[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -185,11 +250,7 @@ impl Transport for GrpcTransport {
             tasks.push(task_handle.boxed());
         }
 
-        let mut responses = Vec::new();
-
-        // Note:
-        // Even if there are errors, we must not return early unless it's a higher term error.
-        // We need to wait for all responses to return before proceeding.
+        let mut responses = Vec::with_capacity(tasks.len());
         while let Some(result) = tasks.next().await {
             match result {
                 Ok(r) => {
@@ -202,71 +263,82 @@ impl Transport for GrpcTransport {
             }
         }
 
-        Ok(AppendResult { peer_ids, responses })
+        Ok(AppendResult {
+            peer_ids,
+            responses,
+        })
     }
 
-    #[autometrics(objective = API_SLO)]
     async fn send_vote_requests(
         &self,
-        peers: Vec<ChannelWithAddressAndRole>,
         req: VoteRequest,
         retry: &RetryPolicies,
+        membership: Arc<MOF<T>>,
     ) -> Result<VoteResult> {
-        debug!("-------- send vote request --------");
+        debug!("Sending vote requests");
+
+        // Get voting members (control plane operation)
+        let peers = membership.voters().await;
         if peers.is_empty() {
-            warn!("peers is empty.");
+            warn!("No voting members available for vote requests");
             return Err(NetworkError::EmptyPeerList {
                 request_type: "send_vote_requests",
             }
             .into());
         }
+
         let mut tasks = FuturesUnordered::new();
-
-        // make sure the collection items are unique
         let mut peer_ids = HashSet::new();
-
-        debug!("send_vote_requests: {:?}, to: {:?}", &req, &peers);
 
         for peer in peers {
             let peer_id = peer.id;
-
-            if peer_id == self.my_id {
-                error!(
-                    "myself({}) should not be passed into the send_vote_requests",
-                    self.my_id
-                );
-                continue;
+            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
+                continue; // Skip self and duplicates
             }
-
-            if peer_ids.contains(&peer_id) {
-                error!("found duplicated peer which we have send append requests already");
-                continue;
-            }
-
             peer_ids.insert(peer_id);
 
-            let peer_channel_with_addr = peer.channel_with_address;
-
-            let addr = peer_channel_with_addr.address;
-
-            let closure = move || {
-                let channel = peer_channel_with_addr.channel.clone();
-                let mut client = RpcServiceClient::new(channel)
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .accept_compressed(CompressionEncoding::Gzip);
-                async move { client.request_vote(tonic::Request::new(req)).await }
+            // Real-time connection fetch for control operations
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
+            {
+                Some(chan) => chan,
+                None => {
+                    error!("Failed to get control channel for peer {}", peer_id);
+                    continue;
+                }
             };
 
-            let election_backoff_policy = retry.election;
+            let req_clone = req;
+            let closure = move || {
+                let channel = channel.clone();
+                let mut client = RaftElectionServiceClient::new(channel)
+                    .send_compressed(CompressionEncoding::Gzip)
+                    .accept_compressed(CompressionEncoding::Gzip);
+                async move { client.request_vote(tonic::Request::new(req_clone)).await }
+            };
+            let policy = retry.election;
+            let my_id = self.my_id;
+            let addr = peer.address;
             let task_handle = task::spawn(async move {
-                match task_with_timeout_and_exponential_backoff(closure, election_backoff_policy).await {
+                match grpc_task_with_timeout_and_exponential_backoff(
+                    "request_vote",
+                    closure,
+                    policy,
+                )
+                .await
+                {
                     Ok(response) => {
-                        debug!("resquest [peer({:?})] vote response: {:?}", &addr, response);
+                        debug!(
+                            "[send_vote_requests | {my_id}->{peer_id}] resquest [peer({:?})] vote response: {:?}",
+                            &addr, response
+                        );
                         let res = response.into_inner();
                         Ok(res)
                     }
                     Err(e) => {
-                        warn!("Received RPC error: {}", e);
+                        warn!(
+                            "[send_vote_requests | {my_id}->{peer_id}] Received RPC error: {}",
+                            e
+                        );
                         Err(e)
                     }
                 }
@@ -284,12 +356,204 @@ impl Transport for GrpcTransport {
                 }
             }
         }
-        Ok(VoteResult { peer_ids, responses })
+        Ok(VoteResult {
+            peer_ids,
+            responses,
+        })
+    }
+
+    async fn send_purge_requests(
+        &self,
+        req: PurgeLogRequest,
+        retry: &RetryPolicies,
+        membership: Arc<MOF<T>>,
+    ) -> Result<Vec<Result<PurgeLogResponse>>> {
+        debug!("Sending log purge requests");
+
+        // Get all members (data operation)
+        let peers = membership.voters().await;
+
+        if peers.is_empty() {
+            warn!("No peers available for purge requests");
+            return Err(NetworkError::EmptyPeerList {
+                request_type: "send_purge_requests",
+            }
+            .into());
+        }
+
+        let mut tasks = FuturesUnordered::new();
+        let mut peer_ids = HashSet::new();
+
+        for peer in peers {
+            let peer_id = peer.id;
+            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
+                continue; // Skip self and duplicates
+            }
+            peer_ids.insert(peer_id);
+
+            // Real-time connection fetch for data operations
+            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Data).await {
+                Some(chan) => chan,
+                None => {
+                    error!("Failed to get data channel for peer {}", peer_id);
+                    continue;
+                }
+            };
+
+            let req_clone = req.clone();
+            let closure = move || {
+                let channel = channel.clone();
+                let mut client = SnapshotServiceClient::new(channel)
+                    .send_compressed(CompressionEncoding::Gzip)
+                    .accept_compressed(CompressionEncoding::Gzip);
+                let req = req_clone.clone();
+                async move { client.purge_log(tonic::Request::new(req)).await }
+            };
+
+            let policy = retry.purge_log;
+            let addr = peer.address;
+            let my_id = self.my_id;
+            let task_handle = task::spawn(async move {
+                match grpc_task_with_timeout_and_exponential_backoff("purge_log", closure, policy)
+                    .await
+                {
+                    Ok(response) => {
+                        debug!(
+                            "[send_purge_requests | {my_id}->{peer_id}]resquest [peer({:?})] vote response: {:?}",
+                            &addr, response
+                        );
+                        let res = response.into_inner();
+                        Ok(res)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[send_purge_requests | {my_id}->{peer_id}]Received RPC error: {}",
+                            e
+                        );
+                        Err(e)
+                    }
+                }
+            });
+            tasks.push(task_handle.boxed());
+        }
+
+        let mut responses = Vec::new();
+        while let Some(result) = tasks.next().await {
+            match result {
+                Ok(r) => responses.push(r),
+                Err(e) => {
+                    error!("Task failed with error: {:?}", &e);
+                    responses.push(Err(Error::from(NetworkError::TaskFailed(e))));
+                }
+            }
+        }
+
+        Ok(responses)
+    }
+
+    async fn join_cluster(
+        &self,
+        leader_id: u32,
+        request: crate::proto::cluster::JoinRequest,
+        retry: BackoffPolicy,
+        membership: Arc<MOF<T>>,
+    ) -> Result<JoinResponse> {
+        debug!("Initiating cluster join via leader {}", leader_id);
+
+        // Real-time connection fetch for control operations
+        let channel = membership
+            .get_peer_channel(leader_id, ConnectionType::Control)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?;
+
+        let closure = move || {
+            let channel = channel.clone();
+            let mut client = ClusterManagementServiceClient::new(channel)
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+            let req = request.clone();
+            async move { client.join_cluster(tonic::Request::new(req)).await }
+        };
+
+        let my_id = self.my_id;
+        let response =
+            grpc_task_with_timeout_and_exponential_backoff("join_cluster", closure, retry).await?;
+        debug!(
+            "[join_cluster | {my_id}->{leader_id}]Join cluster response: {:?}",
+            response
+        );
+        Ok(response.into_inner())
+    }
+
+    async fn discover_leader(
+        &self,
+        request: LeaderDiscoveryRequest,
+        rpc_enable_compression: bool,
+        membership: Arc<MOF<T>>,
+    ) -> Result<Vec<LeaderDiscoveryResponse>> {
+        debug!("Starting leader discovery for node {}", request.node_id);
+
+        let member_ids: Vec<_> = membership.voters().await.iter().map(|m| m.id).collect();
+
+        let tasks = member_ids.into_iter().map(|member_id| {
+            Self::process_member(
+                membership.clone(),
+                member_id,
+                request.clone(),
+                rpc_enable_compression,
+            )
+        });
+
+        let my_id = self.my_id;
+        let results = futures::stream::iter(tasks).buffer_unordered(10).collect::<Vec<_>>().await;
+        debug!("[discover_leader | {my_id} ] Discover leader results.");
+        Ok(results.into_iter().flatten().collect())
+    }
+
+    // Add this to the Transport trait implementation
+    async fn request_snapshot_from_leader(
+        &self,
+        leader_id: u32,
+        ack_rx: mpsc::Receiver<SnapshotAck>,
+        _retry: &InstallSnapshotBackoffPolicy,
+        membership: Arc<MOF<T>>,
+    ) -> Result<Box<tonic::Streaming<SnapshotChunk>>> {
+        debug!("Fetching snapshot from leader {}", leader_id);
+
+        // Get bulk connection channel
+        let channel = membership
+            .get_peer_channel(leader_id, ConnectionType::Bulk)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?;
+
+        let channel = channel.clone();
+        let mut client = SnapshotServiceClient::new(channel)
+            .send_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+
+        // ReceiverStream adapts mpsc::Receiver to Stream type
+        let request_stream = ReceiverStream::new(ack_rx);
+        let response = client
+            .stream_snapshot(tonic::Request::new(request_stream))
+            .await
+            .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
+
+        Ok(Box::new(response.into_inner()))
     }
 }
 
-impl GrpcTransport {
-    #[autometrics(objective = API_SLO)]
+impl<T> GrpcTransport<T>
+where
+    T: TypeConfig,
+{
+    pub(crate) fn new(node_id: u32) -> Self {
+        Self {
+            my_id: node_id,
+            _marker: PhantomData,
+        }
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn if_mark_learner_as_follower(
         leader_commit_index: u64,
         learner_next_id: u64,
@@ -302,6 +566,29 @@ impl GrpcTransport {
             return true;
         }
 
-        return false;
+        false
+    }
+
+    async fn process_member(
+        membership: Arc<MOF<T>>,
+        member_id: u32,
+        request: LeaderDiscoveryRequest,
+        rpc_enable_compression: bool,
+    ) -> Option<LeaderDiscoveryResponse> {
+        match membership.get_peer_channel(member_id, ConnectionType::Control).await {
+            Some(channel) => {
+                let mut client = ClusterManagementServiceClient::new(channel);
+                if rpc_enable_compression {
+                    client = client
+                        .send_compressed(CompressionEncoding::Gzip)
+                        .accept_compressed(CompressionEncoding::Gzip);
+                }
+                client.discover_leader(request).await.ok().map(|res| res.into_inner())
+            }
+            None => {
+                error!(%member_id, "Cannot get channel from membership");
+                None
+            }
+        }
     }
 }

@@ -20,7 +20,6 @@ pub const LEADER: i32 = 2;
 pub const LEARNER: i32 = 3;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
@@ -40,25 +39,19 @@ use tracing::trace;
 use super::RaftContext;
 use super::RaftEvent;
 use super::RoleEvent;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
-use crate::alias::POF;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
-use crate::proto::VotedFor;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
+use crate::proto::common::EntryPayload;
+use crate::proto::election::VotedFor;
 use crate::Result;
-/// The role state focuses solely on its own logic
-/// and does not directly manipulate the underlying storage or network.
 use crate::TypeConfig;
 
+/// The role state focuses solely on its own logic
+/// and does not directly manipulate the underlying storage or network.
 #[repr(i32)]
 pub enum RaftRole<T: TypeConfig> {
-    Follower(FollowerState<T>),
-    Candidate(CandidateState<T>),
-    Leader(LeaderState<T>),
-    Learner(LearnerState<T>),
+    Follower(Box<FollowerState<T>>),
+    Candidate(Box<CandidateState<T>>),
+    Leader(Box<LeaderState<T>>),
+    Learner(Box<LearnerState<T>>),
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -80,8 +73,10 @@ pub struct HardState {
 pub struct SharedState {
     pub node_id: u32,
 
+    /// === Persistent State (MUST be on disk)
     pub hard_state: HardState,
-    /// Volatile state on all servers:
+
+    /// === Volatile state on all servers:
     /// index of highest log entry known to be committed (initialized to 0,
     /// increases monotonically)
     pub commit_index: u64,
@@ -89,6 +84,7 @@ pub struct SharedState {
 
 #[derive(Clone, Debug)]
 pub struct StateSnapshot {
+    pub role: i32,
     pub current_term: u64,
     pub voted_for: Option<VotedFor>,
     pub commit_index: u64,
@@ -108,13 +104,13 @@ impl SharedState {
         hard_state_from_db: Option<HardState>,
         last_applied_index_option: Option<u64>,
     ) -> Self {
-        let hard_state = if hard_state_from_db.is_none() {
+        let hard_state = if let Some(s) = hard_state_from_db {
+            s
+        } else {
             HardState {
                 current_term: 1,
                 voted_for: None,
             }
-        } else {
-            hard_state_from_db.unwrap()
         };
         debug!(
             "New Shared State wtih, hard_state_from_db:{:?}, last_applied_index_option:{:?} ",
@@ -160,19 +156,19 @@ impl SharedState {
 impl<T: TypeConfig> RaftRole<T> {
     pub(crate) fn state(&self) -> &dyn RaftRoleState<T = T> {
         match self {
-            RaftRole::Follower(state) => state,
-            RaftRole::Candidate(state) => state,
-            RaftRole::Leader(state) => state,
-            RaftRole::Learner(state) => state,
+            RaftRole::Follower(state) => state.as_ref(),
+            RaftRole::Candidate(state) => state.as_ref(),
+            RaftRole::Leader(state) => state.as_ref(),
+            RaftRole::Learner(state) => state.as_ref(),
         }
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut dyn RaftRoleState<T = T> {
         match self {
-            RaftRole::Follower(state) => state,
-            RaftRole::Candidate(state) => state,
-            RaftRole::Leader(state) => state,
-            RaftRole::Learner(state) => state,
+            RaftRole::Follower(state) => state.as_mut(),
+            RaftRole::Candidate(state) => state.as_mut(),
+            RaftRole::Leader(state) => state.as_mut(),
+            RaftRole::Learner(state) => state.as_mut(),
         }
     }
 
@@ -184,10 +180,25 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().reset_timer()
     }
 
+    pub(crate) async fn join_cluster(
+        &self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state().join_cluster(ctx).await
+    }
+
+    pub(crate) async fn fetch_initial_snapshot(
+        &self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state().fetch_initial_snapshot(ctx).await
+    }
+
     pub(crate) fn next_deadline(&self) -> Instant {
         self.state().next_deadline()
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn as_i32(&self) -> i32 {
         match self {
@@ -210,16 +221,19 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) fn become_learner(&self) -> Result<RaftRole<T>> {
         self.state().become_learner()
     }
-
+    #[allow(dead_code)]
     pub(crate) fn is_follower(&self) -> bool {
         self.state().is_follower()
     }
+    #[allow(dead_code)]
     pub(crate) fn is_candidate(&self) -> bool {
         self.state().is_candidate()
     }
+    #[allow(dead_code)]
     pub(crate) fn is_leader(&self) -> bool {
         self.state().is_leader()
     }
+    #[allow(dead_code)]
     pub(crate) fn is_learner(&self) -> bool {
         self.state().is_learner()
     }
@@ -228,10 +242,12 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().current_term()
     }
 
+    #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.state().voted_for()
     }
+    #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) fn commit_index(&self) -> u64 {
         self.state().commit_index()
@@ -251,72 +267,37 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().next_index(node_id)
     }
 
-    pub(crate) fn update_term(
-        &mut self,
-        new_term: u64,
-    ) {
-        self.state_mut().update_current_term(new_term);
-    }
-
-    pub(crate) fn update_voted_for(
-        &mut self,
-        voted_for: VotedFor,
-    ) -> Result<()> {
-        self.state_mut().update_voted_for(voted_for)
-    }
-
-    pub(crate) fn update_match_index(
-        &mut self,
-        node_id: u32,
-        new_match_id: u64,
-    ) -> Result<()> {
-        self.state_mut().update_match_index(node_id, new_match_id)
-    }
-
-    pub(crate) fn update_next_index(
-        &mut self,
-        node_id: u32,
-        new_next_id: u64,
-    ) -> Result<()> {
-        self.state_mut().update_next_index(node_id, new_next_id)
-    }
-
     pub(crate) fn init_peers_next_index_and_match_index(
         &mut self,
         last_entry_id: u64,
         peer_ids: Vec<u32>,
     ) -> Result<()> {
-        self.state_mut()
-            .init_peers_next_index_and_match_index(last_entry_id, peer_ids)
+        self.state_mut().init_peers_next_index_and_match_index(last_entry_id, peer_ids)
     }
 
     pub(crate) async fn tick(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         event_tx: &mpsc::Sender<RaftEvent>,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
         trace!("raft_role:tick");
-        self.state_mut().tick(role_tx, event_tx, peer_channels, ctx).await
+        self.state_mut().tick(role_tx, event_tx, ctx).await
     }
 
     pub(crate) async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
-        peer_channels: Arc<POF<T>>,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
-        self.state_mut()
-            .handle_raft_event(raft_event, peer_channels, ctx, role_tx)
-            .await
+        self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
     }
 
     #[cfg(test)]
@@ -324,39 +305,15 @@ impl<T: TypeConfig> RaftRole<T> {
         0
     }
 
-    /// Verifies leadership validity in the new term by attempting to replicate a no-op entry.
-    ///
-    /// This critical safety check ensures the new leader can actually communicate with a quorum of
-    /// cluster nodes before accepting client requests. The verification is done by replicating
-    /// a special no-op log entry and confirming its commitment.
-    ///
-    /// # Key Behaviors
-    /// - **Non-blocking verification**: Operates asynchronously without stalling main Raft loop
-    /// - **Term-aware retries**: Automatically aborts if higher term is detected
-    ///
-    /// # Error Semantics
-    /// Returned errors indicate **technical failures in the verification process**, not quorum
-    /// rejection:
-    /// - Network errors (gRPC failures, unreachable nodes)
-    /// - Storage I/O errors (failed to persist no-op entry)
-    /// - Internal channel errors (message queue overflows)
-    ///
-    /// # Success Conditions
-    /// A successful `Ok(())` return only means:
-    /// The noop request has been successfully enqueued into the leader’s replication batch queue.
-    ///
-    /// # Arguments
-    /// - `peer_channels`: Network channels to cluster peers
-    /// - `ctx`: Shared Raft state context
-    /// - `role_tx`: Role transition event channel
-    pub(crate) async fn verify_leadership_in_new_term(
+    pub(crate) async fn verify_leadership_persistent(
         &mut self,
-        peer_channels: Arc<POF<T>>,
+        payloads: Vec<EntryPayload>,
+        bypass_queue: bool,
         ctx: &RaftContext<T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<bool> {
         self.state_mut()
-            .verify_leadership_in_new_term(peer_channels, ctx, role_tx)
+            .verify_leadership_persistent(payloads, bypass_queue, ctx, role_tx)
             .await
     }
 }
@@ -378,7 +335,9 @@ impl Serialize for HardState {
 
 impl<'de> Deserialize<'de> for HardState {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         #[derive(Deserialize)]
         struct HardStateDe {
             current_term: u64,
@@ -392,4 +351,11 @@ impl<'de> Deserialize<'de> for HardState {
             voted_for: hard_state_de.voted_for,
         })
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum QuorumVerificationResult {
+    Success,        // Leadership confirmation successful
+    LeadershipLost, // Confirmation of leadership loss (need to abdicate)
+    RetryRequired,  // Retry required (leadership still exists)
 }

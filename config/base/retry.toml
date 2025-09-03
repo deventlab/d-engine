@@ -26,3 +26,39 @@ max_retries = 10000  # Nearly infinite retries
 timeout_ms = 100     # Fast failure
 base_delay_ms = 1000 # 1 second interval check
 max_delay_ms = 10000 # Maximum 10 second interval
+
+[retry.auto_discovery]
+max_retries = 3     # Maximum number of retries (recommended: 3)
+timeout_ms = 100    # Single request timeout (recommended: 100-200ms)
+base_delay_ms = 50  # Initial backoff delay (recommended: 50-100ms)
+max_delay_ms = 1000 # Maximum backoff delay (recommended: <=1s)
+
+
+[retry.join_cluster]
+max_retries = 3      # Maximum number of retries (recommended: 3)
+timeout_ms = 500     # Single request timeout (recommended: 500-1000ms)
+base_delay_ms = 3000 # Initial backoff delay (recommended: 3000ms)
+max_delay_ms = 60000 # Maximum backoff delay (recommended: <=1m)
+
+
+[retry.install_snapshot]
+max_retries = 3                  # Maximum number of retries (recommended: 3)
+timeout_ms = 500                 # Single request timeout (recommended: 500-1000ms)
+base_delay_ms = 50               # Initial backoff delay (recommended: 50ms)
+max_delay_ms = 2000              # Maximum backoff delay (recommended: <=2s)
+per_chunk_timeout_ms = 1000      # single chunk timeout
+min_timeout_ms = 100             # minimum total timeout >= 1s
+max_timeout_ms = 30000           # maximum total timeout 30s
+between_chunk_timeout_ms = 30000
+
+[retry.purge_log]
+max_retries = 1     # Maximum number of retries (recommended: 3-5)
+timeout_ms = 100    # Single request timeout (recommended: 100-200ms)
+base_delay_ms = 50  # Initial backoff delay (recommended: 50-100ms)
+max_delay_ms = 1000 # Maximum backoff delay (recommended: <=1s)
+
+[retry.internal_quorum]
+max_retries = 3     # Maximum number of retries (recommended: must >=3)
+timeout_ms = 100    # Single request timeout (recommended: 100-200ms)
+base_delay_ms = 50  # Initial backoff delay (recommended: 50-100ms)
+max_delay_ms = 1000 # Maximum backoff delay (recommended: <=1s)

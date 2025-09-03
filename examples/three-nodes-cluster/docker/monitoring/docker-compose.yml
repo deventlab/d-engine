@@ -1,0 +1,54 @@
+services:
+  prometheus:
+    image: prometheus:1.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ${PROMETHEUS_CONFIG:-./prometheus/prometheus.yml}:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # - "--collector.systemd"
+      # - "--collector.processes"
+    restart: unless-stopped
+    networks:
+      - docker_mynetwork
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    networks:
+      - docker_mynetwork
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_PATHS_DASHBOARD=/var/lib/grafana/dashboards
+      - GF_DASHBOARDS_JSON_ENABLED=true # Enable JSON dashboard provisioning
+      - GF_DASHBOARDS_JSON_PATH=/var/lib/grafana/dashboards/dashboard.json
+    restart: unless-stopped
+    networks:
+      - docker_mynetwork
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  docker_mynetwork:
+    external: true

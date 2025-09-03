@@ -1,13 +1,15 @@
 [package]
 name = "demo"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 
 [dependencies]
 # d-engine = "0.1.1"
-d-engine = { path = "../../../d-engine" }
+# d-engine = { path = "../../../d-engine" }
+d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
 
-tokio = { version = "1.4", features = ["signal", "rt-multi-thread"] }
+metrics-exporter-prometheus = "0.17.2"
+tokio = { version = "1.4", features = ["rt-multi-thread"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"

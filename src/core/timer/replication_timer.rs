@@ -32,10 +32,6 @@ impl ReplicationTimer {
         self.batch_deadline = Instant::now() + self.batch_interval;
     }
 
-    pub fn remaining(&self) -> Duration {
-        self.next_deadline().saturating_duration_since(Instant::now())
-    }
-
     pub fn next_deadline(&self) -> Instant {
         self.replication_deadline.min(self.batch_deadline)
     }
@@ -46,10 +42,6 @@ impl ReplicationTimer {
 
     pub fn replication_deadline(&self) -> Instant {
         self.replication_deadline
-    }
-
-    pub fn tick_interval(&self) -> Duration {
-        self.batch_interval.min(self.replication_timeout)
     }
 
     pub(crate) fn is_expired(&self) -> bool {

@@ -1,0 +1,35 @@
+[package]
+name = "sled-demo"
+version = "0.1.3"
+edition = "2021"
+
+[dependencies]
+# d-engine = "0.1.1"
+d-engine = { path = "../../../d-engine" }
+# d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
+
+
+sled = { version = "0.34.7", features = [
+    "compression",
+], default-features = false }
+
+prost = { version = "0.13", default-features = false }
+metrics-exporter-prometheus = "0.17"
+metrics = { version = "0.24", features = [] }
+tokio = { version = "1.4", features = ["rt-multi-thread"] }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+async-trait = "0.1"
+bytes = "1.10"
+bincode = { version = "2.0", features = ["serde"] }
+arc-swap = "1.7"
+parking_lot = "0.12"
+anyhow = "1.0"
+sha2 = "0.10"
+uuid = { version = "1.4", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.19"
+mockall = "0.12"
+tracing-test = "0.2"

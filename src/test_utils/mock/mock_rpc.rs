@@ -1,29 +1,76 @@
-use crate::proto::rpc_service_server::RpcService;
-use crate::proto::AppendEntriesRequest;
-use crate::proto::AppendEntriesResponse;
-use crate::proto::ClientProposeRequest;
-use crate::proto::ClientReadRequest;
-use crate::proto::ClientResponse;
-use crate::proto::ClusteMembershipChangeRequest;
-use crate::proto::ClusterConfUpdateResponse;
-use crate::proto::ClusterMembership;
-use crate::proto::MetadataRequest;
-use crate::proto::VoteRequest;
-use crate::proto::VoteResponse;
+use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
+use tokio_stream::StreamExt;
+use tonic::Streaming;
+use tracing::trace;
+
+use crate::proto::client::raft_client_service_server::RaftClientService;
+use crate::proto::client::ClientReadRequest;
+use crate::proto::client::ClientResponse;
+use crate::proto::client::ClientWriteRequest;
+use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
+use crate::proto::cluster::ClusterConfChangeRequest;
+use crate::proto::cluster::ClusterConfUpdateResponse;
+use crate::proto::cluster::ClusterMembership;
+use crate::proto::cluster::JoinRequest;
+use crate::proto::cluster::JoinResponse;
+use crate::proto::cluster::LeaderDiscoveryRequest;
+use crate::proto::cluster::LeaderDiscoveryResponse;
+use crate::proto::cluster::MetadataRequest;
+use crate::proto::election::raft_election_service_server::RaftElectionService;
+use crate::proto::election::VoteRequest;
+use crate::proto::election::VoteResponse;
+use crate::proto::replication::raft_replication_service_server::RaftReplicationService;
+use crate::proto::replication::AppendEntriesRequest;
+use crate::proto::replication::AppendEntriesResponse;
+use crate::proto::storage::snapshot_service_server::SnapshotService;
+use crate::proto::storage::PurgeLogRequest;
+use crate::proto::storage::PurgeLogResponse;
+use crate::proto::storage::SnapshotAck;
+use crate::proto::storage::SnapshotChunk;
+use crate::proto::storage::SnapshotResponse;
+use crate::test_utils::crate_test_snapshot_stream;
+
+#[derive(Clone, Default)]
 pub struct MockRpcService {
+    pub server_port: Option<u16>,
     // Expected responses for each method
     pub expected_vote_response: Option<Result<VoteResponse, tonic::Status>>,
     pub expected_append_entries_response: Option<Result<AppendEntriesResponse, tonic::Status>>,
-    pub expected_update_cluster_conf_response: Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
+    pub expected_update_cluster_conf_response:
+        Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
     pub expected_client_propose_response: Option<Result<ClientResponse, tonic::Status>>,
     pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
-    pub expected_metadata_response: Option<Result<ClusterMembership, tonic::Status>>,
+
+    #[allow(clippy::type_complexity)]
+    pub expected_metadata_response:
+        Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
+
+    pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
+    pub expected_stream_snapshot_response: Option<Result<SnapshotChunk, tonic::Status>>,
+    pub expected_purge_log_response: Option<Result<PurgeLogResponse, tonic::Status>>,
+    pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
+    pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
+}
+impl MockRpcService {
+    pub fn with_metadata_response(
+        mut self,
+        f: impl Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync + 'static,
+    ) -> Self {
+        self.expected_metadata_response = Some(Arc::new(f));
+        self
+    }
+
+    pub fn set_port(
+        &mut self,
+        port: u16,
+    ) {
+        self.server_port = Some(port);
+    }
 }
 
 #[tonic::async_trait]
-impl RpcService for MockRpcService {
+impl RaftElectionService for MockRpcService {
     async fn request_vote(
         &self,
         _request: tonic::Request<VoteRequest>,
@@ -34,7 +81,10 @@ impl RpcService for MockRpcService {
             None => Err(tonic::Status::unknown("No mock vote response set")),
         }
     }
+}
 
+#[tonic::async_trait]
+impl RaftReplicationService for MockRpcService {
     async fn append_entries(
         &self,
         _request: tonic::Request<AppendEntriesRequest>,
@@ -42,29 +92,78 @@ impl RpcService for MockRpcService {
         match &self.expected_append_entries_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock append entries response set",
+            )),
         }
     }
+}
 
+#[tonic::async_trait]
+impl ClusterManagementService for MockRpcService {
     async fn update_cluster_conf(
         &self,
-        _request: tonic::Request<ClusteMembershipChangeRequest>,
+        _request: tonic::Request<ClusterConfChangeRequest>,
     ) -> std::result::Result<tonic::Response<ClusterConfUpdateResponse>, tonic::Status> {
         match &self.expected_update_cluster_conf_response {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock update_cluster_conf response set",
+            )),
+        }
+    }
+    async fn get_cluster_metadata(
+        &self,
+        _request: tonic::Request<MetadataRequest>,
+    ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
+        match (&self.expected_metadata_response, self.server_port) {
+            (Some(f), Some(port)) => f(port).map(tonic::Response::new).map_err(|e| e.clone()),
+            _ => Err(tonic::Status::unimplemented(
+                "Metadata response not configured",
+            )),
         }
     }
 
-    async fn handle_client_propose(
+    async fn join_cluster(
         &self,
-        _request: tonic::Request<ClientProposeRequest>,
+        _request: tonic::Request<JoinRequest>,
+    ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
+        match &self.expected_join_cluster_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown(
+                "No mock get_cluster_metadata response set",
+            )),
+        }
+    }
+
+    async fn discover_leader(
+        &self,
+        _request: tonic::Request<LeaderDiscoveryRequest>,
+    ) -> std::result::Result<tonic::Response<LeaderDiscoveryResponse>, tonic::Status> {
+        match &self.expected_discover_leader_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown(
+                "No mock get_cluster_metadata response set",
+            )),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl RaftClientService for MockRpcService {
+    async fn handle_client_write(
+        &self,
+        _request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         match &self.expected_client_propose_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock handle_client_write response set",
+            )),
         }
     }
 
@@ -75,18 +174,63 @@ impl RpcService for MockRpcService {
         match &self.expected_client_read_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown(
+                "No mock handle_client_read response set",
+            )),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl SnapshotService for MockRpcService {
+    type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
+
+    async fn stream_snapshot(
+        &self,
+        _request: tonic::Request<tonic::Streaming<SnapshotAck>>,
+    ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
+        match &self.expected_stream_snapshot_response {
+            Some(Ok(response)) => {
+                let streaming: Self::StreamSnapshotStream =
+                    crate_test_snapshot_stream(vec![response.clone()]);
+                Ok(tonic::Response::new(streaming))
+            }
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unknown(
+                "No mock install_snapshot response set",
+            )),
+        }
+    }
+    async fn install_snapshot(
+        &self,
+        request: tonic::Request<Streaming<SnapshotChunk>>,
+    ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
+        let mut stream = request.into_inner();
+
+        while let Some(_chunk) = stream.next().await {
+            trace!("install_snapshot receive chunk - ");
+        }
+        trace!("install_snapshot no more to receive!");
+
+        match &self.expected_snapshot_response {
+            Some(Ok(response)) => return Ok(tonic::Response::new(*response)),
+            Some(Err(status)) => return Err(status.clone()),
+            None => {
+                return Err(tonic::Status::unknown(
+                    "No mock install_snapshot response set",
+                ))
+            }
         }
     }
 
-    async fn get_cluster_metadata(
+    async fn purge_log(
         &self,
-        _request: tonic::Request<MetadataRequest>,
-    ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
-        match &self.expected_metadata_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+        _request: tonic::Request<PurgeLogRequest>,
+    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, tonic::Status> {
+        match &self.expected_purge_log_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock append entries response set")),
+            None => Err(tonic::Status::unknown("No mock purge_log response set")),
         }
     }
 }

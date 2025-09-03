@@ -1,0 +1,55 @@
+syntax = "proto3";
+package raft.client;
+
+import "proto/error.proto";
+
+// Write operation-specific command
+message WriteCommand {
+    message Insert {
+        bytes key = 1;
+        bytes value = 2;
+    }
+    message Delete {
+        bytes key = 1;
+    }
+    oneof operation {
+        Insert insert = 1;
+        Delete delete = 2;
+    }
+}
+message ClientWriteRequest {
+    uint32 client_id = 1;
+    repeated WriteCommand commands = 2;
+}
+
+message ClientReadRequest {
+    uint32 client_id = 1;
+    bool linear = 2;
+    repeated bytes keys = 3; // Key list to be read
+}
+
+message ClientResponse {
+    error.ErrorCode error = 1;
+
+    oneof success_result {
+        bool write_ack = 2;
+        ReadResults read_data = 3;
+    }
+
+    error.ErrorMetadata metadata = 4;
+}
+
+message ClientResult {  // Renamed from ClientGetResult
+    bytes key = 1;
+    bytes value = 2;
+  }
+
+message ReadResults {
+    repeated ClientResult results = 1;
+}
+  
+
+service RaftClientService {
+  rpc HandleClientWrite (ClientWriteRequest) returns (ClientResponse);
+  rpc HandleClientRead (ClientReadRequest) returns (ClientResponse);
+}

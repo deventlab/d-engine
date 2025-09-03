@@ -26,10 +26,12 @@ logs
 logs/*
 snapshots
 snapshots/*
+sample_reports/*
 
 .idea
 .idea/*
 
+docker/jepsen/sshkeys/
 docker/jepsen/store/
 docker/jepsen/store/*/*/*
 
