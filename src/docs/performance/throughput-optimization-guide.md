@@ -12,7 +12,7 @@ We implement three distinct connection types to prevent head-of-line blocking:
 | `Data`    | Log replication      | AppendEntries, Log writes         | Throughput-optimized       |
 | `Bulk`    | Large transfers      | Snapshot streaming                | Bandwidth-intensive        |
 
-```rust
+```rust,ignore
 pub(crate) enum ConnectionType {
     Control,  // Elections/heartbeats
     Data,     // Log replication
@@ -120,7 +120,7 @@ connection_window_size = 33_554_432  # 32MB window
 
 ### Connection Type Routing
 
-```rust
+```rust,ignore
 // Control operations
 membership.get_peer_channel(peer_id, ConnectionType::Control)
 
@@ -134,7 +134,7 @@ membership.get_peer_channel(leader_id, ConnectionType::Bulk)
 
 ### gRPC Server Tuning
 
-```rust
+```rust,ignore
 tonic::transport::Server::builder()
     .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
     .max_concurrent_streams(control_config.max_concurrent_streams)
@@ -170,14 +170,14 @@ tonic::transport::Server::builder()
 
 3. **Size bulk windows** for snapshot sizes:
 
-   ```rust
+   ```rust,ignore
    connection_window_size = max_snapshot_size * 1.2
 
    ```
 
 4. **Compress snapshots**:
 
-   ```rust
+   ```rust,ignore
    .send_compressed(CompressionEncoding::Gzip)
    .accept_compressed(CompressionEncoding::Gzip)
 
@@ -187,7 +187,7 @@ tonic::transport::Server::builder()
 
 ## Anti-Patterns to Avoid
 
-```rust
+```rust,ignore
 // DON'T: Use same connection for control and data
 get_peer_channel(peer_id, ConnectionType::Data).await?;
 client.request_vote(...)  // Control operation on data channel
