@@ -1,6 +1,6 @@
 # Raft Throughput Optimization Guide for Tonic gRPC in Rust
 
-This guide provides empirically-tuned strategies to improve Raft performance using [tonic](https://docs.rs/tonic/latest/tonic/) with connection type isolation. These optimizations address critical bottlenecks in consensus systems where network transport impacts throughput and latency.
+This guide provides empirically-tuned strategies to improve Raft performance using [tonic](https://docs.rs/tonic/latest/tonic/) with connection type isolation and configurable persistence. These optimizations address critical bottlenecks in consensus systems where network transport and disk I/O impact throughput and latency.
 
 ## Connection Type Strategy
 
@@ -18,7 +18,53 @@ pub(crate) enum ConnectionType {
     Data,     // Log replication
     Bulk,     // Snapshot transmission
 }
+
 ```
+
+## Persistence Strategy & Throughput/Latency Trade-offs
+
+The choice of persistence strategy (`DiskFirst` vs. `MemFirst`) and `FlushPolicy` is the primary mechanism for balancing write throughput against write latency and durability guarantees.
+
+### Strategy Configuration
+
+Configure the strategy in your `config.toml`:
+
+```toml
+[raft.persistence]
+# Choose based on your priority: durability (DiskFirst) or low-latency writes (MemFirst)
+strategy = "MemFirst"
+# strategy = "DiskFirst"
+
+# Flush policy works in conjunction with the chosen strategy.
+flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+# flush_policy = "Immediate"
+
+```
+
+### `DiskFirst` Strategy (High Durability)
+
+- **Write Path**: An entry is written to disk _before_ being acknowledged and added to the in-memory store.
+- **Latency/Throughput**: Higher, more consistent write latency per operation. Maximum throughput may be limited by disk write speed.
+- **Durability**: Strong. Acknowledged entries are always on disk. No data loss on process crash.
+- **Use Case**: Systems where data integrity is the absolute highest priority, even at the cost of higher write latency.
+
+### `MemFirst` Strategy (High Throughput / Low Latency)
+
+- **Write Path**: An entry is immediately added to the in-memory store and acknowledged. Disk persistence happens asynchronously.
+- **Latency/Throughput**: Very low write latency and high throughput, as writes are batched for disk I/O.
+- **Durability**: Eventual. A process crash can lose the most recently acknowledged entries that haven't been flushed yet.
+- **Use Case**: Systems requiring high write performance and low latency, where a small window of potential data loss is acceptable.
+
+### `FlushPolicy` Tuning
+
+The flush policy controls how asynchronous (`MemFirst`) writes are persisted to disk.
+
+- **`Immediate`**: Flush every write synchronously. Use with `MemFirst` to approximate `DiskFirst` durability (but with different failure semantics) or with `DiskFirst` for the strongest guarantees. Highest durability, lowest performance.
+- **`Batch { threshold, interval_ms }`**:
+  - `threshold`: Flush when this many entries are pending. Larger values increase throughput but also the window of potential data loss.
+  - `interval_ms`: Flush after this much time has passed, even if the threshold isn't met. Limits the maximum staleness of data on disk.
+
+**Recommendation**: For most production use cases, `MemFirst` with a `Batch` policy offers the best balance of performance and durability. Tune the `threshold` based on your acceptable data loss window (RPO) and the `interval_ms` based on your crash recovery tolerance.
 
 ## Configuration Tuning
 
@@ -97,26 +143,6 @@ tonic::transport::Server::builder()
 
 ```
 
-### Snapshot Streaming
-
-```rust,ignore
-async fn request_snapshot_from_leader(
-    &self,
-    leader_id: u32,
-    ack_rx: mpsc::Receiver<SnapshotAck>,
-    membership: Arc<MOF<T>>,
-) -> Result<Box<tonic::Streaming<SnapshotChunk>>> {
-    let channel = membership.get_peer_channel(leader_id, ConnectionType::Bulk).await?;
-    let mut client = SnapshotServiceClient::new(channel)
-        .send_compressed(CompressionEncoding::Gzip);
-
-    client.stream_snapshot(tonic::Request::new(ReceiverStream::new(ack_rx)))
-        .await
-        .map(|res| Box::new(res.into_inner()))
-}
-
-```
-
 ## Performance Results
 
 | **Metric**    | **Before**  | **After**   | **Delta**  |
@@ -126,6 +152,7 @@ async fn request_snapshot_from_leader(
 | p99.9 Latency | 14015 µs    | 11279 µs    | -19.5%     |
 
 > Key improvement: 15% reduction in tail latency - critical for consensus stability
+> Note: These results can be further improved by tuning the PersistenceStrategy for your specific workload.
 
 ## Operational Recommendations
 
@@ -156,6 +183,8 @@ async fn request_snapshot_from_leader(
 
    ```
 
+5. **Monitor Flush Lag**: When using `MemFirst`, monitor the difference between `last_log_index` and `durable_index`. A growing gap indicates the disk is not keeping up with writes, increasing potential data loss.
+
 ## Anti-Patterns to Avoid
 
 ```rust,ignore
@@ -167,9 +196,18 @@ client.request_vote(...)  // Control operation on data channel
 get_peer_channel(peer_id, ConnectionType::Control).await?;
 client.request_vote(...)
 
+// DON'T: Use MemFirst with Immediate flush for high-throughput scenarios
+// This eliminates the performance benefit of MemFirst.
+[strategy = "MemFirst"]
+flush_policy = "Immediate" // Anti-pattern
+
+// DO: Use a Batch policy to amortize disk I/O cost.
+[strategy = "MemFirst"]
+flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+
 ```
 
-## Why Connection Isolation Matters
+## Why Connection Isolation and Strategy Choice Matters
 
 1. **Prevents head-of-line blocking**
    Large snapshots won't delay heartbeats
@@ -177,35 +215,25 @@ client.request_vote(...)
    Control: Low latency ↔ Data: High throughput ↔ Bulk: Bandwidth
 3. **Improves fault containment**
    Connection issues affect only one operation type
-
-```text
-Key enhancements:
-1. Added dedicated `Bulk` configuration section with snapshot-specific tuning
-2. Implemented connection type routing in code samples
-3. Included snapshot streaming implementation with compression
-4. Added operational commands for monitoring
-5. Provided anti-pattern examples
-6. Explained why connection isolation matters
-7. Maintained performance improvement highlights
-
-The connection type strategy is crucial because:
-- Snapshots can be 1000x larger than typical log entries
-- Heartbeats require microsecond-level latency guarantees
-- Log replication needs steady high throughput
-Separating these onto dedicated connections prevents resource contention and tail latency spikes.
-```
+4. **Decouples Performance from Durability**
+   The `PersistenceStrategy` allows you to choose the right trade-off between fast writes (`MemFirst`) and guaranteed durability (`DiskFirst`) for your use case.
 
 ## Reference Deployment Configurations
 
 Below are example configurations for different deployment scenarios.
 Adjust values based on snapshot size, log append rate, and cluster size.
 
-1. Single Node (Local Dev / Testing)
-   • CPU: 4 cores
-   • Memory: 8 GB
-   • Network: Localhost
+### 1. Single Node (Local Dev / Testing)
+
+- CPU: 4 cores
+  • Memory: 8 GB
+  • Network: Localhost
 
 ```toml
+[raft.persistence]
+strategy = "MemFirst"
+flush_policy = { Batch = { threshold = 500, interval_ms = 50 } }
+
 [network.control]
 concurrency_limit = 10
 max_concurrent_streams = 64
@@ -220,15 +248,22 @@ connection_window_size = 2_097_152   # 2MB
 concurrency_limit = 2
 connection_window_size = 8_388_608   # 8MB
 request_timeout_in_ms = 10_000       # 10s
+
 ```
 
-Tip: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local.
+**Tip**: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local. `MemFirst` is preferred for developer iteration speed.
 
-2. 3-Node Public Cloud Cluster (Medium)
-   • Instance Type: 4 vCPU / 16 GB RAM (e.g., AWS m6i.large, GCP n2-standard-4)
-   • Network: 10 Gbps
+### 2. 3-Node Public Cloud Cluster (Medium Durability)
+
+- Instance Type: 4 vCPU / 16 GB RAM (e.g., AWS m6i.large, GCP n2-standard-4)
+  • Network: 10 Gbps
+  • Priority: Balanced throughput and durability
 
 ```toml
+[raft.persistence]
+strategy = "MemFirst"
+flush_policy = { Batch = { threshold = 2000, interval_ms = 200 } }
+
 [network.control]
 concurrency_limit = 20
 max_concurrent_streams = 128
@@ -243,15 +278,22 @@ connection_window_size = 4_194_304   # 4MB
 concurrency_limit = 4
 connection_window_size = 33_554_432  # 32MB
 request_timeout_in_ms = 30_000       # 30s for multi-GB snapshots
+
 ```
 
-Tip: For public cloud, moderate concurrency and 32MB bulk windows ensure stable snapshot streaming without affecting heartbeats.
+**Tip**: For public cloud, moderate concurrency and 32MB bulk windows ensure stable snapshot streaming without affecting heartbeats. The batch policy is tuned for high throughput with a reasonable data loss window.
 
-3. 5-Node High-Throughput Cluster (Production)
-   • Instance Type: 8 vCPU / 32 GB RAM (e.g., AWS m6i.xlarge)
-   • Network: 25 Gbps
+### 3. 5-Node High-Durability Cluster (Production)
+
+- Instance Type: 8 vCPU / 32 GB RAM (e.g., AWS m6i.xlarge)
+  • Network: 25 Gbps
+  • Priority: Data Integrity over Write Latency
 
 ```toml
+[raft.persistence]
+strategy = "DiskFirst" # Highest durability guarantee
+# flush_policy is less critical for DiskFirst but can help with batching internal operations.
+
 [network.control]
 concurrency_limit = 50
 max_concurrent_streams = 256
@@ -266,10 +308,10 @@ connection_window_size = 8_388_608   # 8MB
 concurrency_limit = 8
 connection_window_size = 67_108_864  # 64MB
 request_timeout_in_ms = 60_000       # 60s for large snapshots
+
 ```
 
-Tip: Increase concurrency and window size to prevent log replication bottlenecks in high-throughput clusters.
-Bulk plane is tuned for multi-GB snapshots without blocking the control plane.
+**Tip**: Use `DiskFirst` for systems where data integrity is non-negotiable (e.g., financial systems). Be aware that write throughput will be bound by disk I/O latency.
 
 ## Network Environment Tuning Recommendations
 
