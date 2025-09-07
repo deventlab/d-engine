@@ -31,7 +31,7 @@ internal_rpc_client_request_id = 0
 
 
 [raft.commit_handler]
-batch_size = 100
+batch_size_threshold = 100
 process_interval_ms = 10
 max_entries_per_chunk = 100
 

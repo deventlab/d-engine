@@ -11,6 +11,7 @@ use crate::StateMachine;
 use crate::StorageError;
 use parking_lot::RwLock;
 use prost::Message;
+use rocksdb::Cache;
 use rocksdb::{IteratorMode, Options, WriteBatch, DB};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +28,6 @@ const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 /// RocksDB-based state machine implementation
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
-    node_id: u32,
     db: Arc<DB>,
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
@@ -37,19 +37,37 @@ pub struct RocksDBStateMachine {
 
 impl RocksDBStateMachine {
     /// Creates a new RocksDB-based state machine
-    pub fn new<P: AsRef<Path>>(
-        path: P,
-        node_id: u32,
-    ) -> Result<Self, Error> {
-        // Configure RocksDB options for state machine
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        // Configure high-performance RocksDB options
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
-        opts.set_max_write_buffer_number(4);
-        opts.set_min_write_buffer_number_to_merge(2);
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
-        // Define column families
+        // Memory and write optimization
+        opts.set_max_write_buffer_number(6); // Increase the number of write buffers
+        opts.set_min_write_buffer_number_to_merge(3); // Increase the merge threshold
+        opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB write buffer
+
+        // Compression optimization
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
+
+        // Performance Tuning
+        opts.set_max_background_jobs(4); // Number of background jobs
+        opts.set_max_open_files(5000); // Maximum number of open files
+        opts.set_use_direct_io_for_flush_and_compaction(true); // Direct I/O
+        opts.set_use_direct_reads(true); // Direct reads
+
+        // Leveled Compaction Configuration
+        opts.set_level_compaction_dynamic_level_bytes(true);
+        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB base file size
+        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB base level size
+
+        // Block cache configuration (shared)
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB block cache
+        opts.set_row_cache(&cache);
+
         let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
 
         let db = DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -60,7 +78,6 @@ impl RocksDBStateMachine {
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
 
         Ok(Self {
-            node_id,
             db: db_arc,
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
@@ -161,13 +178,13 @@ impl RocksDBStateMachine {
 impl StateMachine for RocksDBStateMachine {
     fn start(&self) -> Result<(), Error> {
         self.is_serving.store(true, Ordering::SeqCst);
-        info!("[Node-{}] RocksDB state machine started", self.node_id);
+        info!("RocksDB state machine started");
         Ok(())
     }
 
     fn stop(&self) -> Result<(), Error> {
         self.is_serving.store(false, Ordering::SeqCst);
-        info!("[Node-{}] RocksDB state machine stopped", self.node_id);
+        info!("RocksDB state machine stopped");
         Ok(())
     }
 

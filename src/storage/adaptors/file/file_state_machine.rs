@@ -53,7 +53,6 @@ pub struct FileStateMachine {
 
     // Operational state
     running: AtomicBool,
-    node_id: u32,
 
     // File handles for persistence
     data_dir: PathBuf,
@@ -71,10 +70,7 @@ impl FileStateMachine {
     ///
     /// # Returns
     /// Result containing the initialized FileStateMachine
-    pub async fn new(
-        data_dir: PathBuf,
-        node_id: u32,
-    ) -> Result<Self, Error> {
+    pub async fn new(data_dir: PathBuf) -> Result<Self, Error> {
         // Ensure data directory exists
         fs::create_dir_all(&data_dir).await?;
 
@@ -84,7 +80,6 @@ impl FileStateMachine {
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
             running: AtomicBool::new(true),
-            node_id,
             data_dir: data_dir.clone(),
         };
 
@@ -105,10 +100,7 @@ impl FileStateMachine {
         // Replay write-ahead log for crash recovery
         self.replay_wal().await?;
 
-        info!(
-            "[Node-{}] Loaded state machine data from disk",
-            self.node_id
-        );
+        info!("Loaded state machine data from disk");
         Ok(())
     }
 
@@ -248,10 +240,7 @@ impl FileStateMachine {
 
         // If WAL has content, we need to replay it
         if !buffer.is_empty() {
-            warn!(
-                "[Node-{}] Replaying write-ahead log for crash recovery",
-                self.node_id
-            );
+            warn!("Replaying write-ahead log for crash recovery");
 
             // For simplicity, we'll just clear and rebuild from data file
             // In a production system, you'd parse and replay each WAL entry
@@ -448,7 +437,7 @@ impl FileStateMachine {
     /// 3. Clears all persisted files
     /// 4. Maintains operational state (running status, node ID)
     pub async fn reset(&self) -> Result<(), Error> {
-        info!("[Node-{}] Resetting state machine", self.node_id);
+        info!("Resetting state machine");
 
         // Clear in-memory data
         {
@@ -470,7 +459,7 @@ impl FileStateMachine {
         self.clear_metadata_file().await?;
         self.clear_wal_async().await?;
 
-        info!("[Node-{}] State machine reset completed", self.node_id);
+        info!("State machine reset completed");
         Ok(())
     }
 
@@ -538,14 +527,14 @@ impl Drop for FileStateMachine {
 impl StateMachine for FileStateMachine {
     fn start(&self) -> Result<(), Error> {
         self.running.store(true, Ordering::SeqCst);
-        info!("[Node-{}] File state machine started", self.node_id);
+        info!("File state machine started");
         Ok(())
     }
 
     fn stop(&self) -> Result<(), Error> {
         // Ensure all data is flushed to disk before stopping
         self.running.store(false, Ordering::SeqCst);
-        info!("[Node-{}] File state machine stopped", self.node_id);
+        info!("File state machine stopped");
         Ok(())
     }
 
@@ -603,10 +592,7 @@ impl StateMachine for FileStateMachine {
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
                     Ok(write_cmd) => match write_cmd.operation {
                         Some(Operation::Insert(Insert { key, value })) => {
-                            debug!(
-                                "[Node-{}] Applying INSERT at index {}: {:?}",
-                                self.node_id, entry.index, key
-                            );
+                            debug!("Applying INSERT at index {}: {:?}", entry.index, key);
 
                             // Write to WAL first
                             self.append_to_wal(&entry, "INSERT", &key, Some(&value)).await?;
@@ -616,10 +602,7 @@ impl StateMachine for FileStateMachine {
                             data.insert(key, (value, entry.term));
                         }
                         Some(Operation::Delete(Delete { key })) => {
-                            debug!(
-                                "[Node-{}] Applying DELETE at index {}: {:?}",
-                                self.node_id, entry.index, key
-                            );
+                            debug!("Applying DELETE at index {}: {:?}", entry.index, key);
 
                             // Write to WAL first
                             self.append_to_wal(&entry, "DELETE", &key, None).await?;
@@ -629,38 +612,29 @@ impl StateMachine for FileStateMachine {
                             data.remove(&key);
                         }
                         None => {
-                            warn!(
-                                "[Node-{}] WriteCommand without operation at index {}",
-                                self.node_id, entry.index
-                            );
+                            warn!("WriteCommand without operation at index {}", entry.index);
                         }
                     },
                     Err(e) => {
                         error!(
-                            "[Node-{}] Failed to decode WriteCommand at index {}: {:?}",
-                            self.node_id, entry.index, e
+                            "Failed to decode WriteCommand at index {}: {:?}",
+                            entry.index, e
                         );
                         return Err(StorageError::SerializationError(e.to_string()).into());
                     }
                 },
                 Some(Payload::Config(_config_change)) => {
-                    debug!(
-                        "[Node-{}] Ignoring config change at index {}",
-                        self.node_id, entry.index
-                    );
+                    debug!("Ignoring config change at index {}", entry.index);
                     self.append_to_wal(&entry, "CONFIG", &[], None).await?;
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }
 
-            info!("[{}]- COMMITTED_LOG_METRIC: {} ", self.node_id, entry.index);
+            info!("COMMITTED_LOG_METRIC: {}", entry.index);
         }
 
         if let Some(log_id) = highest_index_entry {
-            debug!(
-                "[Node-{}] State machine - updated last_applied: {:?}",
-                self.node_id, log_id
-            );
+            debug!("State machine - updated last_applied: {:?}", log_id);
             self.update_last_applied(log_id);
         }
 
@@ -723,14 +697,7 @@ impl StateMachine for FileStateMachine {
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
     ) -> Result<(), Error> {
-        info!(
-            "[Node-{}] Applying snapshot from file: {:?}",
-            self.node_id, snapshot_dir
-        );
-        println!(
-            "[Node-{}] Applying snapshot from file: {:?}",
-            self.node_id, snapshot_dir
-        );
+        info!("Applying snapshot from file: {:?}", snapshot_dir);
 
         // Read from the snapshot.bin file inside the directory
         let snapshot_data_path = snapshot_dir.join("snapshot.bin");
@@ -838,7 +805,7 @@ impl StateMachine for FileStateMachine {
         self.persist_metadata_async().await?;
         self.clear_wal_async().await?;
 
-        info!("[Node-{}] Snapshot applied successfully", self.node_id);
+        info!("Snapshot applied successfully");
         Ok(())
     }
 
@@ -847,10 +814,7 @@ impl StateMachine for FileStateMachine {
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
     ) -> Result<[u8; 32], Error> {
-        info!(
-            "[Node-{}] Generating snapshot data up to {:?}",
-            self.node_id, last_included
-        );
+        info!("Generating snapshot data up to {:?}", last_included);
 
         // Create snapshot directory
         fs::create_dir_all(&new_snapshot_dir).await?;
@@ -894,10 +858,7 @@ impl StateMachine for FileStateMachine {
 
         self.update_last_snapshot_metadata(&metadata)?;
 
-        info!(
-            "[Node-{}] Snapshot generated at {:?}",
-            self.node_id, snapshot_path
-        );
+        info!("Snapshot generated at {:?}", snapshot_path);
 
         // Return dummy checksum
         Ok([0; 32])

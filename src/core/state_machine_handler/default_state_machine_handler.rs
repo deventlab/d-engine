@@ -42,6 +42,7 @@ use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::constants::SNAPSHOT_DIR_PREFIX;
+use crate::convert::classify_error;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::proto::client::ClientResult;
@@ -154,6 +155,16 @@ where
     ) -> Result<()> {
         let _timer = ScopedTimer::new("apply_chunk");
 
+        // Use a timer to measure latency and count chunks
+        let start = Instant::now();
+        let chunk_size = chunk.len();
+
+        metrics::counter!(
+            "state_machine.apply_chunk.count",
+            &[("node_id", self.node_id.to_string())]
+        )
+        .increment(1);
+
         let last_index = chunk.last().map(|entry| entry.index);
         trace!(
             "[node-{}] apply_chunk::entry={:?} last_index: {:?}",
@@ -163,14 +174,51 @@ where
         );
 
         let sm = self.state_machine.clone();
-        sm.apply_chunk(chunk).await?;
+        // Apply the chunk and track errors
+        let apply_result = sm.apply_chunk(chunk).await;
 
-        // Efficiently obtain the maximum index: directly get the index of the last entry
-        if let Some(idx) = last_index {
-            self.last_applied.store(idx, Ordering::Release);
+        // Record latency and chunk size histogram *after* the operation
+        let duration_ms = start.elapsed().as_millis() as f64;
+        metrics::histogram!(
+            "state_machine.apply_chunk.duration_ms",
+            &[("node_id", self.node_id.to_string())]
+        )
+        .record(duration_ms);
+
+        metrics::histogram!(
+            "state_machine.apply_chunk.batch_size",
+            &[("node_id", self.node_id.to_string())]
+        )
+        .record(chunk_size as f64);
+
+        // Track result
+        match &apply_result {
+            Ok(_) => {
+                // Efficiently obtain the maximum index: directly get the index of the last entry
+                if let Some(idx) = last_index {
+                    self.last_applied.store(idx, Ordering::Release);
+                }
+
+                metrics::counter!(
+                    "state_machine.apply_chunk.success",
+                    &[("node_id", self.node_id.to_string())]
+                )
+                .increment(1);
+            }
+            Err(e) => {
+                let error_type = classify_error(e);
+                metrics::counter!(
+                    "state_machine.apply_chunk.error",
+                    &[
+                        ("node_id", self.node_id.to_string()),
+                        ("error_type", error_type)
+                    ]
+                )
+                .increment(1);
+            }
         }
-        // If chunk is empty, no need to update last_applied
-        Ok(())
+
+        apply_result
     }
 
     /// TODO: decouple client related commands with RAFT internal logic

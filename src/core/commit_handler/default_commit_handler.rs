@@ -46,8 +46,6 @@ where
     state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
     new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
-    // batch_size_threshold: u64,
-    // process_interval_ms: u64,
     config: Arc<RaftNodeConfig>,
     membership: Arc<MOF<T>>,
 
@@ -132,8 +130,6 @@ where
             raft_log: deps.raft_log,
             membership: deps.membership,
             new_commit_rx: Some(new_commit_rx),
-            // batch_size_threshold: config.batch_size,
-            // process_interval_ms: config.process_interval_ms,
             config,
             event_tx: deps.event_tx,
             shutdown_signal: deps.shutdown_signal,

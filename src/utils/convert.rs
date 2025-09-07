@@ -58,3 +58,17 @@ pub(crate) fn convert_high_and_low_fromu64_to_u128(
 pub fn abs_ceil(x: f64) -> u64 {
     x.abs().ceil() as u64
 }
+
+// Helper function to classify errors into known types
+pub fn classify_error(e: &impl std::fmt::Display) -> String {
+    let error_str = e.to_string();
+    if error_str.contains("io") || error_str.contains("I/O") {
+        "io_error".to_string()
+    } else if error_str.contains("corrupt") {
+        "corruption".to_string()
+    } else if error_str.contains("timeout") {
+        "timeout".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}

@@ -299,6 +299,7 @@ mod apply_chunk_test {
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
     }
+
     #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
         let handler = create_test_handler(

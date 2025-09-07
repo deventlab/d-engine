@@ -1,8 +1,10 @@
 use core::panic;
 use d_engine::file_io::open_file_for_append;
 use d_engine::node::NodeBuilder;
-use d_engine::FileStateMachine;
-use d_engine::FileStorageEngine;
+// use d_engine::FileStateMachine;
+// use d_engine::FileStorageEngine;
+use d_engine::RocksDBStateMachine;
+use d_engine::RocksDBStorageEngine;
 use std::env;
 use std::error::Error;
 use std::path::Path;
@@ -22,7 +24,10 @@ use tracing_subscriber::Layer;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
-    // Get the log directory path from the environment variable
+    let db_path: PathBuf = env::var("DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp/db"));
+
     let log_dir = env::var("LOG_DIR")
         .map_err(|_| "LOG_DIR environment variable not set")
         .expect("Set log dir successfully.");
@@ -38,7 +43,7 @@ async fn main() {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     // Start the server (wait for its initialization to complete)
-    let server_handler = tokio::spawn(start_dengine_server(graceful_rx.clone()));
+    let server_handler = tokio::spawn(start_dengine_server(db_path, graceful_rx.clone()));
 
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -54,11 +59,19 @@ async fn main() {
         tokio::join!(server_handler, metrics_handle, shutdown_handler);
 }
 
-async fn start_dengine_server(graceful_rx: watch::Receiver<()>) {
-    let path = PathBuf::from("./db/storage");
-    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage_engine")).unwrap());
-    let state_machine =
-        Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
+async fn start_dengine_server(
+    db_path: PathBuf,
+    graceful_rx: watch::Receiver<()>,
+) {
+    // Option 1: RAW FILE
+    // let storage_engine = Arc::new(FileStorageEngine::new(db_path.join("storage_engine")).unwrap());
+    // let state_machine =
+    //     Arc::new(FileStateMachine::new(db_path.join("state_machine")).await.unwrap());
+
+    // Option 2: ROCKSDB
+    let storage_engine = Arc::new(RocksDBStorageEngine::new(db_path.join("storage")).unwrap());
+    let state_machine = Arc::new(RocksDBStateMachine::new(db_path.join("state_machine")).unwrap());
+
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)

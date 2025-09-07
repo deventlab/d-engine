@@ -43,7 +43,7 @@ impl StateMachineBuilder for FileStateMachineBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
         let state_machine_path = self.temp_dir.path().join("state_machine");
         Ok(Arc::new(
-            FileStateMachine::new(state_machine_path, 1)
+            FileStateMachine::new(state_machine_path)
                 .await
                 .expect("Expect file init successfully"),
         ))

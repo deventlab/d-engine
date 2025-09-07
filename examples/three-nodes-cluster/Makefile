@@ -6,6 +6,11 @@
 .DEFAULT_GOAL := help
 
 # ===============================
+# Global Variables
+# ===============================
+LOG_LEVEL ?= warn
+
+# ===============================
 # Build Targets
 # ===============================
 build:
@@ -18,42 +23,47 @@ build:
 start-node1:
 	@echo "Starting Node 1..."
 	CONFIG_PATH=config/n1 \
+	DB_PATH="./db/1" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
 	./target/release/demo
 
 start-node2:
 	@echo "Starting Node 2..."
 	CONFIG_PATH=config/n2 \
+	DB_PATH="./db/2" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	./target/release/demo
 
 start-node3:
 	@echo "Starting Node 3..."
 	CONFIG_PATH=config/n3 \
+	DB_PATH="./db/3" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	./target/release/demo
 
 join-node4:
 	@echo "Joining Learner 4..."
 	CONFIG_PATH=config/n4 \
+	DB_PATH="./db/4" \
 	LOG_DIR="./logs/4" \
 	METRICS_PORT=8084 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	./target/release/demo
 
 join-node5:
 	@echo "Joining Learner 5..."
 	CONFIG_PATH=config/n5 \
+	DB_PATH="./db/5" \
 	LOG_DIR="./logs/5" \
 	METRICS_PORT=8085 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	./target/release/demo
 
 start-cluster: clean build
@@ -69,26 +79,29 @@ start-cluster: clean build
 perf-node1:
 	@echo "Profiling Node 1 with samply..."
 	CONFIG_PATH=config/n1 \
+	DB_PATH="./db/1" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
 	samply record -o ./samply_reports/1.profile.json -P 3001 ./target/release/demo
 
 perf-node2:
 	@echo "Profiling Node 2 with samply..."
 	CONFIG_PATH=config/n2 \
+	DB_PATH="./db/2" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	samply record -o ./samply_reports/2.profile.json -P 3002 ./target/release/demo
 
 perf-node3:
 	@echo "Profiling Node 3 with samply..."
 	CONFIG_PATH=config/n3 \
+	DB_PATH="./db/3" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
-	RUST_LOG=demo=warn,d_engine=warn,timing=warn \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	samply record -o ./samply_reports/3.profile.json -P 3003 ./target/release/demo
 
 perf-cluster: clean build
@@ -121,4 +134,3 @@ help:
 	@echo "  clean            - Remove build artifacts, logs, and profiles"
 	@echo "  clean-log-db     - Remove only logs and database files"
 	@echo "  help             - Show this help message"
-

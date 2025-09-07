@@ -260,7 +260,7 @@ async fn build_node(
     } else {
         let state_machine_path = config.cluster.db_root_dir.join("state_machine");
         Arc::new(
-            FileStateMachine::new(state_machine_path, config.cluster.node_id)
+            FileStateMachine::new(state_machine_path)
                 .await
                 .expect("Failed to create file state machine"),
         )
@@ -308,13 +308,11 @@ pub fn prepare_storage_engine(
 }
 
 pub async fn prepare_state_machine(
-    node_id: u32,
+    _node_id: u32,
     db_path: &str,
 ) -> FileStateMachine {
     let state_machine_db_path = format!("{db_path}/state_machine",);
-    FileStateMachine::new(PathBuf::from(state_machine_db_path), node_id)
-        .await
-        .unwrap()
+    FileStateMachine::new(PathBuf::from(state_machine_db_path)).await.unwrap()
 }
 
 pub async fn manipulate_log(

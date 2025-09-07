@@ -41,7 +41,7 @@ async fn main() {
     let path = PathBuf::from("/tmp/db");
     let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
     let state_machine =
-        Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
+        Arc::new(FileStateMachine::new(path.join("state_machine")).await.unwrap());
 
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
