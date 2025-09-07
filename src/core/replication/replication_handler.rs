@@ -624,14 +624,17 @@ where
             entries.len()
         );
 
-        (peer_id, AppendEntriesRequest {
-            term: data.current_term,
-            leader_id: self.my_id,
-            prev_log_index,
-            prev_log_term,
-            entries,
-            leader_commit_index: data.commit_index,
-        })
+        (
+            peer_id,
+            AppendEntriesRequest {
+                term: data.current_term,
+                leader_id: self.my_id,
+                prev_log_index,
+                prev_log_term,
+                entries,
+                leader_commit_index: data.commit_index,
+            },
+        )
     }
 }
 
