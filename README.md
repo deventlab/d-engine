@@ -148,9 +148,9 @@ See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-node
 
 ```bash
 # Build and test
-cargo test --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt --all -- --check
+make test
+make clippy
+make fmt-check
 ```
 
 ## Code Style
