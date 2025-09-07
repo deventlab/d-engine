@@ -1,9 +1,11 @@
-use crate::ConvertError;
-use crate::Result;
-use prost::Message;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+
+use prost::Message;
+
+use crate::ConvertError;
+use crate::Result;
 
 pub fn str_to_u64(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();

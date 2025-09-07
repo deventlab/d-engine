@@ -1,3 +1,23 @@
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+use prost::Message;
+use rocksdb::Cache;
+use rocksdb::IteratorMode;
+use rocksdb::Options;
+use rocksdb::WriteBatch;
+use rocksdb::DB;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
+
 use crate::proto::client::write_command::Delete;
 use crate::proto::client::write_command::Insert;
 use crate::proto::client::write_command::Operation;
@@ -9,15 +29,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
-use parking_lot::RwLock;
-use prost::Message;
-use rocksdb::Cache;
-use rocksdb::{IteratorMode, Options, WriteBatch, DB};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use tonic::async_trait;
-use tracing::{debug, error, info, instrument, warn};
 
 const STATE_MACHINE_CF: &str = "state_machine";
 const STATE_MACHINE_META_CF: &str = "state_machine_meta";

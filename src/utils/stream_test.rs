@@ -1,8 +1,12 @@
-use crate::stream::{create_production_snapshot_stream, encode_varint, encoded_len_varint};
-use prost::Message;
 use std::sync::Arc;
+
+use prost::Message;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
+
+use crate::stream::create_production_snapshot_stream;
+use crate::stream::encode_varint;
+use crate::stream::encoded_len_varint;
 
 // Simple test message
 #[derive(Clone, PartialEq, Message)]

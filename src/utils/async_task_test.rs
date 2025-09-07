@@ -1,9 +1,14 @@
-use crate::async_task::{spawn_task, task_with_timeout_and_exponential_backoff};
-use crate::{BackoffPolicy, Error};
-use futures::future::join_all;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::future::join_all;
+
+use crate::async_task::spawn_task;
+use crate::async_task::task_with_timeout_and_exponential_backoff;
+use crate::BackoffPolicy;
+use crate::Error;
 
 #[tokio::test]
 async fn test_task_with_timeout_and_exponential_backoff_success() {

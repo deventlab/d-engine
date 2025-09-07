@@ -3,9 +3,10 @@
 //! Defines comprehensive error types for a Raft-based distributed system,
 //! categorized by protocol layer and operational concerns.
 
-use config::ConfigError;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use config::ConfigError;
 use tokio::task::JoinError;
 
 #[doc(hidden)]
