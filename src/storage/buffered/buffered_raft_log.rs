@@ -55,7 +55,7 @@ pub enum LogCommand {
 }
 
 pub struct FlushState {
-    pending_indexes: Vec<u64>, // Indexes pending flush
+    pending_indexes: Box<Vec<u64>>, // Indexes pending flush
 }
 
 /// High-performance buffered Raft log with event-driven architecture
@@ -549,7 +549,7 @@ where
                 next_id: AtomicU64::new(disk_len + 1),
                 command_sender: command_sender.clone(),
                 flush_state: Mutex::new(FlushState {
-                    pending_indexes: Vec::new(),
+                    pending_indexes: Box::new(Vec::new()),
                 }),
                 waiters: DashMap::new(),
                 term_first_index,
@@ -632,7 +632,9 @@ where
     ) {
         match cmd {
             LogCommand::PersistEntries(indexes) => {
-                self.handle_persist_entries(&indexes).await;
+                if !indexes.is_empty() {
+                    self.handle_persist_entries(&indexes).await;
+                }
             }
             LogCommand::WaitDurable(index, ack) => {
                 self.handle_wait_durable(index, ack).await;
@@ -663,12 +665,23 @@ where
         &self,
         indexes: &[u64],
     ) {
+        // Filter out already persisted indices
+        let durable_index = self.durable_index.load(Ordering::Acquire);
+        let indexes_to_process: Vec<u64> =
+            indexes.iter().filter(|&&idx| idx > durable_index).cloned().collect();
+
+        if indexes_to_process.is_empty() {
+            return;
+        }
+        metrics::counter!("persist_entries_calls").increment(1);
+        metrics::histogram!("persist_entries_batch_size").record(indexes_to_process.len() as f64);
+
         match self.flush_policy {
             FlushPolicy::Immediate => {
                 // For Immediate we must persist the *exact incoming indexes* directly.
                 // Do not rely on flush_state.pending_indexes because this field is used
                 // for batching only and may be empty for Immediate path.
-                if !indexes.is_empty() {
+                if !indexes_to_process.is_empty() {
                     // process_flush expects a slice of indexes -> call directly
                     // We ignore the Result here but log on error for debugging.
                     if let Err(e) = self.process_flush(indexes).await {
@@ -682,7 +695,7 @@ where
                 {
                     // lock scope small for performance
                     let mut state = self.flush_state.lock().await;
-                    state.pending_indexes.extend_from_slice(indexes);
+                    state.pending_indexes.extend_from_slice(indexes_to_process.as_slice());
                     if state.pending_indexes.len() >= threshold {
                         flush_now = true;
                     }

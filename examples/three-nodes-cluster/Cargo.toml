@@ -13,6 +13,8 @@ tokio = { version = "1.4", features = ["rt-multi-thread"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
+tokio-metrics = { version = "0.4.5"}
+metrics = "0.24"
 
 # For console support
 console-subscriber = "0.4"

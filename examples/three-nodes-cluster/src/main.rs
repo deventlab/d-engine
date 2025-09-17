@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
+use tokio_metrics::RuntimeMonitor;
 use tracing::error;
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -41,7 +42,7 @@ async fn main() {
             .map(|v| v.parse::<u16>().expect("TOKIO_CONSOLE_PORT must be a valid port"))
             .unwrap_or(6669);
 
-        println!("Tokio Console port: {}", tokio_console_port);
+        println!("Tokio Console port: {tokio_console_port}");
 
         console_subscriber::Builder::default()
             .server_addr(([127, 0, 0, 1], tokio_console_port))
@@ -70,8 +71,22 @@ async fn main() {
     let shutdown_handler = tokio::spawn(graceful_shutdown(graceful_tx));
 
     // Wait for all tasks to complete (or error)
-    let (_server_result, _metrics_result, _shutdown_result) =
-        tokio::join!(server_handler, metrics_handle, shutdown_handler);
+    if env::var("TOKIO_CONSOLE").is_ok() {
+        // Initialize Tokio metrics monitoring
+        let handle = tokio::runtime::Handle::current();
+        let runtime_monitor = RuntimeMonitor::new(&handle);
+        // Start the Tokio metrics collection task
+        let tokio_metrics_handle = tokio::spawn(collect_tokio_metrics(runtime_monitor));
+        let (_server_result, _metrics_result, _shutdown_result, _tokio_metrics_result) = tokio::join!(
+            server_handler,
+            metrics_handle,
+            shutdown_handler,
+            tokio_metrics_handle
+        );
+    } else {
+        let (_server_result, _metrics_result, _shutdown_result) =
+            tokio::join!(server_handler, metrics_handle, shutdown_handler);
+    }
 }
 
 async fn start_dengine_server(
@@ -146,4 +161,21 @@ async fn start_metrics_server(port: u16) {
         .with_http_listener(([0, 0, 0, 0], port))
         .install()
         .expect("failed to start Prometheus metrics exporter");
+}
+
+// Tokio metrics collection function
+async fn collect_tokio_metrics(monitor: RuntimeMonitor) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut intervals = monitor.intervals();
+    loop {
+        interval.tick().await;
+        if let Some(metrics) = intervals.next() {
+            metrics::gauge!("tokio.runtime.workers_count").set(metrics.workers_count as f64);
+            metrics::counter!("tokio.runtime.park_total").absolute(metrics.total_park_count);
+            metrics::gauge!("tokio.runtime.park_max").set(metrics.max_park_count as f64);
+            metrics::gauge!("tokio.runtime.park_min").set(metrics.min_park_count as f64);
+            metrics::histogram!("tokio.runtime.busy_duration_ns")
+                .record(metrics.total_busy_duration.as_nanos() as f64);
+        }
+    }
 }
