@@ -593,37 +593,32 @@ where
         retry_policy: RetryPolicies,
         membership: Arc<MOF<T>>,
     ) -> Result<mpsc::Sender<AppendRequest>> {
-        // Fast path: check if appender already exists
-        if let Some(appender) = self.peer_appenders.get(&peer_id) {
-            return Ok(appender.sender.clone());
-        }
-
-        // Slow path: create new appender (this happens rarely)
-        let (tx, rx) = mpsc::channel(100);
-        let retry_policy = retry_policy.append_entries;
-        let membership = membership.clone();
-        let my_id = self.my_id;
-
-        let task_handle = tokio::spawn(Self::peer_appender_task(
-            peer_id,
-            rx,
-            retry_policy,
-            membership,
-            my_id,
-        ));
-
-        let appender = PeerAppender {
-            sender: tx.clone(),
-            task_handle,
-        };
-
-        // Use entry API to handle concurrent creation attempts
+        // Use entry API to handle concurrent creation attempts atomically
         match self.peer_appenders.entry(peer_id) {
             dashmap::mapref::entry::Entry::Occupied(entry) => {
-                // Another thread created an appender first, use theirs
+                // Appender already exists, use it
                 Ok(entry.get().sender.clone())
             }
             dashmap::mapref::entry::Entry::Vacant(entry) => {
+                // Create new appender
+                let (tx, rx) = mpsc::channel(100);
+                let retry_policy = retry_policy.append_entries;
+                let membership = membership.clone();
+                let my_id = self.my_id;
+
+                let task_handle = tokio::spawn(Self::peer_appender_task(
+                    peer_id,
+                    rx,
+                    retry_policy,
+                    membership,
+                    my_id,
+                ));
+
+                let appender = PeerAppender {
+                    sender: tx.clone(),
+                    task_handle,
+                };
+
                 entry.insert(appender);
                 Ok(tx)
             }
