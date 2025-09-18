@@ -55,7 +55,7 @@ pub enum LogCommand {
 }
 
 pub struct FlushState {
-    pending_indexes: Box<Vec<u64>>, // Indexes pending flush
+    pending_indexes: Vec<u64>, // Indexes pending flush
 }
 
 /// High-performance buffered Raft log with event-driven architecture
@@ -549,7 +549,7 @@ where
                 next_id: AtomicU64::new(disk_len + 1),
                 command_sender: command_sender.clone(),
                 flush_state: Mutex::new(FlushState {
-                    pending_indexes: Box::new(Vec::new()),
+                    pending_indexes: Vec::new(),
                 }),
                 waiters: DashMap::new(),
                 term_first_index,
