@@ -1620,8 +1620,8 @@ mod id_allocation_tests {
         range.start() == &u64::MAX && range.end() == &u64::MAX
     }
 
-    #[test]
-    fn test_pre_allocate_next_index_sequential() {
+    #[tokio::test]
+    async fn test_pre_allocate_next_index_sequential() {
         let raft_log = setup_memory();
 
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 1);
@@ -1631,8 +1631,8 @@ mod id_allocation_tests {
         assert_eq!(raft_log.next_id.load(Ordering::SeqCst), 4);
     }
 
-    #[test]
-    fn test_pre_allocate_id_range_exact_batch() {
+    #[tokio::test]
+    async fn test_pre_allocate_id_range_exact_batch() {
         let raft_log = setup_memory();
 
         let range = raft_log.pre_allocate_id_range(100);
@@ -1642,8 +1642,8 @@ mod id_allocation_tests {
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 101);
     }
 
-    #[test]
-    fn test_pre_allocate_id_range_zero_count() {
+    #[tokio::test]
+    async fn test_pre_allocate_id_range_zero_count() {
         let raft_log = setup_memory();
         let initial_id = raft_log.next_id.load(Ordering::SeqCst);
 
@@ -1652,8 +1652,8 @@ mod id_allocation_tests {
         assert_eq!(raft_log.next_id.load(Ordering::SeqCst), initial_id);
     }
 
-    #[test]
-    fn test_pre_allocate_id_range_after_zero() {
+    #[tokio::test]
+    async fn test_pre_allocate_id_range_after_zero() {
         let raft_log = setup_memory();
 
         // Allocate 0 (should be empty)
@@ -1666,8 +1666,8 @@ mod id_allocation_tests {
         assert_eq!(*range.end(), 5);
     }
 
-    #[test]
-    fn test_pre_allocate_id_range_concurrent() {
+    #[tokio::test]
+    async fn test_pre_allocate_id_range_concurrent() {
         let raft_log = setup_memory();
         let raft_log_clone = Arc::clone(&raft_log);
 
@@ -1707,8 +1707,8 @@ mod id_allocation_tests {
         Range(RangeInclusive<u64>),
     }
 
-    #[test]
-    fn test_concurrent_mixed_allocations() {
+    #[tokio::test]
+    async fn test_concurrent_mixed_allocations() {
         let raft_log = setup_memory();
         let mut handles = vec![];
 
@@ -1783,8 +1783,8 @@ mod id_allocation_tests {
         }
     }
 
-    #[test]
-    fn test_pre_allocate_id_range_multiple_batches() {
+    #[tokio::test]
+    async fn test_pre_allocate_id_range_multiple_batches() {
         let raft_log = setup_memory();
 
         // Valid batches
@@ -1809,8 +1809,8 @@ mod id_allocation_tests {
         assert_eq!(*range3.end(), 300);
     }
 
-    #[test]
-    fn test_mixed_allocation_strategies() {
+    #[tokio::test]
+    async fn test_mixed_allocation_strategies() {
         let raft_log = setup_memory();
 
         // Single allocation
@@ -1838,8 +1838,8 @@ mod id_allocation_tests {
         assert_eq!(raft_log.pre_allocate_raft_logs_next_index(), 259);
     }
 
-    #[test]
-    fn test_edge_cases() {
+    #[tokio::test]
+    async fn test_edge_cases() {
         let raft_log = setup_memory();
 
         // Single ID

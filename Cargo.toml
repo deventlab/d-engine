@@ -81,6 +81,7 @@ ring = { version = "=0.17.14", features = ["std"] }
 
 # TODO: to replace dashmap
 crossbeam-skiplist = "0.1"
+crossbeam = "0.8"
 
 [dev-dependencies]
 mockall = "0.12.1"
