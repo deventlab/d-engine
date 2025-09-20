@@ -562,7 +562,7 @@ where
         let min_index = entries.front().map(|e| *e.key()).unwrap_or(0);
         let max_index = entries.back().map(|e| *e.key()).unwrap_or(0);
         // Initialize flush worker pool
-        let flush_workers = Self::create_flush_worker_pool();
+        let flush_workers = Self::create_flush_worker_pool(persistence_config.flush_workers);
         (
             Self {
                 node_id,
@@ -992,16 +992,15 @@ where
     }
 
     /// Creates a flush worker pool with configurable number of workers
-    fn create_flush_worker_pool() -> FlushWorkerPool<T> {
+    fn create_flush_worker_pool(num_workers: usize) -> FlushWorkerPool<T> {
         // Configuration: Adjust based on your workload
-        const NUM_WORKERS: usize = 2; // Optimal for most I/O-bound workloads
         const CHANNEL_CAPACITY: usize = 100; // Provides backpressure
 
         let (sender, receiver) = bounded::<FlushTask<T>>(CHANNEL_CAPACITY);
         let shutdown = Arc::new(AtomicBool::new(false));
-        let mut worker_handles = Vec::with_capacity(NUM_WORKERS);
+        let mut worker_handles = Vec::with_capacity(num_workers);
 
-        for worker_id in 0..NUM_WORKERS {
+        for worker_id in 0..num_workers {
             let receiver = receiver.clone();
             let shutdown = shutdown.clone();
             let handle = tokio::spawn(async move {

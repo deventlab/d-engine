@@ -744,11 +744,28 @@ pub struct PersistenceConfig {
     /// high write throughput or when disk persistence is slow.
     #[serde(default = "default_max_buffered_entries")]
     pub max_buffered_entries: usize,
+
+    /// Number of flush worker threads to use for log persistence.
+    ///
+    /// - If set to 0, the system falls back to spawning a new task per flush
+    ///   (legacy behavior, lower latency but less stable under high load).
+    /// - If set to a positive number, a worker pool of that size will be created
+    ///   to process flush requests (more stable and efficient under high load).
+    ///
+    /// This parameter allows tuning between throughput and latency depending on
+    /// workload characteristics.
+    #[serde(default = "default_flush_workers")]
+    pub flush_workers: usize,
 }
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
     PersistenceStrategy::MemFirst
+}
+
+/// Default value for flush_workers
+fn default_flush_workers() -> usize {
+    2
 }
 
 /// Default flush policy for asynchronous strategies
@@ -773,6 +790,7 @@ impl Default for PersistenceConfig {
             strategy: default_persistence_strategy(),
             flush_policy: default_flush_policy(),
             max_buffered_entries: default_max_buffered_entries(),
+            flush_workers: default_flush_workers(),
         }
     }
 }

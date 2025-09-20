@@ -59,6 +59,7 @@ impl TestContext {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             storage.clone(),
         );
@@ -90,6 +91,7 @@ impl TestContext {
                 strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             storage.clone(),
         );
@@ -853,6 +855,7 @@ async fn test_insert_batch_logs_case2() {
                 strategy: PersistenceStrategy::DiskFirst,
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             give_me_mock_storage(),
         );
@@ -865,6 +868,7 @@ async fn test_insert_batch_logs_case2() {
                 strategy: PersistenceStrategy::DiskFirst,
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             give_me_mock_storage(),
         );
@@ -1283,6 +1287,7 @@ async fn test_raft_log_drop() {
                     strategy: PersistenceStrategy::DiskFirst,
                     flush_policy: FlushPolicy::Immediate,
                     max_buffered_entries: 1000,
+                    ..Default::default()
                 },
                 Arc::new(storage),
             );
@@ -1504,6 +1509,7 @@ async fn test_term_index_functions_with_concurrent_writes() {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             give_me_mock_storage(),
         );
@@ -1608,6 +1614,7 @@ mod id_allocation_tests {
                     strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Immediate,
                     max_buffered_entries: 1000,
+                    ..Default::default()
                 },
                 give_me_mock_storage(),
             );
@@ -2229,6 +2236,7 @@ mod batched_tests {
                             interval_ms: 100,
                         },
                         max_buffered_entries: 1000,
+                        ..Default::default()
                     },
                     give_me_mock_storage(),
                 );
@@ -2265,6 +2273,7 @@ mod batched_tests {
                         interval_ms: 100,
                     },
                     max_buffered_entries: 1000,
+                    ..Default::default()
                 },
                 give_me_mock_storage(),
             );
@@ -2381,6 +2390,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     interval_ms,
                 },
                 max_buffered_entries: 1000,
+                ..Default::default()
             };
 
             // let mut log_store = MockLogStore::new();
@@ -2458,6 +2468,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     interval_ms,
                 },
                 max_buffered_entries: 1000,
+                ..Default::default()
             };
 
             let temp_dir = tempdir().unwrap();
@@ -2565,6 +2576,7 @@ mod performance_tests {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
+                ..Default::default()
             };
 
             let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
@@ -2623,6 +2635,7 @@ mod performance_tests {
                     interval_ms,
                 },
                 max_buffered_entries: 1000,
+                ..Default::default()
             };
 
             let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
@@ -2707,6 +2720,7 @@ mod performance_tests {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
+                ..Default::default()
             };
 
             let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
@@ -3027,6 +3041,7 @@ mod save_load_hard_state_tests {
                         strategy: PersistenceStrategy::MemFirst,
                         flush_policy: FlushPolicy::Immediate,
                         max_buffered_entries: 1000,
+                        ..Default::default()
                     },
                     storage,
                 );
@@ -3056,6 +3071,7 @@ mod save_load_hard_state_tests {
                         strategy: PersistenceStrategy::MemFirst,
                         flush_policy: FlushPolicy::Immediate,
                         max_buffered_entries: 1000,
+                        ..Default::default()
                     },
                     storage,
                 );

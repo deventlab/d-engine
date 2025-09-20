@@ -129,6 +129,7 @@ pub fn setup_raft_components(
             strategy: PersistenceStrategy::DiskFirst,
             flush_policy: FlushPolicy::Immediate,
             max_buffered_entries: 10000,
+            ..Default::default()
         },
         storage_engine.clone(),
     );
