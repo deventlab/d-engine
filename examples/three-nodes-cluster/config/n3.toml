@@ -34,6 +34,7 @@ flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
 # when using async persistence strategies (MemFirst/Batched)
 max_buffered_entries = 10000
 flush_workers = 4
+channel_capacity=1000
 
 [raft.snapshot]
 enable = false
