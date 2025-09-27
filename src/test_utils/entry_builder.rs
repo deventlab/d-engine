@@ -1,3 +1,5 @@
+use bytes::Bytes;
+
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
@@ -25,7 +27,7 @@ impl EntryBuilder {
         let entry = Entry {
             index: self.index,
             term: self.term,
-            payload: Some(EntryPayload::command(data.to_vec())),
+            payload: Some(EntryPayload::command(Bytes::from(data.to_vec()))),
         };
         self.index += 1;
         (self, entry)

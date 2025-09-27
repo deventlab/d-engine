@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
@@ -477,7 +478,7 @@ async fn test_handle_raft_event_case8() {
         leader_id: 1,
         leader_commit: 1,
         last_included: Some(LogId { term: 1, index: 1 }),
-        snapshot_checksum: vec![1, 2, 3],
+        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();

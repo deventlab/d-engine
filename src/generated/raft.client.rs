@@ -11,16 +11,16 @@ pub mod write_command {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Insert {
-        #[prost(bytes = "vec", tag = "1")]
-        pub key: ::prost::alloc::vec::Vec<u8>,
-        #[prost(bytes = "vec", tag = "2")]
-        pub value: ::prost::alloc::vec::Vec<u8>,
+        #[prost(bytes = "bytes", tag = "1")]
+        pub key: ::prost::bytes::Bytes,
+        #[prost(bytes = "bytes", tag = "2")]
+        pub value: ::prost::bytes::Bytes,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Delete {
-        #[prost(bytes = "vec", tag = "1")]
-        pub key: ::prost::alloc::vec::Vec<u8>,
+        #[prost(bytes = "bytes", tag = "1")]
+        pub key: ::prost::bytes::Bytes,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
@@ -47,8 +47,8 @@ pub struct ClientReadRequest {
     #[prost(bool, tag = "2")]
     pub linear: bool,
     /// Key list to be read
-    #[prost(bytes = "vec", repeated, tag = "3")]
-    pub keys: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "bytes", repeated, tag = "3")]
+    pub keys: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -75,10 +75,10 @@ pub mod client_response {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientResult {
-    #[prost(bytes = "vec", tag = "1")]
-    pub key: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "2")]
-    pub value: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub value: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

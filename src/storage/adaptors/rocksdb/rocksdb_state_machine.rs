@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use parking_lot::RwLock;
 use prost::Message;
 use rocksdb::Cache;
@@ -206,7 +207,7 @@ impl StateMachine for RocksDBStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Bytes>, Error> {
         let cf = self
             .db
             .cf_handle(STATE_MACHINE_CF)
@@ -217,7 +218,7 @@ impl StateMachine for RocksDBStateMachine {
             .get_cf(&cf, key_buffer)
             .map_err(|e| StorageError::DbError(e.to_string()))?
         {
-            Some(value) => Ok(Some(value.to_vec())),
+            Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
             None => Ok(None),
         }
     }
@@ -372,7 +373,7 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32], Error> {
+    ) -> Result<Bytes, Error> {
         // Create a checkpoint in the new_snapshot_dir
         let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -384,11 +385,11 @@ impl StateMachine for RocksDBStateMachine {
         let checksum = [0; 32]; // For now, we return a dummy checksum.
         let snapshot_metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: checksum.to_vec(),
+            checksum: Bytes::copy_from_slice(&checksum),
         };
         self.persist_last_snapshot_metadata(&snapshot_metadata)?;
 
-        Ok(checksum)
+        Ok(Bytes::copy_from_slice(&checksum))
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {

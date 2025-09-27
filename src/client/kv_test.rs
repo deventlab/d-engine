@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::vec;
 
 use arc_swap::ArcSwap;
+use bytes::Bytes;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -99,8 +100,8 @@ async fn test_put_failure() {
 #[tokio::test]
 #[traced_test]
 async fn test_get_success() {
-    let key = "test_key".to_string().into_bytes();
-    let value = "test_value".to_string().into_bytes();
+    let key = Bytes::from("test_key".to_string());
+    let value = Bytes::from("test_value".to_string());
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_read_mock_server(
         rx,
@@ -253,19 +254,23 @@ async fn test_delete_failure() {
 #[traced_test]
 async fn test_get_multi_success_linear() {
     // Set up mock data for multiple keys
-    let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+    let keys = vec![
+        Bytes::from("key1".to_string()),
+        Bytes::from("key2".to_string()),
+        Bytes::from("key3".to_string()),
+    ];
     let values = [
-        "value1".to_string(),
-        "value2".to_string(),
-        "value3".to_string(),
+        Bytes::from("value1".to_string()),
+        Bytes::from("value2".to_string()),
+        Bytes::from("value3".to_string()),
     ];
 
     // Create a single response containing all key-value pairs
     let mut client_results = Vec::new();
     for (i, key) in keys.iter().enumerate() {
         client_results.push(ClientResult {
-            key: key.to_string().into_bytes(),
-            value: values[i].clone().into_bytes(),
+            key: key.clone(),
+            value: values[i].clone(),
         });
     }
     let response = ClientResponse::read_results(client_results);
@@ -297,7 +302,7 @@ async fn test_get_multi_success_linear() {
     })));
 
     // Perform multi-get with linear consistency
-    let result = client.get_multi(keys.clone().into_iter().map(|k| k.to_string()), true).await;
+    let result = client.get_multi(keys.clone().into_iter(), true).await;
 
     assert!(result.is_ok());
     let results = result.unwrap();
@@ -305,24 +310,22 @@ async fn test_get_multi_success_linear() {
     // Verify results match expectations
     assert_eq!(results.len(), keys.len());
     for (i, key) in keys.iter().enumerate() {
-        assert_eq!(
-            results[i].as_ref().map(|r| &r.key),
-            Some(&key.to_string().into_bytes())
-        );
-        assert_eq!(
-            results[i].as_ref().map(|r| &r.value),
-            Some(&values[i].clone().into_bytes())
-        );
+        assert_eq!(results[i].as_ref().map(|r| &r.key), Some(&key.clone()));
+        assert_eq!(results[i].as_ref().map(|r| &r.value), Some(&values[i]));
     }
 }
 #[tokio::test]
 #[traced_test]
 async fn test_get_multi_success_non_linear() {
     // Set up mock data for multiple keys with some missing
-    let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+    let keys = vec![
+        Bytes::from("key1"),
+        Bytes::from("key2"),
+        Bytes::from("key3"),
+    ];
     let values = [
-        Some("value1".to_string()),
-        Some("value2".to_string()),
+        Some(Bytes::from_owner("value1".to_string())),
+        Some(Bytes::from_owner("value2".to_string())),
         None, // key3 not found
     ];
 
@@ -330,10 +333,10 @@ async fn test_get_multi_success_non_linear() {
     let mut client_results = Vec::new();
     for (i, key) in keys.iter().enumerate() {
         client_results.push(ClientResult {
-            key: key.to_string().into_bytes(),
+            key: key.clone(),
             value: match &values[i] {
-                Some(value) => value.clone().into_bytes(),
-                None => vec![], // empty value for not found
+                Some(value) => value.clone(),
+                None => Bytes::copy_from_slice(&[]), // empty value for not found
             },
         });
     }
@@ -366,7 +369,7 @@ async fn test_get_multi_success_non_linear() {
     })));
 
     // Perform multi-get with non-linear consistency
-    let result = client.get_multi(keys.clone().into_iter().map(|k| k.to_string()), false).await;
+    let result = client.get_multi(keys.clone().into_iter(), false).await;
 
     assert!(result.is_ok());
     let results = result.unwrap();
@@ -374,13 +377,10 @@ async fn test_get_multi_success_non_linear() {
     // Verify results match expectations
     assert_eq!(results.len(), keys.len());
     for (i, key) in keys.iter().enumerate() {
+        assert_eq!(results[i].as_ref().map(|r| &r.key), Some(&key.clone()));
         assert_eq!(
-            results[i].as_ref().map(|r| &r.key),
-            Some(&key.to_string().into_bytes())
-        );
-        assert_eq!(
-            results[i].as_ref().map(|r| r.value.as_slice()),
-            values[i].as_ref().map(|v| v.as_bytes()).or(Some(&[]))
+            results[i].as_ref().map(|r| r.value.clone()),
+            values[i].clone().or(Some(Bytes::new()))
         );
     }
 }

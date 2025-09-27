@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tempfile::tempdir;
 use tokio::fs::read;
 use tracing_test::traced_test;
@@ -22,12 +23,12 @@ async fn sequential_chunks_assembly() {
     // Write 5 sequential chunks
     for i in 0..5 {
         let data = vec![i as u8; 1024];
-        assembler.write_chunk(i, data.clone()).await.unwrap();
+        assembler.write_chunk(i, Bytes::from(data.clone())).await.unwrap();
     }
 
     let snapshot_meta = SnapshotMetadata {
         last_included: Some(LogId { index: 1, term: 1 }),
-        checksum: vec![],
+        checksum: Bytes::new(),
     };
     let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
     let content = read(&final_path).await.unwrap();
@@ -48,8 +49,8 @@ async fn reject_out_of_order_chunks() {
     ));
     let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
 
-    assembler.write_chunk(0, vec![1]).await.unwrap();
-    let result = assembler.write_chunk(2, vec![3]).await;
+    assembler.write_chunk(0, Bytes::from(vec![1])).await.unwrap();
+    let result = assembler.write_chunk(2, Bytes::from(vec![3])).await;
 
     assert!(result.is_err());
 }
@@ -64,8 +65,8 @@ async fn detect_duplicate_chunk_index() {
     ));
     let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
 
-    assembler.write_chunk(0, vec![1]).await.unwrap();
-    let result = assembler.write_chunk(0, vec![1]).await;
+    assembler.write_chunk(0, Bytes::from(vec![1])).await.unwrap();
+    let result = assembler.write_chunk(0, Bytes::from(vec![1])).await;
 
     assert!(result.is_err());
 }
@@ -80,12 +81,12 @@ async fn handle_empty_chunk() {
     ));
     let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
 
-    assembler.write_chunk(0, vec![]).await.unwrap();
-    assembler.write_chunk(1, vec![1]).await.unwrap();
+    assembler.write_chunk(0, Bytes::new()).await.unwrap();
+    assembler.write_chunk(1, Bytes::from(vec![1])).await.unwrap();
 
     let snapshot_meta = SnapshotMetadata {
         last_included: Some(LogId { index: 1, term: 1 }),
-        checksum: vec![],
+        checksum: Bytes::new(),
     };
     let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
     let content = read(final_path).await.unwrap();
@@ -102,7 +103,7 @@ async fn verify_flush_operation() {
     ));
     let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
 
-    assembler.write_chunk(0, vec![0; 4096]).await.unwrap();
+    assembler.write_chunk(0, Bytes::from(vec![0; 4096])).await.unwrap();
     assembler.flush_to_disk().await.unwrap();
 
     // Verify data persists before finalize
@@ -122,7 +123,7 @@ async fn return_correct_final_path() {
 
     let snapshot_meta = SnapshotMetadata {
         last_included: Some(LogId { index: 1, term: 1 }),
-        checksum: vec![],
+        checksum: Bytes::new(),
     };
     let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
     assert!(final_path.ends_with("snapshot-1-1.tar.gz"));
@@ -141,12 +142,12 @@ async fn handle_large_data_volume() {
 
     // Write 1000 chunks of 4KB each (4MB total)
     for i in 0..1000 {
-        assembler.write_chunk(i, vec![i as u8; 4096]).await.unwrap();
+        assembler.write_chunk(i, Bytes::from(vec![i as u8; 4096])).await.unwrap();
     }
 
     let snapshot_meta = SnapshotMetadata {
         last_included: Some(LogId { index: 1, term: 1 }),
-        checksum: vec![],
+        checksum: Bytes::new(),
     };
     let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
     let metadata = tokio::fs::metadata(final_path).await.unwrap();

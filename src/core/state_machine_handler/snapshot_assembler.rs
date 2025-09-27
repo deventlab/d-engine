@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use bytes::Bytes;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::debug;
@@ -92,7 +93,7 @@ impl SnapshotAssembler {
     pub(crate) async fn write_chunk(
         &mut self,
         index: u32,
-        data: Vec<u8>,
+        data: Bytes,
     ) -> Result<()> {
         // Check if the block index is continuous
         if index != self.expected_index {

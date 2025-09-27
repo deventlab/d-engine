@@ -8,7 +8,7 @@ use tonic::Code;
 use tonic::Request;
 use tracing_test::traced_test;
 
-use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::proto::client::raft_client_service_server::RaftClientService;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
@@ -286,7 +286,7 @@ async fn test_handle_rpc_services_successfully() {
         assert!(node
             .handle_client_write(Request::new(ClientWriteRequest {
                 client_id: 1,
-                commands: vec![WriteCommand::delete(safe_kv(1))],
+                commands: vec![WriteCommand::delete(safe_kv_bytes(1))],
             }))
             .await
             .is_ok());

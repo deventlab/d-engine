@@ -9,6 +9,7 @@ mod replication;
 mod state_machine_handler;
 mod timer;
 
+use bytes::Bytes;
 pub(crate) use commit_handler::*;
 pub(crate) use election::*;
 pub(crate) use event::*;
@@ -81,7 +82,7 @@ pub enum QuorumStatus {
 }
 
 impl EntryPayload {
-    pub fn command(command: Vec<u8>) -> Self {
+    pub fn command(command: Bytes) -> Self {
         Self {
             payload: Some(Payload::Command(command)),
         }

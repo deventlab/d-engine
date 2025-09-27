@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
+use bytes::BytesMut;
 use prost::Message;
 
 use crate::alias::ROF;
-use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::proto::client::WriteCommand;
 use crate::proto::common::membership_change::Change;
 use crate::proto::common::AddNode;
@@ -49,34 +51,26 @@ pub fn create_config_entries() -> Vec<Entry> {
     vec![entry]
 }
 
-pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
-    let mut buffer = Vec::new();
+pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
+    let mut buffer = BytesMut::new();
 
-    let mut commands = Vec::new();
     for id in ids {
-        commands.push(WriteCommand::insert(safe_kv(id), safe_kv(id)));
+        let cmd = WriteCommand::insert(safe_kv_bytes(id), safe_kv_bytes(id));
+        cmd.encode(&mut buffer).expect("Failed to encode insert command");
     }
 
-    for c in commands {
-        buffer.append(&mut c.encode_to_vec());
-    }
-
-    buffer
+    buffer.freeze()
 }
 
-pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Vec<u8> {
-    let mut buffer = Vec::new();
+pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
+    let mut buffer = BytesMut::new();
 
-    let mut commands = Vec::new();
     for id in range {
-        commands.push(WriteCommand::delete(safe_kv(id)));
+        let cmd = WriteCommand::delete(safe_kv_bytes(id));
+        cmd.encode(&mut buffer).expect("Failed to encode delete command");
     }
 
-    for c in commands {
-        buffer.append(&mut c.encode_to_vec());
-    }
-
-    buffer
+    buffer.freeze()
 }
 ///Dependes on external id to specify the local log entry index.
 /// If duplicated ids are specified, then the only one entry will be inserted.

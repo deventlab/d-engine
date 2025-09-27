@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -1028,7 +1029,7 @@ async fn test_handle_raft_event_case8_1() {
         leader_id: 2,
         leader_commit: 100,
         last_included: Some(LogId { term: 3, index: 80 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1096,7 +1097,7 @@ async fn test_handle_raft_event_case8_2() {
             term: 3,
             index: 100,
         }),
-        snapshot_checksum: vec![1, 2, 3],
+        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1164,7 +1165,7 @@ async fn test_handle_raft_event_case8_3() {
         leader_id: 2,
         leader_commit: 100,
         last_included: Some(LogId { term: 3, index: 80 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1226,7 +1227,7 @@ async fn test_handle_raft_event_case8_4() {
         leader_id: 2,
         leader_commit: 100,
         last_included: Some(LogId { term: 2, index: 80 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1286,7 +1287,7 @@ async fn test_handle_raft_event_case8_5() {
             term: 3,
             index: 100,
         }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1343,7 +1344,7 @@ async fn test_handle_raft_event_case8_6() {
         leader_id: 2,
         leader_commit: 150,
         last_included: Some(LogId { term: 3, index: 80 }), // Lower than current
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1411,7 +1412,7 @@ async fn test_handle_raft_event_case8_7() {
             term: 3,
             index: 100,
         }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
     };
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();

@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use bytes::Bytes;
 use parking_lot::RwLock;
 use prost::Message;
 use tokio::fs;
@@ -32,7 +33,7 @@ use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
 
-type FileStateMachineDataType = RwLock<HashMap<Vec<u8>, (Vec<u8>, u64)>>;
+type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 /// File-based state machine implementation with persistence
 ///
 /// Design principles:
@@ -171,7 +172,7 @@ impl FileStateMachine {
                 break;
             }
 
-            let key = buffer[pos..pos + key_len].to_vec();
+            let key = Bytes::from(buffer[pos..pos + key_len].to_vec());
             pos += key_len;
 
             // Read value length
@@ -198,7 +199,7 @@ impl FileStateMachine {
                 break;
             }
 
-            let value = buffer[pos..pos + value_len].to_vec();
+            let value = Bytes::from(buffer[pos..pos + value_len].to_vec());
             pos += value_len;
 
             // Read term
@@ -253,7 +254,7 @@ impl FileStateMachine {
     /// Persists key-value data to disk
     fn persist_data(&self) -> Result<(), Error> {
         // Collect data first to minimize lock time
-        let data_copy: HashMap<Vec<u8>, (Vec<u8>, u64)> = {
+        let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
             data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
         };
@@ -292,7 +293,7 @@ impl FileStateMachine {
     /// Persists key-value data to disk
     async fn persist_data_async(&self) -> Result<(), Error> {
         // Collect data first to minimize lock time
-        let data_copy: HashMap<Vec<u8>, (Vec<u8>, u64)> = {
+        let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
             data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
         };
@@ -312,14 +313,14 @@ impl FileStateMachine {
             file.write_all(&key_len.to_be_bytes()).await?;
 
             // Write key
-            file.write_all(key).await?;
+            file.write_all(key.as_ref()).await?;
 
             // Write value length (8 bytes)
             let value_len = value.len() as u64;
             file.write_all(&value_len.to_be_bytes()).await?;
 
             // Write value
-            file.write_all(value).await?;
+            file.write_all(value.as_ref()).await?;
 
             // Write term (8 bytes)
             file.write_all(&term.to_be_bytes()).await?;
@@ -362,39 +363,6 @@ impl FileStateMachine {
 
         file.write_all(&index.to_be_bytes()).await?;
         file.write_all(&term.to_be_bytes()).await?;
-
-        file.flush().await?;
-        Ok(())
-    }
-
-    /// Appends an operation to the write-ahead log
-    async fn append_to_wal(
-        &self,
-        entry: &Entry,
-        operation: &str,
-        key: &[u8],
-        value: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        let wal_path = self.data_dir.join("wal.log");
-        let mut file =
-            OpenOptions::new().write(true).create(true).append(true).open(wal_path).await?;
-
-        // Write entry index and term
-        file.write_all(&entry.index.to_be_bytes()).await?;
-        file.write_all(&entry.term.to_be_bytes()).await?;
-
-        // Write operation type (insert/delete)
-        file.write_all(operation.as_bytes()).await?;
-
-        // Write key length and key
-        file.write_all(&(key.len() as u64).to_be_bytes()).await?;
-        file.write_all(key).await?;
-
-        // For insert operations, write value length and value
-        if let Some(value_data) = value {
-            file.write_all(&(value_data.len() as u64).to_be_bytes()).await?;
-            file.write_all(value_data).await?;
-        }
 
         file.flush().await?;
         Ok(())
@@ -496,6 +464,43 @@ impl FileStateMachine {
         Ok(())
     }
 
+    /// Batch WAL writes for better I/O performance
+    async fn append_to_wal(
+        &self,
+        entries: Vec<(Entry, String, Bytes, Option<Bytes>)>,
+    ) -> Result<(), Error> {
+        let wal_path = self.data_dir.join("wal.log");
+        let mut file =
+            OpenOptions::new().write(true).create(true).append(true).open(wal_path).await?;
+
+        // Single batched write instead of multiple small writes
+        let mut batch_buffer = Vec::new();
+
+        for (entry, operation, key, value) in entries {
+            // Write entry index and term
+            batch_buffer.extend_from_slice(&entry.index.to_be_bytes());
+            batch_buffer.extend_from_slice(&entry.term.to_be_bytes());
+
+            // Write operation type
+            batch_buffer.extend_from_slice(operation.as_bytes());
+
+            // Write key length and key (ZERO-COPY: use existing Bytes)
+            batch_buffer.extend_from_slice(&(key.len() as u64).to_be_bytes());
+            batch_buffer.extend_from_slice(&key);
+
+            // For insert operations, write value
+            if let Some(value_data) = value {
+                batch_buffer.extend_from_slice(&(value_data.len() as u64).to_be_bytes());
+                batch_buffer.extend_from_slice(&value_data);
+            }
+        }
+
+        // Single I/O operation for entire batch
+        file.write_all(&batch_buffer).await?;
+        file.flush().await?;
+
+        Ok(())
+    }
     // pub(super) async fn decompress_snapshot(
     //     &self,
     //     compressed_path: &Path,
@@ -545,7 +550,7 @@ impl StateMachine for FileStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Bytes>, Error> {
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
@@ -565,9 +570,12 @@ impl StateMachine for FileStateMachine {
         trace!("Applying chunk: {:?}.", chunk);
 
         let mut highest_index_entry: Option<LogId> = None;
+        let mut batch_operations = Vec::new();
 
-        // Process each entry in the chunk
+        // PHASE 1: Decode all operations and prepare WAL entries
         for entry in chunk {
+            let entry_index = entry.index;
+
             assert!(entry.payload.is_some(), "Entry payload should not be None!");
 
             // Ensure entries are processed in order
@@ -584,37 +592,28 @@ impl StateMachine for FileStateMachine {
                 term: entry.term,
             });
 
+            // Decode operations without holding locks
             match entry.payload.as_ref().unwrap().payload.as_ref() {
                 Some(Payload::Noop(_)) => {
                     debug!("Handling NOOP command at index {}", entry.index);
-                    self.append_to_wal(&entry, "NOOP", &[], None).await?;
+                    batch_operations.push((entry, "NOOP", Bytes::new(), None));
                 }
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
-                    Ok(write_cmd) => match write_cmd.operation {
-                        Some(Operation::Insert(Insert { key, value })) => {
-                            debug!("Applying INSERT at index {}: {:?}", entry.index, key);
-
-                            // Write to WAL first
-                            self.append_to_wal(&entry, "INSERT", &key, Some(&value)).await?;
-
-                            // Update in-memory data
-                            let mut data = self.data.write();
-                            data.insert(key, (value, entry.term));
+                    Ok(write_cmd) => {
+                        // Extract operation data for batch processing
+                        match write_cmd.operation {
+                            Some(Operation::Insert(Insert { key, value })) => {
+                                batch_operations.push((entry, "INSERT", key, Some(value)));
+                            }
+                            Some(Operation::Delete(Delete { key })) => {
+                                batch_operations.push((entry, "DELETE", key, None));
+                            }
+                            None => {
+                                warn!("WriteCommand without operation at index {}", entry.index);
+                                batch_operations.push((entry, "NOOP", Bytes::new(), None));
+                            }
                         }
-                        Some(Operation::Delete(Delete { key })) => {
-                            debug!("Applying DELETE at index {}: {:?}", entry.index, key);
-
-                            // Write to WAL first
-                            self.append_to_wal(&entry, "DELETE", &key, None).await?;
-
-                            // Update in-memory data
-                            let mut data = self.data.write();
-                            data.remove(&key);
-                        }
-                        None => {
-                            warn!("WriteCommand without operation at index {}", entry.index);
-                        }
-                    },
+                    }
                     Err(e) => {
                         error!(
                             "Failed to decode WriteCommand at index {}: {:?}",
@@ -625,13 +624,52 @@ impl StateMachine for FileStateMachine {
                 },
                 Some(Payload::Config(_config_change)) => {
                     debug!("Ignoring config change at index {}", entry.index);
-                    self.append_to_wal(&entry, "CONFIG", &[], None).await?;
+                    batch_operations.push((entry, "CONFIG", Bytes::new(), None));
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }
 
-            info!("COMMITTED_LOG_METRIC: {}", entry.index);
+            info!("COMMITTED_LOG_METRIC: {}", entry_index);
         }
+
+        // PHASE 2: Batch WAL writes (minimize I/O latency)
+        let mut wal_entries = Vec::new();
+        for (entry, operation, key, value) in &batch_operations {
+            // Prepare WAL data without immediate I/O
+            wal_entries.push((
+                entry.clone(),
+                operation.to_string(),
+                key.clone(),
+                value.clone(),
+            ));
+        }
+
+        // Single batch WAL write (reduces I/O overhead)
+        self.append_to_wal(wal_entries).await?;
+
+        // PHASE 3: Fast in-memory updates with minimal lock time (ZERO-COPY)
+        {
+            let mut data = self.data.write();
+
+            // Process all operations without any awaits inside the lock
+            for (entry, operation, key, value) in batch_operations {
+                match operation {
+                    "INSERT" => {
+                        if let Some(value) = value {
+                            // ZERO-COPY: Use existing Bytes without cloning if possible
+                            data.insert(key, (value, entry.term));
+                        }
+                    }
+                    "DELETE" => {
+                        data.remove(&key);
+                    }
+                    "NOOP" | "CONFIG" => {
+                        // No data modification needed
+                    }
+                    _ => warn!("Unknown operation: {}", operation),
+                }
+            }
+        } // Lock released immediately - no awaits inside!
 
         if let Some(log_id) = highest_index_entry {
             debug!("State machine - updated last_applied: {:?}", log_id);
@@ -734,7 +772,7 @@ impl StateMachine for FileStateMachine {
                 break;
             }
 
-            let key = buffer[pos..pos + key_len].to_vec();
+            let key = Bytes::from(buffer[pos..pos + key_len].to_vec());
             pos += key_len;
 
             // Read value length
@@ -761,7 +799,7 @@ impl StateMachine for FileStateMachine {
                 break;
             }
 
-            let value = buffer[pos..pos + value_len].to_vec();
+            let value = Bytes::from(buffer[pos..pos + value_len].to_vec());
             pos += value_len;
 
             // Read term
@@ -813,7 +851,7 @@ impl StateMachine for FileStateMachine {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32], Error> {
+    ) -> Result<Bytes, Error> {
         info!("Generating snapshot data up to {:?}", last_included);
 
         // Create snapshot directory
@@ -823,7 +861,7 @@ impl StateMachine for FileStateMachine {
         let snapshot_path = new_snapshot_dir.join("snapshot.bin");
         let mut file = File::create(&snapshot_path).await?;
 
-        let data_copy: HashMap<Vec<u8>, (Vec<u8>, u64)> = {
+        let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
             data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
         };
@@ -853,7 +891,7 @@ impl StateMachine for FileStateMachine {
         // Update metadata
         let metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: vec![0; 32], // Simple checksum for demo
+            checksum: Bytes::from(vec![0; 32]), // Simple checksum for demo
         };
 
         self.update_last_snapshot_metadata(&metadata)?;
@@ -861,7 +899,7 @@ impl StateMachine for FileStateMachine {
         info!("Snapshot generated at {:?}", snapshot_path);
 
         // Return dummy checksum
-        Ok([0; 32])
+        Ok(Bytes::from_static(&[0u8; 32]))
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {

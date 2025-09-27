@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use futures::StreamExt;
 use mockall::predicate::eq;
 use nanoid::nanoid;
@@ -16,7 +17,7 @@ use tracing_test::traced_test;
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::client_command_to_entry_payloads;
-use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientWriteRequest;
@@ -808,7 +809,7 @@ async fn test_handle_raft_event_case6_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let keys = vec![safe_kv(1).to_vec()];
+    let keys = vec![safe_kv_bytes(1)];
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
@@ -890,7 +891,7 @@ async fn test_handle_raft_event_case6_2() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let keys = vec![safe_kv(1).to_vec()];
+    let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -967,7 +968,7 @@ async fn test_handle_raft_event_case6_3() {
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
-    let keys = vec![safe_kv(1).to_vec()];
+    let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
         linear: true,
@@ -1039,7 +1040,7 @@ async fn test_handle_raft_event_case8() {
             leader_id: 1,
             leader_commit: 1,
             last_included: None,
-            snapshot_checksum: vec![],
+            snapshot_checksum: Bytes::new(),
         },
         resp_tx,
     );
@@ -2396,7 +2397,7 @@ fn mock_request(sender: MaybeCloneOneshotSender<ClientResponseResult>) -> RaftRe
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case1_quorum_achieved() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case1_quorum_achieved",
@@ -2444,7 +2445,7 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case2_verifiable_failure() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case2_verifiable_failure",
@@ -2484,7 +2485,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case3_non_verifiable_failure",
@@ -2548,7 +2549,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case4_partial_timeouts() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case4_partial_timeouts",
@@ -2588,7 +2589,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case5_all_timeouts() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case5_all_timeouts",
@@ -2624,7 +2625,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case6_higher_term() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case6_higher_term",
@@ -2669,7 +2670,7 @@ async fn test_verify_internal_quorum_case6_higher_term() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case7_critical_failure() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case7_critical_failure",
@@ -2761,7 +2762,7 @@ async fn test_handle_join_cluster_case1_success() {
     state_machine.expect_snapshot_metadata().returning(move || {
         Some(SnapshotMetadata {
             last_included: Some(LogId { term: 1, index: 1 }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         })
     });
     raft_context.storage.state_machine = Arc::new(state_machine);
@@ -2992,7 +2993,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
                 index: 100,
                 term: 1,
             }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         })
     });
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
@@ -3022,7 +3023,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     state_machine.expect_snapshot_metadata().returning(move || {
         Some(SnapshotMetadata {
             last_included: Some(LogId { term: 1, index: 1 }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         })
     });
     context.storage.state_machine = Arc::new(state_machine);
@@ -3080,7 +3081,7 @@ mod trigger_background_snapshot_test {
                 Err(crate::SnapshotError::OperationFailed("mock error".to_string()).into())
             } else {
                 let chunk = SnapshotChunk {
-                    data: vec![1, 2, 3],
+                    data: Bytes::from(vec![1, 2, 3]),
                     ..Default::default()
                 };
                 Ok(stream::iter(vec![Ok(chunk)]).boxed())
@@ -3358,6 +3359,7 @@ mod batch_promote_learners_test {
 mod pending_promotion_tests {
     use std::time::Duration;
 
+    use bytes::Bytes;
     use parking_lot::Mutex;
     use tokio::time::timeout;
     use tokio::time::Instant;
@@ -3423,7 +3425,7 @@ mod pending_promotion_tests {
         async fn verify_internal_quorum_achieved_context(
             test_name: &str
         ) -> RaftContext<MockTypeConfig> {
-            let payloads = vec![EntryPayload::command(vec![])];
+            let payloads = vec![EntryPayload::command(Bytes::new())];
             let (_graceful_tx, graceful_rx) = watch::channel(());
             let mut raft_context =
                 mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
@@ -3467,7 +3469,7 @@ mod pending_promotion_tests {
         async fn verify_internal_quorum_failure_context(
             test_name: &str
         ) -> RaftContext<MockTypeConfig> {
-            let payloads = vec![EntryPayload::command(vec![])];
+            let payloads = vec![EntryPayload::command(Bytes::new())];
             let (_graceful_tx, graceful_rx) = watch::channel(());
             let mut raft_context =
                 mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);

@@ -88,7 +88,7 @@ where
     /// Returns None if any key doesn't exist
     fn read_from_state_machine(
         &self,
-        keys: Vec<Vec<u8>>,
+        keys: Vec<bytes::Bytes>,
     ) -> Option<Vec<ClientResult>>;
 
     /// Receives and installs a snapshot stream pushed by the leader

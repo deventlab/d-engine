@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::StateMachine;
@@ -147,7 +148,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     // Verify state machine status
     let value = sm3.get(&safe_kv(3)).unwrap();
-    assert_eq!(value, Some(safe_kv(3).to_vec()));
+    assert_eq!(value, Some(Bytes::from(safe_kv(3).to_vec())));
 
     // Verify raft log been purged
     for i in 1..=3 {

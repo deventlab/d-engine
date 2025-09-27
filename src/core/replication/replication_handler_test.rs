@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use dashmap::DashMap;
 use prost::Message;
 use tokio::sync::watch;
@@ -12,7 +13,7 @@ use super::ReplicationCore;
 use super::ReplicationData;
 use super::ReplicationHandler;
 use crate::client_command_to_entry_payloads;
-use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::proto::client::write_command::Insert;
 use crate::proto::client::write_command::Operation;
 use crate::proto::client::WriteCommand;
@@ -373,7 +374,7 @@ async fn test_generate_new_entries_case2() {
         ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     debug!("last_id: {}", last_id);
-    let commands = vec![WriteCommand::delete(safe_kv(1))];
+    let commands = vec![WriteCommand::delete(safe_kv_bytes(1))];
     let current_term = 1;
     assert_eq!(
         handler
@@ -801,14 +802,14 @@ fn test_client_command_to_entry_payloads_case1() {
     let commands = vec![
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                key: b"key1".to_vec(),
-                value: b"value1".to_vec(),
+                key: Bytes::from(b"key1".to_vec()),
+                value: Bytes::from(b"value1".to_vec()),
             })),
         },
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                key: b"key2".to_vec(),
-                value: b"value2".to_vec(),
+                key: Bytes::from(b"key2".to_vec()),
+                value: Bytes::from(b"value2".to_vec()),
             })),
         },
     ];
@@ -821,11 +822,11 @@ fn test_client_command_to_entry_payloads_case1() {
 
     // Check first payload
     if let Some(Payload::Command(bytes)) = &payloads[0].payload {
-        let decoded = WriteCommand::decode(bytes.as_slice()).unwrap();
+        let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
             Some(Operation::Insert(Insert { key, value }))
-            if key == b"key1" && value == b"value1"
+            if key == b"key1".as_ref() && value == b"value1".as_ref()
         ));
     } else {
         panic!("First payload should be Command variant");
@@ -833,11 +834,11 @@ fn test_client_command_to_entry_payloads_case1() {
 
     // Check second payload
     if let Some(Payload::Command(bytes)) = &payloads[1].payload {
-        let decoded = WriteCommand::decode(bytes.as_slice()).unwrap();
+        let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
             Some(Operation::Insert(Insert { key, value }))
-            if key == b"key2" && value == b"value2"
+            if key == b"key2".as_ref() && value == b"value2".as_ref()
         ));
     } else {
         panic!("Second payload should be Command variant");
@@ -859,6 +860,7 @@ mod handle_raft_request_in_batch_test {
     use tracing::debug;
 
     use super::*;
+    use crate::convert::safe_kv_bytes;
     use crate::test_utils::node_config;
     use crate::test_utils::MockBuilder;
 
@@ -1214,8 +1216,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1323,7 +1325,7 @@ mod handle_raft_request_in_batch_test {
 
         // Prepare client commands (new entries to replicate)
         let commands = vec![
-            WriteCommand::insert(safe_kv(300), safe_kv(300)), // Will create log index 11
+            WriteCommand::insert(safe_kv_bytes(300), safe_kv_bytes(300)), // Will create log index 11
         ];
 
         // Initialize leader state
@@ -1552,8 +1554,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1715,8 +1717,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1844,8 +1846,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1965,8 +1967,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -2081,8 +2083,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -2184,8 +2186,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -2327,7 +2329,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2432,7 +2434,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2529,7 +2531,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2701,7 +2703,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2804,7 +2806,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2893,7 +2895,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2977,7 +2979,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,

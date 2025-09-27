@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
 
+use bytes::Bytes;
 use futures::future::join_all;
 use tempfile::tempdir;
 use tokio::time::sleep;
@@ -120,7 +121,7 @@ impl TestContext {
             .map(|index| Entry {
                 index,
                 term,
-                payload: Some(EntryPayload::command(b"data".to_vec())),
+                payload: Some(EntryPayload::command(Bytes::from(b"data".to_vec()))),
             })
             .collect();
 
@@ -1896,7 +1897,7 @@ mod disk_first_tests {
             .append_entries(vec![Entry {
                 index: 1,
                 term: 1,
-                payload: Some(EntryPayload::command(b"data".to_vec())),
+                payload: Some(EntryPayload::command(Bytes::from(b"data".to_vec()))),
             }])
             .await
             .unwrap();
@@ -1941,7 +1942,9 @@ mod disk_first_tests {
                 .append_entries(vec![Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(format!("data{i}",).into_bytes())),
+                    payload: Some(EntryPayload::command(Bytes::from(
+                        format!("data{i}",).into_bytes(),
+                    ))),
                 }])
                 .await
                 .unwrap();
@@ -2000,7 +2003,9 @@ mod disk_first_tests {
                 .append_entries(vec![Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(format!("data{i}",).into_bytes())),
+                    payload: Some(EntryPayload::command(Bytes::from(
+                        format!("data{i}",).into_bytes(),
+                    ))),
                 }])
                 .await
                 .unwrap();
@@ -2415,7 +2420,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                 entries.push(Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(vec![0; 256])), // 256B payload
+                    payload: Some(EntryPayload::command(Bytes::from(vec![0; 256]))), // 256B payload
                 });
             }
             log.append_entries(entries.clone()).await.unwrap();
@@ -2428,7 +2433,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                 vec![Entry {
                     index: 501,
                     term: 1,
-                    payload: Some(EntryPayload::command(vec![1; 256])),
+                    payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
                 }],
             )
             .await
@@ -2487,7 +2492,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                 entries.push(Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(vec![0; 256])), // 256B payload
+                    payload: Some(EntryPayload::command(Bytes::from(vec![0; 256]))), // 256B payload
                 });
             }
             log.append_entries(entries.clone()).await.unwrap();
@@ -2500,7 +2505,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                 vec![Entry {
                     index: 501,
                     term: 1,
-                    payload: Some(EntryPayload::command(vec![1; 256])),
+                    payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
                 }],
             )
             .await
@@ -2648,7 +2653,7 @@ mod performance_tests {
                 entries.push(Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(vec![0; 256])),
+                    payload: Some(EntryPayload::command(Bytes::from(vec![0; 256]))),
                 });
             }
             log_arc.append_entries(entries).await.unwrap();
@@ -2674,7 +2679,7 @@ mod performance_tests {
                     vec![Entry {
                         index: 501,
                         term: 1,
-                        payload: Some(EntryPayload::command(vec![1; 256])),
+                        payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
                     }],
                 )
                 .await
@@ -3174,7 +3179,7 @@ async fn test_last_entry_id_performance() {
         .map(|index| Entry {
             index: index as u64,
             term: index as u64,
-            payload: Some(EntryPayload::command(b"test_data".to_vec())),
+            payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
         })
         .collect();
 
@@ -3481,7 +3486,7 @@ async fn test_high_concurrency_mixed_operations() {
                 let entry = Entry {
                     index: (i * 1000) + j,
                     term: 1,
-                    payload: Some(EntryPayload::command(vec![0; 1024])), // 1KB payload
+                    payload: Some(EntryPayload::command(Bytes::from(vec![0; 1024]))), // 1KB payload
                 };
                 log.append_entries(vec![entry]).await.unwrap();
             }
@@ -3544,12 +3549,12 @@ async fn test_extreme_boundary_conditions() {
         Entry {
             index: max_index,
             term: 1,
-            payload: Some(EntryPayload::command(b"max_data".to_vec())),
+            payload: Some(EntryPayload::command(Bytes::from(b"max_data".to_vec()))),
         },
         Entry {
             index: max_index + 1,
             term: 1,
-            payload: Some(EntryPayload::command(b"max_data+1".to_vec())),
+            payload: Some(EntryPayload::command(Bytes::from(b"max_data+1".to_vec()))),
         },
     ];
 
@@ -3600,7 +3605,9 @@ async fn test_recovery_under_different_scenarios() {
                 .append_entries(vec![Entry {
                     index: i,
                     term: 1,
-                    payload: Some(EntryPayload::command(format!("data{i}").into_bytes())),
+                    payload: Some(EntryPayload::command(Bytes::from(
+                        format!("data{i}").into_bytes(),
+                    ))),
                 }])
                 .await
                 .unwrap();
@@ -3678,8 +3685,8 @@ async fn test_performance_benchmarks() {
     for i in 1..=pre_populate_count {
         entries.push(Entry {
             index: i,
-            term: i / 100 + 1,                                  // Vary terms
-            payload: Some(EntryPayload::command(vec![0; 256])), // 256B payload
+            term: i / 100 + 1, // Vary terms
+            payload: Some(EntryPayload::command(Bytes::from(vec![0; 256]))), // 256B payload
         });
     }
     ctx.raft_log.append_entries(entries).await.unwrap();
@@ -3695,7 +3702,7 @@ async fn test_performance_benchmarks() {
                     let entry = Entry {
                         index: 10000 + i as u64 + 1,
                         term: 101,
-                        payload: Some(EntryPayload::command(vec![0; 256])),
+                        payload: Some(EntryPayload::command(Bytes::from(vec![0; 256]))),
                     };
                     ctx.raft_log.append_entries(vec![entry]).await.unwrap();
                 }

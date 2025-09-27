@@ -1,6 +1,7 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use prost::Message;
 use tonic::async_trait;
 
@@ -281,18 +282,20 @@ fn create_test_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
 /// Helper function to create test command payload
 fn create_test_command_payload(index: u64) -> crate::proto::common::EntryPayload {
     // Create a simple insert command
-    let key = format!("key_{index}").into_bytes();
-    let value = format!("value_{index}").into_bytes();
+    let key = Bytes::from(format!("key_{index}"));
+    let value = Bytes::from(format!("value_{index}"));
 
     let insert = Insert { key, value };
     let operation = crate::proto::client::write_command::Operation::Insert(insert);
     let write_cmd = crate::proto::client::WriteCommand {
         operation: Some(operation),
     };
-
+    let mut buf = Vec::new();
+    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
+    let cmd_bytes = Bytes::from(buf); // convert Vec<u8> to Bytes
     crate::proto::common::EntryPayload {
         payload: Some(crate::proto::common::entry_payload::Payload::Command(
-            write_cmd.encode_to_vec(),
+            cmd_bytes,
         )),
     }
 }

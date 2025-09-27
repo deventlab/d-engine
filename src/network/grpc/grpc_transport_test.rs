@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use bytes::Bytes;
 use futures::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -782,7 +783,7 @@ async fn test_purge_requests_case1_empty_peers() {
         term: 1,
         leader_id: 1,
         last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 5,
     };
 
@@ -814,7 +815,7 @@ async fn test_purge_requests_case2_self_reference() {
         term: 1,
         leader_id: my_id,
         last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 5,
     };
 
@@ -860,7 +861,7 @@ async fn test_purge_requests_case3_duplicate_peers() {
         term: 1,
         leader_id: my_id,
         last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 5,
     };
 
@@ -906,7 +907,7 @@ async fn test_purge_requests_case4_mixed_responses() {
         term: 1,
         leader_id: my_id,
         last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 5,
     };
 
@@ -973,7 +974,7 @@ async fn test_purge_requests_case5_full_success() {
         term: 1,
         leader_id: my_id,
         last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 5,
     };
 

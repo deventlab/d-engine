@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
@@ -407,7 +408,8 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
     mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
-    mock.expect_generate_snapshot_data().returning(|_, _| Ok([0u8; 32]));
+    mock.expect_generate_snapshot_data()
+        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
 
     mock.expect_save_hard_state().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
