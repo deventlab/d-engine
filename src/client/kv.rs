@@ -41,8 +41,8 @@ impl KvClient {
     /// - [`crate::ClientApiError::InvalidResponse`] for malformed server responses
     pub async fn put(
         &self,
-        key: impl Into<Bytes>,
-        value: impl Into<Bytes>,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
     ) -> std::result::Result<(), ClientApiError> {
         let _timer = ScopedTimer::new("client::put");
 
@@ -50,7 +50,10 @@ impl KvClient {
 
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::insert(key, value);
+        let client_command_insert = WriteCommand::insert(
+            Bytes::copy_from_slice(key.as_ref()),
+            Bytes::copy_from_slice(value.as_ref()),
+        );
         commands.push(client_command_insert);
 
         let request = ClientWriteRequest {
@@ -86,12 +89,12 @@ impl KvClient {
     /// - [`Error::InvalidResponse`] for malformed server responses
     pub async fn delete(
         &self,
-        key: impl Into<Bytes>,
+        key: impl AsRef<[u8]>,
     ) -> std::result::Result<(), ClientApiError> {
         let client_inner = self.client_inner.load();
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::delete(key);
+        let client_command_insert = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
         commands.push(client_command_insert);
 
         let request = ClientWriteRequest {
@@ -127,7 +130,7 @@ impl KvClient {
     /// - `Err` on network failures or invalid responses
     pub async fn get(
         &self,
-        key: impl Into<Bytes>,
+        key: impl AsRef<[u8]>,
         linear: bool,
     ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
         // Delegate to multi-get implementation
@@ -150,12 +153,13 @@ impl KvClient {
     /// - `Error::FailedToSendReadRequestError` on network failures
     pub async fn get_multi(
         &self,
-        keys: impl IntoIterator<Item = impl Into<Bytes>>,
+        keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
         linear: bool,
     ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         let client_inner = self.client_inner.load();
         // Convert keys to commands
-        let keys: Vec<Bytes> = keys.into_iter().map(|k| k.into()).collect();
+        let keys: Vec<Bytes> =
+            keys.into_iter().map(|k| Bytes::copy_from_slice(k.as_ref())).collect();
 
         // Validate at least one key
         if keys.is_empty() {
