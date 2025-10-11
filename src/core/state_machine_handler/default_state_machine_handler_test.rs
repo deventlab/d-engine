@@ -1587,7 +1587,7 @@ fn mock_node_with_rpc_service(
     );
 
     MockBuilder::new(shutdown_signal)
-        .wiht_node_config(node_config)
+        .with_node_config(node_config)
         .with_replication_handler(replication_handler)
         .with_election_handler(election_handler)
         .with_state_machine_handler(mock_state_machine_handler)

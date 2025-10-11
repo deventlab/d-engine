@@ -9,12 +9,14 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
+use tracing::warn;
 
 use super::ClientInner;
 use crate::proto::client::raft_client_service_client::RaftClientServiceClient;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResult;
 use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::ReadConsistencyPolicy;
 use crate::proto::client::WriteCommand;
 use crate::proto::error::ErrorCode;
 use crate::scoped_timer::ScopedTimer;
@@ -118,44 +120,91 @@ impl KvClient {
         }
     }
 
-    /// Retrieves a single key's value from the cluster
+    // Convenience methods for explicit consistency levels
+    pub async fn get_linearizable(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
+        self.get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead)).await
+    }
+
+    pub async fn get_lease(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
+        self.get_with_policy(key, Some(ReadConsistencyPolicy::LeaseRead)).await
+    }
+
+    pub async fn get_eventual(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
+        self.get_with_policy(key, Some(ReadConsistencyPolicy::EventualConsistency))
+            .await
+    }
+
+    /// Retrieves a single key's value using server's default consistency policy
+    ///
+    /// Uses the cluster's configured default consistency policy as defined in
+    /// the server's ReadConsistencyConfig.default_policy setting.
     ///
     /// # Parameters
-    /// - `key`: The key to retrieve, accepts any byte slice compatible type
-    /// - `linear`: Whether to use linearizable read consistency
+    /// * `key` - The key to retrieve, accepts any type implementing `AsRef<[u8]>`
     ///
     /// # Returns
-    /// - `Ok(Some(ClientResult))` if key exists
-    /// - `Ok(None)` if key not found
-    /// - `Err` on network failures or invalid responses
+    /// * `Ok(Some(ClientResult))` - Key exists, returns key-value pair
+    /// * `Ok(None)` - Key does not exist in the store
+    /// * `Err(ClientApiError)` - Read failed due to network or consistency issues
     pub async fn get(
         &self,
         key: impl AsRef<[u8]>,
-        linear: bool,
+    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
+        self.get_with_policy(key, None).await
+    }
+
+    /// Retrieves a single key's value with explicit consistency policy
+    ///
+    /// Allows client to override server's default consistency policy for this specific request.
+    /// If server's allow_client_override is false, the override will be ignored.
+    ///
+    /// # Parameters
+    /// * `key` - The key to retrieve, accepts any type implementing `AsRef<[u8]>`
+    /// * `policy` - Explicit consistency policy for this request
+    pub async fn get_with_policy(
+        &self,
+        key: impl AsRef<[u8]>,
+        consistency_policy: Option<ReadConsistencyPolicy>,
     ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
         // Delegate to multi-get implementation
-        let mut results = self.get_multi(std::iter::once(key), linear).await?;
+        let mut results =
+            self.get_multi_with_policy(std::iter::once(key), consistency_policy).await?;
 
         // Extract single result (safe due to single-key input)
         Ok(results.pop().unwrap_or(None))
     }
-    /// Fetches values for multiple keys from the cluster
+
+    /// Fetches multiple keys using server's default consistency policy
     ///
-    /// # Parameters
-    /// - `keys`: Iterable collection of keys to fetch
-    /// - `linear`: Whether to use linearizable read consistency
-    ///
-    /// # Returns
-    /// Ordered list of results matching input keys. Missing keys return `None`.
-    ///
-    /// # Errors
-    /// - `Error::EmptyKeys` if no keys provided
-    /// - `Error::FailedToSendReadRequestError` on network failures
+    /// Uses the cluster's configured default consistency policy as defined in
+    /// the server's ReadConsistencyConfig.default_policy setting.
     pub async fn get_multi(
         &self,
         keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
-        linear: bool,
     ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
+        self.get_multi_with_policy(keys, None).await
+    }
+
+    /// Fetches multiple keys with explicit consistency policy override
+    ///
+    /// Allows client to override server's default consistency policy for this batch request.
+    /// If server's allow_client_override is false, the override will be ignored.
+    pub async fn get_multi_with_policy(
+        &self,
+        keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
+        consistency_policy: Option<ReadConsistencyPolicy>,
+    ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
+        let _timer = ScopedTimer::new("client::get_multi");
+
         let client_inner = self.client_inner.load();
         // Convert keys to commands
         let keys: Vec<Bytes> =
@@ -163,21 +212,28 @@ impl KvClient {
 
         // Validate at least one key
         if keys.is_empty() {
+            warn!("Attempted multi-get with empty key collection");
             return Err(ErrorCode::InvalidRequest.into());
         }
-
-        // Select client based on consistency level
-        let mut client = if linear {
-            self.make_leader_client().await?
-        } else {
-            self.make_client().await?
-        };
 
         // Build request
         let request = ClientReadRequest {
             client_id: client_inner.client_id,
-            linear,
             keys,
+            consistency_policy: consistency_policy.map(|p| p as i32),
+        };
+
+        // Select client based on policy (if specified)
+        let mut client = match consistency_policy {
+            Some(ReadConsistencyPolicy::LinearizableRead)
+            | Some(ReadConsistencyPolicy::LeaseRead) => {
+                debug!("Using leader client for explicit consistency policy");
+                self.make_leader_client().await?
+            }
+            Some(ReadConsistencyPolicy::EventualConsistency) | None => {
+                debug!("Using load-balanced client for cluster default policy");
+                self.make_client().await?
+            }
         };
 
         // Execute request

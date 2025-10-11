@@ -333,7 +333,7 @@ impl MockBuilder {
         self
     }
 
-    pub fn wiht_node_config(
+    pub fn with_node_config(
         mut self,
         node_config: RaftNodeConfig,
     ) -> Self {

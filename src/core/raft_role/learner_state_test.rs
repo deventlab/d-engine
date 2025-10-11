@@ -449,7 +449,7 @@ async fn test_handle_raft_event_case6() {
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        linear: false,
+        consistency_policy: None,
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();

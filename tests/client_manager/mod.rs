@@ -4,6 +4,7 @@ use d_engine::client::Client;
 use d_engine::client::ClientBuilder;
 use d_engine::convert::safe_kv_bytes;
 use d_engine::convert::safe_vk;
+use d_engine::proto::client::ReadConsistencyPolicy;
 use d_engine::proto::cluster::NodeMeta;
 use d_engine::proto::error::ErrorCode;
 use d_engine::ClientApiError;
@@ -121,7 +122,7 @@ impl ClientManager {
                     }
                 },
                 ClientCommands::Read => {
-                    match self.client.kv().get(safe_kv_bytes(key), false).await? {
+                    match self.client.kv().get_with_policy(safe_kv_bytes(key), None).await? {
                         Some(r) => {
                             let v = safe_vk(&r.value).unwrap();
                             debug!("Success: {:?}", v);
@@ -133,7 +134,14 @@ impl ClientManager {
                         }
                     }
                 }
-                ClientCommands::Lread => match self.client.kv().get(safe_kv_bytes(key), true).await
+                ClientCommands::Lread => match self
+                    .client
+                    .kv()
+                    .get_with_policy(
+                        safe_kv_bytes(key),
+                        Some(ReadConsistencyPolicy::LinearizableRead),
+                    )
+                    .await
                 {
                     Ok(result) => match result {
                         Some(r) => {

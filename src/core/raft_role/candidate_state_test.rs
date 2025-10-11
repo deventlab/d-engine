@@ -10,6 +10,7 @@ use tracing_test::traced_test;
 use super::candidate_state::CandidateState;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::ReadConsistencyPolicy;
 use crate::proto::cluster::cluster_conf_update_response;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
@@ -569,61 +570,6 @@ async fn test_handle_raft_event_case5() {
     assert_eq!(r.error, ErrorCode::NotLeader as i32);
 }
 
-/// # Case 6.1: test ClientReadRequest with linear request
-#[tokio::test]
-#[traced_test]
-async fn test_handle_raft_event_case6_1() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
-
-    // New state
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    let client_read_request = ClientReadRequest {
-        client_id: 1,
-        linear: true,
-        keys: vec![],
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
-
-    let s = resp_rx.recv().await.unwrap().unwrap_err();
-    assert_eq!(s.code(), Code::PermissionDenied);
-}
-
-/// # Case 6.2: test ClientReadRequest with request(linear=false)
-#[tokio::test]
-#[traced_test]
-async fn test_handle_raft_event_case6_2() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_handle_raft_event_case6_2", graceful_rx, None);
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .times(1)
-        .returning(|_| Some(vec![]));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    // New state
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let client_read_request = ClientReadRequest {
-        client_id: 1,
-        linear: false,
-        keys: vec![],
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
-
-    let r = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(r.error, ErrorCode::Success as i32);
-}
-
 #[test]
 fn test_send_replay_raft_event() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -845,4 +791,190 @@ mod role_violation_tests {
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
     }
+}
+
+#[cfg(test)]
+mod handle_client_read_request {
+    use super::*;
+    use crate::config::ReadConsistencyPolicy as ServerPolicy;
+    use crate::convert::safe_kv_bytes;
+    use crate::proto::client::ReadConsistencyPolicy as ClientPolicy;
+    use crate::test_utils::MockBuilder;
+    use crate::RaftNodeConfig;
+
+    /// # Case 6.1: test ClientReadRequest with linear request
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_raft_event_case6_1() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = mock_raft_context("/tmp/test_handle_raft_event_case6_1", graceful_rx, None);
+
+        // New state
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            keys: vec![],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+        let s = resp_rx.recv().await.unwrap().unwrap_err();
+        assert_eq!(s.code(), Code::PermissionDenied);
+    }
+
+    /// # Case 6.2: test ClientReadRequest with request(linear=false)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_raft_event_case6_2() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut context =
+            mock_raft_context("/tmp/test_handle_raft_event_case6_2", graceful_rx, None);
+        let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+        state_machine_handler
+            .expect_read_from_state_machine()
+            .times(1)
+            .returning(|_| Some(vec![]));
+        context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+        // New state
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+            keys: vec![],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+        let r = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(r.error, ErrorCode::Success as i32);
+    }
+
+    /// Test that candidate rejects LinearizableRead policy
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_linearizable_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LinearizableRead as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap();
+        assert!(response.is_err()); // Should be rejected
+    }
+
+    /// Test that candidate rejects LeaseRead policy
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_lease_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LeaseRead as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap();
+        assert!(response.is_err()); // Should be rejected
+    }
+
+    /// Test that candidate uses server default policy
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_none_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Default is LinearizableRead, should be rejected by candidate
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: None, // Use server default
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap();
+        assert!(response.is_err()); // Should be rejected
+    }
+
+    /// Test EventualConsistency policy allows candidate reads
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_eventual_consistency_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::EventualConsistency as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32); // Should succeed
+    }
+
+    // Remove old tests with obsolete enum values like Unspecified, Invalid
 }

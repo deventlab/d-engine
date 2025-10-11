@@ -12,6 +12,7 @@ use crate::convert::safe_kv_bytes;
 use crate::proto::client::raft_client_service_server::RaftClientService;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::ReadConsistencyPolicy;
 use crate::proto::client::WriteCommand;
 use crate::proto::cluster::cluster_management_service_server::ClusterManagementService;
 use crate::proto::cluster::ClusterConfChangeRequest;
@@ -93,7 +94,7 @@ async fn test_handle_service_timeout() {
     assert!(node
         .handle_client_read(Request::new(ClientReadRequest {
             client_id: 1,
-            linear: true,
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
             keys: vec![]
         }))
         .await
@@ -166,7 +167,7 @@ async fn test_server_is_not_ready() {
     let result = node
         .handle_client_read(Request::new(ClientReadRequest {
             client_id: 1,
-            linear: true,
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
             keys: vec![],
         }))
         .await;
@@ -236,7 +237,7 @@ async fn test_handle_rpc_services_successfully() {
         .with_membership(membership)
         .with_replication_handler(replication_handler)
         .with_election_handler(election_handler)
-        .wiht_node_config(settings)
+        .with_node_config(settings)
         .build_node();
     node.set_ready(true);
 
@@ -296,7 +297,7 @@ async fn test_handle_rpc_services_successfully() {
         assert!(node
             .handle_client_read(Request::new(ClientReadRequest {
                 client_id: 1,
-                linear: false,
+                consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
                 keys: vec![],
             }))
             .await

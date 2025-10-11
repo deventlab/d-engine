@@ -30,3 +30,5 @@ pub mod storage {
 pub mod client {
     include!("../generated/raft.client.rs");
 }
+
+pub mod client_extensions;

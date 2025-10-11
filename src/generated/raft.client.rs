@@ -44,11 +44,15 @@ pub struct ClientWriteRequest {
 pub struct ClientReadRequest {
     #[prost(uint32, tag = "1")]
     pub client_id: u32,
-    #[prost(bool, tag = "2")]
-    pub linear: bool,
     /// Key list to be read
-    #[prost(bytes = "bytes", repeated, tag = "3")]
+    #[prost(bytes = "bytes", repeated, tag = "2")]
     pub keys: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+    /// Optional consistency policy for this request
+    ///
+    /// When present: Client explicitly specifies consistency requirements
+    /// When absent: Use cluster's configured default policy
+    #[prost(enumeration = "ReadConsistencyPolicy", optional, tag = "3")]
+    pub consistency_policy: ::core::option::Option<i32>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -85,6 +89,57 @@ pub struct ClientResult {
 pub struct ReadResults {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<ClientResult>,
+}
+/// Read consistency policy for controlling read operation guarantees
+///
+/// Allows clients to choose between performance and consistency trade-offs
+/// on a per-request basis when supported by the cluster configuration.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReadConsistencyPolicy {
+    /// Lease-based reads for better performance with weaker consistency
+    ///
+    /// Leader serves reads locally without contacting followers during lease period.
+    /// Provides lower latency but slightly weaker consistency guarantees.
+    LeaseRead = 0,
+    /// Fully linearizable reads for strongest consistency
+    ///
+    /// Leader verifies its leadership with a quorum before serving the read,
+    /// ensuring strict linearizability. Guarantees that all reads reflect
+    /// the most recent committed value in the cluster.
+    LinearizableRead = 1,
+    /// Eventually consistent reads from any node
+    ///
+    /// Allows reading from any node (leader, follower, or candidate) without
+    /// additional consistency checks. May return stale data but provides
+    /// best read performance and availability. Suitable for scenarios where
+    /// eventual consistency is acceptable.
+    EventualConsistency = 2,
+}
+impl ReadConsistencyPolicy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::LeaseRead => "READ_CONSISTENCY_POLICY_LEASE_READ",
+            Self::LinearizableRead => "READ_CONSISTENCY_POLICY_LINEARIZABLE_READ",
+            Self::EventualConsistency => "READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "READ_CONSISTENCY_POLICY_LEASE_READ" => Some(Self::LeaseRead),
+            "READ_CONSISTENCY_POLICY_LINEARIZABLE_READ" => Some(Self::LinearizableRead),
+            "READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY" => {
+                Some(Self::EventualConsistency)
+            }
+            _ => None,
+        }
+    }
 }
 /// Generated client implementations.
 pub mod raft_client_service_client {

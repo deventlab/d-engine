@@ -30,7 +30,7 @@
 //!     // Execute key-value operations
 //!     client.kv().put("user:1001", "Alice").await.unwrap();
 //!
-//!     let value = client.kv().get("user:1001", false).await.unwrap();
+//!     let value = client.kv().get("user:1001").await.unwrap();
 //!
 //!     println!("User data: {:?}", value);
 //!

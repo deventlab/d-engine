@@ -5,6 +5,7 @@ use std::time::Duration;
 use config::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::warn;
 
 use super::validate_directory;
 use crate::Error;
@@ -61,6 +62,11 @@ pub struct RaftConfig {
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
+
+    /// Configuration for read operation consistency behavior
+    /// Controls the trade-off between read performance and consistency guarantees
+    #[serde(default)]
+    pub read_consistency: ReadConsistencyConfig,
 }
 
 impl Debug for RaftConfig {
@@ -84,6 +90,7 @@ impl Default for RaftConfig {
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
+            read_consistency: ReadConsistencyConfig::default(),
         }
     }
 }
@@ -107,6 +114,17 @@ impl RaftConfig {
         self.membership.validate()?;
         self.commit_handler.validate()?;
         self.snapshot.validate()?;
+        self.read_consistency.validate()?;
+
+        // Warn if lease duration is too long compared to election timeout
+        if self.read_consistency.lease_duration_ms > self.election.election_timeout_min / 2 {
+            warn!(
+                    "read_consistency.lease_duration_ms ({}) is greater than half of election_timeout_min ({}ms). \
+                     This may cause lease expiration during normal operation.",
+                    self.read_consistency.lease_duration_ms,
+                    self.election.election_timeout_min / 2
+                );
+        }
 
         Ok(())
     }
@@ -806,6 +824,123 @@ impl Default for PersistenceConfig {
             max_buffered_entries: default_max_buffered_entries(),
             flush_workers: default_flush_workers(),
             channel_capacity: default_channel_capacity(),
+        }
+    }
+}
+
+/// Policy for read operation consistency guarantees
+///
+/// Determines the trade-off between read consistency and performance.
+/// Clients can choose the appropriate level based on their requirements.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReadConsistencyPolicy {
+    /// Lease-based reads for better performance with weaker consistency
+    ///
+    /// The leader serves reads locally without contacting followers
+    /// during the valid lease period. Assumes bounded clock drift between nodes.
+    /// Provides lower latency but slightly weaker consistency guarantees
+    /// compared to LinearizableRead.
+    LeaseRead,
+
+    /// Fully linearizable reads for strongest consistency
+    ///
+    /// The leader verifies its leadership with a quorum before serving
+    /// the read, ensuring strict linearizability. This guarantees that
+    /// all reads reflect the most recent committed value in the cluster.
+    #[default]
+    LinearizableRead,
+
+    /// Eventually consistent reads from any node
+    ///
+    /// Allows reading from any node (leader, follower, or candidate) without
+    /// additional consistency checks. May return stale data but provides
+    /// best read performance and availability. Suitable for scenarios where
+    /// eventual consistency is acceptable.
+    /// **Can be served by non-leader nodes.**
+    EventualConsistency,
+}
+
+/// Configuration for read operation consistency behavior
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadConsistencyConfig {
+    /// Default read consistency policy for the cluster
+    ///
+    /// This sets the cluster-wide default behavior. Individual read requests
+    /// can still override this setting when needed for specific use cases.
+    #[serde(default)]
+    pub default_policy: ReadConsistencyPolicy,
+
+    /// Lease duration in milliseconds for LeaseRead policy
+    ///
+    /// Only applicable when using the LeaseRead policy. The leader considers
+    /// itself valid for this duration after successfully heartbeating to a quorum.
+    #[serde(default = "default_lease_duration_ms")]
+    pub lease_duration_ms: u64,
+
+    /// Whether to allow clients to override the default policy per request
+    ///
+    /// When true, clients can specify consistency requirements per read request.
+    /// When false, all reads use the cluster's default_policy setting.
+    #[serde(default = "default_allow_client_override")]
+    pub allow_client_override: bool,
+}
+
+impl Default for ReadConsistencyConfig {
+    fn default() -> Self {
+        Self {
+            default_policy: ReadConsistencyPolicy::default(),
+            lease_duration_ms: default_lease_duration_ms(),
+            allow_client_override: default_allow_client_override(),
+        }
+    }
+}
+
+fn default_lease_duration_ms() -> u64 {
+    // Conservative default: half of a typical heartbeat interval (~300ms)
+    250
+}
+
+fn default_allow_client_override() -> bool {
+    // Allow flexibility by default — clients can choose stronger consistency when needed
+    true
+}
+
+impl ReadConsistencyConfig {
+    fn validate(&self) -> Result<()> {
+        // Validate read consistency configuration
+        if self.lease_duration_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "read_consistency.lease_duration_ms must be greater than 0".into(),
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl From<crate::proto::client::ReadConsistencyPolicy> for ReadConsistencyPolicy {
+    fn from(proto_policy: crate::proto::client::ReadConsistencyPolicy) -> Self {
+        match proto_policy {
+            crate::proto::client::ReadConsistencyPolicy::LeaseRead => Self::LeaseRead,
+            crate::proto::client::ReadConsistencyPolicy::LinearizableRead => Self::LinearizableRead,
+            crate::proto::client::ReadConsistencyPolicy::EventualConsistency => {
+                Self::EventualConsistency
+            }
+        }
+    }
+}
+
+impl From<ReadConsistencyPolicy> for crate::proto::client::ReadConsistencyPolicy {
+    fn from(config_policy: ReadConsistencyPolicy) -> Self {
+        match config_policy {
+            ReadConsistencyPolicy::LeaseRead => {
+                crate::proto::client::ReadConsistencyPolicy::LeaseRead
+            }
+            ReadConsistencyPolicy::LinearizableRead => {
+                crate::proto::client::ReadConsistencyPolicy::LinearizableRead
+            }
+            ReadConsistencyPolicy::EventualConsistency => {
+                crate::proto::client::ReadConsistencyPolicy::EventualConsistency
+            }
         }
     }
 }

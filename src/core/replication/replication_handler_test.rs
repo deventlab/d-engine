@@ -2846,7 +2846,7 @@ mod handle_raft_request_in_batch_test {
         node_config.raft.learner_catchup_threshold = 5;
 
         let mut context =
-            MockBuilder::new(graceful_rx).wiht_node_config(node_config).build_context();
+            MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
         let my_id = 1;
         let learner_id = 2;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);

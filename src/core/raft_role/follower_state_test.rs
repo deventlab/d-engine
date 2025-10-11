@@ -12,6 +12,7 @@ use super::follower_state::FollowerState;
 use super::HardState;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::ReadConsistencyPolicy;
 use crate::proto::cluster::cluster_conf_update_response;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterConfUpdateResponse;
@@ -953,7 +954,7 @@ async fn test_handle_raft_event_case6_1() {
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        linear: true,
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -985,7 +986,7 @@ async fn test_handle_raft_event_case6_2() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        linear: false,
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1681,5 +1682,111 @@ mod role_violation_tests {
             e,
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod handle_client_read_request {
+    use super::*;
+    use crate::config::ReadConsistencyPolicy as ServerPolicy;
+    use crate::convert::safe_kv_bytes;
+    use crate::proto::client::ReadConsistencyPolicy as ClientPolicy;
+    use crate::RaftNodeConfig;
+
+    /// Test that follower rejects LeaseRead policy
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_lease_read_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LeaseRead as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap();
+        assert!(response.is_err()); // Should be rejected
+    }
+
+    /// Test that follower uses server default policy
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_unspecified_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Server default is LinearizableRead, should be rejected by follower
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: None, // Use server default
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap();
+        assert!(response.is_err()); // Should be rejected (requires leader)
+    }
+
+    /// Test EventualConsistency policy allows follower reads
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_eventual_consistency_policy() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Configure server to allow client override
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.default_policy = ServerPolicy::EventualConsistency;
+
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: None, // Use server default (EventualConsistency)
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32); // Should succeed
     }
 }

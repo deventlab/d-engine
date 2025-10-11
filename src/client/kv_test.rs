@@ -8,6 +8,7 @@ use tracing_test::traced_test;
 
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientResult;
+use crate::proto::client::ReadConsistencyPolicy;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::NodeMeta;
 use crate::proto::common::NodeStatus;
@@ -139,7 +140,7 @@ async fn test_get_success() {
     };
     leader_node.role = LEADER;
 
-    let result = client.get(key, true).await;
+    let result = client.get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead)).await;
     println!("{:?}", &result);
     assert!(result.is_ok());
     assert_eq!(result.unwrap().as_ref().map(|r| &r.value), Some(&value));
@@ -174,7 +175,7 @@ async fn test_get_not_found() {
     })));
 
     let key = "nonexistent_key".to_string().into_bytes();
-    let result = client.get(key, true).await;
+    let result = client.get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead)).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), None);
 }
@@ -302,7 +303,12 @@ async fn test_get_multi_success_linear() {
     })));
 
     // Perform multi-get with linear consistency
-    let result = client.get_multi(keys.clone().into_iter(), true).await;
+    let result = client
+        .get_multi_with_policy(
+            keys.clone().into_iter(),
+            Some(ReadConsistencyPolicy::LinearizableRead),
+        )
+        .await;
 
     assert!(result.is_ok());
     let results = result.unwrap();
@@ -369,7 +375,7 @@ async fn test_get_multi_success_non_linear() {
     })));
 
     // Perform multi-get with non-linear consistency
-    let result = client.get_multi(keys.clone().into_iter(), false).await;
+    let result = client.get_multi_with_policy(keys.clone().into_iter(), None).await;
 
     assert!(result.is_ok());
     let results = result.unwrap();
@@ -417,9 +423,10 @@ async fn test_get_multi_failure() {
     })));
 
     // Test both linear and non-linear consistency levels
-    for linear in [true, false] {
-        let result =
-            client.get_multi(keys.clone().into_iter().map(|k| k.to_string()), linear).await;
+    for linear in [Some(ReadConsistencyPolicy::LinearizableRead), None] {
+        let result = client
+            .get_multi_with_policy(keys.clone().into_iter().map(|k| k.to_string()), linear)
+            .await;
 
         assert!(result.is_err());
         assert_eq!(
@@ -458,7 +465,7 @@ async fn test_get_multi_empty_keys() {
         config: ClientConfig::default(),
         endpoints: vec![],
     })))
-    .get_multi(std::iter::empty::<String>(), false)
+    .get_multi_with_policy(std::iter::empty::<String>(), None)
     .await;
 
     assert!(result.is_err());
