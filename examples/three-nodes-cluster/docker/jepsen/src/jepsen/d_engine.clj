@@ -20,7 +20,7 @@
    [clojure.tools.cli :refer [parse-opts]]))
 
 ;; ========== Operation Definition ==========
-;; Update operation commands to match v0.1.3 API
+;; Update operation commands to match v0.1.4 API
 (defn r [_ _] {:type :invoke, :f :read, :value nil})
 (defn w [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
 
