@@ -671,9 +671,9 @@ where
     ) -> Result<AppendEntriesResponse> {
         let closure = || {
             let channel = channel.clone();
-            let mut client = RaftReplicationServiceClient::new(channel)
-                .send_compressed(CompressionEncoding::Gzip)
-                .accept_compressed(CompressionEncoding::Gzip);
+            let mut client = RaftReplicationServiceClient::new(channel);
+            // .send_compressed(CompressionEncoding::Gzip)
+            // .accept_compressed(CompressionEncoding::Gzip);
             let req = request.clone();
             async move { client.append_entries(tonic::Request::new(req)).await }
         };

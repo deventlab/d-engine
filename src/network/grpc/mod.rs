@@ -139,8 +139,7 @@ where
         .add_service(health_service)
         .add_service(
             RaftClientServiceServer::from_arc(node.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+                .accept_compressed(CompressionEncoding::Gzip), // .send_compressed(CompressionEncoding::Gzip),
         )
         .add_service(
             RaftElectionServiceServer::from_arc(node.clone())
@@ -149,8 +148,7 @@ where
         )
         .add_service(
             RaftReplicationServiceServer::from_arc(node.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+                .accept_compressed(CompressionEncoding::Gzip), // .send_compressed(CompressionEncoding::Gzip),
         )
         .add_service(
             ClusterManagementServiceServer::from_arc(node.clone())

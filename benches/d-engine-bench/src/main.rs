@@ -76,6 +76,7 @@ impl ClientPool {
             let client = ClientBuilder::new(endpoints.clone())
                 .connect_timeout(Duration::from_secs(10))
                 .request_timeout(Duration::from_secs(10))
+                .enable_compression(false)
                 .build()
                 .await?;
             clients.push(Arc::new(client));
