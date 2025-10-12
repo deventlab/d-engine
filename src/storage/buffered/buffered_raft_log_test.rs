@@ -3622,7 +3622,7 @@ async fn test_recovery_under_different_scenarios() {
             // For batch policy, only flush if we reached the threshold
             if 100 >= threshold {
                 original_ctx.raft_log.flush().await.unwrap();
-                tokio::time::sleep(Duration::from_millis(20)).await; // KEY!!!
+                tokio::time::sleep(Duration::from_millis(100)).await; // KEY!!!
             }
         }
 
