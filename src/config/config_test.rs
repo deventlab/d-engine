@@ -26,18 +26,11 @@ fn default_config_should_initialize_with_hardcoded_values() {
 #[serial]
 fn new_should_merge_environment_overrides() {
     cleanup_all_raft_env_vars();
-    with_vars(
-        vec![
-            ("RAFT__NETWORK__BUFFER_SIZE", Some("1024")),
-            ("RAFT__TLS__ENABLE_MTLS", Some("true")),
-        ],
-        || {
-            let config = RaftNodeConfig::new().unwrap();
+    with_vars(vec![("RAFT__NETWORK__BUFFER_SIZE", Some("1025"))], || {
+        let config = RaftNodeConfig::new().unwrap();
 
-            assert_eq!(config.network.buffer_size, 1024);
-            assert!(config.tls.enable_mtls);
-        },
-    );
+        assert_eq!(config.network.buffer_size, 1025);
+    });
 }
 
 #[test]

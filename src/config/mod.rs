@@ -21,7 +21,11 @@ pub use tls::*;
 #[cfg(test)]
 mod config_test;
 #[cfg(test)]
+mod network_test;
+#[cfg(test)]
 mod raft_test;
+#[cfg(test)]
+mod tls_test;
 use std::env;
 
 use config::Config;
