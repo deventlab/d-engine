@@ -67,6 +67,14 @@ pub struct RaftConfig {
     /// Controls the trade-off between read performance and consistency guarantees
     #[serde(default)]
     pub read_consistency: ReadConsistencyConfig,
+
+    /// RPC compression configuration for different service types
+    ///
+    /// Controls which RPC service types use response compression.
+    /// Allows fine-tuning for performance optimization based on
+    /// deployment environment and traffic patterns.
+    #[serde(default)]
+    pub rpc_compression: RpcCompressionConfig,
 }
 
 impl Debug for RaftConfig {
@@ -91,6 +99,7 @@ impl Default for RaftConfig {
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
             read_consistency: ReadConsistencyConfig::default(),
+            rpc_compression: RpcCompressionConfig::default(),
         }
     }
 }
@@ -943,4 +952,98 @@ impl From<ReadConsistencyPolicy> for crate::proto::client::ReadConsistencyPolicy
             }
         }
     }
+}
+
+/// Configuration for controlling gRPC compression settings per service type
+///
+/// Provides fine-grained control over when to enable compression based on
+/// the RPC service type and deployment environment. Each service can be
+/// independently configured to use compression based on its data
+/// characteristics and frequency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcCompressionConfig {
+    /// Controls compression for Raft replication response data
+    ///
+    /// Replication traffic is typically high-frequency with small payloads
+    /// in LAN environments, making compression less beneficial. In WAN
+    /// deployments with bandwidth constraints, enabling may help.
+    ///
+    /// **Default**: `false` - Optimized for LAN/same-VPC deployments
+    #[serde(default = "default_replication_compression")]
+    pub replication_response: bool,
+
+    /// Controls compression for Raft election response data
+    ///
+    /// Election traffic is low-frequency but time-sensitive. Compression
+    /// rarely benefits election traffic due to small payload size.
+    ///
+    /// **Default**: `true` for backward compatibility
+    #[serde(default = "default_election_compression")]
+    pub election_response: bool,
+
+    /// Controls compression for snapshot transfer response data
+    ///
+    /// Snapshot transfers involve large data volumes where compression
+    /// is typically beneficial, even in low-latency environments.
+    ///
+    /// **Default**: `true` - Recommended for all environments
+    #[serde(default = "default_snapshot_compression")]
+    pub snapshot_response: bool,
+
+    /// Controls compression for cluster management response data
+    ///
+    /// Cluster operations are infrequent but may contain configuration data.
+    /// Compression is generally beneficial for these operations.
+    ///
+    /// **Default**: `true` for backward compatibility
+    #[serde(default = "default_cluster_compression")]
+    pub cluster_response: bool,
+
+    /// Controls compression for client request response data
+    ///
+    /// Client responses may vary in size. In LAN/VPC environments,
+    /// compression CPU overhead typically outweighs network benefits.
+    ///
+    /// **Default**: `false` - Optimized for LAN/same-VPC deployments
+    #[serde(default = "default_client_compression")]
+    pub client_response: bool,
+}
+
+impl Default for RpcCompressionConfig {
+    fn default() -> Self {
+        Self {
+            replication_response: default_replication_compression(),
+            election_response: default_election_compression(),
+            snapshot_response: default_snapshot_compression(),
+            cluster_response: default_cluster_compression(),
+            client_response: default_client_compression(),
+        }
+    }
+}
+
+// Default values for RPC compression settings
+fn default_replication_compression() -> bool {
+    // Replication traffic is high-frequency with typically small payloads
+    // For LAN/VPC deployments, compression adds CPU overhead without significant benefit
+    false
+}
+
+fn default_election_compression() -> bool {
+    // Kept enabled for backward compatibility, though minimal benefit
+    true
+}
+
+fn default_snapshot_compression() -> bool {
+    // Snapshot data is large and benefits from compression in all environments
+    true
+}
+
+fn default_cluster_compression() -> bool {
+    // Kept enabled for backward compatibility
+    true
+}
+
+fn default_client_compression() -> bool {
+    // Client responses in LAN/VPC environments typically benefit from no compression
+    false
 }

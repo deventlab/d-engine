@@ -18,6 +18,14 @@ batch_size_threshold = 500
 process_interval_ms = 10
 max_entries_per_chunk = 100
 
+[raft.election]
+election_timeout_min = 1000
+election_timeout_max = 2000
+
+[raft.read_consistency]
+default_policy = "LeaseRead"
+lease_duration_ms = 500
+
 [raft.replication]
 # Process commands when this number is reached
 rpc_append_entries_in_batch_threshold = 5000

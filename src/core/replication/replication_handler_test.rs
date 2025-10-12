@@ -957,7 +957,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_entry_term().returning(|_| None);
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::success(
@@ -1020,7 +1020,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_entry_term().returning(|_| None);
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().returning(move |_, _, _| {
+        transport.expect_send_append_requests().returning(move |_, _, _, _| {
             Err(NetworkError::EmptyPeerList {
                 request_type: "send_vote_requests",
             }
@@ -1079,7 +1079,7 @@ mod handle_raft_request_in_batch_test {
 
         // Response with term=1 (stale)
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::success(
@@ -1149,7 +1149,7 @@ mod handle_raft_request_in_batch_test {
         // HigherTerm response with term=2
         let higher_term = 2;
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::higher_term(
@@ -1242,12 +1242,12 @@ mod handle_raft_request_in_batch_test {
         // Use `with` to capture request parameters
         transport
             .expect_send_append_requests()
-            .withf(move |requests, _, _| {
+            .withf(move |requests, _, _, _| {
                 // Send the request to the channel for subsequent assertions
                 let _ = tx.send(requests.clone());
                 true // Return true to indicate that the parameters match successfully
             })
-            .return_once(|_, _, _| {
+            .return_once(|_, _, _, _| {
                 Ok(AppendResult {
                     peer_ids: vec![].into_iter().collect(),
                     responses: vec![],
@@ -1387,7 +1387,7 @@ mod handle_raft_request_in_batch_test {
 
         // Configure mock transport responses
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |requests, _, _| {
+        transport.expect_send_append_requests().return_once(move |requests, _, _, _| {
             Ok(AppendResult {
                 peer_ids: requests.iter().map(|(id, _)| *id).collect(),
                 responses: vec![
@@ -1578,7 +1578,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id, peer4_id, peer5_id].into_iter().collect(),
                 responses: vec![
@@ -1741,7 +1741,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -1870,7 +1870,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -1991,7 +1991,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -2107,7 +2107,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -2210,7 +2210,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::higher_term(peer2_id, 5))],
@@ -2308,7 +2308,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, learner_id].into_iter().collect(),
                 responses: vec![
@@ -2413,7 +2413,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, pending_id].into_iter().collect(),
                 responses: vec![
@@ -2510,7 +2510,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner1, learner2].into_iter().collect(),
                 responses: vec![
@@ -2677,7 +2677,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, joining_id, pending_id].into_iter().collect(),
                 responses: vec![
@@ -2785,7 +2785,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, pending_id].into_iter().collect(),
                 responses: vec![
@@ -2878,7 +2878,7 @@ mod handle_raft_request_in_batch_test {
             leader_commit_index - context.node_config.raft.learner_catchup_threshold + 1;
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::success(
@@ -2953,7 +2953,7 @@ mod handle_raft_request_in_batch_test {
 
         // Mock responses - conflict
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::conflict(

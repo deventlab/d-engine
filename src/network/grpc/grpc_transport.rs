@@ -187,6 +187,7 @@ where
         requests: Vec<(u32, AppendEntriesRequest)>,
         retry_policies: &RetryPolicies,
         membership: Arc<MOF<T>>,
+        response_compress_enabled: bool,
     ) -> Result<AppendResult> {
         let _timer = ScopedTimer::new("send_append_requests");
 
@@ -220,7 +221,12 @@ where
 
             // Get or create appender for this peer
             let appender = match self
-                .get_or_create_appender(peer_id, retry_policies.clone(), membership.clone())
+                .get_or_create_appender(
+                    peer_id,
+                    retry_policies.clone(),
+                    membership.clone(),
+                    response_compress_enabled,
+                )
                 .await
             {
                 Ok(appender) => appender,
@@ -592,6 +598,7 @@ where
         peer_id: u32,
         retry_policy: RetryPolicies,
         membership: Arc<MOF<T>>,
+        response_compress_enabled: bool,
     ) -> Result<mpsc::Sender<AppendRequest>> {
         // Use entry API to handle concurrent creation attempts atomically
         match self.peer_appenders.entry(peer_id) {
@@ -612,6 +619,7 @@ where
                     retry_policy,
                     membership,
                     my_id,
+                    response_compress_enabled,
                 ));
 
                 let appender = PeerAppender {
@@ -632,6 +640,7 @@ where
         retry_policy: BackoffPolicy,
         membership: Arc<MOF<T>>,
         my_id: u32,
+        replication_response_compress_enabled: bool,
     ) {
         while let Some(req) = receiver.recv().await {
             let AppendRequest {
@@ -650,9 +659,15 @@ where
                 }
             };
 
-            let result =
-                Self::send_single_append_request(peer_id, request, retry_policy, channel, my_id)
-                    .await;
+            let result = Self::send_single_append_request(
+                peer_id,
+                request,
+                retry_policy,
+                channel,
+                my_id,
+                replication_response_compress_enabled,
+            )
+            .await;
 
             let _ = response_sender.send(result);
         }
@@ -668,12 +683,18 @@ where
         retry_policy: BackoffPolicy,
         channel: Channel,
         my_id: u32,
+        replication_response_compress_enabled: bool,
     ) -> Result<AppendEntriesResponse> {
         let closure = || {
             let channel = channel.clone();
             let mut client = RaftReplicationServiceClient::new(channel);
-            // .send_compressed(CompressionEncoding::Gzip)
-            // .accept_compressed(CompressionEncoding::Gzip);
+            // Check configuration to determine if compression should be applied
+            if replication_response_compress_enabled {
+                client = client
+                    .send_compressed(CompressionEncoding::Gzip)
+                    .accept_compressed(CompressionEncoding::Gzip);
+            }
+
             let req = request.clone();
             async move { client.append_entries(tonic::Request::new(req)).await }
         };

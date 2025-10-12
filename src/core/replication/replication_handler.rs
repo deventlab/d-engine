@@ -144,7 +144,12 @@ where
 
         match ctx
             .transport()
-            .send_append_requests(requests, &ctx.node_config.retry, membership)
+            .send_append_requests(
+                requests,
+                &ctx.node_config.retry,
+                membership,
+                ctx.node_config.raft.rpc_compression.replication_response,
+            )
             .await
         {
             Ok(append_result) => {

@@ -137,29 +137,61 @@ where
 
     if let Err(e) = server_builder
         .add_service(health_service)
-        .add_service(
-            RaftClientServiceServer::from_arc(node.clone())
-                .accept_compressed(CompressionEncoding::Gzip), // .send_compressed(CompressionEncoding::Gzip),
-        )
-        .add_service(
-            RaftElectionServiceServer::from_arc(node.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
-        )
-        .add_service(
-            RaftReplicationServiceServer::from_arc(node.clone())
-                .accept_compressed(CompressionEncoding::Gzip), // .send_compressed(CompressionEncoding::Gzip),
-        )
-        .add_service(
-            ClusterManagementServiceServer::from_arc(node.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
-        )
-        .add_service(
-            SnapshotServiceServer::from_arc(node)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
-        )
+        .add_service({
+            let server = RaftClientServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip);
+
+            // Client compression based on config
+            if config.raft.rpc_compression.client_response {
+                server.send_compressed(CompressionEncoding::Gzip)
+            } else {
+                server
+            }
+        })
+        .add_service({
+            let server = RaftElectionServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip);
+
+            // Election compression based on config
+            if config.raft.rpc_compression.election_response {
+                server.send_compressed(CompressionEncoding::Gzip)
+            } else {
+                server
+            }
+        })
+        .add_service({
+            let server = RaftReplicationServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip);
+
+            // Replication compression based on config
+            if config.raft.rpc_compression.replication_response {
+                server.send_compressed(CompressionEncoding::Gzip)
+            } else {
+                server
+            }
+        })
+        .add_service({
+            let server = ClusterManagementServiceServer::from_arc(node.clone())
+                .accept_compressed(CompressionEncoding::Gzip);
+
+            // Cluster management compression based on config
+            if config.raft.rpc_compression.cluster_response {
+                server.send_compressed(CompressionEncoding::Gzip)
+            } else {
+                server
+            }
+        })
+        .add_service({
+            let server =
+                SnapshotServiceServer::from_arc(node).accept_compressed(CompressionEncoding::Gzip);
+
+            // Snapshot compression based on config
+            if config.raft.rpc_compression.snapshot_response {
+                server.send_compressed(CompressionEncoding::Gzip)
+            } else {
+                server
+            }
+        })
         .serve_with_shutdown(
             // SocketAddr::from_str(&listen_address).map_err(|e| Error::AddrParseError(e))?,
             listen_address,

@@ -24,7 +24,7 @@ Guarantees you read the **most recent** committed value across the entire cluste
 
 **Trade-off**: Highest latency due to network round-trip to verify quorum.
 
-```rust
+```rust,ignore
 // Example usage
 let value = client
     .get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead))
@@ -45,7 +45,7 @@ Provides **near-latest** data with significantly better performance.
 
 **Trade-off**: Assumes bounded clock drift between nodes (typically negligible).
 
-```rust
+```rust,ignore
 let value = client
     .get_with_policy(key, Some(ReadConsistencyPolicy::LeaseRead))
     .await?;
@@ -66,7 +66,7 @@ Reads from **any node** without additional consistency checks.
 
 **Trade-off**: May return data that is slightly behind the latest committed state.
 
-```rust
+```rust,ignore
 let value = client
     .get_eventual(key)  // Convenience method
     .await?;
@@ -81,7 +81,7 @@ let value = client
 
 If you **don't specify** a consistency policy, the server's default configuration is used:
 
-```rust
+```rust,ignore
 // Uses server's default policy
 let value = client.get(key).await?;
 ```
@@ -108,7 +108,7 @@ Clients can override the server default on a per-request basis if the server all
 
 ### Critical Read with Fallback
 
-```rust
+```rust,ignore
 // Try linearizable first, fallback to lease on timeout
 match timeout(
     Duration::from_millis(100),
@@ -121,7 +121,7 @@ match timeout(
 
 ### Mixed Read Patterns
 
-```rust
+```rust,ignore
 // Critical read
 let balance = client.get_linearizable(&account_balance_key).await?;
 

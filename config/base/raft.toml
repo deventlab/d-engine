@@ -83,3 +83,21 @@ max_buffered_entries = 10000
 default_policy = "LinearizableRead"
 lease_duration_ms = 250
 allow_client_override = true
+
+
+# Granular RPC compression configuration
+[raft.rpc_compression]
+# High-frequency replication traffic - compression CPU overhead outweighs network benefit in VPC
+replication_response = false
+
+# Election traffic - low volume, low benefit but kept true for backward compatibility
+election_response = true
+
+# Snapshot transfers - large data volumes benefit from compression
+snapshot_response = true
+
+# Cluster management - configuration data benefits from compression
+cluster_response = true
+
+# Client responses - disabling improves performance in VPC/LAN environments
+client_response = false
