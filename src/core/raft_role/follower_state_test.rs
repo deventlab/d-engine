@@ -1523,19 +1523,20 @@ fn test_can_purge_logs_case1() {
     ));
 
     // Edge case: 99 == commit_index - 1 (per gap rule)
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 
     // Violate gap rule: 100 not < 100
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId {
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
             index: 100,
             term: 1
-        }
-    ));
+        })
+    );
 }
 
 // # Case 2: Reject uncommitted index (Raft §5.4.2)
@@ -1554,10 +1555,12 @@ fn test_can_purge_logs_case2() {
     ));
 
     // Boundary check: 50 == commit_index (violates <)
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 40, term: 1 }),
-        LogId { index: 50, term: 1 }
-    ));
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId {
+            index: 50,
+            term: 1
+        })
+    );
 }
 
 /// # Case 3: Ensure purge monotonicity (Raft §7.2)

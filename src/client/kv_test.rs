@@ -1080,5 +1080,6 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
     assert!(kv_result.is_ok() || kv_result.is_err()); // Either result is fine as long as it doesn't panic
 
     let cluster_result = client.cluster().list_members().await;
-    assert!(cluster_result.is_ok() || cluster_result.is_err()); // Either result is fine as long as it doesn't panic
+    assert!(cluster_result.is_ok() || cluster_result.is_err()); // Either result is fine as long as
+                                                                // it doesn't panic
 }

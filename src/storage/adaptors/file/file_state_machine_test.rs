@@ -1,16 +1,14 @@
 use bytes::Bytes;
 use prost::Message;
 
-use crate::{
-    proto::{
-        client::{
-            write_command::{Insert, Operation},
-            WriteCommand,
-        },
-        common::{entry_payload::Payload, Entry, EntryPayload},
-    },
-    FileStateMachine, StateMachine,
-};
+use crate::proto::client::write_command::Insert;
+use crate::proto::client::write_command::Operation;
+use crate::proto::client::WriteCommand;
+use crate::proto::common::entry_payload::Payload;
+use crate::proto::common::Entry;
+use crate::proto::common::EntryPayload;
+use crate::FileStateMachine;
+use crate::StateMachine;
 
 #[tokio::test]
 async fn test_wal_replay_after_crash() {

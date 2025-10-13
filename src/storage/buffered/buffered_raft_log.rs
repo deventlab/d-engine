@@ -3,8 +3,8 @@
 //! PersistenceStrategy defines durability guarantees:
 //!
 //! - DiskFirst: Entries persisted before becoming visible (SAFE, slower)
-//! - MemFirst: Entries visible before persistence (FAST, crash risk)
-//!   WARNING: Violates Raft durability. Use only if:
+//! - MemFirst: Entries visible before persistence (FAST, crash risk) WARNING: Violates Raft
+//!   durability. Use only if:
 //!   - You accept potential data loss on crash
 //!   - Replication provides redundancy
 //!   - Performance > strict durability
@@ -14,10 +14,6 @@
 //! - Async persistence pipeline
 //! - Generic storage integration
 
-use crossbeam::channel::bounded;
-use crossbeam::channel::Sender;
-use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicBool;
@@ -25,6 +21,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+
+use crossbeam::channel::bounded;
+use crossbeam::channel::Sender;
+use crossbeam_skiplist::SkipMap;
+use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
@@ -1070,7 +1071,8 @@ where
                                     // Implement retry logic for transient errors
                                     if Self::is_transient_error(&e) {
                                         warn!("Retrying failed flush operation");
-                                        // Simple retry after delay - consider exponential backoff for production
+                                        // Simple retry after delay - consider exponential backoff
+                                        // for production
                                         tokio::time::sleep(Duration::from_millis(100)).await;
                                         match this.process_flush(&indexes).await {
                                             Ok(_) => {

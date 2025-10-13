@@ -4,6 +4,7 @@
 //!
 //! ## Available Guides
 //!
-//! - [Read Consistency](read_consistency.md) - Understanding and configuring read consistency policies
+//! - [Read Consistency](read_consistency.md) - Understanding and configuring read consistency
+//!   policies
 
 #![doc = include_str!("./read_consistency.md")]

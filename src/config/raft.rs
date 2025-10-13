@@ -774,10 +774,10 @@ pub struct PersistenceConfig {
 
     /// Number of flush worker threads to use for log persistence.
     ///
-    /// - If set to 0, the system falls back to spawning a new task per flush
-    ///   (legacy behavior, lower latency but less stable under high load).
-    /// - If set to a positive number, a worker pool of that size will be created
-    ///   to process flush requests (more stable and efficient under high load).
+    /// - If set to 0, the system falls back to spawning a new task per flush (legacy behavior,
+    ///   lower latency but less stable under high load).
+    /// - If set to a positive number, a worker pool of that size will be created to process flush
+    ///   requests (more stable and efficient under high load).
     ///
     /// This parameter allows tuning between throughput and latency depending on
     /// workload characteristics.
@@ -788,8 +788,8 @@ pub struct PersistenceConfig {
     ///
     /// - Provides **backpressure** during high write throughput.
     /// - Prevents unbounded task accumulation in memory when disk I/O is slow.
-    /// - Larger values improve throughput at the cost of higher memory usage,
-    ///   while smaller values apply stricter flow control but may reduce parallelism.
+    /// - Larger values improve throughput at the cost of higher memory usage, while smaller values
+    ///   apply stricter flow control but may reduce parallelism.
     #[serde(default = "default_channel_capacity")]
     pub channel_capacity: usize,
 }
