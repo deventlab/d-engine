@@ -59,7 +59,7 @@ impl Default for ClientConfig {
             http2_keepalive_interval: Duration::from_secs(60),
             http2_keepalive_timeout: Duration::from_secs(20),
             max_frame_size: 1 << 20, // 1MB
-            enable_compression: true,
+            enable_compression: false,
         }
     }
 }

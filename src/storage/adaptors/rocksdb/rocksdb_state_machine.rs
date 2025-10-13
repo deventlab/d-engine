@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use parking_lot::RwLock;
 use prost::Message;
 use rocksdb::Cache;
@@ -55,14 +56,20 @@ impl RocksDBStateMachine {
         opts.create_missing_column_families(true);
 
         // Memory and write optimization
-        opts.set_max_write_buffer_number(6); // Increase the number of write buffers
-        opts.set_min_write_buffer_number_to_merge(3); // Increase the merge threshold
-        opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB write buffer
+        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
+        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
+        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
 
         // Compression optimization
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
         opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
+
+        // WAL-related optimizations
+        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
+        opts.set_manual_wal_flush(true); // manually control WAL flush
+
+        opts.set_use_fsync(false);
 
         // Performance Tuning
         opts.set_max_background_jobs(4); // Number of background jobs
@@ -206,7 +213,7 @@ impl StateMachine for RocksDBStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Bytes>, Error> {
         let cf = self
             .db
             .cf_handle(STATE_MACHINE_CF)
@@ -217,7 +224,7 @@ impl StateMachine for RocksDBStateMachine {
             .get_cf(&cf, key_buffer)
             .map_err(|e| StorageError::DbError(e.to_string()))?
         {
-            Some(value) => Ok(Some(value.to_vec())),
+            Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
             None => Ok(None),
         }
     }
@@ -372,7 +379,7 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32], Error> {
+    ) -> Result<Bytes, Error> {
         // Create a checkpoint in the new_snapshot_dir
         let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -384,11 +391,11 @@ impl StateMachine for RocksDBStateMachine {
         let checksum = [0; 32]; // For now, we return a dummy checksum.
         let snapshot_metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: checksum.to_vec(),
+            checksum: Bytes::copy_from_slice(&checksum),
         };
         self.persist_last_snapshot_metadata(&snapshot_metadata)?;
 
-        Ok(checksum)
+        Ok(Bytes::copy_from_slice(&checksum))
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {

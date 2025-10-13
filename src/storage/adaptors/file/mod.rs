@@ -7,4 +7,6 @@ pub use file_storage_engine::*;
 #[cfg(test)]
 mod file_engine_test;
 #[cfg(test)]
+mod file_state_machine_test;
+#[cfg(test)]
 mod file_storage_engine_test;

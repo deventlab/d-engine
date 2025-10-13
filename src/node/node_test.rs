@@ -104,7 +104,7 @@ async fn run_success_without_joining() {
             .with_membership(membership) // Inject our mock membership
             .with_raft_log(raft_log)
             .with_replication_handler(replication_handler)
-            .wiht_node_config({
+            .with_node_config({
                 let mut config = RaftNodeConfig::new().expect("Default config");
                 // Mark as non-joining node
                 config.cluster.initial_cluster = vec![
@@ -221,7 +221,7 @@ async fn run_success_with_joining() {
             .with_membership(membership)
             .with_raft_log(raft_log)
             .with_replication_handler(replication_handler)
-            .wiht_node_config(config_clone);
+            .with_node_config(config_clone);
 
         builder.build_node()
     };
@@ -278,7 +278,7 @@ async fn run_fails_on_health_check() {
     let node = {
         let builder = MockBuilder::new(shutdown_rx.clone())
             .with_membership(membership) // Inject our mock membership
-            .wiht_node_config({
+            .with_node_config({
                 let mut config = RaftNodeConfig::new().expect("Default config");
                 // Mark as non-joining node
                 config.cluster.initial_cluster = vec![

@@ -15,14 +15,14 @@ pub struct SnapshotChunk {
     #[prost(uint32, tag = "4")]
     pub total_chunks: u32,
     /// Chunk-specific checksum (CRC32)
-    #[prost(bytes = "vec", tag = "5")]
-    pub chunk_checksum: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "5")]
+    pub chunk_checksum: ::prost::bytes::Bytes,
     /// Snapshot metadata (only present in first chunk)
     #[prost(message, optional, tag = "6")]
     pub metadata: ::core::option::Option<SnapshotMetadata>,
     /// Payload data (recommended 4MB chunks)
-    #[prost(bytes = "vec", tag = "7")]
-    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "7")]
+    pub data: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -31,8 +31,8 @@ pub struct SnapshotMetadata {
     #[prost(message, optional, tag = "1")]
     pub last_included: ::core::option::Option<super::common::LogId>,
     /// SHA-256 checksum// Total number of chunks in this snapshot
-    #[prost(bytes = "vec", tag = "2")]
-    pub checksum: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub checksum: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -60,8 +60,8 @@ pub struct PurgeLogRequest {
     /// Maximum log index that can be deleted
     #[prost(message, optional, tag = "4")]
     pub last_included: ::core::option::Option<super::common::LogId>,
-    #[prost(bytes = "vec", tag = "5")]
-    pub snapshot_checksum: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "5")]
+    pub snapshot_checksum: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]

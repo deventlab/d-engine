@@ -1,5 +1,6 @@
 #![doc = include_str!("../docs/server_guide/customize-state-machine.md")]
 
+use bytes::Bytes;
 #[cfg(test)]
 use mockall::automock;
 use tonic::async_trait;
@@ -30,7 +31,7 @@ pub trait StateMachine: Send + Sync + 'static {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error>;
+    ) -> Result<Option<Bytes>, Error>;
 
     /// Returns the term of a specific log entry by its ID.
     /// Sync operation as it queries in-memory data.
@@ -138,7 +139,7 @@ pub trait StateMachine: Send + Sync + 'static {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32], Error>;
+    ) -> Result<Bytes, Error>;
 
     /// Saves the hard state of the state machine.
     /// Sync operation as it typically just delegates to other persistence methods.
@@ -172,6 +173,6 @@ impl SnapshotMetadata {
         &mut self,
         array: [u8; 32],
     ) {
-        self.checksum = array.to_vec();
+        self.checksum = Bytes::copy_from_slice(&array);
     }
 }

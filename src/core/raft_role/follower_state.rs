@@ -13,6 +13,7 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
+use super::can_serve_read_locally;
 use super::candidate_state::CandidateState;
 use super::leader_state::LeaderState;
 use super::learner_state::LearnerState;
@@ -341,34 +342,37 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 )?;
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
-                // If the request is linear request, ...
-                if client_read_request.linear {
-                    sender
-                        .send(Err(Status::permission_denied(
-                            "Not leader. Send linearizable read requet to Leader only.",
-                        )))
-                        .map_err(|e| {
-                            let error_str = format!("{e:?}");
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
+                match can_serve_read_locally(&client_read_request, ctx).map_err(|e| *e) {
+                    Ok(Some(_policy)) => {
+                        // Only EventualConsistency will reach here - safe to serve locally
+                        let results = ctx
+                            .handlers
+                            .state_machine_handler
+                            .read_from_state_machine(client_read_request.keys)
+                            .unwrap_or_default();
+                        let response = ClientResponse::read_results(results);
+                        debug!("Non-leader serving local read: {:?}", response);
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send local read response: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
                         })?;
-                } else {
-                    // Otherwise
-                    let mut results = vec![];
-                    if let Some(v) = ctx
-                        .handlers
-                        .state_machine_handler
-                        .read_from_state_machine(client_read_request.keys)
-                    {
-                        results = v;
                     }
-                    let response = ClientResponse::read_results(results);
-                    debug!("handle_client_read response: {:?}", response);
-                    sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    Ok(None) => {
+                        // Policy requires leader access - reject
+                        let error = tonic::Status::permission_denied(
+                                    "Read consistency policy requires leader access. Current node is follower."
+                                );
+                        sender.send(Err(error)).map_err(|e| {
+                            error!("Failed to send policy rejection: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
+                        })?;
+                    }
+                    Err(error) => {
+                        sender.send(Err(error)).map_err(|e| {
+                            error!("Failed to send policy rejection: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
+                        })?;
+                    }
                 }
             }
 

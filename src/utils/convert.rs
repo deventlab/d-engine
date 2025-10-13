@@ -2,6 +2,7 @@ use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 
+use bytes::Bytes;
 use prost::Message;
 
 use crate::ConvertError;
@@ -11,6 +12,16 @@ pub fn str_to_u64(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     s.hash(&mut hasher);
     hasher.finish()
+}
+
+pub fn u64_to_bytes(value: u64) -> Bytes {
+    // Use a static buffer to avoid allocation
+    let bytes = value.to_be_bytes();
+    Bytes::copy_from_slice(&bytes)
+}
+
+pub fn safe_kv_bytes(key: u64) -> Bytes {
+    u64_to_bytes(key)
 }
 
 /// Converts a `u64` to an 8-byte array in big-endian byte order.

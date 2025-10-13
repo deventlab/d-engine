@@ -111,6 +111,10 @@ pub enum NetworkError {
     #[error("Peer({0}) connection not found")]
     PeerConnectionNotFound(u32),
 
+    /// Peer closed the channel
+    #[error("Peer closed the channel")]
+    ResponseChannelClosed,
+
     /// Peer address not found
     #[error("Peer({0}) address not found")]
     PeerAddressNotFound(u32),

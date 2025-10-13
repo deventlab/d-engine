@@ -1,4 +1,3 @@
-#[cfg(not(test))]
 use std::fs;
 use std::path::Path;
 
@@ -9,7 +8,7 @@ use serde::Serialize;
 use crate::Error;
 use crate::Result;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct TlsConfig {
     /// Enables TLS encryption for network communication
@@ -47,6 +46,20 @@ pub struct TlsConfig {
     #[serde(default = "default_enable_mtls")]
     pub enable_mtls: bool,
 }
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enable_tls: default_enable_tls(),
+            generate_self_signed_certificates: default_generate_self_signed(),
+            certificate_authority_root_path: default_ca_path(),
+            server_certificate_path: default_server_cert_path(),
+            server_private_key_path: default_server_key_path(),
+            client_certificate_authority_root_path: default_client_ca_path(),
+            enable_mtls: default_enable_mtls(),
+        }
+    }
+}
+
 impl TlsConfig {
     /// Validates TLS configuration consistency and file existence
     /// # Errors
@@ -56,19 +69,19 @@ impl TlsConfig {
     /// - Self-signed generation conflicts with existing paths
     /// - Invalid certificate file permissions
     pub fn validate(&self) -> Result<()> {
-        if !self.enable_tls {
-            // Skip validation if TLS is disabled
-            return Ok(());
-        }
-
-        // Validate mTLS dependencies
+        // Check mTLS dependency
         if self.enable_mtls && !self.enable_tls {
             return Err(Error::Config(ConfigError::Message(
                 "mTLS requires enable_tls to be true".into(),
             )));
         }
 
-        // Handle self-signed certificate generation case
+        // No further validation needed if TLS is disabled
+        if !self.enable_tls {
+            return Ok(());
+        }
+
+        // Self-signed certificate logic
         if self.generate_self_signed_certificates {
             if !self.server_certificate_path.is_empty() || !self.server_private_key_path.is_empty()
             {
@@ -77,15 +90,23 @@ impl TlsConfig {
                         .into(),
                 )));
             }
+
+            if self.enable_mtls {
+                self.validate_cert_file(
+                    &self.client_certificate_authority_root_path,
+                    "client CA certificate",
+                )?;
+            }
+
             return Ok(());
         }
 
-        // Validate server certificates
+        // Validate certificate files
         self.validate_cert_file(&self.server_certificate_path, "server certificate")?;
         self.validate_key_file(&self.server_private_key_path, "server private key")?;
         self.validate_cert_file(&self.certificate_authority_root_path, "CA certificate")?;
 
-        // Validate client certificates for mTLS
+        // mTLS requires additional client CA verification
         if self.enable_mtls {
             self.validate_cert_file(
                 &self.client_certificate_authority_root_path,
@@ -105,7 +126,6 @@ impl TlsConfig {
         let path = Path::new(path);
 
         if path.exists() {
-            #[cfg(not(test))]
             {
                 // Check file readability
                 fs::File::open(path).map_err(|e| {
@@ -136,7 +156,6 @@ impl TlsConfig {
         let path = Path::new(path);
 
         if path.exists() {
-            #[cfg(not(test))]
             {
                 // Check key file permissions (should be 600)
                 let metadata = fs::metadata(path).map_err(|e| {

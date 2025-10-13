@@ -29,10 +29,10 @@ Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = "0.1.3"
+d-engine = "0.1.4"
 
 # or with RocksDB support:
-d-engine = { version = "0.1.3", features = ["rocksdb"] }
+d-engine = { version = "0.1.4", features = ["rocksdb"] }
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -112,9 +112,9 @@ sequenceDiagram
     State_Machine-->>Client: Return Result
 ```
 
-## Performance Comparison (d-engine v0.1.3 vs etcd 3.5)
+## Performance Comparison (d-engine v0.1.4 vs etcd 3.5)
 
-## ![d-engine vs etcd comparison](./benches/d-engine-bench/reportrs/v0.1.3/dengine_comparison_v0.1.3.png)
+## ![d-engine vs etcd comparison](./benches/d-engine-bench/reportrs/v0.1.4/dengine_comparison_v0.1.4.png)
 
 **Important Notes**
 

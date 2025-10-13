@@ -1,5 +1,14 @@
 //! High-performance buffered Raft log with static dispatch
 //!
+//! PersistenceStrategy defines durability guarantees:
+//!
+//! - DiskFirst: Entries persisted before becoming visible (SAFE, slower)
+//! - MemFirst: Entries visible before persistence (FAST, crash risk) WARNING: Violates Raft
+//!   durability. Use only if:
+//!   - You accept potential data loss on crash
+//!   - Replication provides redundancy
+//!   - Performance > strict durability
+//!
 //! - Lock-free in-memory index
 //! - Batch I/O operations
 //! - Async persistence pipeline
@@ -7,26 +16,33 @@
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crossbeam::channel::bounded;
+use crossbeam::channel::Sender;
 use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio::time::interval;
+use tokio::time::Instant;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
+use tracing::warn;
 
 use crate::alias::SOF;
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::scoped_timer::ScopedTimer;
+use crate::Error;
 use crate::FlushPolicy;
 use crate::HardState;
 use crate::LogStore;
@@ -38,6 +54,23 @@ use crate::RaftLog;
 use crate::Result;
 use crate::StorageEngine;
 use crate::TypeConfig;
+
+pub struct FlushWorkerPool<T>
+where
+    T: TypeConfig,
+{
+    sender: Option<Sender<FlushTask<T>>>,
+    shutdown: Arc<AtomicBool>,
+    pub(crate) worker_handles: Vec<JoinHandle<()>>,
+}
+
+pub struct FlushTask<T>
+where
+    T: TypeConfig,
+{
+    indexes: Vec<u64>,
+    this: Arc<BufferedRaftLog<T>>,
+}
 
 /// Commands for the log processor
 #[derive(Debug)]
@@ -102,6 +135,9 @@ where
     // Track flush state
     pub(crate) flush_state: Mutex<FlushState>,
     pub(crate) waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
+
+    // --- Flush worker pool ---
+    pub(crate) flush_workers: FlushWorkerPool<T>,
 }
 
 #[async_trait]
@@ -504,9 +540,13 @@ where
         let term_last_index = SkipMap::new();
 
         // Load all entries from disk to memory
+        let mut loaded_count = 0;
         if disk_len > 0 {
             match log_store.get_entries(1..=disk_len) {
-                Ok(all_entries) => {
+                Ok(all_entries) if !all_entries.is_empty() => {
+                    loaded_count = all_entries.len();
+                    debug!("Successfully loaded {} entries from disk", loaded_count);
+
                     for entry in all_entries {
                         let index = entry.index;
                         entries.insert(index, entry.clone());
@@ -524,6 +564,9 @@ where
                             .fetch_max(index, Ordering::AcqRel);
                     }
                 }
+                Ok(_empty_entries) => {
+                    warn!("Disk reported length {} but loaded 0 entries", disk_len);
+                }
                 Err(e) => {
                     error!("Failed to load entries from storage: {:?}", e);
                     // Handle critical error if needed
@@ -535,6 +578,15 @@ where
         let min_index = entries.front().map(|e| *e.key()).unwrap_or(0);
         let max_index = entries.back().map(|e| *e.key()).unwrap_or(0);
 
+        if disk_len > 0 && loaded_count == 0 {
+            warn!(
+                "Inconsistent state: disk_len={} but loaded_count=0",
+                disk_len
+            );
+        }
+
+        // Initialize flush worker pool
+        let flush_workers = Self::create_flush_worker_pool(persistence_config.flush_workers);
         (
             Self {
                 node_id,
@@ -554,6 +606,7 @@ where
                 waiters: DashMap::new(),
                 term_first_index,
                 term_last_index,
+                flush_workers,
             },
             command_receiver,
         )
@@ -595,16 +648,27 @@ where
         interval_ms: u64,
     ) {
         let mut interval = interval(Duration::from_millis(interval_ms));
+        let mut shutdown_requested = false;
 
-        loop {
+        while !shutdown_requested {
             tokio::select! {
                 // Priority 1: immediate command processing
                 cmd = receiver.recv() => {
-                    if let Some(cmd) = cmd {
-                        if let Some(this) = this.upgrade() {
-                            // Process immediately without delay
-                            this.handle_command(cmd).await;
+                    match cmd {
+                        Some(LogCommand::Shutdown) => {
+                            shutdown_requested = true;
+                            if let Some(this) = this.upgrade() {
+                                let _ = this.force_flush().await;
+                                let _ = this.log_store.flush();
+                                let _ = this.meta_store.flush();
+                            }
                         }
+                        Some(cmd) => {
+                            if let Some(this) = this.upgrade() {
+                                this.handle_command(cmd).await;
+                            }
+                        }
+                        None => break,
                     }
                 }
                 // Priority 2: non-blocking refresh trigger
@@ -614,16 +678,30 @@ where
                         let indexes = this.get_pending_indexes().await;
 
                         if !indexes.is_empty() {
-                            // Background asynchronous refresh (do not block the command processor)
-                            let this_clone = this.clone();
-                            tokio::spawn(async move {
-                                let _ = this_clone.process_flush(&indexes).await;
-                            });
+
+                            // Send to flush worker pool instead of spawning new task
+                            let flush_task = FlushTask {
+                                indexes,
+                                this: this.clone(),
+                            };
+
+                            // Handle backpressure gracefully
+                            match this.flush_workers.sender.as_ref().expect("sender should exist").send(flush_task) {
+                                Ok(_) => {
+                                    metrics::counter!("flush_tasks.enqueued").increment(1);
+                                }
+                                Err(e) => {
+                                    metrics::counter!("flush_tasks.dropped").increment(1);
+                                    error!("Flush worker pool backlogged, dropping task: {}", e);
+                                    // Consider implementing a retry mechanism or fallback
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        trace!("Batch processor shutting down");
     }
 
     async fn handle_command(
@@ -774,9 +852,14 @@ where
         }
 
         // Update durable index
-        if let Some(max_index) = indexes.iter().max() {
-            self.durable_index.store(*max_index, Ordering::Release);
-            self.notify_waiters(*max_index);
+        if let Some(&max_index) = indexes.iter().max() {
+            // fetch_max ensures we only ever increase durable_index
+            let prev = self.durable_index.fetch_max(max_index, Ordering::AcqRel);
+
+            // Only notify if we actually advanced
+            if max_index > prev {
+                self.notify_waiters(max_index);
+            }
         }
 
         Ok(())
@@ -828,7 +911,10 @@ where
 
         // Update durable index
         if let Some(max_index) = entries.iter().map(|e| e.index).max() {
-            self.durable_index.store(max_index, Ordering::Release);
+            let prev = self.durable_index.fetch_max(max_index, Ordering::AcqRel);
+            if max_index > prev {
+                self.notify_waiters(max_index);
+            }
         }
 
         Ok(())
@@ -935,6 +1021,140 @@ where
                 .value()
                 .fetch_max(entry.index, Ordering::AcqRel);
         }
+    }
+
+    /// Creates a flush worker pool with configurable number of workers
+    fn create_flush_worker_pool(num_workers: usize) -> FlushWorkerPool<T> {
+        // Configuration: Adjust based on your workload
+        const CHANNEL_CAPACITY: usize = 100; // Provides backpressure
+
+        let (sender, receiver) = bounded::<FlushTask<T>>(CHANNEL_CAPACITY);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut worker_handles = Vec::with_capacity(num_workers);
+
+        for worker_id in 0..num_workers {
+            let receiver = receiver.clone();
+            let shutdown = shutdown.clone();
+            let handle = tokio::spawn(async move {
+                loop {
+                    // Check shutdown flag first
+                    if shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match receiver.try_recv() {
+                        Ok(task) => {
+                            let FlushTask { indexes, this } = task;
+
+                            // Record metrics for monitoring
+                            let start_time = Instant::now();
+                            metrics::counter!("flush_worker.requests").increment(1);
+                            metrics::histogram!("flush_worker.batch_size")
+                                .record(indexes.len() as f64);
+
+                            // Process the flush
+                            match this.process_flush(&indexes).await {
+                                Ok(_) => {
+                                    let duration = start_time.elapsed();
+                                    metrics::histogram!("flush_worker.success_duration")
+                                        .record(duration.as_micros() as f64);
+                                    debug!(
+                                    "Worker {} successfully processed flush of {} entries in {:?}",
+                                    worker_id,
+                                    indexes.len(),
+                                    duration
+                                );
+                                }
+                                Err(e) => {
+                                    metrics::counter!("flush_worker.errors").increment(1);
+                                    error!("Worker {} failed to process flush: {}", worker_id, e);
+
+                                    // Implement retry logic for transient errors
+                                    if Self::is_transient_error(&e) {
+                                        warn!("Retrying failed flush operation");
+                                        // Simple retry after delay - consider exponential backoff
+                                        // for production
+                                        tokio::time::sleep(Duration::from_millis(100)).await;
+                                        match this.process_flush(&indexes).await {
+                                            Ok(_) => {
+                                                debug!("Worker {} retry succeeded", worker_id);
+                                            }
+                                            Err(retry_err) => {
+                                                error!(
+                                                    "Worker {} retry failed: {}",
+                                                    worker_id, retry_err
+                                                );
+                                                break; // Only exit on persistent failure
+                                            }
+                                        }
+                                    } else {
+                                        break; // Non-transient - exit immediately
+                                    }
+                                }
+                            }
+                        }
+                        Err(crossbeam::channel::TryRecvError::Empty) => {
+                            // No tasks available, sleep briefly
+                            tokio::time::sleep(Duration::from_millis(1)).await;
+                            continue;
+                        }
+                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                            // Channel disconnected, break
+                            break;
+                        }
+                    }
+                }
+
+                debug!("Flush worker {} shutting down", worker_id);
+            });
+
+            worker_handles.push(handle);
+        }
+
+        FlushWorkerPool {
+            sender: Some(sender),
+            shutdown,
+            worker_handles,
+        }
+    }
+
+    /// Helper to determine if an error is transient and worth retrying
+    fn is_transient_error(error: &Error) -> bool {
+        // Implement logic based on your error types
+        // For example, network timeouts, temporary IO errors, etc.
+        error.to_string().contains("timeout")
+            || error.to_string().contains("temporary")
+            || error.to_string().contains("busy")
+    }
+
+    // Cleanup method for graceful shutdown
+    pub async fn shutdown(&mut self) {
+        // Signal shutdown to all workers
+        self.flush_workers.shutdown.store(true, Ordering::Relaxed);
+
+        // Take and drop the sender to close channel
+        if let Some(sender) = self.flush_workers.sender.take() {
+            drop(sender);
+        }
+
+        // Wait for workers with timeout
+        let timeout = tokio::time::sleep(Duration::from_secs(2));
+        tokio::pin!(timeout);
+
+        for handle in &self.flush_workers.worker_handles {
+            tokio::select! {
+                _ = &mut timeout => {
+                    handle.abort();
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if handle.is_finished() {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        debug!("Flush worker pool shut down successfully");
     }
 
     #[cfg(test)]

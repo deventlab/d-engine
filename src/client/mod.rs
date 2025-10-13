@@ -30,7 +30,7 @@
 //!     // Execute key-value operations
 //!     client.kv().put("user:1001", "Alice").await.unwrap();
 //!
-//!     let value = client.kv().get("user:1001", false).await.unwrap();
+//!     let value = client.kv().get("user:1001").await.unwrap();
 //!
 //!     println!("User data: {:?}", value);
 //!
@@ -49,6 +49,7 @@ mod kv;
 mod pool;
 
 pub use builder::*;
+use bytes::Bytes;
 pub use cluster::*;
 pub use config::*;
 pub use error::*;
@@ -168,12 +169,12 @@ impl WriteCommand {
     /// - `key`: Byte array for storage key
     /// - `value`: Byte array to be stored
     pub fn insert(
-        key: impl AsRef<[u8]>,
-        value: impl AsRef<[u8]>,
+        key: impl Into<Bytes>,
+        value: impl Into<Bytes>,
     ) -> Self {
         let cmd = write_command::Insert {
-            key: key.as_ref().to_vec(),
-            value: value.as_ref().to_vec(),
+            key: key.into(),
+            value: value.into(),
         };
         Self {
             operation: Some(write_command::Operation::Insert(cmd)),
@@ -184,10 +185,8 @@ impl WriteCommand {
     ///
     /// # Parameters
     /// - `key`: Byte array of key to delete
-    pub fn delete(key: impl AsRef<[u8]>) -> Self {
-        let cmd = write_command::Delete {
-            key: key.as_ref().to_vec(),
-        };
+    pub fn delete(key: impl Into<Bytes>) -> Self {
+        let cmd = write_command::Delete { key: key.into() };
         Self {
             operation: Some(write_command::Operation::Delete(cmd)),
         }
@@ -268,8 +267,8 @@ impl ClientResponse {
                 .into_iter()
                 .map(|item| {
                     Ok(Some(ClientResult {
-                        key: item.key.to_vec(),
-                        value: item.value.to_vec(),
+                        key: item.key,
+                        value: item.value,
                     }))
                 })
                 .collect(),

@@ -153,6 +153,7 @@ where
     /// - `requests`: Vector of (peer_id, AppendEntriesRequest)
     /// - `retry`: Network retry configuration
     /// - `membership`: Cluster membership for channel resolution
+    /// - `response_compress_enabled`: Enable compression for replication responses
     ///
     /// # Returns
     /// - On success: `Ok(AppendResult)` containing aggregated responses
@@ -175,6 +176,7 @@ where
         requests: Vec<(u32, AppendEntriesRequest)>,
         retry: &RetryPolicies,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
+        response_compress_enabled: bool,
     ) -> Result<AppendResult>;
 
     /// Initiates leader election by requesting votes from cluster peers.

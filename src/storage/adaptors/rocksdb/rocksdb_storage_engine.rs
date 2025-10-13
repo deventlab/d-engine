@@ -56,14 +56,20 @@ impl RocksDBStorageEngine {
         opts.create_missing_column_families(true);
 
         // Memory and write optimization
-        opts.set_max_write_buffer_number(6); // Increase the number of write buffers
-        opts.set_min_write_buffer_number_to_merge(3); // Increase the merge threshold
-        opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB write buffer
+        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
+        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
+        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
 
         // Compression optimization
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
         opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
+
+        // WAL-related optimizations
+        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
+        opts.set_manual_wal_flush(true); // manually control WAL flush
+
+        opts.set_use_fsync(false);
 
         // Performance Tuning
         opts.set_max_background_jobs(4); // Number of background jobs
@@ -336,7 +342,16 @@ impl LogStore for RocksDBLogStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Flush WAL first when manual_wal_flush is enabled
+        // This ensures write-ahead log is durably persisted before memtable flush
+        self.db
+            .flush_wal(true) // true = sync WAL to disk
+            .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
+
+        // Then flush memtables to SST files
+        self.db
+            .flush()
+            .map_err(|e| StorageError::DbError(format!("Failed to flush memtables: {e}")))?;
         Ok(())
     }
 
@@ -420,7 +435,17 @@ impl MetaStore for RocksDBMetaStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Flush WAL first for metadata durability
+        // Metadata changes (like HardState) MUST survive crashes
+        self.db
+            .flush_wal(true) // true = sync WAL to disk
+            .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
+
+        // Then flush meta column family memtables
+        self.db
+            .flush()
+            .map_err(|e| StorageError::DbError(format!("Failed to flush meta memtables: {e}")))?;
+
         Ok(())
     }
 

@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +38,7 @@ use crate::cluster::is_majority;
 use crate::ensure_safe_join;
 use crate::grpc::BackgroundSnapshotTransfer;
 use crate::proto::client::ClientResponse;
+use crate::proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 use crate::proto::cluster::ClusterConfUpdateResponse;
 use crate::proto::cluster::JoinRequest;
 use crate::proto::cluster::JoinResponse;
@@ -78,6 +80,7 @@ use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::RaftOneshot;
 use crate::RaftRequestWithSignal;
+use crate::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
 use crate::ReplicationConfig;
 use crate::ReplicationCore;
 use crate::ReplicationError;
@@ -217,6 +220,10 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// Queue of learners that have caught up and are pending promotion to voter.
     pub(super) pending_promotions: VecDeque<PendingPromotion>,
+
+    /// Lease timestamp for LeaseRead policy
+    /// Tracks when leadership was last confirmed with quorum
+    pub(super) lease_timestamp: AtomicU64,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -803,42 +810,97 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     &client_read_request
                 );
 
+                let keys = client_read_request.keys.clone();
                 let response: std::result::Result<ClientResponse, tonic::Status> = {
                     let read_operation =
                         || -> std::result::Result<ClientResponse, tonic::Status> {
                             let results = ctx
                                 .handlers
                                 .state_machine_handler
-                                .read_from_state_machine(client_read_request.keys)
+                                .read_from_state_machine(keys)
                                 .unwrap_or_default();
                             debug!("handle_client_read results: {:?}", results);
                             Ok(ClientResponse::read_results(results))
                         };
 
-                    if client_read_request.linear {
-                        if !self
-                            .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
-                            .await
-                            .unwrap_or(false)
-                        {
-                            warn!("enforce_quorum_consensus failed for linear read request");
-
-                            Err(tonic::Status::failed_precondition(
-                                "enforce_quorum_consensus failed".to_string(),
-                            ))
-                        } else if let Err(e) = self.ensure_state_machine_upto_commit_index(
-                            &ctx.handlers.state_machine_handler,
-                            last_applied_index,
-                        ) {
-                            warn!("ensure_state_machine_upto_commit_index failed for linear read request");
-                            Err(tonic::Status::failed_precondition(format!(
-                                "ensure_state_machine_upto_commit_index failed: {e:?}"
-                            )))
+                    // Determine effective consistency policy using server configuration
+                    let effective_policy = if client_read_request.has_consistency_policy() {
+                        // Client explicitly specified policy
+                        if ctx.node_config().raft.read_consistency.allow_client_override {
+                            match client_read_request.consistency_policy() {
+                                ClientReadConsistencyPolicy::LeaseRead => {
+                                    ServerReadConsistencyPolicy::LeaseRead
+                                }
+                                ClientReadConsistencyPolicy::LinearizableRead => {
+                                    ServerReadConsistencyPolicy::LinearizableRead
+                                }
+                                ClientReadConsistencyPolicy::EventualConsistency => {
+                                    ServerReadConsistencyPolicy::EventualConsistency
+                                }
+                            }
                         } else {
-                            read_operation()
+                            // Client override not allowed - use server default
+                            ctx.node_config().raft.read_consistency.default_policy.clone()
                         }
                     } else {
-                        read_operation()
+                        // No client policy specified - use server default
+                        ctx.node_config().raft.read_consistency.default_policy.clone()
+                    };
+
+                    // Apply consistency policy
+                    match effective_policy {
+                        ServerReadConsistencyPolicy::LinearizableRead => {
+                            if !self
+                                .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
+                                .await
+                                .unwrap_or(false)
+                            {
+                                warn!("enforce_quorum_consensus failed for linear read request");
+
+                                Err(tonic::Status::failed_precondition(
+                                    "enforce_quorum_consensus failed".to_string(),
+                                ))
+                            } else if let Err(e) = self.ensure_state_machine_upto_commit_index(
+                                &ctx.handlers.state_machine_handler,
+                                last_applied_index,
+                            ) {
+                                warn!("ensure_state_machine_upto_commit_index failed for linear read request");
+                                Err(tonic::Status::failed_precondition(format!(
+                                    "ensure_state_machine_upto_commit_index failed: {e:?}"
+                                )))
+                            } else {
+                                read_operation()
+                            }
+                        }
+                        ServerReadConsistencyPolicy::LeaseRead => {
+                            // New lease-based implementation
+                            if self.is_lease_valid(ctx) {
+                                // Lease is valid, serve read locally
+                                read_operation()
+                            } else {
+                                // Lease expired, need to refresh with quorum
+                                if !self
+                                    .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
+                                    .await
+                                    .unwrap_or(false)
+                                {
+                                    warn!("LeaseRead policy: lease renewal failed");
+                                    Err(tonic::Status::failed_precondition(
+                                        "LeaseRead policy: lease renewal failed".to_string(),
+                                    ))
+                                } else {
+                                    // Update lease timestamp after successful verification
+                                    self.update_lease_timestamp();
+                                    read_operation()
+                                }
+                            }
+                        }
+                        ServerReadConsistencyPolicy::EventualConsistency => {
+                            // Eventual consistency: serve immediately without verification
+                            // Leader can always serve eventually consistent reads
+                            debug!("EventualConsistency: serving local read without verification");
+                            read_operation()
+                        }
                     }
                 };
 
@@ -1855,6 +1917,7 @@ impl<T: TypeConfig> LeaderState<T> {
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             _marker: PhantomData,
+            lease_timestamp: AtomicU64::new(0),
         }
     }
 
@@ -2186,6 +2249,45 @@ impl<T: TypeConfig> LeaderState<T> {
 
         Ok(())
     }
+
+    /// Check if current lease is still valid for LeaseRead policy
+    fn is_lease_valid(
+        &self,
+        ctx: &RaftContext<T>,
+    ) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let last_confirmed = self.lease_timestamp.load(std::sync::atomic::Ordering::Acquire);
+        let lease_duration = ctx.node_config().raft.read_consistency.lease_duration_ms;
+
+        now.saturating_sub(last_confirmed) < lease_duration
+    }
+
+    /// Update lease timestamp after successful leadership verification
+    fn update_lease_timestamp(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.lease_timestamp.store(now, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub fn test_update_lease_timestamp(&self) {
+        self.update_lease_timestamp();
+    }
+
+    #[cfg(test)]
+    pub fn test_set_lease_timestamp(
+        &self,
+        timestamp: u64,
+    ) {
+        self.lease_timestamp.store(timestamp, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
@@ -2223,6 +2325,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             pending_promotions: VecDeque::new(),
 
             _marker: PhantomData,
+            lease_timestamp: AtomicU64::new(0),
         }
     }
 }

@@ -63,6 +63,7 @@ async fn test_set_raft_log_replaces_default() {
                 strategy: PersistenceStrategy::DiskFirst,
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             mock_storage_engine.clone(),
         );

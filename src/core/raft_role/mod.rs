@@ -39,6 +39,7 @@ use tracing::trace;
 use super::RaftContext;
 use super::RaftEvent;
 use super::RoleEvent;
+use crate::proto::client::ClientReadRequest;
 use crate::proto::common::EntryPayload;
 use crate::proto::election::VotedFor;
 use crate::Result;
@@ -358,4 +359,49 @@ pub(crate) enum QuorumVerificationResult {
     Success,        // Leadership confirmation successful
     LeadershipLost, // Confirmation of leadership loss (need to abdicate)
     RetryRequired,  // Retry required (leadership still exists)
+}
+
+use crate::config::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
+use crate::proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+
+/// Checks if non-leader node can serve read request locally
+///
+/// Returns Some(policy) if local read is allowed, None if leader access required
+pub(crate) fn can_serve_read_locally<T>(
+    client_request: &ClientReadRequest,
+    ctx: &crate::RaftContext<T>,
+) -> std::result::Result<Option<ServerReadConsistencyPolicy>, Box<tonic::Status>>
+where
+    T: TypeConfig,
+{
+    let effective_policy = if client_request.has_consistency_policy() {
+        // Client explicitly specified policy
+        if ctx.node_config().raft.read_consistency.allow_client_override {
+            match client_request.consistency_policy() {
+                ClientReadConsistencyPolicy::LeaseRead => ServerReadConsistencyPolicy::LeaseRead,
+                ClientReadConsistencyPolicy::LinearizableRead => {
+                    ServerReadConsistencyPolicy::LinearizableRead
+                }
+                ClientReadConsistencyPolicy::EventualConsistency => {
+                    ServerReadConsistencyPolicy::EventualConsistency
+                }
+            }
+        } else {
+            // Client override not allowed - use server default
+            ctx.node_config().raft.read_consistency.default_policy.clone()
+        }
+    } else {
+        // No client policy specified - use server default
+        ctx.node_config().raft.read_consistency.default_policy.clone()
+    };
+
+    // Check if effective policy allows non-leader reads
+    match &effective_policy {
+        ServerReadConsistencyPolicy::LeaseRead | ServerReadConsistencyPolicy::LinearizableRead => {
+            Ok(None) // Requires leader access
+        }
+        ServerReadConsistencyPolicy::EventualConsistency => {
+            Ok(Some(effective_policy)) // Can be served by non-leader nodes
+        }
+    }
 }

@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use dashmap::DashMap;
 use prost::Message;
 use tonic::async_trait;
@@ -143,7 +144,12 @@ where
 
         match ctx
             .transport()
-            .send_append_requests(requests, &ctx.node_config.retry, membership)
+            .send_append_requests(
+                requests,
+                &ctx.node_config.retry,
+                membership,
+                ctx.node_config.raft.rpc_compression.replication_response,
+            )
             .await
         {
             Ok(append_result) => {
@@ -662,12 +668,11 @@ pub(crate) fn client_command_to_entry_payloads(commands: Vec<WriteCommand>) -> V
     commands
         .into_iter()
         .map(|cmd| {
-            // Serialize each WriteCommand to bytes
-            let bytes = cmd.encode_to_vec();
+            let mut buf = BytesMut::with_capacity(cmd.encoded_len());
+            cmd.encode(&mut buf).unwrap();
 
-            // Create EntryPayload with Command variant containing the serialized bytes
             EntryPayload {
-                payload: Some(Payload::Command(bytes)),
+                payload: Some(Payload::Command(buf.freeze())),
             }
         })
         .collect()
