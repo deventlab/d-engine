@@ -1,10 +1,23 @@
 //! High-performance buffered Raft log with static dispatch
 //!
+//! PersistenceStrategy defines durability guarantees:
+//!
+//! - DiskFirst: Entries persisted before becoming visible (SAFE, slower)
+//! - MemFirst: Entries visible before persistence (FAST, crash risk)
+//!   WARNING: Violates Raft durability. Use only if:
+//!   - You accept potential data loss on crash
+//!   - Replication provides redundancy
+//!   - Performance > strict durability
+//!
 //! - Lock-free in-memory index
 //! - Batch I/O operations
 //! - Async persistence pipeline
 //! - Generic storage integration
 
+use crossbeam::channel::bounded;
+use crossbeam::channel::Sender;
+use crossbeam_skiplist::SkipMap;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicBool;
@@ -12,11 +25,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-
-use crossbeam::channel::bounded;
-use crossbeam::channel::Sender;
-use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
@@ -50,9 +58,9 @@ pub struct FlushWorkerPool<T>
 where
     T: TypeConfig,
 {
-    sender: Sender<FlushTask<T>>,
+    sender: Option<Sender<FlushTask<T>>>,
     shutdown: Arc<AtomicBool>,
-    worker_handles: Vec<JoinHandle<()>>,
+    pub(crate) worker_handles: Vec<JoinHandle<()>>,
 }
 
 pub struct FlushTask<T>
@@ -531,9 +539,13 @@ where
         let term_last_index = SkipMap::new();
 
         // Load all entries from disk to memory
+        let mut loaded_count = 0;
         if disk_len > 0 {
             match log_store.get_entries(1..=disk_len) {
-                Ok(all_entries) => {
+                Ok(all_entries) if !all_entries.is_empty() => {
+                    loaded_count = all_entries.len();
+                    debug!("Successfully loaded {} entries from disk", loaded_count);
+
                     for entry in all_entries {
                         let index = entry.index;
                         entries.insert(index, entry.clone());
@@ -551,6 +563,9 @@ where
                             .fetch_max(index, Ordering::AcqRel);
                     }
                 }
+                Ok(_empty_entries) => {
+                    warn!("Disk reported length {} but loaded 0 entries", disk_len);
+                }
                 Err(e) => {
                     error!("Failed to load entries from storage: {:?}", e);
                     // Handle critical error if needed
@@ -561,6 +576,14 @@ where
         // Initialize atomic boundaries
         let min_index = entries.front().map(|e| *e.key()).unwrap_or(0);
         let max_index = entries.back().map(|e| *e.key()).unwrap_or(0);
+
+        if disk_len > 0 && loaded_count == 0 {
+            warn!(
+                "Inconsistent state: disk_len={} but loaded_count=0",
+                disk_len
+            );
+        }
+
         // Initialize flush worker pool
         let flush_workers = Self::create_flush_worker_pool(persistence_config.flush_workers);
         (
@@ -662,7 +685,7 @@ where
                             };
 
                             // Handle backpressure gracefully
-                            match this.flush_workers.sender.send(flush_task) {
+                            match this.flush_workers.sender.as_ref().expect("sender should exist").send(flush_task) {
                                 Ok(_) => {
                                     metrics::counter!("flush_tasks.enqueued").increment(1);
                                 }
@@ -828,9 +851,14 @@ where
         }
 
         // Update durable index
-        if let Some(max_index) = indexes.iter().max() {
-            self.durable_index.store(*max_index, Ordering::Release);
-            self.notify_waiters(*max_index);
+        if let Some(&max_index) = indexes.iter().max() {
+            // fetch_max ensures we only ever increase durable_index
+            let prev = self.durable_index.fetch_max(max_index, Ordering::AcqRel);
+
+            // Only notify if we actually advanced
+            if max_index > prev {
+                self.notify_waiters(max_index);
+            }
         }
 
         Ok(())
@@ -882,7 +910,10 @@ where
 
         // Update durable index
         if let Some(max_index) = entries.iter().map(|e| e.index).max() {
-            self.durable_index.store(max_index, Ordering::Release);
+            let prev = self.durable_index.fetch_max(max_index, Ordering::AcqRel);
+            if max_index > prev {
+                self.notify_waiters(max_index);
+            }
         }
 
         Ok(())
@@ -1041,9 +1072,21 @@ where
                                         warn!("Retrying failed flush operation");
                                         // Simple retry after delay - consider exponential backoff for production
                                         tokio::time::sleep(Duration::from_millis(100)).await;
-                                        let _ = this.process_flush(&indexes).await;
+                                        match this.process_flush(&indexes).await {
+                                            Ok(_) => {
+                                                debug!("Worker {} retry succeeded", worker_id);
+                                            }
+                                            Err(retry_err) => {
+                                                error!(
+                                                    "Worker {} retry failed: {}",
+                                                    worker_id, retry_err
+                                                );
+                                                break; // Only exit on persistent failure
+                                            }
+                                        }
+                                    } else {
+                                        break; // Non-transient - exit immediately
                                     }
-                                    break;
                                 }
                             }
                         }
@@ -1066,7 +1109,7 @@ where
         }
 
         FlushWorkerPool {
-            sender,
+            sender: Some(sender),
             shutdown,
             worker_handles,
         }
@@ -1082,20 +1125,30 @@ where
     }
 
     // Cleanup method for graceful shutdown
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&mut self) {
         // Signal shutdown to all workers
         self.flush_workers.shutdown.store(true, Ordering::Relaxed);
 
-        // Close the sender to signal workers to stop
-        drop(self.flush_workers.sender.clone());
+        // Take and drop the sender to close channel
+        if let Some(sender) = self.flush_workers.sender.take() {
+            drop(sender);
+        }
 
-        // Wait for all workers to complete with timeout
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Wait for workers with timeout
+        let timeout = tokio::time::sleep(Duration::from_secs(2));
+        tokio::pin!(timeout);
 
-        // If any workers are still running, abort them
         for handle in &self.flush_workers.worker_handles {
-            if !handle.is_finished() {
-                handle.abort();
+            tokio::select! {
+                _ = &mut timeout => {
+                    handle.abort();
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if handle.is_finished() {
+                        continue;
+                    }
+                }
             }
         }
 
