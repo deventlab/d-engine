@@ -34,6 +34,37 @@ use crate::StateMachine;
 use crate::StorageError;
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
+
+/// WAL operation codes for fixed-size encoding
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalOpCode {
+    Noop = 0,
+    Insert = 1,
+    Delete = 2,
+    Config = 3,
+}
+
+impl WalOpCode {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "INSERT" => Self::Insert,
+            "DELETE" => Self::Delete,
+            "CONFIG" => Self::Config,
+            _ => Self::Noop,
+        }
+    }
+
+    fn from_u8(byte: u8) -> Self {
+        match byte {
+            1 => Self::Insert,
+            2 => Self::Delete,
+            3 => Self::Config,
+            _ => Self::Noop,
+        }
+    }
+}
+
 /// File-based state machine implementation with persistence
 ///
 /// Design principles:
@@ -232,6 +263,7 @@ impl FileStateMachine {
     async fn replay_wal(&self) -> Result<(), Error> {
         let wal_path = self.data_dir.join("wal.log");
         if !wal_path.exists() {
+            debug!("No WAL file found, skipping replay");
             return Ok(());
         }
 
@@ -239,13 +271,129 @@ impl FileStateMachine {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
-        // If WAL has content, we need to replay it
-        if !buffer.is_empty() {
-            warn!("Replaying write-ahead log for crash recovery");
+        if buffer.is_empty() {
+            debug!("WAL file is empty, skipping replay");
+            return Ok(());
+        }
 
-            // For simplicity, we'll just clear and rebuild from data file
-            // In a production system, you'd parse and replay each WAL entry
-            file.set_len(0).await?; // Clear WAL after recovery
+        let mut pos = 0;
+        let mut operations = Vec::new();
+        let mut replayed_count = 0;
+
+        while pos + 17 < buffer.len() {
+            // Read entry index (8 bytes)
+            let _index = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+
+            // Read entry term (8 bytes)
+            let term = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+
+            // Read operation code (1 byte)
+            let op_code = WalOpCode::from_u8(buffer[pos]);
+            pos += 1;
+
+            // Check if we have enough bytes for key length
+            if pos + 8 > buffer.len() {
+                warn!("Incomplete key length at position {}, stopping replay", pos);
+                break;
+            }
+
+            // Read key length (8 bytes)
+            let key_len = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+            pos += 8;
+
+            // Check if we have enough data for the key
+            if pos + key_len > buffer.len() {
+                warn!(
+                    "Incomplete key data at position {} (need {} bytes, have {})",
+                    pos,
+                    key_len,
+                    buffer.len() - pos
+                );
+                break;
+            }
+
+            // Read key
+            let key = Bytes::from(buffer[pos..pos + key_len].to_vec());
+            pos += key_len;
+
+            // Check if we have enough bytes for value length
+            if pos + 8 > buffer.len() {
+                warn!(
+                    "Incomplete value length at position {}, stopping replay",
+                    pos
+                );
+                break;
+            }
+
+            // Read value length (8 bytes)
+            let value_len = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+            pos += 8;
+
+            // Read value if present
+            let value = if value_len > 0 {
+                if pos + value_len > buffer.len() {
+                    warn!("Incomplete value data at position {}, stopping replay", pos);
+                    break;
+                }
+                let value_data = Bytes::from(buffer[pos..pos + value_len].to_vec());
+                pos += value_len;
+                Some(value_data)
+            } else {
+                None
+            };
+
+            operations.push((op_code, key, value, term));
+            replayed_count += 1;
+        }
+
+        info!(
+            "Parsed {} WAL operations, applying to memory",
+            operations.len()
+        );
+
+        // Apply all collected operations with a single lock acquisition
+        let mut applied_count = 0;
+        {
+            let mut data = self.data.write();
+            for (op_code, key, value, term) in operations {
+                match op_code {
+                    WalOpCode::Insert => {
+                        if let Some(value_data) = value {
+                            data.insert(key, (value_data, term));
+                            applied_count += 1;
+                            debug!("Applied INSERT");
+                        } else {
+                            warn!("INSERT operation without value");
+                        }
+                    }
+                    WalOpCode::Delete => {
+                        data.remove(&key);
+                        applied_count += 1;
+                        debug!("Replayed DELETE: key={:?}", key);
+                    }
+                    WalOpCode::Noop | WalOpCode::Config => {
+                        // No data modification needed
+                        applied_count += 1;
+                        debug!("Replayed {:?} operation", op_code);
+                    }
+                }
+            }
+        }
+
+        info!(
+            "WAL replay complete: {} operations replayed_count, {} operations applied",
+            replayed_count, applied_count
+        );
+
+        // Clear WAL only if replay was successful
+        if applied_count > 0 {
+            self.clear_wal_async().await?;
+            debug!(
+                "Cleared WAL after successful replay of {} operations",
+                applied_count
+            );
         }
 
         Ok(())
@@ -369,6 +517,7 @@ impl FileStateMachine {
     }
 
     /// Clears the write-ahead log (called after successful persistence)
+    #[allow(unused)]
     fn clear_wal(&self) -> Result<(), Error> {
         let wal_path = self.data_dir.join("wal.log");
         let mut file = std::fs::OpenOptions::new()
@@ -464,56 +613,83 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Batch WAL writes for better I/O performance
-    async fn append_to_wal(
+    /// Batch WAL writes with proper durability guarantees
+    ///
+    /// Format per entry:
+    /// - 8 bytes: entry index (big-endian u64)
+    /// - 8 bytes: entry term (big-endian u64)
+    /// - 1 byte: operation code (0=NOOP, 1=INSERT, 2=DELETE, 3=CONFIG)
+    /// - 8 bytes: key length (big-endian u64)
+    /// - N bytes: key data
+    /// - 8 bytes: value length (big-endian u64, 0 if no value)
+    /// - M bytes: value data (only if length > 0)
+    pub(crate) async fn append_to_wal(
         &self,
         entries: Vec<(Entry, String, Bytes, Option<Bytes>)>,
     ) -> Result<(), Error> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
         let wal_path = self.data_dir.join("wal.log");
+
         let mut file =
-            OpenOptions::new().write(true).create(true).append(true).open(wal_path).await?;
+            OpenOptions::new().write(true).create(true).append(true).open(&wal_path).await?;
+
+        // Pre-allocate buffer with estimated size
+        let estimated_size: usize = entries
+            .iter()
+            .map(|(_, _, key, value)| {
+                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len())
+            })
+            .sum();
 
         // Single batched write instead of multiple small writes
-        let mut batch_buffer = Vec::new();
+        let mut batch_buffer = Vec::with_capacity(estimated_size);
 
         for (entry, operation, key, value) in entries {
-            // Write entry index and term
+            // Write entry index and term (16 bytes total)
             batch_buffer.extend_from_slice(&entry.index.to_be_bytes());
             batch_buffer.extend_from_slice(&entry.term.to_be_bytes());
 
-            // Write operation type
-            batch_buffer.extend_from_slice(operation.as_bytes());
+            // Write operation code (1 byte)
+            let op_code = WalOpCode::from_str(&operation);
+            batch_buffer.push(op_code as u8);
 
-            // Write key length and key (ZERO-COPY: use existing Bytes)
+            // Write key length and data (8 + N bytes)
             batch_buffer.extend_from_slice(&(key.len() as u64).to_be_bytes());
             batch_buffer.extend_from_slice(&key);
 
-            // For insert operations, write value
+            // Write value length and data (8 + M bytes)
+            // Always write length field for consistent format
             if let Some(value_data) = value {
                 batch_buffer.extend_from_slice(&(value_data.len() as u64).to_be_bytes());
                 batch_buffer.extend_from_slice(&value_data);
+            } else {
+                // Write 0 length for operations without value
+                batch_buffer.extend_from_slice(&0u64.to_be_bytes());
             }
         }
 
-        // Single I/O operation for entire batch
         file.write_all(&batch_buffer).await?;
         file.flush().await?;
 
         Ok(())
     }
-    // pub(super) async fn decompress_snapshot(
-    //     &self,
-    //     compressed_path: &Path,
-    //     dest_dir: &Path,
-    // ) -> Result<(), Error> {
-    //     let file = File::open(compressed_path).await.map_err(StorageError::IoError)?;
-    //     let buf_reader = BufReader::new(file);
-    //     let gzip_decoder = GzipDecoder::new(buf_reader);
-    //     let mut archive = Archive::new(gzip_decoder);
 
-    //     archive.unpack(dest_dir).await.map_err(StorageError::IoError)?;
-    //     Ok(())
-    // }
+    /// Checkpoint: Persist memory to disk and clear WAL
+    /// This is the "safe point" after which WAL is no longer needed
+    #[allow(unused)]
+    pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
+        // 1. Persist current state
+        self.persist_data_async().await?;
+        self.persist_metadata_async().await?;
+
+        // 2. Clear WAL (data is now in state.data)
+        self.clear_wal_async().await?;
+
+        Ok(())
+    }
 }
 
 impl Drop for FileStateMachine {
@@ -917,14 +1093,14 @@ impl StateMachine for FileStateMachine {
     fn flush(&self) -> Result<(), Error> {
         self.persist_data()?;
         self.persist_metadata()?;
-        self.clear_wal()?;
+        // self.clear_wal()?;
         Ok(())
     }
 
     async fn flush_async(&self) -> Result<(), Error> {
         self.persist_data_async().await?;
         self.persist_metadata_async().await?;
-        self.clear_wal_async().await?;
+        // self.clear_wal_async().await?;
         Ok(())
     }
 
