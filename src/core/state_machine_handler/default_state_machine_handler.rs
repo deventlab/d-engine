@@ -1106,12 +1106,7 @@ fn zero_copy_bytes_from_mmap(
 ) -> Bytes {
     // Get a slice of the memory map
     let slice = &mmap_arc[start..end];
-
-    // Create Bytes using from_static by leaking the Arc (carefully managed)
-    // This is true zero-copy but requires careful lifetime management
-    let static_slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
-
-    Bytes::from_static(static_slice)
+    Bytes::copy_from_slice(slice)
 }
 
 /// Manual parsing file name format: snapshot-{index}-{term}
