@@ -161,10 +161,10 @@ where
         let start = Instant::now();
         let chunk_size = chunk.len();
 
-        metrics::counter!("state_machine.apply_chunk.count", &[(
-            "node_id",
-            self.node_id.to_string()
-        )])
+        metrics::counter!(
+            "state_machine.apply_chunk.count",
+            &[("node_id", self.node_id.to_string())]
+        )
         .increment(1);
 
         let last_index = chunk.last().map(|entry| entry.index);
@@ -181,16 +181,16 @@ where
 
         // Record latency and chunk size histogram *after* the operation
         let duration_ms = start.elapsed().as_millis() as f64;
-        metrics::histogram!("state_machine.apply_chunk.duration_ms", &[(
-            "node_id",
-            self.node_id.to_string()
-        )])
+        metrics::histogram!(
+            "state_machine.apply_chunk.duration_ms",
+            &[("node_id", self.node_id.to_string())]
+        )
         .record(duration_ms);
 
-        metrics::histogram!("state_machine.apply_chunk.batch_size", &[(
-            "node_id",
-            self.node_id.to_string()
-        )])
+        metrics::histogram!(
+            "state_machine.apply_chunk.batch_size",
+            &[("node_id", self.node_id.to_string())]
+        )
         .record(chunk_size as f64);
 
         // Track result
@@ -201,18 +201,21 @@ where
                     self.last_applied.store(idx, Ordering::Release);
                 }
 
-                metrics::counter!("state_machine.apply_chunk.success", &[(
-                    "node_id",
-                    self.node_id.to_string()
-                )])
+                metrics::counter!(
+                    "state_machine.apply_chunk.success",
+                    &[("node_id", self.node_id.to_string())]
+                )
                 .increment(1);
             }
             Err(e) => {
                 let error_type = classify_error(e);
-                metrics::counter!("state_machine.apply_chunk.error", &[
-                    ("node_id", self.node_id.to_string()),
-                    ("error_type", error_type)
-                ])
+                metrics::counter!(
+                    "state_machine.apply_chunk.error",
+                    &[
+                        ("node_id", self.node_id.to_string()),
+                        ("error_type", error_type)
+                    ]
+                )
                 .increment(1);
             }
         }
@@ -628,6 +631,7 @@ where
         Ok(Box::pin(stream))
     }
 
+    #[allow(unused)]
     async fn load_snapshot_chunk(
         &self,
         metadata: &SnapshotMetadata,
