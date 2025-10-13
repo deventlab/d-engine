@@ -342,7 +342,16 @@ impl LogStore for RocksDBLogStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Flush WAL first when manual_wal_flush is enabled
+        // This ensures write-ahead log is durably persisted before memtable flush
+        self.db
+            .flush_wal(true) // true = sync WAL to disk
+            .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
+
+        // Then flush memtables to SST files
+        self.db
+            .flush()
+            .map_err(|e| StorageError::DbError(format!("Failed to flush memtables: {e}")))?;
         Ok(())
     }
 
@@ -426,7 +435,17 @@ impl MetaStore for RocksDBMetaStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Flush WAL first for metadata durability
+        // Metadata changes (like HardState) MUST survive crashes
+        self.db
+            .flush_wal(true) // true = sync WAL to disk
+            .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
+
+        // Then flush meta column family memtables
+        self.db
+            .flush()
+            .map_err(|e| StorageError::DbError(format!("Failed to flush meta memtables: {e}")))?;
+
         Ok(())
     }
 
