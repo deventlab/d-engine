@@ -107,16 +107,22 @@ async fn setup_process_raft_request_test_context(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(5),
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: Some(5),
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -849,16 +855,22 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: Some(3),
-                        next_index: 4,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: Some(4),
-                        next_index: 5,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(3),
+                            next_index: 4,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: Some(4),
+                            next_index: 5,
+                            success: true,
+                        },
+                    ),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -1277,10 +1289,13 @@ mod snapshot_created_event_tests {
         let event = role_rx.try_recv().expect("Should receive LogPurgeCompleted event");
         if let RoleEvent::ReprocessEvent(inner) = event {
             if let RaftEvent::LogPurgeCompleted(purged_id) = *inner {
-                assert_eq!(purged_id, LogId {
-                    term: 3,
-                    index: 100
-                });
+                assert_eq!(
+                    purged_id,
+                    LogId {
+                        term: 3,
+                        index: 100
+                    }
+                );
             } else {
                 panic!("Expected LogPurgeCompleted event");
             }
@@ -1817,20 +1832,19 @@ fn test_can_purge_logs_case1() {
     ));
 
     // Boundary check: 99 == commit_index - 1 (valid gap)
-    assert!(
-        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
-            index: 99,
-            term: 1
-        })
-    );
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }),
+        LogId { index: 99, term: 1 }
+    ));
 
     // Violate gap rule: 100 not < 100
-    assert!(
-        !state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }),
+        LogId {
             index: 100,
             term: 1
-        })
-    );
+        }
+    ));
 }
 
 /// # Case 2: Reject uncommitted purge (Raft §5.4.2)
@@ -1849,12 +1863,10 @@ fn test_can_purge_logs_case2() {
     ));
 
     // Boundary violation: 50 == commit_index (requires <)
-    assert!(
-        !state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId {
-            index: 50,
-            term: 1
-        })
-    );
+    assert!(!state.can_purge_logs(
+        Some(LogId { index: 40, term: 1 }),
+        LogId { index: 50, term: 1 }
+    ));
 }
 
 /// # Case 3: Enforce purge sequence monotonicity (Raft §7.2)
@@ -1915,21 +1927,17 @@ fn test_can_purge_logs_case4() {
     // Single lagging peer (index 99 < 100)
     state.peer_purge_progress.insert(2, 99);
     state.peer_purge_progress.insert(3, 100);
-    assert!(
-        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
-            index: 99,
-            term: 1
-        })
-    );
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }),
+        LogId { index: 99, term: 1 }
+    ));
 
     // All peers at required index
     state.peer_purge_progress.insert(2, 100);
-    assert!(
-        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
-            index: 99,
-            term: 1
-        })
-    );
+    assert!(state.can_purge_logs(
+        Some(LogId { index: 90, term: 1 }),
+        LogId { index: 99, term: 1 }
+    ));
 }
 
 /// # Case 5: Initial purge state validation
@@ -1981,16 +1989,22 @@ async fn test_process_batch_case1_quorum_achieved() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: Some(6),
-                        next_index: 7,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: Some(6),
-                        next_index: 7,
-                        success: true,
-                    }),
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(6),
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: Some(6),
+                            next_index: 7,
+                            success: true,
+                        },
+                    ),
                 ]),
             })
         });
@@ -2045,16 +2059,22 @@ async fn test_process_batch_case2_quorum_failed() {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (2, PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    }),
-                    (3, PeerUpdate {
-                        match_index: None,
-                        next_index: 1,
-                        success: false,
-                    }), // Failed
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(5),
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: None,
+                            next_index: 1,
+                            success: false,
+                        },
+                    ), // Failed
                 ]),
             })
         });
@@ -2099,11 +2119,14 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .returning(move |_, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(peer2_id, PeerUpdate {
-                    match_index: Some(5),
-                    next_index: 6,
-                    success: true,
-                })]),
+                peer_updates: HashMap::from([(
+                    peer2_id,
+                    PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    },
+                )]),
                 learner_progress: HashMap::new(),
             })
         });
@@ -2209,11 +2232,14 @@ async fn test_process_batch_case4_partial_timeouts() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate {
-                    match_index: Some(6),
-                    next_index: 7,
-                    success: true,
-                })]),
+                peer_updates: HashMap::from([(
+                    2,
+                    PeerUpdate {
+                        match_index: Some(6),
+                        next_index: 7,
+                        success: true,
+                    },
+                )]),
             })
         });
 
@@ -3792,11 +3818,13 @@ mod stale_learner_tests {
     /// Test no purge when not expired
     #[tokio::test]
     async fn test_no_purge_when_fresh() {
-        let (mut leader, mut membership) =
-            create_test_leader_state("test_no_purge_when_fresh", vec![
+        let (mut leader, mut membership) = create_test_leader_state(
+            "test_no_purge_when_fresh",
+            vec![
                 (101, Duration::from_secs(15)),
                 (102, Duration::from_secs(20)),
-            ]);
+            ],
+        );
         // Should do nothing
         membership.expect_update_node_status().never();
 
@@ -3868,11 +3896,14 @@ mod stale_learner_tests {
 
     #[tokio::test]
     async fn test_promotion_timeout_threshold() {
-        let (mut leader, membership) = create_test_leader_state("test", vec![
-            (101, Duration::from_secs(31)), // 1s over threshold
-            (102, Duration::from_secs(30)), // exactly at threshold
-            (103, Duration::from_secs(29)), // 1s under threshold
-        ]);
+        let (mut leader, membership) = create_test_leader_state(
+            "test",
+            vec![
+                (101, Duration::from_secs(31)), // 1s over threshold
+                (102, Duration::from_secs(30)), // exactly at threshold
+                (103, Duration::from_secs(29)), // 1s under threshold
+            ],
+        );
         leader.next_membership_maintenance_check = Instant::now() - Duration::from_secs(1);
         let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
         node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
@@ -3890,11 +3921,14 @@ mod stale_learner_tests {
 
     #[tokio::test]
     async fn test_downgrade_affects_replication() {
-        let (mut leader, mut membership) = create_test_leader_state("test", vec![
-            (101, Duration::from_secs(29)), // 1s under threshold
-            (102, Duration::from_secs(30)), // exactly at threshold
-            (103, Duration::from_secs(31)), // 1s over threshold
-        ]);
+        let (mut leader, mut membership) = create_test_leader_state(
+            "test",
+            vec![
+                (101, Duration::from_secs(29)), // 1s under threshold
+                (102, Duration::from_secs(30)), // exactly at threshold
+                (103, Duration::from_secs(31)), // 1s over threshold
+            ],
+        );
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
         let ctx = mock_raft_context(
             "test_downgrade_affects_replication",
