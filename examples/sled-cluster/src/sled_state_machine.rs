@@ -432,7 +432,7 @@ impl StateMachine for SledStateMachine {
         Ok(Bytes::copy_from_slice(&checksum))
     }
 
-    #[instrument(skil(self))]
+    #[instrument(skip(self))]
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
