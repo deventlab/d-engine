@@ -1,5 +1,6 @@
 use super::*;
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use d_engine::{
     proto::{client::write_command::Insert, common::Entry},
     storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite},
@@ -80,8 +81,8 @@ async fn test_sled_performance() -> Result<(), Error> {
 
 fn create_test_command_payload(index: u64) -> d_engine::proto::common::EntryPayload {
     // Create a simple insert command
-    let key = format!("key_{index}").into_bytes();
-    let value = format!("value_{index}").into_bytes();
+    let key = Bytes::from(format!("key_{index}").into_bytes());
+    let value = Bytes::from(format!("value_{index}").into_bytes());
 
     let insert = Insert { key, value };
     let operation = d_engine::proto::client::write_command::Operation::Insert(insert);
@@ -89,9 +90,12 @@ fn create_test_command_payload(index: u64) -> d_engine::proto::common::EntryPayl
         operation: Some(operation),
     };
 
+    let mut buffer = BytesMut::new();
+    write_cmd.encode(&mut buffer).expect("Failed to encode insert command");
+    let buffer = buffer.freeze();
     d_engine::proto::common::EntryPayload {
         payload: Some(d_engine::proto::common::entry_payload::Payload::Command(
-            write_cmd.encode_to_vec(),
+            buffer,
         )),
     }
 }

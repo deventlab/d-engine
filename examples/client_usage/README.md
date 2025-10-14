@@ -18,6 +18,9 @@ cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127
 # Get value (eventually consistent)
 cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.0.1:9081" get 42
 
+# Lease read
+cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.0.1:9081" sget 42
+
 # Linearizable read (strongly consistent)
 cargo run -- --endpoints "http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.0.1:9081" lget 42
 
