@@ -96,8 +96,8 @@ impl KvClient {
         let client_inner = self.client_inner.load();
         // Build request
         let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
-        commands.push(client_command_insert);
+        let client_command_delete = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
+        commands.push(client_command_delete);
 
         let request = ClientWriteRequest {
             client_id: client_inner.client_id,

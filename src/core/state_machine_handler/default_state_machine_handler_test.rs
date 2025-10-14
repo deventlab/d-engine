@@ -1918,3 +1918,86 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
     // Ensure handler completes successfully
     assert!(handler_task.await.unwrap().is_ok());
 }
+
+#[cfg(test)]
+mod mmap_tests {
+    use crate::SystemError;
+
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Test that load_chunk_via_mmap works correctly with std::fs::File
+    /// after the migration from tokio::fs::File
+    #[test]
+    fn test_load_chunk_via_mmap_with_std_file() {
+        // Create a temporary file with test data
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let test_data = b"Hello, this is test data for memory mapping!";
+        temp_file.write_all(test_data).unwrap();
+        temp_file.flush().unwrap();
+
+        let file_path = temp_file.path();
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_std_file"), Some(0));
+
+        // Test loading a chunk via mmap
+        let result = handler.load_chunk_via_mmap(file_path, 0, test_data.len());
+
+        // Verify the operation succeeds and returns correct data
+        assert!(result.is_ok());
+        let chunk_data = result.unwrap();
+        assert_eq!(chunk_data.as_ref(), test_data);
+    }
+
+    /// Test error handling when file doesn't exist
+    #[test]
+    fn test_load_chunk_via_mmap_file_not_found() {
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_file_not_found"), Some(0));
+        let non_existent_path = Path::new("/non/existent/file.bin");
+
+        let result = handler.load_chunk_via_mmap(non_existent_path, 0, 100);
+
+        assert!(result.is_err());
+        // Verify it's an IO error as expected
+        match result.unwrap_err() {
+            Error::System(SystemError::Storage(StorageError::IoError(_))) => {} // Expected
+            other => panic!("Expected IoError, got {other:?}"),
+        }
+    }
+
+    /// Test bounds validation with file that's too small
+    #[test]
+    fn test_load_chunk_via_mmap_bounds_validation() {
+        // Create a small file
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let small_data = b"small";
+        temp_file.write_all(small_data).unwrap();
+        temp_file.flush().unwrap();
+
+        let file_path = temp_file.path();
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_bounds"), Some(0));
+
+        // Try to access beyond file bounds
+        let result = handler.load_chunk_via_mmap(file_path, 0, 1000); // File is only 5 bytes
+
+        assert!(result.is_err());
+        // Should fail with bounds validation error
+    }
+
+    /// Test that the function is truly synchronous (no async needed)
+    #[test]
+    fn test_load_chunk_via_mmap_is_synchronous() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let test_data = b"Sync test data";
+        temp_file.write_all(test_data).unwrap();
+        temp_file.flush().unwrap();
+
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_sync"), Some(0));
+
+        // This should complete immediately without any async/await
+        // If it were still async, this wouldn't compile in a sync test
+        let result = handler.load_chunk_via_mmap(temp_file.path(), 0, test_data.len());
+
+        assert!(result.is_ok());
+    }
+}

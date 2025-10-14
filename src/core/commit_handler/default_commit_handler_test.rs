@@ -400,7 +400,6 @@ async fn test_dynamic_interval_case2() {
 
 #[cfg(test)]
 mod run_test {
-    use prost::Message;
     use tokio::time;
 
     use super::*;
@@ -521,9 +520,7 @@ mod run_test {
     async fn test_high_throughput_processing() {
         let mut entries = Vec::new();
         for i in 1..=1000 {
-            entries.push(CommandType::Command(Bytes::from(
-                format!("cmd{i}").encode_to_vec(),
-            )));
+            entries.push(CommandType::Command(Bytes::from(format!("cmd{i}"))));
         }
         let entries = build_entries(entries, 1);
 

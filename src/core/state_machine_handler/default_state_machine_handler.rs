@@ -658,7 +658,7 @@ where
         }
 
         // ZERO-COPY: Use memory mapping instead of buffer reading
-        let chunk_data = self.load_chunk_via_mmap(&transfer_meta.file_path, start, end).await?;
+        let chunk_data = self.load_chunk_via_mmap(&transfer_meta.file_path, start, end)?;
 
         // Efficient checksum calculation on mapped memory
         let checksum_bytes = crc32fast::hash(&chunk_data).to_be_bytes();
@@ -1052,17 +1052,17 @@ where
     /// - Memory mapping is unsafe but properly bounded and validated
     /// - File size is checked before mapping
     /// - Proper error handling for IO operations
-    async fn load_chunk_via_mmap(
+    pub(super) fn load_chunk_via_mmap(
         &self,
         file_path: &Path,
         start: usize,
         end: usize,
     ) -> Result<Bytes> {
         // Open file with proper error handling
-        let file = tokio::fs::File::open(file_path).await.map_err(StorageError::IoError)?;
+        let file = std::fs::File::open(file_path).map_err(StorageError::IoError)?;
 
         // Get file metadata to validate bounds
-        let file_meta = file.metadata().await.map_err(StorageError::IoError)?;
+        let file_meta = file.metadata().map_err(StorageError::IoError)?;
         let file_size = file_meta.len() as usize;
 
         // Validate bounds before memory mapping
