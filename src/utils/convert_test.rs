@@ -5,8 +5,10 @@ use crate::convert::classify_error;
 use crate::convert::convert_high_and_low_fromu64_to_u128;
 use crate::convert::convert_u128_to_u64_with_high_and_low;
 use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::convert::skv;
 use crate::convert::str_to_u64;
+use crate::convert::u64_to_bytes;
 
 #[derive(Debug)]
 struct TestError(&'static str);
@@ -128,4 +130,32 @@ fn test_classify_error() {
     // Test unknown error classification
     let unknown_error = TestError("Some other error");
     assert_eq!(classify_error(&unknown_error), "unknown");
+}
+
+#[test]
+fn test_u64_to_bytes() {
+    // Test basic conversion
+    let result = u64_to_bytes(0x1234_5678_9ABC_DEF0);
+    assert_eq!(
+        result.as_ref(),
+        &[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]
+    );
+
+    // Test zero
+    let result = u64_to_bytes(0);
+    assert_eq!(result.as_ref(), &[0, 0, 0, 0, 0, 0, 0, 0]);
+
+    // Test max value
+    let result = u64_to_bytes(u64::MAX);
+    assert_eq!(
+        result.as_ref(),
+        &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+    );
+}
+
+#[test]
+fn test_safe_kv_bytes() {
+    // Verify it delegates to u64_to_bytes
+    let key = 0x1234_5678_9ABC_DEF0;
+    assert_eq!(safe_kv_bytes(key), u64_to_bytes(key));
 }

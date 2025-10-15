@@ -14,8 +14,8 @@ pub fn str_to_u64(s: &str) -> u64 {
     hasher.finish()
 }
 
+// Convert to big-endian bytes with a single allocation
 pub fn u64_to_bytes(value: u64) -> Bytes {
-    // Use a static buffer to avoid allocation
     let bytes = value.to_be_bytes();
     Bytes::copy_from_slice(&bytes)
 }
