@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,12 +20,15 @@ use crate::proto::common::Entry;
 use crate::proto::common::EntryPayload;
 use crate::proto::common::LogId;
 use crate::test_utils::generate_insert_commands;
+use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::{self};
 use crate::BufferedRaftLog;
 use crate::FileStorageEngine;
 use crate::FlushPolicy;
 use crate::LogStore;
+use crate::MockLogStore;
+use crate::MockMetaStore;
 use crate::MockStateMachine;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
@@ -4281,5 +4285,224 @@ async fn test_read_performance_remains_lockfree() {
     assert!(
         reads_per_sec > expected_min,
         "Read performance degraded: {reads_per_sec:.2} reads/sec (expected > {expected_min:.2})",
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_awaits_worker_completion() {
+    let node_id = 1;
+    let temp_dir = tempdir().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
+
+    let (raft_log, receiver) =
+        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
+            node_id,
+            PersistenceConfig {
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 100,
+                    interval_ms: 5000,
+                },
+                max_buffered_entries: 1000,
+                ..Default::default()
+            },
+            storage,
+        );
+
+    let raft_log = raft_log.start(receiver);
+
+    // Append entries to trigger worker activity
+    for i in 1..=50 {
+        raft_log
+            .append_entries(vec![Entry {
+                index: i,
+                term: 1,
+                payload: Some(EntryPayload::command(Bytes::from(vec![0u8; 100]))),
+            }])
+            .await
+            .unwrap();
+    }
+
+    // Force flush to ensure workers have work
+    raft_log.flush().await.unwrap();
+
+    // Give workers time to start processing
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Trigger shutdown via Drop (which calls shutdown internally)
+    let shutdown_start = std::time::Instant::now();
+    drop(raft_log);
+    let shutdown_duration = shutdown_start.elapsed();
+
+    // Verify shutdown completed in reasonable time
+    assert!(
+        shutdown_duration < Duration::from_secs(3),
+        "Shutdown took too long: {shutdown_duration:?}",
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_handles_slow_workers() {
+    let node_id = 1;
+
+    // Use Arc<AtomicBool> for synchronization
+    let worker_busy = Arc::new(AtomicBool::new(false));
+    let worker_complete = Arc::new(AtomicBool::new(false));
+
+    // Create storage with controlled persist operations
+    let mut log_store = MockLogStore::new();
+    log_store.expect_last_index().returning(|| 0);
+    log_store.expect_truncate().returning(|_| Ok(()));
+    log_store.expect_reset().returning(|| Ok(()));
+    log_store.expect_flush().returning(|| Ok(()));
+
+    // Clone the Arc values for the mock
+    let worker_busy_clone = worker_busy.clone();
+    let worker_complete_clone = worker_complete.clone();
+
+    // Simulate persist operations that control timing
+    log_store.expect_persist_entries().returning(move |entries| {
+        // Signal that worker is busy
+        worker_busy_clone.store(true, Ordering::SeqCst);
+
+        // Small initial delay
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Wait until allowed to complete or timeout
+        let start = std::time::Instant::now();
+        while !worker_complete_clone.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(10));
+
+            // Safety timeout after 3 seconds to prevent test hanging
+            if start.elapsed() > Duration::from_secs(3) {
+                break;
+            }
+        }
+
+        // Log the entries we're persisting for debugging
+        println!("Persisting {} entries", entries.len());
+
+        Ok(())
+    });
+
+    let storage = Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new()));
+
+    let (raft_log, receiver) =
+        BufferedRaftLog::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            node_id,
+            PersistenceConfig {
+                strategy: PersistenceStrategy::DiskFirst,
+                flush_policy: FlushPolicy::Immediate,
+                max_buffered_entries: 1000,
+                flush_workers: 2, // Use multiple workers
+                ..Default::default()
+            },
+            storage,
+        );
+
+    let raft_log = raft_log.start(receiver);
+
+    // Append entries to create work for workers
+    for i in 1..=10 {
+        raft_log
+            .append_entries(vec![Entry {
+                index: i,
+                term: 1,
+                payload: Some(EntryPayload::command(Bytes::from(vec![0u8; 50]))),
+            }])
+            .await
+            .unwrap();
+    }
+
+    // Trigger flush and wait for worker to become busy
+    raft_log.flush().await.unwrap();
+
+    // Wait for worker to signal it's busy (with timeout)
+    let start = std::time::Instant::now();
+    while !worker_busy.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if start.elapsed() > Duration::from_secs(2) {
+            panic!("Workers did not start within expected time");
+        }
+    }
+
+    // Shutdown should wait for slow workers
+    let shutdown_start = std::time::Instant::now();
+
+    // Drop triggers shutdown
+    drop(raft_log);
+
+    // Allow the workers to complete after a controlled delay
+    // This simulates workers finishing their current task after shutdown is initiated
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    worker_complete.store(true, Ordering::SeqCst);
+
+    let shutdown_duration = shutdown_start.elapsed();
+
+    // Should complete within reasonable timeout window
+    assert!(
+        shutdown_duration < Duration::from_secs(5),
+        "Shutdown exceeded expected duration: {shutdown_duration:?}",
+    );
+
+    // Should have waited at least for our controlled delay plus buffer
+    assert!(
+        shutdown_duration >= Duration::from_millis(200),
+        "Shutdown completed too quickly ({shutdown_duration:?}), may not have waited for workers",
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_with_multiple_flushes() {
+    let node_id = 1;
+    let temp_dir = tempdir().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
+
+    let (raft_log, receiver) =
+        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
+            node_id,
+            PersistenceConfig {
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 5,
+                    interval_ms: 100,
+                },
+                max_buffered_entries: 1000,
+                ..Default::default()
+            },
+            storage,
+        );
+
+    let raft_log = raft_log.start(receiver);
+
+    // Create multiple flush operations
+    for batch in 0..5 {
+        for i in 1..=10 {
+            let index = batch * 10 + i;
+            raft_log
+                .append_entries(vec![Entry {
+                    index,
+                    term: 1,
+                    payload: Some(EntryPayload::command(Bytes::from(vec![0u8; 100]))),
+                }])
+                .await
+                .unwrap();
+        }
+        raft_log.flush().await.unwrap();
+    }
+
+    // Give workers time to process
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Shutdown should handle all pending work
+    let shutdown_start = std::time::Instant::now();
+    drop(raft_log);
+    let shutdown_duration = shutdown_start.elapsed();
+
+    assert!(
+        shutdown_duration < Duration::from_secs(3),
+        "Shutdown with multiple flushes took too long"
     );
 }

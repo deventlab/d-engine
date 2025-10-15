@@ -1136,20 +1136,18 @@ where
             drop(sender);
         }
 
-        // Wait for workers with timeout
-        let timeout = tokio::time::sleep(Duration::from_secs(2));
-        tokio::pin!(timeout);
-
-        for handle in &self.flush_workers.worker_handles {
-            tokio::select! {
-                _ = &mut timeout => {
-                    handle.abort();
-                    break;
+        // Wait for each worker to complete with individual timeout
+        for handle in self.flush_workers.worker_handles.drain(..) {
+            match tokio::time::timeout(Duration::from_secs(2), handle).await {
+                Ok(Ok(())) => {
+                    // Worker completed successfully
                 }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    if handle.is_finished() {
-                        continue;
-                    }
+                Ok(Err(e)) => {
+                    warn!("Worker task panicked during shutdown: {:?}", e);
+                }
+                Err(_) => {
+                    warn!("Worker task timed out during shutdown");
+                    // Task is automatically cancelled when JoinHandle is dropped
                 }
             }
         }
