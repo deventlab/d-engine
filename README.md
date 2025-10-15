@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure storage
     let path = PathBuf::from("/tmp/db");
     let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage"))?);
-    let state_machine = Arc::new(FileStateMachine::new(path.join("state_machine")).await?);
+    let state_machine = Arc::new(FileStateMachine::new(path.join("state_machine"))?);
 
     // Build and start node
     let node = NodeBuilder::new(None, graceful_rx)
