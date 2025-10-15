@@ -14,6 +14,7 @@
 ## Features
 
 - **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
+- **Flexible Read Consistency**: Three-tier read model (Linearizable/Lease-Based/Eventual) balancing consistency and performance.
 - **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, Raw File).
 - **Observability**: Built-in metrics, structured logging, and distributed tracing.
 - **Runtime Agnostic**: Works seamlessly with `tokio`.
@@ -91,6 +92,18 @@ d-engine provides flexible storage abstraction layers. Implement your own storag
 
 Note: For production use, a minimum of 3 nodes is required to ensure fault tolerance.
 
+---
+
+## Architecture
+
+**Hybrid threading model**: Single-threaded Raft core + async I/O layer
+
+- **Consensus logic**: Dedicated event loop (eliminates lock contention)
+- **Network/Storage**: Tokio's async runtime for efficient I/O multiplexing
+- **Design goal**: Maximize single CPU core performance while minimizing resource overhead
+
+---
+
 ## Core Concepts
 
 ### Data Flow
@@ -112,9 +125,11 @@ sequenceDiagram
     State_Machine-->>Client: Return Result
 ```
 
+---
+
 ## Performance Comparison (d-engine v0.1.4 vs etcd 3.5)
 
-## ![d-engine vs etcd comparison](./benches/d-engine-bench/reportrs/v0.1.4/dengine_comparison_v0.1.4.png)
+![d-engine vs etcd comparison](./benches/d-engine-bench/reportrs/v0.1.4/dengine_comparison_v0.1.4.png)
 
 **Important Notes**
 
@@ -136,6 +151,8 @@ d-engine includes [Jepsen](https://jepsen.io/) tests to validate linearizability
 To run Jepsen tests (requires Docker & Leiningen):
 See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-nodes-cluster/docker/jepsen/README.md) for full instructions.
 
+---
+
 ## Contribution Guide
 
 ### Prerequisites
@@ -152,6 +169,8 @@ make test
 make clippy
 make fmt-check
 ```
+
+---
 
 ## Code Style
 
