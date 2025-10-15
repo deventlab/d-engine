@@ -610,11 +610,10 @@ where
                 }
 
                 // ZERO-COPY: Create Bytes that references the memory map
-                let chunk_slice = &mmap_arc[start..end];
-                let chunk_data = Bytes::from(chunk_slice.to_vec());
+                let chunk_data = zero_copy_bytes_from_mmap(mmap_arc.clone(), start, end);
 
-                let checksum_bytes = crc32fast::hash(&chunk_data).to_be_bytes().to_vec();
-                let chunk_checksum = Bytes::from(checksum_bytes); // Static for small checksum
+                let checksum = crc32fast::hash(&chunk_data).to_be_bytes();
+                let chunk_checksum = Bytes::copy_from_slice(&checksum);
 
                 yield SnapshotChunk {
                     leader_term,
