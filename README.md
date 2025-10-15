@@ -131,13 +131,6 @@ sequenceDiagram
 
 ![d-engine vs etcd comparison](./benches/d-engine-bench/reportrs/v0.1.4/dengine_comparison_v0.1.4.png)
 
-**Important Notes**
-
-1. d-engine architecture uses **single-threaded** event-driven design
-2. Tested on d-engine v0.1.2 (without snapshot functionality)
-3. etcd 3.5 benchmark using official tools
-4. All services co-located on same hardware (M2/16GB)
-
 ### View Benchmarks Detailed Reports
 
 ```bash
