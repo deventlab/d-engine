@@ -392,8 +392,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 )?;
             }
             RaftEvent::ClientReadRequest(client_read_request, sender) => {
-                match can_serve_read_locally(&client_read_request, ctx).map_err(|e| *e) {
-                    Ok(Some(_policy)) => {
+                match can_serve_read_locally(&client_read_request, ctx) {
+                    Some(_policy) => {
                         // Only EventualConsistency will reach here - safe to serve locally
                         let results = ctx
                             .handlers
@@ -407,17 +407,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                             NetworkError::SingalSendFailed(format!("{e:?}"))
                         })?;
                     }
-                    Ok(None) => {
+                    None => {
                         // Policy requires leader access - reject
                         let error = tonic::Status::permission_denied(
                                     "Read consistency policy requires leader access. Current node is candidate."
                                 );
-                        sender.send(Err(error)).map_err(|e| {
-                            error!("Failed to send policy rejection: {:?}", e);
-                            NetworkError::SingalSendFailed(format!("{e:?}"))
-                        })?;
-                    }
-                    Err(error) => {
                         sender.send(Err(error)).map_err(|e| {
                             error!("Failed to send policy rejection: {:?}", e);
                             NetworkError::SingalSendFailed(format!("{e:?}"))

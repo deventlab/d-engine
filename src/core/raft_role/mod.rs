@@ -370,7 +370,7 @@ use crate::proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 pub(crate) fn can_serve_read_locally<T>(
     client_request: &ClientReadRequest,
     ctx: &crate::RaftContext<T>,
-) -> std::result::Result<Option<ServerReadConsistencyPolicy>, Box<tonic::Status>>
+) -> Option<ServerReadConsistencyPolicy>
 where
     T: TypeConfig,
 {
@@ -398,10 +398,10 @@ where
     // Check if effective policy allows non-leader reads
     match &effective_policy {
         ServerReadConsistencyPolicy::LeaseRead | ServerReadConsistencyPolicy::LinearizableRead => {
-            Ok(None) // Requires leader access
+            None // Requires leader access
         }
         ServerReadConsistencyPolicy::EventualConsistency => {
-            Ok(Some(effective_policy)) // Can be served by non-leader nodes
+            Some(effective_policy) // Can be served by non-leader nodes
         }
     }
 }

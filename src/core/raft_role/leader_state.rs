@@ -2251,7 +2251,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Check if current lease is still valid for LeaseRead policy
-    fn is_lease_valid(
+    pub(super) fn is_lease_valid(
         &self,
         ctx: &RaftContext<T>,
     ) -> bool {
@@ -2263,7 +2263,12 @@ impl<T: TypeConfig> LeaderState<T> {
         let last_confirmed = self.lease_timestamp.load(std::sync::atomic::Ordering::Acquire);
         let lease_duration = ctx.node_config().raft.read_consistency.lease_duration_ms;
 
-        now.saturating_sub(last_confirmed) < lease_duration
+        if now <= last_confirmed {
+            // Clock moved backwards or equal: conservatively treat lease as invalid
+            error!("Clock moved backwards or equal: Now {now}, Last Confirmed {last_confirmed}");
+            return false;
+        }
+        (now - last_confirmed) < lease_duration
     }
 
     /// Update lease timestamp after successful leadership verification

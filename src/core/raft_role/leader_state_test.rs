@@ -3955,12 +3955,28 @@ mod handle_client_read_request {
     async fn test_handle_client_read_lease_read_valid_lease() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
 
+        let mut replication_handler = MockReplicationCore::new();
+        replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+            |_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    peer_updates: HashMap::new(),
+                    learner_progress: HashMap::new(),
+                })
+            },
+        );
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
         // Configure server to allow client override
         let mut node_config = RaftNodeConfig::default();
         node_config.raft.read_consistency.allow_client_override = true;
 
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_lease_read_valid")
+            .with_replication_handler(replication_handler)
+            .with_raft_log(raft_log)
             .with_node_config(node_config)
             .build_context();
 
@@ -4154,5 +4170,129 @@ mod handle_client_read_request {
         let response = resp_rx.recv().await.unwrap().unwrap();
         assert_eq!(response.error, ErrorCode::Success as i32);
         // Should use server default (EventualConsistency) and succeed immediately
+    }
+}
+
+/// Tests for is_lease_valid function
+#[cfg(test)]
+mod lease_validity_tests {
+    use super::*;
+    use crate::test_utils::MockBuilder;
+    use crate::RaftNodeConfig;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::watch;
+
+    /// Test with a valid lease (timestamp within the lease duration)
+    #[test]
+    fn test_is_lease_valid_with_valid_lease() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state with a lease timestamp set to now - 500ms
+        // (which is within the 1000ms lease duration)
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to 500ms ago
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now - 500; // 500ms ago
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be valid
+        assert!(state.is_lease_valid(&context));
+    }
+
+    /// Test with an expired lease (timestamp outside the lease duration)
+    #[test]
+    fn test_is_lease_valid_with_expired_lease() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to 1500ms ago (which exceeds the 1000ms lease duration)
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now - 1500; // 1500ms ago
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be invalid
+        assert!(!state.is_lease_valid(&context));
+    }
+
+    /// Test with a clock move backwards scenario (now <= lease_timestamp)
+    #[test]
+    fn test_is_lease_valid_with_clock_backwards() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to now + 100ms (simulates clock moving backwards)
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now + 100; // 100ms in the future
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be invalid when clock moves backwards
+        assert!(!state.is_lease_valid(&context));
+    }
+
+    /// Test lease duration edge case (exactly at the threshold)
+    #[test]
+    fn test_is_lease_valid_at_duration_threshold() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to exactly 1000ms ago (exactly at the threshold)
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now - 1000; // Exactly 1000ms ago
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be invalid at exactly the threshold
+        assert!(!state.is_lease_valid(&context));
     }
 }
