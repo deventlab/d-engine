@@ -852,13 +852,21 @@ where
         }
 
         // Update durable index
-        if let Some(&max_index) = indexes.iter().max() {
-            // fetch_max ensures we only ever increase durable_index
-            let prev = self.durable_index.fetch_max(max_index, Ordering::AcqRel);
-
-            // Only notify if we actually advanced
-            if max_index > prev {
-                self.notify_waiters(max_index);
+        if !indexes.is_empty() {
+            let mut cur = self.durable_index.load(Ordering::Acquire);
+            let mut v = indexes.to_vec();
+            v.sort_unstable();
+            v.dedup();
+            for idx in v {
+                if idx == cur + 1 {
+                    cur = idx;
+                } else if idx > cur + 1 {
+                    break;
+                }
+            }
+            if cur > self.durable_index.load(Ordering::Acquire) {
+                self.durable_index.store(cur, Ordering::Release);
+                self.notify_waiters(cur);
             }
         }
 

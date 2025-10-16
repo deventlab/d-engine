@@ -4506,3 +4506,88 @@ async fn test_shutdown_with_multiple_flushes() {
         "Shutdown with multiple flushes took too long"
     );
 }
+
+#[cfg(test)]
+mod durable_index_test {
+    use tempfile::tempdir;
+    use tokio::sync::oneshot;
+
+    use crate::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
+
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn test_durable_index_with_non_contiguous_entries() {
+        // Create a test storage backend
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().to_path_buf();
+        let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
+
+        // Create buffered raft log with MemFirst strategy for easier testing
+        let (raft_log, receiver) =
+            BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(
+                1,
+                PersistenceConfig {
+                    strategy: PersistenceStrategy::MemFirst,
+                    flush_policy: FlushPolicy::Immediate,
+                    ..Default::default()
+                },
+                storage,
+            );
+
+        let raft_log = raft_log.start(receiver);
+
+        // Create a test waiter for index 10
+        let (tx, mut rx) = oneshot::channel();
+        let waiter_index = 10;
+        raft_log.waiters.entry(waiter_index).or_default().push(tx);
+
+        // Create entries with non-contiguous indexes: 4, 7, 8, 10
+        let entries = vec![
+            Entry {
+                index: 4,
+                ..Default::default()
+            },
+            Entry {
+                index: 7,
+                ..Default::default()
+            },
+            Entry {
+                index: 8,
+                ..Default::default()
+            },
+            Entry {
+                index: 10,
+                ..Default::default()
+            },
+        ];
+
+        // Manually add entries to memory store
+        for entry in &entries {
+            raft_log.entries.insert(entry.index, entry.clone());
+        }
+
+        // Set initial durable_index to 3
+        raft_log.durable_index.store(3, Ordering::Release);
+
+        // Test the buggy implementation: directly call process_flush with non-contiguous indexes
+        let indexes = vec![4, 7, 8, 10];
+        raft_log.process_flush(&indexes).await.unwrap();
+
+        // Check if waiter was notified (it should NOT be in the correct implementation)
+        let notification_result = rx.try_recv();
+
+        assert!(
+            notification_result.is_err(),
+            "Waiter was correctly NOT notified because entries are non-contiguous"
+        );
+
+        // Check if durable_index was updated correctly to only include contiguous entries
+        let final_durable_index = raft_log.durable_index.load(Ordering::Acquire);
+        assert_eq!(
+            final_durable_index, 4,
+            "Durable index was correctly updated only to the last contiguous entry (4)"
+        );
+    }
+}
