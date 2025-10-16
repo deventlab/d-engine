@@ -1,4 +1,3 @@
-use core::panic;
 use d_engine::file_io::open_file_for_append;
 use d_engine::node::NodeBuilder;
 // use d_engine::FileStateMachine;
@@ -76,7 +75,8 @@ async fn main() {
         let handle = tokio::runtime::Handle::current();
         let runtime_monitor = RuntimeMonitor::new(&handle);
         // Start the Tokio metrics collection task
-        let tokio_metrics_handle = tokio::spawn(collect_tokio_metrics(runtime_monitor));
+        let tokio_metrics_handle =
+            tokio::spawn(collect_tokio_metrics(runtime_monitor, graceful_rx.clone()));
         let (_server_result, _metrics_result, _shutdown_result, _tokio_metrics_result) = tokio::join!(
             server_handler,
             metrics_handle,
@@ -164,18 +164,28 @@ async fn start_metrics_server(port: u16) {
 }
 
 // Tokio metrics collection function
-async fn collect_tokio_metrics(monitor: RuntimeMonitor) {
+async fn collect_tokio_metrics(
+    monitor: RuntimeMonitor,
+    mut graceful_rx: watch::Receiver<()>,
+) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut intervals = monitor.intervals();
     loop {
-        interval.tick().await;
-        if let Some(metrics) = intervals.next() {
-            metrics::gauge!("tokio.runtime.workers_count").set(metrics.workers_count as f64);
-            metrics::counter!("tokio.runtime.park_total").absolute(metrics.total_park_count);
-            metrics::gauge!("tokio.runtime.park_max").set(metrics.max_park_count as f64);
-            metrics::gauge!("tokio.runtime.park_min").set(metrics.min_park_count as f64);
-            metrics::histogram!("tokio.runtime.busy_duration_ns")
-                .record(metrics.total_busy_duration.as_nanos() as f64);
+        tokio::select! {
+            _ = interval.tick() => {
+                if let Some(metrics) = intervals.next() {
+                    metrics::gauge!("tokio.runtime.workers_count").set(metrics.workers_count as f64);
+                    metrics::counter!("tokio.runtime.park_total").absolute(metrics.total_park_count);
+                    metrics::gauge!("tokio.runtime.park_max").set(metrics.max_park_count as f64);
+                    metrics::gauge!("tokio.runtime.park_min").set(metrics.min_park_count as f64);
+                    metrics::histogram!("tokio.runtime.busy_duration_ns")
+                        .record(metrics.total_busy_duration.as_nanos() as f64);
+                }
+            }
+            _ = graceful_rx.changed() => {
+                info!("Shutting down Tokio metrics collection");
+                break;
+            }
         }
     }
 }
