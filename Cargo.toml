@@ -1,6 +1,6 @@
 [package]
 name = "d-engine"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 resolver = "2" # Workspace-level unified configuration
 authors = ["Joshua Chi <joshokn@gmail.com>"]
