@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use bytes::BufMut;
+use bytes::Bytes;
 use bytes::BytesMut;
 use crc32fast::Hasher;
 use futures::stream;
@@ -93,7 +94,7 @@ pub async fn create_test_compressed_snapshot() -> (Vec<u8>, SnapshotMetadata) {
     // Create metadata
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 5, term: 1 }),
-        checksum: vec![1; 32],
+        checksum: Bytes::from(vec![1; 32]),
     };
 
     // Create test data file
@@ -174,15 +175,15 @@ pub(crate) fn create_test_chunk(
         leader_id,
         seq,
         total_chunks,
-        chunk_checksum: compute_checksum(data),
+        chunk_checksum: Bytes::from(compute_checksum(data)),
         metadata: Some(SnapshotMetadata {
             last_included: Some(LogId {
                 index: 100,
                 term: leader_term,
             }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         }),
-        data: data.to_vec(),
+        data: Bytes::from(data.to_vec()),
     }
 }
 

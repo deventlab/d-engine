@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use clap::Subcommand;
+use d_engine::proto::client::ReadConsistencyPolicy;
 use d_engine::ClientBuilder;
 use hdrhistogram::Histogram;
 use rand::distributions::Alphanumeric;
@@ -75,6 +76,7 @@ impl ClientPool {
             let client = ClientBuilder::new(endpoints.clone())
                 .connect_timeout(Duration::from_secs(10))
                 .request_timeout(Duration::from_secs(10))
+                .enable_compression(false)
                 .build()
                 .await?;
             clients.push(Arc::new(client));
@@ -237,7 +239,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Commands::Range { consistency } => {
                         let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
-                        match client.kv().get(key, *consistency == "l").await {
+
+                        let policy = match consistency.as_str() {
+                            "l" | "linearizable" => ReadConsistencyPolicy::LinearizableRead,
+                            "s" | "sequential" | "lease" => ReadConsistencyPolicy::LeaseRead,
+                            "e" | "eventual" => ReadConsistencyPolicy::EventualConsistency,
+                            _ => ReadConsistencyPolicy::LinearizableRead, // Default to linearizable
+                        };
+
+                        match client.kv().get_with_policy(key, Some(policy)).await {
                             Err(e) => {
                                 eprintln!("Get error: {e:?}");
                                 continue;

@@ -3,6 +3,7 @@
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bincode::config;
+use bytes::Bytes;
 use d_engine::convert::safe_kv;
 use d_engine::convert::safe_vk;
 use d_engine::proto::client::write_command::Delete;
@@ -149,7 +150,11 @@ impl StateMachine for SledStateMachine {
                     index: self.last_included_index.load(Ordering::SeqCst),
                     term: self.last_included_term.load(Ordering::SeqCst),
                 }),
-                checksum: self.last_snapshot_checksum.lock().as_ref().map(|arr| arr.to_vec())?,
+                checksum: self
+                    .last_snapshot_checksum
+                    .lock()
+                    .as_ref()
+                    .map(|arr| Bytes::copy_from_slice(arr))?,
             })
         } else {
             None
@@ -159,9 +164,9 @@ impl StateMachine for SledStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Bytes>, Error> {
         match self.current_tree().get(key_buffer) {
-            Ok(Some(v)) => Ok(Some(v.to_vec())),
+            Ok(Some(v)) => Ok(Some(Bytes::copy_from_slice(&v))),
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
@@ -227,14 +232,14 @@ impl StateMachine for SledStateMachine {
                                     "Applying INSERT command at index {}: {:?}",
                                     entry.index, key
                                 );
-                                batch.insert(key, value);
+                                batch.insert(key.as_ref(), value.as_ref());
                             }
                             Some(Operation::Delete(Delete { key })) => {
                                 debug!(
                                     "Applying DELETE command at index {}: {:?}",
                                     entry.index, key
                                 );
-                                batch.remove(key);
+                                batch.remove(key.as_ref());
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
@@ -352,7 +357,7 @@ impl StateMachine for SledStateMachine {
         &self,
         new_snapshot_dir: PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32], Error> {
+    ) -> Result<Bytes, Error> {
         // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
         let _guard = self.snapshot_lock.write().await;
 
@@ -411,7 +416,7 @@ impl StateMachine for SledStateMachine {
 
         let last_snapshot_metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: checksum.to_vec(),
+            checksum: Bytes::copy_from_slice(&checksum),
         };
 
         self.update_last_snapshot_metadata(&last_snapshot_metadata)?;
@@ -424,10 +429,10 @@ impl StateMachine for SledStateMachine {
             &last_snapshot_metadata,
         )?;
 
-        Ok(checksum)
+        Ok(Bytes::copy_from_slice(&checksum))
     }
 
-    #[instrument(skil(self))]
+    #[instrument(skip(self))]
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
@@ -463,7 +468,7 @@ impl StateMachine for SledStateMachine {
             let computed_checksum =
                 compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
 
-            if metadata.checksum != computed_checksum {
+            if metadata.checksum.as_ref() != computed_checksum.as_ref() {
                 error!(
                     "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
                     computed_checksum, metadata.checksum

@@ -27,3 +27,18 @@ mod utils_test;
 
 #[cfg(test)]
 mod file_io_test;
+
+#[cfg(test)]
+mod async_task_test;
+
+#[cfg(test)]
+mod convert_test;
+
+#[cfg(test)]
+mod net_test;
+
+#[cfg(test)]
+mod stream_test;
+
+#[cfg(test)]
+mod time_test;

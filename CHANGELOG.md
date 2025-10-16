@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v0.1.4] - 2025-10-12 [✅ Released]
+
+### Features
+
+- **Read Consistency Policies**: Implemented three-tier read consistency model with LeaseRead, LinearizableRead, and EventualConsistency support (#142)
+- **Lease-Based Read Optimization**: Added leader-local reads with lease validation for improved read performance without sacrificing strong consistency (#142)
+
+### Performance
+
+- **Write Path Optimization**: Optimized RocksDB write path and Raft log loop for reduced latency (#141)
+- **Zero-Copy Proto**: Migrated proto bytes fields to `bytes::Bytes` for zero-copy serialization (#140)
+- **gRPC Compression**: Refactored gRPC compression configuration for Raft transport layer (#143)
+- **Long-lived Peer Connections**: Optimized AppendEntries network layer with persistent peer task pools (#138)
+- **Dedicated Read Thread Pool**: Offloaded state machine read operations to separate thread pool to improve throughput (#135)
+
+### Testing
+
+- **Multi-node Deployment**: Conducted comprehensive multi-node deployment testing for throughput validation (#137)
+- **100K QPS Benchmark**: Achieved sustained 100,000+ QPS in high concurrency scenarios
+
+---
+
 ## [v0.1.3] - 2025-09-XX [✅ Released]
 
 ### Features

@@ -67,7 +67,7 @@ pub(crate) fn mock_node(
     }
     // Initializing Shutdown Signal
     // let (graceful_tx, graceful_rx) = watch::channel(());
-    MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_node()
+    MockBuilder::new(shutdown_signal).with_node_config(node_config).build_node()
 }
 
 pub(crate) fn mock_raft(
@@ -82,7 +82,7 @@ pub(crate) fn mock_raft(
         node_config.cluster.initial_cluster = peers_meta;
     }
 
-    MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_raft()
+    MockBuilder::new(shutdown_signal).with_node_config(node_config).build_raft()
 }
 
 pub(crate) fn mock_raft_context(
@@ -98,5 +98,5 @@ pub(crate) fn mock_raft_context(
     // Reduce timeout for test
     node_config.retry.auto_discovery.timeout_ms = 10;
 
-    MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_context()
+    MockBuilder::new(shutdown_signal).with_node_config(node_config).build_context()
 }

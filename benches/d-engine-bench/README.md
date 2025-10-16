@@ -1,6 +1,7 @@
 # Benchmark Guide
 
 ## Background
+
 This benchmark suite is designed to evaluate d-engine's performance against etcd's official benchmarks. Refer to [etcd's performance documentation](https://etcd.io/docs/v3.5/op-guide/performance/) for comparison methodology and baseline metrics.
 
 ## Getting Started
@@ -54,26 +55,32 @@ make
 # Strong consistency (linearizable)
 ./target/release/d-engine-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
-    --conns 10 --clients 100 --sequential-keys --total 10000 --key-size 8 \
+    --conns 200 --clients 1000 --sequential-keys --total 10000 --key-size 8 \
     range --consistency l
 
-# Eventual consistency (sequential)
+# Lease-based reads (better performance with still strong consistency)
 ./target/release/d-engine-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
-    --conns 10 --clients 100 --sequential-keys --total 10000 --key-size 8 \
+    --conns 200 --clients 1000 --sequential-keys --total 100000 --key-size 8 \
     range --consistency s
+
+# Eventual consistency (highest performance, may return stale data)
+./target/release/d-engine-bench \
+    --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
+    --conns 200 --clients 1000 --sequential-keys --total 100000 --key-size 8 \
+    range --consistency e
 ```
 
 ## Key Parameters
 
-| **Parameter** | **Description** | **Recommended Range** |
-| --- | --- | --- |
-| `--endpoints` | Endpoints for client to connect | http://127.0.0.1:9081,http://127.0.0.1:9082,http://127.0.0.1:9083 |
-| `--conns` | Concurrent TCP connections | 1-100 |
-| `--clients` | Parallel client workers | 1-1000 |
-| `--total` | Total operations (≥10k for accuracy) | 10,000-1M |
-| `--key-size` | Key size in bytes (default: 8) | 8-1024 |
-| `--value-size` | Value size in bytes (default: 256) | 256-65536 |
+| **Parameter**  | **Description**                      | **Recommended Range**                                             |
+| -------------- | ------------------------------------ | ----------------------------------------------------------------- |
+| `--endpoints`  | Endpoints for client to connect      | http://127.0.0.1:9081,http://127.0.0.1:9082,http://127.0.0.1:9083 |
+| `--conns`      | Concurrent TCP connections           | 1-100                                                             |
+| `--clients`    | Parallel client workers              | 1-1000                                                            |
+| `--total`      | Total operations (≥10k for accuracy) | 10,000-1M                                                         |
+| `--key-size`   | Key size in bytes (default: 8)       | 8-1024                                                            |
+| `--value-size` | Value size in bytes (default: 256)   | 256-65536                                                         |
 
 ## Understanding Output
 
@@ -96,23 +103,22 @@ p99       1687
 ## Optimization Guide
 
 1. **Baseline First**
-    
-    Start with single connection/client before scaling
-    
+
+   Start with single connection/client before scaling
+
 2. **Find Saturation**
-    
-    Gradually increase `--conns` and `--clients` until latency spikes
-    
+
+   Gradually increase `--conns` and `--clients` until latency spikes
+
 3. **Consistency Tradeoffs**
-    
-    Compare linearizable vs sequential reads
-    
+
+   Compare linearizable vs lease-based vs eventual consistency reads
+
 4. **Debugging**
-    
-    Enable detailed logs:
-    
-    `RUST_LOG=d-engine-bench=debug ./target/release/d-engine-bench ...`
-    
+
+   Enable detailed logs:
+
+   `RUST_LOG=d-engine-bench=debug ./target/release/d-engine-bench ...`
 
 ## Reference Data
 

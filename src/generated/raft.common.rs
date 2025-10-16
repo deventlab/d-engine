@@ -36,7 +36,7 @@ pub mod entry_payload {
         Noop(super::Noop),
         /// Business write operation
         #[prost(bytes, tag = "2")]
-        Command(::prost::alloc::vec::Vec<u8>),
+        Command(::prost::bytes::Bytes),
         /// Cluster configuration change
         #[prost(message, tag = "3")]
         Config(super::MembershipChange),
@@ -109,10 +109,10 @@ pub struct BatchRemove {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SnapshotEntry {
-    #[prost(bytes = "vec", tag = "1")]
-    pub key: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "2")]
-    pub value: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub value: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]

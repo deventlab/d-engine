@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::proto::common::NodeStatus;
@@ -239,7 +240,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     // Verify that the first new node has all the data
     for i in 1..=last_included {
         let value = state_machines[3].get(&safe_kv(i)).unwrap();
-        assert_eq!(value, Some(safe_kv(i).to_vec()));
+        assert_eq!(value, Some(Bytes::from(safe_kv(i).to_vec())));
     }
 
     // Validate that the second new node has received the snapshot
@@ -249,7 +250,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     // Verify that the second new node has all the data
     for i in 1..=last_included {
         let value = state_machines[4].get(&safe_kv(i)).unwrap();
-        assert_eq!(value, Some(safe_kv(i).to_vec()));
+        assert_eq!(value, Some(Bytes::from(safe_kv(i).to_vec())));
     }
 
     // Verify the cluster has 5 active nodes

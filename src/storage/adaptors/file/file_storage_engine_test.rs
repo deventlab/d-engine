@@ -1,6 +1,7 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tempfile::TempDir;
 use tracing_test::traced_test;
 
@@ -20,7 +21,7 @@ fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
         .map(|i| Entry {
             index: i,
             term: i,
-            payload: Some(EntryPayload::command(vec![i as u8; 1024])), // 1KB payload
+            payload: Some(EntryPayload::command(Bytes::from(vec![i as u8; 1024]))), // 1KB payload
         })
         .collect()
 }
@@ -329,7 +330,7 @@ async fn test_large_entry_persistence() {
     let large_entry = Entry {
         index: 1,
         term: 1,
-        payload: Some(EntryPayload::command(vec![42; 1024 * 100])),
+        payload: Some(EntryPayload::command(Bytes::from(vec![42; 1024 * 100]))),
     };
 
     log_store.persist_entries(vec![large_entry.clone()]).await.unwrap();

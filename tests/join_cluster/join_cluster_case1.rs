@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use d_engine::client::ClientApiError;
 use d_engine::convert::safe_kv;
 use d_engine::storage::StateMachine;
@@ -190,7 +191,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     // Verify that the new node has all the data
     for i in 1..=10 {
         let value = state_machines[3].get(&safe_kv(i)).unwrap();
-        assert_eq!(value, Some(safe_kv(i).to_vec()));
+        assert_eq!(value, Some(Bytes::from(safe_kv(i).to_vec())));
     }
 
     debug!("Cluster join test completed successfully");

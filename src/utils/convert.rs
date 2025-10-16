@@ -1,14 +1,27 @@
-use crate::ConvertError;
-use crate::Result;
-use prost::Message;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+
+use bytes::Bytes;
+use prost::Message;
+
+use crate::ConvertError;
+use crate::Result;
 
 pub fn str_to_u64(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     s.hash(&mut hasher);
     hasher.finish()
+}
+
+// Convert to big-endian bytes with a single allocation
+pub fn u64_to_bytes(value: u64) -> Bytes {
+    let bytes = value.to_be_bytes();
+    Bytes::copy_from_slice(&bytes)
+}
+
+pub fn safe_kv_bytes(key: u64) -> Bytes {
+    u64_to_bytes(key)
 }
 
 /// Converts a `u64` to an 8-byte array in big-endian byte order.
@@ -57,4 +70,18 @@ pub(crate) fn convert_high_and_low_fromu64_to_u128(
 /// abs_ceil(1.9) = 2
 pub fn abs_ceil(x: f64) -> u64 {
     x.abs().ceil() as u64
+}
+
+// Helper function to classify errors into known types
+pub fn classify_error(e: &impl std::fmt::Display) -> String {
+    let error_str = e.to_string();
+    if error_str.contains("io") || error_str.contains("I/O") {
+        "io_error".to_string()
+    } else if error_str.contains("corrupt") {
+        "corruption".to_string()
+    } else if error_str.contains("timeout") {
+        "timeout".to_string()
+    } else {
+        "unknown".to_string()
+    }
 }

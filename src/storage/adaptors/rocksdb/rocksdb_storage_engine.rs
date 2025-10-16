@@ -1,3 +1,19 @@
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use prost::Message;
+use rocksdb::Cache;
+use rocksdb::Direction;
+use rocksdb::IteratorMode;
+use rocksdb::Options;
+use rocksdb::WriteBatch;
+use rocksdb::DB;
+use tonic::async_trait;
+use tracing::instrument;
+
 use crate::proto::common::Entry;
 use crate::proto::common::LogId;
 use crate::Error;
@@ -6,14 +22,6 @@ use crate::LogStore;
 use crate::MetaStore;
 use crate::StorageEngine;
 use crate::StorageError;
-use prost::Message;
-use rocksdb::{Direction, IteratorMode, Options, WriteBatch, DB};
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use tonic::async_trait;
-use tracing::instrument;
 
 const LOG_CF: &str = "logs";
 const META_CF: &str = "meta";
@@ -42,13 +50,41 @@ pub struct RocksDBStorageEngine {
 impl RocksDBStorageEngine {
     /// Creates new RocksDB-based storage engine with column family separation
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        // Configure RocksDB options for high performance
+        // Configure high-performance RocksDB options
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
-        opts.set_max_write_buffer_number(4);
-        opts.set_min_write_buffer_number_to_merge(2);
+
+        // Memory and write optimization
+        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
+        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
+        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
+
+        // Compression optimization
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
+
+        // WAL-related optimizations
+        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
+        opts.set_manual_wal_flush(true); // manually control WAL flush
+
+        opts.set_use_fsync(false);
+
+        // Performance Tuning
+        opts.set_max_background_jobs(4); // Number of background jobs
+        opts.set_max_open_files(5000); // Maximum number of open files
+        opts.set_use_direct_io_for_flush_and_compaction(true); // Direct I/O
+        opts.set_use_direct_reads(true); // Direct reads
+
+        // Leveled Compaction Configuration
+        opts.set_level_compaction_dynamic_level_bytes(true);
+        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB base file size
+        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB base level size
+
+        // Block cache configuration (shared)
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB block cache
+        opts.set_row_cache(&cache);
 
         // Define column families
         let cfs = vec![LOG_CF, META_CF];
@@ -306,7 +342,16 @@ impl LogStore for RocksDBLogStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Flush WAL first when manual_wal_flush is enabled
+        // This ensures write-ahead log is durably persisted before memtable flush
+        self.db
+            .flush_wal(true) // true = sync WAL to disk
+            .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
+
+        // Then flush memtables to SST files
+        self.db
+            .flush()
+            .map_err(|e| StorageError::DbError(format!("Failed to flush memtables: {e}")))?;
         Ok(())
     }
 
@@ -390,7 +435,17 @@ impl MetaStore for RocksDBMetaStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Flush WAL first for metadata durability
+        // Metadata changes (like HardState) MUST survive crashes
+        self.db
+            .flush_wal(true) // true = sync WAL to disk
+            .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
+
+        // Then flush meta column family memtables
+        self.db
+            .flush()
+            .map_err(|e| StorageError::DbError(format!("Failed to flush meta memtables: {e}")))?;
+
         Ok(())
     }
 

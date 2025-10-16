@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use prost::Message;
 use tempfile::TempDir;
 use tonic::async_trait;
@@ -68,13 +69,13 @@ impl StateMachineTestSuite {
     /// Test basic key-value operations
     async fn test_basic_kv_operations(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         let test_key = b"test_key";
-        let test_value = b"test_value";
+        let test_value = Bytes::from(b"test_value".to_vec());
 
         // Create an insert entry
         let entries = vec![create_insert_entry(
             1,
-            test_key.to_vec(),
-            test_value.to_vec(),
+            Bytes::from(test_key.to_vec()),
+            test_value.clone(),
         )];
         state_machine.apply_chunk(entries).await?;
 
@@ -85,7 +86,7 @@ impl StateMachineTestSuite {
         }
 
         // Create a delete entry
-        let entries = vec![create_delete_entry(2, test_key.to_vec())];
+        let entries = vec![create_delete_entry(2, Bytes::from(test_key.to_vec()))];
         state_machine.apply_chunk(entries).await?;
 
         // Verify the value was deleted
@@ -100,18 +101,36 @@ impl StateMachineTestSuite {
     ) -> Result<(), Error> {
         // Create a mix of insert and delete operations
         let entries = vec![
-            create_insert_entry(1, b"key1".to_vec(), b"value1".to_vec()),
-            create_insert_entry(2, b"key2".to_vec(), b"value2".to_vec()),
-            create_delete_entry(3, b"key1".to_vec()),
-            create_insert_entry(4, b"key3".to_vec(), b"value3".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
+            create_delete_entry(3, Bytes::from(b"key1".to_vec())),
+            create_insert_entry(
+                4,
+                Bytes::from(b"key3".to_vec()),
+                Bytes::from(b"value3".to_vec()),
+            ),
         ];
 
         state_machine.apply_chunk(entries).await?;
 
         // Verify the final state
         assert!(state_machine.get(b"key1")?.is_none());
-        assert_eq!(state_machine.get(b"key2")?, Some(b"value2".to_vec()));
-        assert_eq!(state_machine.get(b"key3")?, Some(b"value3".to_vec()));
+        assert_eq!(
+            state_machine.get(b"key2")?,
+            Some(Bytes::from(b"value2".to_vec()))
+        );
+        assert_eq!(
+            state_machine.get(b"key3")?,
+            Some(Bytes::from(b"value3".to_vec()))
+        );
         assert_eq!(state_machine.last_applied(), LogId { index: 4, term: 1 });
 
         Ok(())
@@ -127,9 +146,21 @@ impl StateMachineTestSuite {
 
         // Apply entries with different terms
         let entries = vec![
-            create_insert_entry(1, b"key1".to_vec(), b"value1".to_vec()),
-            create_insert_entry(2, b"key2".to_vec(), b"value2".to_vec()),
-            create_insert_entry(3, b"key3".to_vec(), b"value3".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from(b"key3".to_vec()),
+                Bytes::from(b"value3".to_vec()),
+            ),
         ];
 
         state_machine.apply_chunk(entries).await?;
@@ -142,9 +173,21 @@ impl StateMachineTestSuite {
     async fn test_snapshot_operations(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         // Add some test data
         let entries = vec![
-            create_insert_entry(1, b"key1".to_vec(), b"value1".to_vec()),
-            create_insert_entry(2, b"key2".to_vec(), b"value2".to_vec()),
-            create_insert_entry(3, b"key3".to_vec(), b"value3".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from(b"key3".to_vec()),
+                Bytes::from(b"value3".to_vec()),
+            ),
         ];
         state_machine.apply_chunk(entries).await?;
 
@@ -167,7 +210,7 @@ impl StateMachineTestSuite {
         // let snapshot_path = snapshot_dir.join("snapshot.bin");
         let metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: checksum.to_vec(),
+            checksum: Bytes::from(checksum.to_vec()),
         };
 
         //Reset State Machine to make sure it is fresh
@@ -180,18 +223,39 @@ impl StateMachineTestSuite {
         // Assume there were some entries. After applying snapshot, all the old ones should be
         // cleared.
         let entries = vec![
-            create_insert_entry(1, b"key1".to_vec(), b"old_value1".to_vec()),
-            create_insert_entry(2, b"old_key2".to_vec(), b"vold_alue2".to_vec()),
-            create_insert_entry(3, b"old_key3".to_vec(), b"old_value3".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"old_value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"old_key2".to_vec()),
+                Bytes::from(b"vold_alue2".to_vec()),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from(b"old_key3".to_vec()),
+                Bytes::from(b"old_value3".to_vec()),
+            ),
         ];
         state_machine.apply_chunk(entries).await?;
 
         state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
 
         // Verify state was preserved after snapshot application
-        assert_eq!(state_machine.get(b"key1")?, Some(b"value1".to_vec()));
-        assert_eq!(state_machine.get(b"key2")?, Some(b"value2".to_vec()));
-        assert_eq!(state_machine.get(b"key3")?, Some(b"value3".to_vec()));
+        assert_eq!(
+            state_machine.get(b"key1")?,
+            Some(Bytes::from(b"value1".to_vec()))
+        );
+        assert_eq!(
+            state_machine.get(b"key2")?,
+            Some(Bytes::from(b"value2".to_vec()))
+        );
+        assert_eq!(
+            state_machine.get(b"key3")?,
+            Some(Bytes::from(b"value3".to_vec()))
+        );
         assert_eq!(state_machine.get(b"old_key2")?, None);
         assert_eq!(state_machine.get(b"old_key3")?, None);
         assert_eq!(state_machine.last_applied(), last_included);
@@ -203,8 +267,16 @@ impl StateMachineTestSuite {
     async fn test_persistence(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         // Add test data
         let entries = vec![
-            create_insert_entry(1, b"key1".to_vec(), b"value1".to_vec()),
-            create_insert_entry(2, b"key2".to_vec(), b"value2".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
         ];
         state_machine.apply_chunk(entries).await?;
 
@@ -215,7 +287,7 @@ impl StateMachineTestSuite {
         // Update snapshot metadata
         let snapshot_metadata = SnapshotMetadata {
             last_included: Some(last_applied),
-            checksum: vec![0; 32],
+            checksum: Bytes::from(vec![0; 32]),
         };
         state_machine.persist_last_snapshot_metadata(&snapshot_metadata)?;
 
@@ -235,16 +307,37 @@ impl StateMachineTestSuite {
     async fn test_reset_operation(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         // Add test data
         let entries = vec![
-            create_insert_entry(1, b"key1".to_vec(), b"value1".to_vec()),
-            create_insert_entry(2, b"key2".to_vec(), b"value2".to_vec()),
-            create_insert_entry(3, b"key3".to_vec(), b"value3".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from(b"key3".to_vec()),
+                Bytes::from(b"value3".to_vec()),
+            ),
         ];
         state_machine.apply_chunk(entries).await?;
 
         // Verify data exists
-        assert_eq!(state_machine.get(b"key1")?, Some(b"value1".to_vec()));
-        assert_eq!(state_machine.get(b"key2")?, Some(b"value2".to_vec()));
-        assert_eq!(state_machine.get(b"key3")?, Some(b"value3".to_vec()));
+        assert_eq!(
+            state_machine.get(b"key1")?,
+            Some(Bytes::from(b"value1".to_vec()))
+        );
+        assert_eq!(
+            state_machine.get(b"key2")?,
+            Some(Bytes::from(b"value2".to_vec()))
+        );
+        assert_eq!(
+            state_machine.get(b"key3")?,
+            Some(Bytes::from(b"value3".to_vec()))
+        );
         assert_eq!(state_machine.last_applied(), LogId { index: 3, term: 1 });
         assert!(state_machine.snapshot_metadata().is_none());
 
@@ -268,19 +361,27 @@ impl StateMachineTestSuite {
 
         // Test that we can add new data after reset
         let new_entries = vec![
-            create_insert_entry(1, b"new_key1".to_vec(), b"new_value1".to_vec()),
-            create_insert_entry(2, b"new_key2".to_vec(), b"new_value2".to_vec()),
+            create_insert_entry(
+                1,
+                Bytes::from(b"new_key1".to_vec()),
+                Bytes::from(b"new_value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"new_key2".to_vec()),
+                Bytes::from(b"new_value2".to_vec()),
+            ),
         ];
         state_machine.apply_chunk(new_entries).await?;
 
         // Verify new data exists
         assert_eq!(
             state_machine.get(b"new_key1")?,
-            Some(b"new_value1".to_vec())
+            Some(Bytes::from(b"new_value1".to_vec()))
         );
         assert_eq!(
             state_machine.get(b"new_key2")?,
-            Some(b"new_value2".to_vec())
+            Some(Bytes::from(b"new_value2".to_vec()))
         );
         assert_eq!(state_machine.last_applied(), LogId { index: 2, term: 1 });
 
@@ -291,28 +392,38 @@ impl StateMachineTestSuite {
 /// Helper function to create an insert entry
 fn create_insert_entry(
     index: u64,
-    key: Vec<u8>,
-    value: Vec<u8>,
+    key: Bytes,
+    value: Bytes,
 ) -> Entry {
+    // 1. Build the WriteCommand
     let insert = Insert { key, value };
     let operation = Operation::Insert(insert);
     let write_cmd = WriteCommand {
         operation: Some(operation),
     };
 
+    // 2. Serialize WriteCommand to Bytes
+    let mut buf = Vec::new();
+    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
+    let cmd_bytes = Bytes::from(buf); // convert Vec<u8> to Bytes
+
+    // 3. Wrap in Payload::Command
+    let payload = EntryPayload {
+        payload: Some(Payload::Command(cmd_bytes)),
+    };
+
+    // 4. Build the Entry
     Entry {
         index,
         term: 1,
-        payload: Some(EntryPayload {
-            payload: Some(Payload::Command(write_cmd.encode_to_vec())),
-        }),
+        payload: Some(payload),
     }
 }
 
 /// Helper function to create a delete entry
 fn create_delete_entry(
     index: u64,
-    key: Vec<u8>,
+    key: Bytes,
 ) -> Entry {
     let delete = Delete { key };
     let operation = Operation::Delete(delete);
@@ -320,11 +431,15 @@ fn create_delete_entry(
         operation: Some(operation),
     };
 
+    let mut buf = Vec::new();
+    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
+    let cmd_bytes = Bytes::from(buf);
+
     Entry {
         index,
         term: 1,
         payload: Some(EntryPayload {
-            payload: Some(Payload::Command(write_cmd.encode_to_vec())),
+            payload: Some(Payload::Command(cmd_bytes)),
         }),
     }
 }

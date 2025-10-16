@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures::StreamExt;
 use mockall::predicate::eq;
 use mockall::Sequence;
@@ -299,6 +300,7 @@ mod apply_chunk_test {
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
     }
+
     #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
         let handler = create_test_handler(
@@ -439,7 +441,7 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     let mut chunks: Vec<SnapshotChunk> = vec![];
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 2, term: 1 }),
-        checksum: vec![2; 32],
+        checksum: Bytes::from(vec![2; 32]),
     };
 
     // Create test data
@@ -466,8 +468,8 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
         metadata: Some(metadata.clone()),
         seq: 0,
         total_chunks,
-        data: compressed_data.clone(),
-        chunk_checksum: crc32fast::hash(&compressed_data).to_be_bytes().to_vec(),
+        data: Bytes::from(compressed_data.clone()),
+        chunk_checksum: Bytes::from(crc32fast::hash(&compressed_data).to_be_bytes().to_vec()),
     };
     chunks.push(chunk);
 
@@ -506,7 +508,7 @@ async fn test_apply_snapshot_stream_from_leader_case3() {
 
     // Create chunk with invalid checksum
     let mut bad_chunk = create_test_chunk(0, b"bad data", TEST_TERM, TEST_LEADER_ID, 1);
-    bad_chunk.chunk_checksum = vec![0xde, 0xad, 0xbe, 0xef]; // Corrupt checksum
+    bad_chunk.chunk_checksum = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]); // Corrupt checksum
 
     // Create ACK channel
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
@@ -691,8 +693,8 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
             },
             seq: seq as u32,
             total_chunks: total_chunks as u32,
-            data: chunk_data.clone(),
-            chunk_checksum: crc32fast::hash(&chunk_data).to_be_bytes().to_vec(),
+            data: Bytes::from(chunk_data.clone()),
+            chunk_checksum: Bytes::from(crc32fast::hash(&chunk_data).to_be_bytes().to_vec()),
         };
         chunks.push(chunk);
     }
@@ -753,7 +755,7 @@ mod create_snapshot_tests {
 
                 path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
             })
-            .returning(|_, _| Ok([0; 32]));
+            .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -804,7 +806,7 @@ mod create_snapshot_tests {
         sm.expect_snapshot_metadata().returning(move || {
             Some(SnapshotMetadata {
                 last_included: Some(LogId { index: 1, term: 1 }),
-                checksum: [1; 8].to_vec(),
+                checksum: Bytes::from(vec![1; 8]),
             })
         });
         sm.expect_entry_term().returning(|_| Some(1));
@@ -819,7 +821,7 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path.clone()).unwrap();
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
-                Ok([0; 32])
+                Ok(Bytes::copy_from_slice(&[0; 32]))
             } else {
                 Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
             }
@@ -898,7 +900,7 @@ mod create_snapshot_tests {
             debug!(?path, "expect_generate_snapshot_data");
             std::fs::create_dir_all(path).expect("Failed to create directory");
 
-            Ok([0; 32])
+            Ok(Bytes::copy_from_slice(&[0; 32]))
         });
         let snapshot_dir = temp_path.to_path_buf();
 
@@ -976,7 +978,7 @@ mod create_snapshot_tests {
         sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().returning(|path, _| {
             fs::create_dir_all(path).unwrap();
-            Ok([0; 32])
+            Ok(Bytes::from(vec![0; 32]))
         });
 
         let config = snapshot_config(temp_path);
@@ -1192,7 +1194,7 @@ async fn test_handle_purge_request_case1() {
         term: 3,
         leader_id: 1,
         last_included,
-        snapshot_checksum: [1u8; 32].to_vec(),
+        snapshot_checksum: Bytes::from([1u8; 32].to_vec()),
         leader_commit: 1,
     };
 
@@ -1231,7 +1233,7 @@ async fn test_handle_purge_request_case2() {
         term: 5,
         leader_id: 2,
         last_included,
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 1,
     };
 
@@ -1271,7 +1273,7 @@ async fn test_handle_purge_request_case3() {
         term: 5,
         leader_id: 1,
         last_included,
-        snapshot_checksum: vec![],
+        snapshot_checksum: Bytes::new(),
         leader_commit: 1,
     };
 
@@ -1315,7 +1317,7 @@ async fn test_handle_purge_request_case4() {
         term: 5,
         leader_id: 1,
         last_included,
-        snapshot_checksum: wrong_checksum.to_vec(), // mismatch
+        snapshot_checksum: Bytes::from(wrong_checksum.to_vec()),
         leader_commit: 1,
     };
 
@@ -1363,7 +1365,7 @@ async fn test_handle_purge_request_case5() {
         term: 5,
         leader_id: 1,
         last_included,
-        snapshot_checksum: expected_checksum.to_vec(),
+        snapshot_checksum: Bytes::from(expected_checksum.to_vec()),
         leader_commit: 1,
     };
 
@@ -1405,7 +1407,7 @@ async fn test_handle_purge_request_case6() {
         term: 5,
         leader_id: 1,
         last_included,
-        snapshot_checksum: expected_checksum.to_vec(),
+        snapshot_checksum: Bytes::from(expected_checksum.to_vec()),
         leader_commit: 1,
     };
 
@@ -1439,7 +1441,7 @@ async fn test_handle_purge_request_case7() {
         term: 5,
         leader_id: 1,
         last_included,
-        snapshot_checksum: vec![1, 2, 3],
+        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
         leader_commit: 1,
     };
 
@@ -1468,7 +1470,7 @@ async fn create_test_snapshot(
     sm.expect_snapshot_metadata().returning(move || {
         Some(SnapshotMetadata {
             last_included: Some(LogId { term, index }),
-            checksum: checksum.to_vec(),
+            checksum: Bytes::from(checksum.to_vec()),
         })
     });
 }
@@ -1585,7 +1587,7 @@ fn mock_node_with_rpc_service(
     );
 
     MockBuilder::new(shutdown_signal)
-        .wiht_node_config(node_config)
+        .with_node_config(node_config)
         .with_replication_handler(replication_handler)
         .with_election_handler(election_handler)
         .with_state_machine_handler(mock_state_machine_handler)
@@ -1610,7 +1612,7 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 1, term: 1 }),
-        checksum: vec![1; 32],
+        checksum: Bytes::from(vec![1; 32]),
     };
 
     // Get snapshot stream
@@ -1632,7 +1634,7 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     assert_eq!(chunk.leader_id, 1);
     assert_eq!(chunk.seq, 0);
     assert_eq!(chunk.total_chunks, 1);
-    assert_eq!(chunk.data, content);
+    assert_eq!(chunk.data, Bytes::from(content.to_vec()));
     assert_eq!(
         chunk.chunk_checksum,
         crc32fast::hash(content).to_be_bytes().to_vec()
@@ -1658,7 +1660,7 @@ async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
 
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 2, term: 1 }),
-        checksum: vec![2; 32],
+        checksum: Bytes::from(vec![2; 32]),
     };
 
     // Get and collect chunks
@@ -1712,7 +1714,7 @@ async fn test_load_snapshot_data_case4_empty_snapshot() {
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
         last_included: None,
-        checksum: vec![],
+        checksum: Bytes::new(),
     };
 
     assert!(handler.load_snapshot_data(metadata).await.is_err());
@@ -1734,7 +1736,7 @@ async fn test_load_snapshot_data_case5_checksum() {
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 5, term: 1 }),
-        checksum: vec![5; 32],
+        checksum: Bytes::from(vec![5; 32]),
     };
 
     let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
@@ -1759,7 +1761,7 @@ async fn test_load_snapshot_data_case6_read_error() {
     let handler = create_test_handler(temp_dir.path(), None);
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 6, term: 1 }),
-        checksum: vec![6; 32],
+        checksum: Bytes::from(vec![6; 32]),
     };
 
     let result = handler.load_snapshot_data(metadata).await;
@@ -1784,7 +1786,7 @@ async fn test_load_snapshot_data_case7_metadata_in_first_chunk_only() {
 
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 7, term: 1 }),
-        checksum: vec![7; 32],
+        checksum: Bytes::from(vec![7; 32]),
     };
 
     // Get and collect chunks
@@ -1823,7 +1825,7 @@ async fn test_snapshot_compression() {
         std::fs::write(&file1, "This is a test file").unwrap();
         std::fs::write(&file2, vec![0u8; 1024]).unwrap();
 
-        Ok([0; 32])
+        Ok(Bytes::from(vec![0; 32]))
     });
 
     let mut config = snapshot_config(temp_path.to_path_buf());
@@ -1893,8 +1895,8 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
         metadata: Some(metadata),
         seq: 0,
         total_chunks: 1,
-        data: compressed_data,
-        chunk_checksum,
+        data: Bytes::from(compressed_data),
+        chunk_checksum: Bytes::from(chunk_checksum),
     };
 
     let streaming_request = crate_test_snapshot_stream(vec![chunk]);
@@ -1915,4 +1917,87 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
 
     // Ensure handler completes successfully
     assert!(handler_task.await.unwrap().is_ok());
+}
+
+#[cfg(test)]
+mod mmap_tests {
+    use crate::SystemError;
+
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Test that load_chunk_via_mmap works correctly with std::fs::File
+    /// after the migration from tokio::fs::File
+    #[test]
+    fn test_load_chunk_via_mmap_with_std_file() {
+        // Create a temporary file with test data
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let test_data = b"Hello, this is test data for memory mapping!";
+        temp_file.write_all(test_data).unwrap();
+        temp_file.flush().unwrap();
+
+        let file_path = temp_file.path();
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_std_file"), Some(0));
+
+        // Test loading a chunk via mmap
+        let result = handler.load_chunk_via_mmap(file_path, 0, test_data.len());
+
+        // Verify the operation succeeds and returns correct data
+        assert!(result.is_ok());
+        let chunk_data = result.unwrap();
+        assert_eq!(chunk_data.as_ref(), test_data);
+    }
+
+    /// Test error handling when file doesn't exist
+    #[test]
+    fn test_load_chunk_via_mmap_file_not_found() {
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_file_not_found"), Some(0));
+        let non_existent_path = Path::new("/non/existent/file.bin");
+
+        let result = handler.load_chunk_via_mmap(non_existent_path, 0, 100);
+
+        assert!(result.is_err());
+        // Verify it's an IO error as expected
+        match result.unwrap_err() {
+            Error::System(SystemError::Storage(StorageError::IoError(_))) => {} // Expected
+            other => panic!("Expected IoError, got {other:?}"),
+        }
+    }
+
+    /// Test bounds validation with file that's too small
+    #[test]
+    fn test_load_chunk_via_mmap_bounds_validation() {
+        // Create a small file
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let small_data = b"small";
+        temp_file.write_all(small_data).unwrap();
+        temp_file.flush().unwrap();
+
+        let file_path = temp_file.path();
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_bounds"), Some(0));
+
+        // Try to access beyond file bounds
+        let result = handler.load_chunk_via_mmap(file_path, 0, 1000); // File is only 5 bytes
+
+        assert!(result.is_err());
+        // Should fail with bounds validation error
+    }
+
+    /// Test that the function is truly synchronous (no async needed)
+    #[test]
+    fn test_load_chunk_via_mmap_is_synchronous() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let test_data = b"Sync test data";
+        temp_file.write_all(test_data).unwrap();
+        temp_file.flush().unwrap();
+
+        let handler = create_test_handler(Path::new("/tmp/test_mmap_sync"), Some(0));
+
+        // This should complete immediately without any async/await
+        // If it were still async, this wouldn't compile in a sync test
+        let result = handler.load_chunk_via_mmap(temp_file.path(), 0, test_data.len());
+
+        assert!(result.is_ok());
+    }
 }

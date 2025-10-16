@@ -3,9 +3,10 @@
 //! Defines comprehensive error types for a Raft-based distributed system,
 //! categorized by protocol layer and operational concerns.
 
-use config::ConfigError;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use config::ConfigError;
 use tokio::task::JoinError;
 
 #[doc(hidden)]
@@ -109,6 +110,10 @@ pub enum NetworkError {
     /// Peer connection not found
     #[error("Peer({0}) connection not found")]
     PeerConnectionNotFound(u32),
+
+    /// Peer closed the channel
+    #[error("Peer closed the channel")]
+    ResponseChannelClosed,
 
     /// Peer address not found
     #[error("Peer({0}) address not found")]

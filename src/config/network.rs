@@ -117,7 +117,7 @@ impl NetworkConfig {
 
 impl ConnectionParams {
     /// Type-specific validation with context for error messages
-    fn validate(
+    pub(crate) fn validate(
         &self,
         conn_type: &str,
     ) -> Result<()> {

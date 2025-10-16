@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use dashmap::DashMap;
 use prost::Message;
 use tokio::sync::watch;
@@ -12,7 +13,7 @@ use super::ReplicationCore;
 use super::ReplicationData;
 use super::ReplicationHandler;
 use crate::client_command_to_entry_payloads;
-use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::proto::client::write_command::Insert;
 use crate::proto::client::write_command::Operation;
 use crate::proto::client::WriteCommand;
@@ -373,7 +374,7 @@ async fn test_generate_new_entries_case2() {
         ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     debug!("last_id: {}", last_id);
-    let commands = vec![WriteCommand::delete(safe_kv(1))];
+    let commands = vec![WriteCommand::delete(safe_kv_bytes(1))];
     let current_term = 1;
     assert_eq!(
         handler
@@ -801,14 +802,14 @@ fn test_client_command_to_entry_payloads_case1() {
     let commands = vec![
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                key: b"key1".to_vec(),
-                value: b"value1".to_vec(),
+                key: Bytes::from(b"key1".to_vec()),
+                value: Bytes::from(b"value1".to_vec()),
             })),
         },
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                key: b"key2".to_vec(),
-                value: b"value2".to_vec(),
+                key: Bytes::from(b"key2".to_vec()),
+                value: Bytes::from(b"value2".to_vec()),
             })),
         },
     ];
@@ -821,11 +822,11 @@ fn test_client_command_to_entry_payloads_case1() {
 
     // Check first payload
     if let Some(Payload::Command(bytes)) = &payloads[0].payload {
-        let decoded = WriteCommand::decode(bytes.as_slice()).unwrap();
+        let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
             Some(Operation::Insert(Insert { key, value }))
-            if key == b"key1" && value == b"value1"
+            if key == b"key1".as_ref() && value == b"value1".as_ref()
         ));
     } else {
         panic!("First payload should be Command variant");
@@ -833,11 +834,11 @@ fn test_client_command_to_entry_payloads_case1() {
 
     // Check second payload
     if let Some(Payload::Command(bytes)) = &payloads[1].payload {
-        let decoded = WriteCommand::decode(bytes.as_slice()).unwrap();
+        let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
             Some(Operation::Insert(Insert { key, value }))
-            if key == b"key2" && value == b"value2"
+            if key == b"key2".as_ref() && value == b"value2".as_ref()
         ));
     } else {
         panic!("Second payload should be Command variant");
@@ -859,6 +860,7 @@ mod handle_raft_request_in_batch_test {
     use tracing::debug;
 
     use super::*;
+    use crate::convert::safe_kv_bytes;
     use crate::test_utils::node_config;
     use crate::test_utils::MockBuilder;
 
@@ -955,7 +957,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_entry_term().returning(|_| None);
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::success(
@@ -1018,7 +1020,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_entry_term().returning(|_| None);
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().returning(move |_, _, _| {
+        transport.expect_send_append_requests().returning(move |_, _, _, _| {
             Err(NetworkError::EmptyPeerList {
                 request_type: "send_vote_requests",
             }
@@ -1077,7 +1079,7 @@ mod handle_raft_request_in_batch_test {
 
         // Response with term=1 (stale)
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::success(
@@ -1147,7 +1149,7 @@ mod handle_raft_request_in_batch_test {
         // HigherTerm response with term=2
         let higher_term = 2;
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::higher_term(
@@ -1214,8 +1216,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1240,12 +1242,12 @@ mod handle_raft_request_in_batch_test {
         // Use `with` to capture request parameters
         transport
             .expect_send_append_requests()
-            .withf(move |requests, _, _| {
+            .withf(move |requests, _, _, _| {
                 // Send the request to the channel for subsequent assertions
                 let _ = tx.send(requests.clone());
                 true // Return true to indicate that the parameters match successfully
             })
-            .return_once(|_, _, _| {
+            .return_once(|_, _, _, _| {
                 Ok(AppendResult {
                     peer_ids: vec![].into_iter().collect(),
                     responses: vec![],
@@ -1323,7 +1325,8 @@ mod handle_raft_request_in_batch_test {
 
         // Prepare client commands (new entries to replicate)
         let commands = vec![
-            WriteCommand::insert(safe_kv(300), safe_kv(300)), // Will create log index 11
+            WriteCommand::insert(safe_kv_bytes(300), safe_kv_bytes(300)), /* Will create log
+                                                                           * index 11 */
         ];
 
         // Initialize leader state
@@ -1385,7 +1388,7 @@ mod handle_raft_request_in_batch_test {
 
         // Configure mock transport responses
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |requests, _, _| {
+        transport.expect_send_append_requests().return_once(move |requests, _, _, _| {
             Ok(AppendResult {
                 peer_ids: requests.iter().map(|(id, _)| *id).collect(),
                 responses: vec![
@@ -1552,8 +1555,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1576,7 +1579,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id, peer4_id, peer5_id].into_iter().collect(),
                 responses: vec![
@@ -1715,8 +1718,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1739,7 +1742,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -1844,8 +1847,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1868,7 +1871,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -1965,8 +1968,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -1989,7 +1992,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -2081,8 +2084,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -2105,7 +2108,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
                 responses: vec![
@@ -2184,8 +2187,8 @@ mod handle_raft_request_in_batch_test {
 
         // New commands submitted by the client generate logs with index=6~7
         let commands = vec![
-            WriteCommand::insert(safe_kv(100), safe_kv(100)),
-            WriteCommand::insert(safe_kv(200), safe_kv(200)),
+            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
+            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
         ];
 
         // Leader status snapshot
@@ -2208,7 +2211,7 @@ mod handle_raft_request_in_batch_test {
         let mut transport = MockTransport::new();
 
         // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![peer2_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::higher_term(peer2_id, 5))],
@@ -2306,7 +2309,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, learner_id].into_iter().collect(),
                 responses: vec![
@@ -2327,7 +2330,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2411,7 +2414,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, pending_id].into_iter().collect(),
                 responses: vec![
@@ -2432,7 +2435,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2508,7 +2511,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner1, learner2].into_iter().collect(),
                 responses: vec![
@@ -2529,7 +2532,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2675,7 +2678,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, joining_id, pending_id].into_iter().collect(),
                 responses: vec![
@@ -2701,7 +2704,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2783,7 +2786,7 @@ mod handle_raft_request_in_batch_test {
         raft_log.expect_insert_batch().returning(|_| Ok(()));
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![voter_id, pending_id].into_iter().collect(),
                 responses: vec![
@@ -2804,7 +2807,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2844,7 +2847,7 @@ mod handle_raft_request_in_batch_test {
         node_config.raft.learner_catchup_threshold = 5;
 
         let mut context =
-            MockBuilder::new(graceful_rx).wiht_node_config(node_config).build_context();
+            MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
         let my_id = 1;
         let learner_id = 2;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -2876,7 +2879,7 @@ mod handle_raft_request_in_batch_test {
             leader_commit_index - context.node_config.raft.learner_catchup_threshold + 1;
 
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::success(
@@ -2893,7 +2896,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
@@ -2951,7 +2954,7 @@ mod handle_raft_request_in_batch_test {
 
         // Mock responses - conflict
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().return_once(move |_, _, _| {
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
             Ok(AppendResult {
                 peer_ids: vec![learner_id].into_iter().collect(),
                 responses: vec![Ok(AppendEntriesResponse::conflict(
@@ -2977,7 +2980,7 @@ mod handle_raft_request_in_batch_test {
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
 
-        let commands = vec![WriteCommand::insert(safe_kv(100), safe_kv(100))];
+        let commands = vec![WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100))];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,

@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use futures::StreamExt;
 use mockall::predicate::eq;
 use nanoid::nanoid;
@@ -16,10 +17,11 @@ use tracing_test::traced_test;
 use super::leader_state::LeaderState;
 use super::role_state::RaftRoleState;
 use crate::client_command_to_entry_payloads;
-use crate::convert::safe_kv;
+use crate::convert::safe_kv_bytes;
 use crate::proto::client::ClientReadRequest;
 use crate::proto::client::ClientResponse;
 use crate::proto::client::ClientWriteRequest;
+use crate::proto::client::ReadConsistencyPolicy;
 use crate::proto::cluster::ClusterConfChangeRequest;
 use crate::proto::cluster::ClusterMembership;
 use crate::proto::cluster::JoinRequest;
@@ -88,7 +90,7 @@ async fn setup_process_raft_request_test_context(
     let mut node_config = node_config(&format!("/tmp/{test_name}",));
     node_config.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
     let mut raft_context =
-        MockBuilder::new(shutdown_signal).wiht_node_config(node_config).build_context();
+        MockBuilder::new(shutdown_signal).with_node_config(node_config).build_context();
 
     let mut state = LeaderState::new(1, raft_context.node_config());
     state.update_commit_index(4).expect("Should succeed to update commit index");
@@ -808,12 +810,12 @@ async fn test_handle_raft_event_case6_1() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let keys = vec![safe_kv(1).to_vec()];
+    let keys = vec![safe_kv_bytes(1)];
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        linear: true,
         keys,
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
@@ -890,10 +892,10 @@ async fn test_handle_raft_event_case6_2() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Prepare request
-    let keys = vec![safe_kv(1).to_vec()];
+    let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        linear: true,
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -967,10 +969,10 @@ async fn test_handle_raft_event_case6_3() {
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
-    let keys = vec![safe_kv(1).to_vec()];
+    let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        linear: true,
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1039,7 +1041,7 @@ async fn test_handle_raft_event_case8() {
             leader_id: 1,
             leader_commit: 1,
             last_included: None,
-            snapshot_checksum: vec![],
+            snapshot_checksum: Bytes::new(),
         },
         resp_tx,
     );
@@ -1806,7 +1808,11 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
 
 #[test]
 fn test_state_size() {
-    assert!(size_of::<LeaderState<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>() < 360);
+    println!(
+        "LeaderState size: {}",
+        size_of::<LeaderState<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>()
+    );
+    assert!(size_of::<LeaderState<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>() <= 360);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus
@@ -2396,7 +2402,7 @@ fn mock_request(sender: MaybeCloneOneshotSender<ClientResponseResult>) -> RaftRe
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case1_quorum_achieved() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case1_quorum_achieved",
@@ -2444,7 +2450,7 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case2_verifiable_failure() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case2_verifiable_failure",
@@ -2484,7 +2490,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case3_non_verifiable_failure",
@@ -2548,7 +2554,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case4_partial_timeouts() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case4_partial_timeouts",
@@ -2588,7 +2594,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case5_all_timeouts() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case5_all_timeouts",
@@ -2624,7 +2630,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case6_higher_term() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case6_higher_term",
@@ -2669,7 +2675,7 @@ async fn test_verify_internal_quorum_case6_higher_term() {
 #[tokio::test]
 #[traced_test]
 async fn test_verify_internal_quorum_case7_critical_failure() {
-    let payloads = vec![EntryPayload::command(vec![])];
+    let payloads = vec![EntryPayload::command(Bytes::new())];
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft_context = mock_raft_context(
         "/tmp/test_verify_internal_quorum_case7_critical_failure",
@@ -2761,7 +2767,7 @@ async fn test_handle_join_cluster_case1_success() {
     state_machine.expect_snapshot_metadata().returning(move || {
         Some(SnapshotMetadata {
             last_included: Some(LogId { term: 1, index: 1 }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         })
     });
     raft_context.storage.state_machine = Arc::new(state_machine);
@@ -2992,7 +2998,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
                 index: 100,
                 term: 1,
             }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         })
     });
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
@@ -3022,7 +3028,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     state_machine.expect_snapshot_metadata().returning(move || {
         Some(SnapshotMetadata {
             last_included: Some(LogId { term: 1, index: 1 }),
-            checksum: vec![],
+            checksum: Bytes::new(),
         })
     });
     context.storage.state_machine = Arc::new(state_machine);
@@ -3080,7 +3086,7 @@ mod trigger_background_snapshot_test {
                 Err(crate::SnapshotError::OperationFailed("mock error".to_string()).into())
             } else {
                 let chunk = SnapshotChunk {
-                    data: vec![1, 2, 3],
+                    data: Bytes::from(vec![1, 2, 3]),
                     ..Default::default()
                 };
                 Ok(stream::iter(vec![Ok(chunk)]).boxed())
@@ -3191,7 +3197,7 @@ mod batch_promote_learners_test {
         node_config.raft.learner_catchup_threshold = 100;
 
         let mut raft_context =
-            MockBuilder::new(graceful_rx).wiht_node_config(node_config).build_context();
+            MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
 
         // Mock membership
         let mut membership = MockMembership::new();
@@ -3358,6 +3364,7 @@ mod batch_promote_learners_test {
 mod pending_promotion_tests {
     use std::time::Duration;
 
+    use bytes::Bytes;
     use parking_lot::Mutex;
     use tokio::time::timeout;
     use tokio::time::Instant;
@@ -3423,7 +3430,7 @@ mod pending_promotion_tests {
         async fn verify_internal_quorum_achieved_context(
             test_name: &str
         ) -> RaftContext<MockTypeConfig> {
-            let payloads = vec![EntryPayload::command(vec![])];
+            let payloads = vec![EntryPayload::command(Bytes::new())];
             let (_graceful_tx, graceful_rx) = watch::channel(());
             let mut raft_context =
                 mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
@@ -3467,7 +3474,7 @@ mod pending_promotion_tests {
         async fn verify_internal_quorum_failure_context(
             test_name: &str
         ) -> RaftContext<MockTypeConfig> {
-            let payloads = vec![EntryPayload::command(vec![])];
+            let payloads = vec![EntryPayload::command(Bytes::new())];
             let (_graceful_tx, graceful_rx) = watch::channel(());
             let mut raft_context =
                 mock_raft_context(&format!("/tmp/{test_name}",), graceful_rx, None);
@@ -3933,5 +3940,359 @@ mod stale_learner_tests {
 
         // Verify replication was stopped for this node
         assert!(!leader.next_index.contains_key(&101));
+    }
+}
+#[cfg(test)]
+mod handle_client_read_request {
+    use super::*;
+    use crate::config::ReadConsistencyPolicy as ServerPolicy;
+    use crate::convert::safe_kv_bytes;
+    use crate::proto::client::ReadConsistencyPolicy as ClientPolicy;
+
+    /// Test LeaseRead policy with valid lease
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_lease_read_valid_lease() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        let mut replication_handler = MockReplicationCore::new();
+        replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+            |_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    peer_updates: HashMap::new(),
+                    learner_progress: HashMap::new(),
+                })
+            },
+        );
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
+        // Configure server to allow client override
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+
+        let context = MockBuilder::new(graceful_rx)
+            .with_db_path("/tmp/leader_lease_read_valid")
+            .with_replication_handler(replication_handler)
+            .with_raft_log(raft_log)
+            .with_node_config(node_config)
+            .build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+        // Set up valid lease
+        state.test_update_lease_timestamp();
+
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LeaseRead as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
+    }
+
+    /// Test LeaseRead policy with expired lease
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_lease_read_expired_lease() {
+        let mut replication_handler = MockReplicationCore::new();
+        replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+            |_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    peer_updates: HashMap::new(),
+                    learner_progress: HashMap::new(),
+                })
+            },
+        );
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Configure server to allow client override
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+
+        let context = MockBuilder::new(graceful_rx)
+            .with_db_path("/tmp/leader_lease_read_expired")
+            .with_replication_handler(replication_handler)
+            .with_raft_log(raft_log)
+            .with_node_config(node_config)
+            .build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+        // Don't update lease timestamp - lease should be expired by default
+
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LeaseRead as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
+    }
+
+    /// Test LinearizableRead policy (default behavior)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_unspecified_policy_leader() {
+        let mut replication_handler = MockReplicationCore::new();
+        replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+            |_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    peer_updates: HashMap::new(),
+                    learner_progress: HashMap::new(),
+                })
+            },
+        );
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_db_path("/tmp/leader_unspecified_policy")
+            .with_replication_handler(replication_handler)
+            .with_raft_log(raft_log)
+            .build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: None, // Use server default (LinearizableRead)
+            keys: vec![safe_kv_bytes(1)],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
+    }
+
+    /// Test EventualConsistency policy - should serve immediately
+    #[tokio::test]
+    #[traced_test]
+    async fn test_handle_client_read_eventual_consistency() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Configure server to allow client override
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.allow_client_override = true;
+
+        let context = MockBuilder::new(graceful_rx)
+            .with_db_path("/tmp/leader_eventual_consistency")
+            .with_node_config(node_config)
+            .build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::EventualConsistency as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
+        // Should succeed immediately without any verification
+    }
+
+    /// Test server default policy takes effect when client override disabled
+    #[tokio::test]
+    #[traced_test]
+    async fn test_server_default_policy_eventual_consistency() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Configure server with EventualConsistency as default, client override disabled
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.default_policy = ServerPolicy::EventualConsistency;
+        node_config.raft.read_consistency.allow_client_override = false;
+
+        let context = MockBuilder::new(graceful_rx)
+            .with_db_path("/tmp/leader_server_default_eventual")
+            .with_node_config(node_config)
+            .build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LinearizableRead as i32), // Should be ignored
+            keys: vec![safe_kv_bytes(1)],
+        };
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        state
+            .handle_raft_event(raft_event, &context, role_tx)
+            .await
+            .expect("should succeed");
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
+        // Should use server default (EventualConsistency) and succeed immediately
+    }
+}
+
+/// Tests for is_lease_valid function
+#[cfg(test)]
+mod lease_validity_tests {
+    use super::*;
+    use crate::test_utils::MockBuilder;
+    use crate::RaftNodeConfig;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::watch;
+
+    /// Test with a valid lease (timestamp within the lease duration)
+    #[test]
+    fn test_is_lease_valid_with_valid_lease() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state with a lease timestamp set to now - 500ms
+        // (which is within the 1000ms lease duration)
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to 500ms ago
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now - 500; // 500ms ago
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be valid
+        assert!(state.is_lease_valid(&context));
+    }
+
+    /// Test with an expired lease (timestamp outside the lease duration)
+    #[test]
+    fn test_is_lease_valid_with_expired_lease() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to 1500ms ago (which exceeds the 1000ms lease duration)
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now - 1500; // 1500ms ago
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be invalid
+        assert!(!state.is_lease_valid(&context));
+    }
+
+    /// Test with a clock move backwards scenario (now <= lease_timestamp)
+    #[test]
+    fn test_is_lease_valid_with_clock_backwards() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to now + 100ms (simulates clock moving backwards)
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now + 100; // 100ms in the future
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be invalid when clock moves backwards
+        assert!(!state.is_lease_valid(&context));
+    }
+
+    /// Test lease duration edge case (exactly at the threshold)
+    #[test]
+    fn test_is_lease_valid_at_duration_threshold() {
+        // Create a node config with 1000ms lease duration
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.lease_duration_ms = 1000;
+        let node_config_clone = node_config.clone();
+
+        // Create a leader state
+        let state = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
+
+        // Set lease timestamp to exactly 1000ms ago (exactly at the threshold)
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+        let lease_timestamp = now - 1000; // Exactly 1000ms ago
+        state.test_set_lease_timestamp(lease_timestamp);
+
+        // Create a mock raft context with the configured lease duration
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx)
+            .with_node_config(node_config_clone)
+            .build_context();
+
+        // The lease should be invalid at exactly the threshold
+        assert!(!state.is_lease_valid(&context));
     }
 }

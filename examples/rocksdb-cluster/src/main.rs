@@ -1,6 +1,6 @@
 use d_engine::file_io::open_file_for_append;
-use d_engine::rocksdb::{RocksDBStateMachine, RocksDBStorageEngine};
 use d_engine::NodeBuilder;
+use d_engine::{RocksDBStateMachine, RocksDBStorageEngine};
 use std::env;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,6 @@ async fn main() {
 
     // Start the server (wait for its initialization to complete)
     let server_handler = tokio::spawn(start_dengine_server(
-        node_id,
         PathBuf::from(db_path),
         graceful_rx.clone(),
     ));
@@ -61,13 +60,11 @@ async fn main() {
 }
 
 async fn start_dengine_server(
-    node_id: u32,
     db_path: PathBuf,
     graceful_rx: watch::Receiver<()>,
 ) {
     let storage_engine = Arc::new(RocksDBStorageEngine::new(db_path.join("storage")).unwrap());
-    let state_machine =
-        Arc::new(RocksDBStateMachine::new(db_path.join("state_machine"), node_id).unwrap());
+    let state_machine = Arc::new(RocksDBStateMachine::new(db_path.join("state_machine")).unwrap());
     // Build Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)

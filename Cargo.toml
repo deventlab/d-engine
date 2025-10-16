@@ -60,7 +60,7 @@ nanoid = "0.4.0"
 # using Dashset
 dashmap = "5.5.3"
 arc-swap = "1.7.1"
-bytes = "1.10"
+bytes =  { version = "1.10", features = ["serde"] }
 tempfile = "3.19.1"
 crc32fast = "1.4.2"
 sha2 = "0.10.9"
@@ -81,6 +81,7 @@ ring = { version = "=0.17.14", features = ["std"] }
 
 # TODO: to replace dashmap
 crossbeam-skiplist = "0.1"
+crossbeam = "0.8"
 
 [dev-dependencies]
 mockall = "0.12.1"

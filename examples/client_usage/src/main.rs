@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::client::ClientApiError;
+use d_engine::config::ReadConsistencyPolicy;
 use d_engine::proto::client::ClientResult;
 use d_engine::proto::cluster::NodeMeta;
 use d_engine::proto::common::NodeStatus;
@@ -29,6 +30,9 @@ enum Commands {
     Get {
         key: u64,
     },
+    Sget {
+        key: u64,
+    },
     Lget {
         key: u64,
     },
@@ -54,13 +58,14 @@ async fn main() -> Result<()> {
         .request_timeout(std::time::Duration::from_secs(10))
         .build()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to create client: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to create client: {e:?}"))?;
 
     match cli.command {
         Commands::Put { key, value } => handle_write(&client, key, value).await,
         Commands::Delete { key } => handle_delete(&client, key).await,
-        Commands::Get { key } => handle_read(&client, key, false).await,
-        Commands::Lget { key } => handle_read(&client, key, true).await,
+        Commands::Get { key } => handle_read(&client, key, "e").await,
+        Commands::Sget { key } => handle_read(&client, key, "s").await,
+        Commands::Lget { key } => handle_read(&client, key, "l").await,
         Commands::Join { node_id, address } => {
             handle_cluster_command(&client, node_id, address).await
         }
@@ -78,7 +83,7 @@ async fn handle_write(
         .put(safe_kv(key), safe_kv(value))
         .await
         .map(|_| println!("Success"))
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Write error: {:?}", e))
+        .map_err(|e: ClientApiError| anyhow::anyhow!("Write error: {e:?}"))
 }
 
 async fn handle_delete(
@@ -91,19 +96,26 @@ async fn handle_delete(
         .delete(safe_kv(key))
         .await
         .map(|_| println!("Success"))
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Delete error: {:?}", e))
+        .map_err(|e: ClientApiError| anyhow::anyhow!("Delete error: {e:?}"))
 }
 
 async fn handle_read(
     client: &d_engine::Client,
     key: u64,
-    linearizable: bool,
+    consistency: &str,
 ) -> Result<()> {
+    let policy = match consistency {
+        "l" | "linearizable" => ReadConsistencyPolicy::LinearizableRead,
+        "s" | "sequential" | "lease" => ReadConsistencyPolicy::LeaseRead,
+        "e" | "eventual" => ReadConsistencyPolicy::EventualConsistency,
+        _ => ReadConsistencyPolicy::LinearizableRead, // Default to linearizable
+    };
+
     let result = client
         .kv()
-        .get(safe_kv(key), linearizable)
+        .get_with_policy(safe_kv(key), Some(policy.into()))
         .await
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {:?}", e))?;
+        .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {e:?}"))?;
 
     match result {
         Some(ClientResult { key: _, value }) => {
@@ -130,7 +142,7 @@ async fn handle_cluster_command(
             status: NodeStatus::Joining as i32,
         })
         .await
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {:?}", e))?;
+        .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {e:?}"))?;
 
     if response.success {
         println!("Node joined successfully!");

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
+use bytes::BytesMut;
 use config::Config;
 use d_engine::alias::SMOF;
 use d_engine::alias::SOF;
@@ -17,7 +19,7 @@ use d_engine::config::RaftConfig;
 use d_engine::config::RaftNodeConfig;
 use d_engine::config::ReplicationConfig;
 use d_engine::config::SnapshotConfig;
-use d_engine::convert::safe_kv;
+use d_engine::convert::safe_kv_bytes;
 use d_engine::node::Node;
 use d_engine::node::NodeBuilder;
 use d_engine::node::RaftTypeConfig;
@@ -260,7 +262,7 @@ async fn build_node(
     } else {
         let state_machine_path = config.cluster.db_root_dir.join("state_machine");
         Arc::new(
-            FileStateMachine::new(state_machine_path, config.cluster.node_id)
+            FileStateMachine::new(state_machine_path)
                 .await
                 .expect("Failed to create file state machine"),
         )
@@ -308,13 +310,11 @@ pub fn prepare_storage_engine(
 }
 
 pub async fn prepare_state_machine(
-    node_id: u32,
+    _node_id: u32,
     db_path: &str,
 ) -> FileStateMachine {
     let state_machine_db_path = format!("{db_path}/state_machine",);
-    FileStateMachine::new(PathBuf::from(state_machine_db_path), node_id)
-        .await
-        .unwrap()
+    FileStateMachine::new(PathBuf::from(state_machine_db_path)).await.unwrap()
 }
 
 pub async fn manipulate_log(
@@ -374,19 +374,15 @@ pub fn create_bootstrap_urls(ports: &[u16]) -> Vec<String> {
     ports.iter().map(|port| format!("http://127.0.0.1:{port}")).collect()
 }
 
-pub fn generate_insert_commands(ids: Vec<u64>) -> Vec<u8> {
-    let mut buffer = Vec::new();
+pub fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
+    let mut buffer = BytesMut::new();
 
-    let mut commands = Vec::new();
     for id in ids {
-        commands.push(WriteCommand::insert(safe_kv(id), safe_kv(id)));
+        let cmd = WriteCommand::insert(safe_kv_bytes(id), safe_kv_bytes(id));
+        cmd.encode(&mut buffer).expect("Failed to encode insert command");
     }
 
-    for c in commands {
-        buffer.append(&mut c.encode_to_vec());
-    }
-
-    buffer
+    buffer.freeze()
 }
 
 pub async fn reset(case_name: &str) -> std::result::Result<(), ClientApiError> {

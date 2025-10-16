@@ -9,21 +9,40 @@ initial_cluster = [
 db_root_dir = "./db"
 log_dir = "./logs"
 
+
 [raft]
 general_raft_timeout_duration_in_ms = 100
 
-
 [raft.commit_handler]
-batch_size = 5000
+batch_size_threshold = 500
+process_interval_ms = 10
+max_entries_per_chunk = 100
+
+[raft.election]
+election_timeout_min = 1000
+election_timeout_max = 2000
+
+[raft.read_consistency]
+default_policy = "LeaseRead"
+lease_duration_ms = 500
 
 [raft.replication]
+# Process commands when this number is reached
 rpc_append_entries_in_batch_threshold = 5000
+# Ensure the batch is processed within a maximum delay (e.g., 10ms)
+rpc_append_entries_batch_process_delay_in_ms = 0
 
 [raft.persistence]
-strategy = "MemFirst"
 # strategy = "DiskFirst"
-flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+strategy = "MemFirst"
 # flush_policy = "Immediate"
+flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
+# Upcoming feature(v0.1.4)
+# Maximum number of log entries to buffer in memory
+# when using async persistence strategies (MemFirst/Batched)
+max_buffered_entries = 10000
+flush_workers = 4
+channel_capacity=1000
 
 [raft.snapshot]
 enable = false
@@ -34,24 +53,36 @@ retained_log_entries = 3
 
 # == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]
-concurrency_limit = 20             # Lower control plane concurrency is recommended
-max_concurrent_streams = 128
-connection_window_size = 2_097_152 # 2MB is sufficient (to prevent memory overflow)
+concurrency_limit = 50             # Increase to 50 to reduce lock contention
+max_concurrent_streams = 1024      # Increase significantly to reduce stream creation overhead
+connection_window_size = 4_194_304 # Increase to 4MB to reduce flow control blocking
+initial_stream_window_size = 2_097_152 # New: initial stream window 2MB
+enable_connect_protocol = true     # Enable HTTP/2 connect protocol optimization
 
-tcp_keepalive_in_secs = 60             # Closer to native behavior
-http2_keep_alive_interval_in_secs = 10
-http2_keep_alive_timeout_in_secs = 5
-max_frame_size = 16_777_215            # Default value is acceptable
+tcp_keepalive_in_secs = 60
+http2_keep_alive_interval_in_secs = 15  # Slightly increase to reduce frequent keep-alives
+http2_keep_alive_timeout_in_secs = 10   # Increase timeout
+max_frame_size = 16_777_215
+
+# New performance tuning parameters
+http2_max_pending_accept_reset_streams = 1000  # Increase limit for pending streams
+http2_max_send_buffer_size = 8_388_608         # Send buffer 8MB
 
 # == Network Data Plane (append_entries, etc.) ==
 [network.data]
-connect_timeout_in_ms = 100        # Slow is fine, ensure the connection is established
-request_timeout_in_ms = 300        # Log synchronization may take a long time.
-concurrency_limit = 30             # High concurrency supports data replication.
-max_concurrent_streams = 256       # Sufficient; higher values may be counterproductive.
-connection_window_size = 4_194_304 # Increase the buffer size to support batch data.
+connect_timeout_in_ms = 100
+request_timeout_in_ms = 300
+concurrency_limit = 100            # Increase significantly to support higher concurrent replication
+max_concurrent_streams = 4096      # Increase significantly to support batch replication
+connection_window_size = 8_388_608 # Increase to 8MB to support large log entries
+initial_stream_window_size = 4_194_304 # Initial stream window 4MB
 
 tcp_keepalive_in_secs = 60
-http2_keep_alive_interval_in_secs = 10
-http2_keep_alive_timeout_in_secs = 5
+http2_keep_alive_interval_in_secs = 15  # Same as control plane
+http2_keep_alive_timeout_in_secs = 10
 max_frame_size = 16_777_215
+
+# New data plane optimizations
+http2_adaptive_window = true              # Enable adaptive window
+http2_max_pending_accept_reset_streams = 2000  # Higher pending stream limit
+http2_max_send_buffer_size = 16_777_216   # 16MB send buffer

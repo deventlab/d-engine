@@ -1,3 +1,24 @@
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use bytes::Bytes;
+use parking_lot::RwLock;
+use prost::Message;
+use rocksdb::Cache;
+use rocksdb::IteratorMode;
+use rocksdb::Options;
+use rocksdb::WriteBatch;
+use rocksdb::DB;
+use tonic::async_trait;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::instrument;
+use tracing::warn;
+
 use crate::proto::client::write_command::Delete;
 use crate::proto::client::write_command::Insert;
 use crate::proto::client::write_command::Operation;
@@ -9,14 +30,6 @@ use crate::proto::storage::SnapshotMetadata;
 use crate::Error;
 use crate::StateMachine;
 use crate::StorageError;
-use parking_lot::RwLock;
-use prost::Message;
-use rocksdb::{IteratorMode, Options, WriteBatch, DB};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use tonic::async_trait;
-use tracing::{debug, error, info, instrument, warn};
 
 const STATE_MACHINE_CF: &str = "state_machine";
 const STATE_MACHINE_META_CF: &str = "state_machine_meta";
@@ -27,7 +40,6 @@ const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 /// RocksDB-based state machine implementation
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
-    node_id: u32,
     db: Arc<DB>,
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
@@ -37,19 +49,43 @@ pub struct RocksDBStateMachine {
 
 impl RocksDBStateMachine {
     /// Creates a new RocksDB-based state machine
-    pub fn new<P: AsRef<Path>>(
-        path: P,
-        node_id: u32,
-    ) -> Result<Self, Error> {
-        // Configure RocksDB options for state machine
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        // Configure high-performance RocksDB options
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
-        opts.set_max_write_buffer_number(4);
-        opts.set_min_write_buffer_number_to_merge(2);
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
-        // Define column families
+        // Memory and write optimization
+        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
+        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
+        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
+
+        // Compression optimization
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
+
+        // WAL-related optimizations
+        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
+        opts.set_manual_wal_flush(true); // manually control WAL flush
+
+        opts.set_use_fsync(false);
+
+        // Performance Tuning
+        opts.set_max_background_jobs(4); // Number of background jobs
+        opts.set_max_open_files(5000); // Maximum number of open files
+        opts.set_use_direct_io_for_flush_and_compaction(true); // Direct I/O
+        opts.set_use_direct_reads(true); // Direct reads
+
+        // Leveled Compaction Configuration
+        opts.set_level_compaction_dynamic_level_bytes(true);
+        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB base file size
+        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB base level size
+
+        // Block cache configuration (shared)
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB block cache
+        opts.set_row_cache(&cache);
+
         let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
 
         let db = DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -60,7 +96,6 @@ impl RocksDBStateMachine {
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
 
         Ok(Self {
-            node_id,
             db: db_arc,
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
@@ -161,13 +196,13 @@ impl RocksDBStateMachine {
 impl StateMachine for RocksDBStateMachine {
     fn start(&self) -> Result<(), Error> {
         self.is_serving.store(true, Ordering::SeqCst);
-        info!("[Node-{}] RocksDB state machine started", self.node_id);
+        info!("RocksDB state machine started");
         Ok(())
     }
 
     fn stop(&self) -> Result<(), Error> {
         self.is_serving.store(false, Ordering::SeqCst);
-        info!("[Node-{}] RocksDB state machine stopped", self.node_id);
+        info!("RocksDB state machine stopped");
         Ok(())
     }
 
@@ -178,7 +213,7 @@ impl StateMachine for RocksDBStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Bytes>, Error> {
         let cf = self
             .db
             .cf_handle(STATE_MACHINE_CF)
@@ -189,7 +224,7 @@ impl StateMachine for RocksDBStateMachine {
             .get_cf(&cf, key_buffer)
             .map_err(|e| StorageError::DbError(e.to_string()))?
         {
-            Some(value) => Ok(Some(value.to_vec())),
+            Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
             None => Ok(None),
         }
     }
@@ -344,7 +379,7 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<[u8; 32], Error> {
+    ) -> Result<Bytes, Error> {
         // Create a checkpoint in the new_snapshot_dir
         let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -356,11 +391,11 @@ impl StateMachine for RocksDBStateMachine {
         let checksum = [0; 32]; // For now, we return a dummy checksum.
         let snapshot_metadata = SnapshotMetadata {
             last_included: Some(last_included),
-            checksum: checksum.to_vec(),
+            checksum: Bytes::copy_from_slice(&checksum),
         };
         self.persist_last_snapshot_metadata(&snapshot_metadata)?;
 
-        Ok(checksum)
+        Ok(Bytes::copy_from_slice(&checksum))
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {

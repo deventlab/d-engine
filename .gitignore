@@ -44,3 +44,5 @@ docker/monitoring/prometheus/data/
 .lsp
 .zed
 lcov.info
+
+CONTEXT

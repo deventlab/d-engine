@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures::stream;
 use futures::StreamExt;
 use tokio::sync::oneshot;
@@ -39,13 +40,13 @@ fn create_snapshot_chunk(
         leader_id: 1,
         seq,
         total_chunks: 1,
-        chunk_checksum: vec![],
+        chunk_checksum: Bytes::new(),
         metadata: if seq == 0 {
             Some(Default::default())
         } else {
             None
         },
-        data: vec![0; size],
+        data: Bytes::from(vec![0; size]),
     }
 }
 

@@ -21,12 +21,12 @@ use tonic::Streaming; // Adjust path as needed
 /// - Protobuf deserialization
 /// - Error conversion
 /// - Buffer management
-pub(crate) struct GrpcStreamDecoder<T> {
+pub struct GrpcStreamDecoder<T> {
     _marker: PhantomData<T>,
 }
 
 // Helper functions for varint encoding (prost uses these internally, but they're not public)
-fn encoded_len_varint(mut value: u64) -> usize {
+pub fn encoded_len_varint(mut value: u64) -> usize {
     let mut len = 1;
     while value >= 0x80 {
         value >>= 7;
@@ -35,7 +35,7 @@ fn encoded_len_varint(mut value: u64) -> usize {
     len
 }
 
-fn encode_varint(
+pub fn encode_varint(
     mut value: u64,
     buf: &mut impl BufMut,
 ) {

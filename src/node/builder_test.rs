@@ -63,6 +63,7 @@ async fn test_set_raft_log_replaces_default() {
                 strategy: PersistenceStrategy::DiskFirst,
                 flush_policy: FlushPolicy::Immediate,
                 max_buffered_entries: 1000,
+                ..Default::default()
             },
             mock_storage_engine.clone(),
         );
@@ -73,7 +74,7 @@ async fn test_set_raft_log_replaces_default() {
     insert_raft_log(&buffered_raft_log, expected_raft_log_ids.clone(), 1).await;
 
     let mock_state_machine =
-        Arc::new(FileStateMachine::new(temp_dir.path().join("state_machine"), id).await.unwrap());
+        Arc::new(FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap());
 
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&mock_state_machine, expected_state_machine_ids.clone(), 1).await;

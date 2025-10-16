@@ -13,7 +13,8 @@
 ## Features
 
 - **Strong Consistency**: Full production-grade implementation of the Raft consensus protocol, including leader election, log replication, membership changes, and fault-tolerant state replication.
-- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB).
+- **Flexible Read Consistency**: Supports three-tier read policies — Linearizable, Lease-Based, and Eventual — allowing fine-grained control over consistency and latency.
+- **Pluggable Storage**: Compatible with multiple storage backends such as RocksDB, Sled, and Raw File, with an abstraction layer for custom implementations.
 - **Configurable Snapshotting**: Built-in snapshot generation with customizable policies, on-demand creation, or the option to disable snapshots entirely.
 - **Dynamic Cluster Membership**: New nodes can join as learners and be promoted to followers based on configurable synchronization conditions.
 - **Optimized Resource Usage**: Single-threaded, event-driven architecture maximizing single-core throughput while minimizing memory and disk overhead.
@@ -41,7 +42,7 @@ async fn main() {
     let path = PathBuf::from("/tmp/db");
     let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
     let state_machine =
-        Arc::new(FileStateMachine::new(path.join("state_machine"), 1).await.unwrap());
+        Arc::new(FileStateMachine::new(path.join("state_machine")).await.unwrap());
 
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)

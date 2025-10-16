@@ -6,10 +6,13 @@
 //! transport layers, membership management, and asynchronous handlers.
 //!
 //! ## Key Design Points
-//! - **Explicit Component Initialization**: Requires explicit configuration of storage engines and state machines (no implicit defaults).
-//! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`, `state_machine()`, `transport()`).
+//! - **Explicit Component Initialization**: Requires explicit configuration of storage engines and
+//!   state machines (no implicit defaults).
+//! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`,
+//!   `state_machine()`, `transport()`).
 //! - **Lifecycle Management**:
-//!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`], replication, election).
+//!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`],
+//!     replication, election).
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
 //!   - `start_rpc_server()`: Spawns the gRPC server for cluster communication.
 //!
@@ -26,9 +29,11 @@
 //! ```
 //!
 //! ## Notes
-//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership and thread safety.
+//! - **Thread Safety**: All components wrapped in `Arc`/`Mutex` for shared ownership and thread
+//!   safety.
 //! - **Resource Cleanup**: Uses `watch::Receiver` for cooperative shutdown signaling.
-//! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory config.
+//! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory
+//!   config.
 
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;

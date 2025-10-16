@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tokio::sync::mpsc::{self};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -33,7 +34,7 @@ use crate::LEADER;
 const TEST_TERM: u64 = 1;
 
 pub enum CommandType {
-    Command(Vec<u8>),
+    Command(Bytes),
     Configuration(Change),
     Noop,
 }
@@ -49,7 +50,7 @@ pub fn build_entries(
             CommandType::Command(data) => Entry {
                 index,
                 term,
-                payload: Some(EntryPayload::command(data.to_vec())),
+                payload: Some(EntryPayload::command(data)),
             },
             CommandType::Configuration(change) => Entry {
                 index,
@@ -269,7 +270,7 @@ fn setup(
         Ok((
             SnapshotMetadata {
                 last_included: Some(LogId { index: 1, term: 1 }),
-                checksum: vec![],
+                checksum: Bytes::new(),
             },
             PathBuf::from("/tmp/value"),
         ))
@@ -399,7 +400,6 @@ async fn test_dynamic_interval_case2() {
 
 #[cfg(test)]
 mod run_test {
-    use prost::Message;
     use tokio::time;
 
     use super::*;
@@ -414,13 +414,13 @@ mod run_test {
     async fn test_full_processing_flow() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
                 })),
                 CommandType::Noop,
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -457,8 +457,8 @@ mod run_test {
     async fn test_leadership_loss_during_batch() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -520,7 +520,7 @@ mod run_test {
     async fn test_high_throughput_processing() {
         let mut entries = Vec::new();
         for i in 1..=1000 {
-            entries.push(CommandType::Command(format!("cmd{i}").encode_to_vec()));
+            entries.push(CommandType::Command(Bytes::from(format!("cmd{i}"))));
         }
         let entries = build_entries(entries, 1);
 
@@ -568,8 +568,8 @@ mod run_test {
 
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -621,8 +621,8 @@ mod run_test {
         let batch_thresold = 10;
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -674,8 +674,8 @@ mod run_test {
         let batch_thresold = 1000;
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -727,8 +727,8 @@ mod run_test {
         let batch_thresold = 10;
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -859,9 +859,9 @@ mod process_batch_test {
     async fn batches_consecutive_commands() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
-                CommandType::Command(b"cmd3".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd3".to_vec())),
             ],
             1,
         );
@@ -888,12 +888,12 @@ mod process_batch_test {
     async fn flushes_commands_at_config_change() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
                 })),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -931,9 +931,9 @@ mod process_batch_test {
     async fn flushes_commands_at_noop() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Noop,
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -964,7 +964,7 @@ mod process_batch_test {
                     node_id: 1,
                     address: "addr".into(),
                 })),
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
             ],
             1,
         );
@@ -991,8 +991,8 @@ mod process_batch_test {
     async fn handles_command_failure_properly() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -1017,8 +1017,8 @@ mod process_batch_test {
     async fn triggers_snapshot_when_condition_met() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -1043,7 +1043,7 @@ mod process_batch_test {
 
     #[tokio::test]
     async fn does_not_trigger_snapshot_when_condition_not_met() {
-        let entries = build_entries(vec![CommandType::Command(b"cmd1".to_vec())], 1);
+        let entries = build_entries(vec![CommandType::Command(Bytes::from(b"cmd1".to_vec()))], 1);
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
@@ -1068,14 +1068,14 @@ mod process_batch_test {
     async fn processes_mixed_entries_correctly() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
                 })),
                 CommandType::Noop,
-                CommandType::Command(b"cmd2".to_vec()),
-                CommandType::Command(b"cmd3".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
+                CommandType::Command(Bytes::from(b"cmd3".to_vec())),
             ],
             1,
         );
@@ -1103,7 +1103,7 @@ mod process_batch_test {
     async fn handles_large_command_batches() {
         let mut r = vec![];
         for _i in 1..=1000 {
-            r.push(CommandType::Command(b"cmd".to_vec()))
+            r.push(CommandType::Command(Bytes::from(b"cmd".to_vec())))
         }
         let entries = build_entries(r, 1);
         let last_applied = entries.len();
@@ -1128,12 +1128,12 @@ mod process_batch_test {
     async fn maintains_ordering_across_entry_types() {
         let entries = build_entries(
             vec![
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
                 })),
-                CommandType::Command(b"cmd2".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
             1,
         );
@@ -1180,7 +1180,7 @@ mod process_batch_test {
                     node_id: 1,
                     address: "addr".into(),
                 })),
-                CommandType::Command(b"cmd1".to_vec()),
+                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Configuration(Change::RemoveNode(RemoveNode { node_id: 1 })),
             ],
             1,

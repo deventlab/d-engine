@@ -1,16 +1,21 @@
-use super::*;
-use crate::{
-    proto::{client::write_command::Insert, common::Entry},
-    storage::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite},
-    Error, LogStore, StorageEngine,
-};
-use prost::Message;
 use std::sync::Arc;
+
+use bytes::Bytes;
+use prost::Message;
 use tempfile::TempDir;
 use tonic::async_trait;
 use tracing::debug;
 use tracing_test::traced_test;
 use uuid::Uuid;
+
+use super::*;
+use crate::proto::client::write_command::Insert;
+use crate::proto::common::Entry;
+use crate::storage::storage_engine_test::StorageEngineBuilder;
+use crate::storage::storage_engine_test::StorageEngineTestSuite;
+use crate::Error;
+use crate::LogStore;
+use crate::StorageEngine;
 
 pub struct RocksDBStorageEngineBuilder {
     temp_dir: TempDir,
@@ -94,8 +99,8 @@ async fn test_rocksdb_performance() -> Result<(), Error> {
 
 fn create_test_command_payload(index: u64) -> crate::proto::common::EntryPayload {
     // Create a simple insert command
-    let key = format!("key_{index}").into_bytes();
-    let value = format!("value_{index}").into_bytes();
+    let key = Bytes::from(format!("key_{index}").into_bytes());
+    let value = Bytes::from(format!("value_{index}").into_bytes());
 
     let insert = Insert { key, value };
     let operation = crate::proto::client::write_command::Operation::Insert(insert);
@@ -105,7 +110,7 @@ fn create_test_command_payload(index: u64) -> crate::proto::common::EntryPayload
 
     crate::proto::common::EntryPayload {
         payload: Some(crate::proto::common::entry_payload::Payload::Command(
-            write_cmd.encode_to_vec(),
+            write_cmd.encode_to_vec().into(),
         )),
     }
 }
