@@ -22,7 +22,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+// #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let db_path: PathBuf = env::var("DB_PATH")
         .map(PathBuf::from)
