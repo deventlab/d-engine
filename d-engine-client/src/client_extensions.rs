@@ -22,12 +22,14 @@ pub trait ClientReadRequestExt {
     ///
     /// Returns true if the client explicitly specified a consistency policy,
     /// false if the field is absent (should use server default).
+    #[allow(unused)]
     fn has_consistency_policy(&self) -> bool;
 
     /// Gets the consistency policy value safely
     ///
     /// Returns Some(policy) if present, None if field is absent.
     /// Safer alternative that doesn't panic.
+    #[allow(unused)]
     fn get_consistency_policy(&self) -> Option<ReadConsistencyPolicy>;
 }
 
@@ -40,6 +42,7 @@ pub trait ClientResponseExt {
     ///
     /// # Returns
     /// Response with NoError code and write confirmation
+    #[allow(unused)]
     fn write_success() -> ClientResponse;
 
     /// Check if the write operation was successful
@@ -47,18 +50,21 @@ pub trait ClientResponseExt {
     /// # Returns
     /// - `true` if the response indicates a successful write operation
     /// - `false` if the response indicates a failed write operation or is not a write response
+    #[allow(unused)]
     fn is_write_success(&self) -> bool;
 
     /// Build success response for read operations
     ///
     /// # Parameters
     /// - `results`: Vector of retrieved key-value pairs
+    #[allow(unused)]
     fn read_results(results: Vec<ClientResult>) -> Self;
 
     /// Build generic error response for any operation type
     ///
     /// # Parameters
     /// - `error_code`: Predefined client request error code
+    #[allow(unused)]
     fn client_error(error_code: ErrorCode) -> Self;
 
     /// Convert response to boolean write result
@@ -66,30 +72,37 @@ pub trait ClientResponseExt {
     /// # Returns
     /// - `Ok(true)` on successful write
     /// - `Err` with converted error code on failure
-    fn into_write_result(&self) -> std::result::Result<bool, ClientApiError>;
+    #[allow(unused)]
+    fn into_write_result(self) -> std::result::Result<bool, ClientApiError>;
 
     /// Convert response to read results
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    fn into_read_results(&self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError>;
+    #[allow(unused)]
+    fn into_read_results(self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError>;
 
     /// Validate error code in response header
     ///
     /// # Internal Logic
     /// Converts numeric error code to enum variant
+    #[allow(unused)]
     fn validate_error(&self) -> std::result::Result<(), ClientApiError>;
 
     /// Check if this response indicates the leader's term is outdated
+    #[allow(unused)]
     fn is_term_outdated(&self) -> bool;
 
     /// Check if this response indicates a quorum timeout or failure to receive majority responses
+    #[allow(unused)]
     fn is_quorum_timeout_or_failure(&self) -> bool;
 
     /// Check if this response indicates a failure to receive majority responses
+    #[allow(unused)]
     fn is_propose_failure(&self) -> bool;
 
     /// Check if this response indicates a a retry required
+    #[allow(unused)]
     fn is_retry_required(&self) -> bool;
 }
 
@@ -236,7 +249,7 @@ impl ClientResponseExt for ClientResponse {
     /// # Returns
     /// - `Ok(true)` on successful write
     /// - `Err` with converted error code on failure
-    fn into_write_result(&self) -> std::result::Result<bool, ClientApiError> {
+    fn into_write_result(self) -> std::result::Result<bool, ClientApiError> {
         self.validate_error()?;
         Ok(match self.success_result {
             Some(SuccessResult::WriteAck(success)) => success,
@@ -248,7 +261,7 @@ impl ClientResponseExt for ClientResponse {
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    fn into_read_results(&self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
+    fn into_read_results(self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
         self.validate_error()?;
         match &self.success_result {
             Some(SuccessResult::ReadData(data)) => data

@@ -14,7 +14,7 @@ use crate::ClusterClient;
 use crate::ConnectionPool;
 use crate::KvClient;
 use crate::client_extensions::ClientResponseExt;
-use crate::test_utils::MockNode;
+use crate::mock_rpc_service::MockNode;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ReadConsistencyPolicy;

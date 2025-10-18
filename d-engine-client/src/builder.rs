@@ -80,7 +80,8 @@ impl ClientBuilder {
     ///
     /// # Example: Full Configuration
     /// ```no_run
-    /// use d_engine::client::{ClientBuilder, ClientConfig};
+    /// use d_engine_client::ClientBuilder;
+    /// use d_engine_client::ClientConfig;
     /// use std::time::Duration;
     ///
     /// let custom_config = ClientConfig {

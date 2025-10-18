@@ -11,7 +11,7 @@ use crate::ClientConfig;
 use crate::ClientInner;
 use crate::ClusterClient;
 use crate::ConnectionPool;
-use crate::test_utils::MockNode;
+use crate::mock_rpc_service::MockNode;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;

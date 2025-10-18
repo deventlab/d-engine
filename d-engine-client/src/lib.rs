@@ -9,7 +9,8 @@
 //!
 //! # Basic Usage
 //! ```no_run
-//! use d_engine::client::{Client, ClientBuilder};
+//! use d_engine_client::Client;
+//! use d_engine_client::ClientBuilder;
 //! use std::time::Duration;
 //! use core::error::Error;
 //!
@@ -48,6 +49,9 @@ mod config;
 mod error;
 mod kv;
 mod pool;
+mod scoped_timer;
+mod utils;
+
 pub use builder::*;
 pub use cluster::*;
 pub use config::*;
@@ -60,11 +64,11 @@ mod cluster_test;
 #[cfg(test)]
 mod kv_test;
 #[cfg(test)]
+mod mock_rpc;
+#[cfg(test)]
+mod mock_rpc_service;
+#[cfg(test)]
 mod pool_test;
-mod scoped_timer;
-mod utils;
-
-use arc_swap::ArcSwap;
 
 /// Main entry point for interacting with the d_engine cluster
 ///
@@ -81,7 +85,7 @@ pub struct Client {
     /// Cluster management client interface
     cluster: ClusterClient,
 
-    inner: std::sync::Arc<ArcSwap<ClientInner>>,
+    inner: std::sync::Arc<arc_swap::ArcSwap<ClientInner>>,
 }
 
 #[derive(Clone)]

@@ -4,7 +4,6 @@ members = [
   "d-engine-core",
   "d-engine-client",
   "d-engine-server",
-  "d-engine-test-utils",
 ]
 
 resolver = "2"
@@ -14,7 +13,6 @@ d-engine-proto = { path = "./d-engine-proto" }
 d-engine-core = { path = "./d-engine-core" }
 d-engine-client = { path = "./d-engine-client" }
 d-engine-server = { path = "./d-engine-server" }
-d-engine-test-utils = { path = "./d-engine-test-utils" }
 
 # [package]
 # name = "d-engine"

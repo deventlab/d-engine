@@ -8,14 +8,15 @@ d-engine-proto = { workspace = true }
 
 tokio = { workspace = true }
 tonic = { workspace = true }
+tonic-health = { workspace = true }
 bytes =  { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 rand = { workspace = true }
 arc-swap = "1.7.1"
 futures = { workspace = true }
+tokio-stream = { workspace = true }
 
 [dev-dependencies]
-d-engine-test-utils = { workspace = true }
 mockall = "0.12.1"
 tracing-test = "0.2"
