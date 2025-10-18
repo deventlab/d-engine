@@ -1,0 +1,17 @@
+[package]
+name = "d-engine-proto"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+# prost = { workspace = true }
+prost = { version = "0.13", features = ["derive"] }
+tonic = { workspace = true }
+serde = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+
+
+[build-dependencies]
+tonic-build = "0.12"
+vergen = { version = "8.1", features = ["git", "gitcl"] }

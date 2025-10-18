@@ -1,0 +1,91 @@
+syntax = "proto3";
+package d_engine.client;
+
+import "proto/error.proto";
+
+// Write operation-specific command
+message WriteCommand {
+    message Insert {
+        bytes key = 1;
+        bytes value = 2;
+    }
+    message Delete {
+        bytes key = 1;
+    }
+    oneof operation {
+        Insert insert = 1;
+        Delete delete = 2;
+    }
+}
+message ClientWriteRequest {
+    uint32 client_id = 1;
+    repeated WriteCommand commands = 2;
+}
+
+// Read consistency policy for controlling read operation guarantees
+//
+// Allows clients to choose between performance and consistency trade-offs
+// on a per-request basis when supported by the cluster configuration.
+enum ReadConsistencyPolicy {
+
+    // Lease-based reads for better performance with weaker consistency
+    //
+    // Leader serves reads locally without contacting followers during lease period.
+    // Provides lower latency but slightly weaker consistency guarantees.
+    READ_CONSISTENCY_POLICY_LEASE_READ = 0;
+
+    // Fully linearizable reads for strongest consistency
+    //
+    // Leader verifies its leadership with a quorum before serving the read,
+    // ensuring strict linearizability. Guarantees that all reads reflect
+    // the most recent committed value in the cluster.
+    READ_CONSISTENCY_POLICY_LINEARIZABLE_READ = 1;
+
+    // Eventually consistent reads from any node
+    //
+    // Allows reading from any node (leader, follower, or candidate) without
+    // additional consistency checks. May return stale data but provides
+    // best read performance and availability. Suitable for scenarios where
+    // eventual consistency is acceptable.
+    READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY = 2;
+}
+
+
+
+message ClientReadRequest {
+    uint32 client_id = 1;
+
+    repeated bytes keys = 2; // Key list to be read
+
+    // Optional consistency policy for this request
+    //
+    // When present: Client explicitly specifies consistency requirements
+    // When absent: Use cluster's configured default policy
+    optional ReadConsistencyPolicy consistency_policy = 3;
+}
+
+message ClientResponse {
+    d_engine.error.ErrorCode error = 1;
+
+    oneof success_result {
+        bool write_ack = 2;
+        ReadResults read_data = 3;
+    }
+
+    d_engine.error.ErrorMetadata metadata = 4;
+}
+
+message ClientResult {  // Renamed from ClientGetResult
+    bytes key = 1;
+    bytes value = 2;
+  }
+
+message ReadResults {
+    repeated ClientResult results = 1;
+}
+
+
+service RaftClientService {
+  rpc HandleClientWrite (ClientWriteRequest) returns (ClientResponse);
+  rpc HandleClientRead (ClientReadRequest) returns (ClientResponse);
+}
