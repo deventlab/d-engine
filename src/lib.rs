@@ -21,7 +21,6 @@ mod core;
 mod errors;
 mod membership;
 mod network;
-mod type_config;
 
 #[doc(hidden)]
 pub use core::*;
@@ -33,8 +32,6 @@ pub use storage::*;
 
 #[doc(hidden)]
 pub mod utils;
-#[doc(hidden)]
-pub use type_config::*;
 #[doc(hidden)]
 pub use utils::*;
 

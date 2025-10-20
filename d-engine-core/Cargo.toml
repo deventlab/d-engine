@@ -4,3 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+d-engine-proto = { workspace = true }
+
+tokio = { workspace = true }
+tonic = { workspace = true }
+bytes =  { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+prost = { workspace = true }
+
+nanoid = "0.4.0"
+# using Dashset
+dashmap = "5.5.3"
+metrics = { version = "0.24", features = [] }
+config = { version = "0.14.0", default-features = false, features = ["toml"] }
+
+[dev-dependencies]
+mockall = "0.12.1"
+tracing-test = "0.2"

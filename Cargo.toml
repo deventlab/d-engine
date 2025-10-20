@@ -3,7 +3,7 @@ members = [
   "d-engine-proto",
   "d-engine-core",
   "d-engine-client",
-  "d-engine-server",
+  "d-engine-server", "d-engine-docs",
 ]
 
 resolver = "2"

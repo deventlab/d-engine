@@ -200,6 +200,7 @@ pub enum NodeRole {
     Follower = 0,
     Candidate = 1,
     Leader = 2,
+    Learner = 3,
 }
 impl NodeRole {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -211,6 +212,7 @@ impl NodeRole {
             Self::Follower => "FOLLOWER",
             Self::Candidate => "CANDIDATE",
             Self::Leader => "LEADER",
+            Self::Learner => "LEARNER",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -219,6 +221,7 @@ impl NodeRole {
             "FOLLOWER" => Some(Self::Follower),
             "CANDIDATE" => Some(Self::Candidate),
             "LEADER" => Some(Self::Leader),
+            "LEARNER" => Some(Self::Learner),
             _ => None,
         }
     }
