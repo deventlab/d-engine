@@ -1,31 +1,35 @@
-mod cluster_proto_extension;
 mod commit_handler;
+pub mod config;
 mod election;
 mod errors;
 mod event;
+mod maybe_clone_oneshot;
 mod membership;
+mod network;
 mod purge;
 mod raft;
 mod raft_context;
 mod raft_role;
 mod replication;
 mod state_machine_handler;
+mod storage;
 mod timer;
 mod type_config;
 mod utils;
 
-pub mod storage;
+pub use config::*;
 pub use membership::*;
+pub use network::*;
+pub use storage::*;
 
-pub(crate) use cluster_proto_extension::*;
 pub(crate) use commit_handler::*;
 pub(crate) use election::*;
 pub(crate) use errors::*;
 pub(crate) use event::*;
+pub(crate) use maybe_clone_oneshot::*;
 pub(crate) use purge::*;
 pub(crate) use raft::*;
 pub(crate) use raft_context::*;
-pub use storage::*;
 
 #[doc(hidden)]
 pub use raft_role::*;
@@ -96,25 +100,4 @@ pub enum QuorumStatus {
     Confirmed,    // Confirmed by the majority of nodes
     LostQuorum,   // Unable to obtain majority
     NetworkError, // Network problem (can be retried)
-}
-
-impl EntryPayload {
-    pub fn command(command: Bytes) -> Self {
-        Self {
-            payload: Some(Payload::Command(command)),
-        }
-    }
-    pub fn noop() -> Self {
-        Self {
-            payload: Some(Payload::Noop(Noop {})),
-        }
-    }
-
-    pub fn config(change: Change) -> Self {
-        Self {
-            payload: Some(Payload::Config(MembershipChange {
-                change: Some(change),
-            })),
-        }
-    }
 }

@@ -6,11 +6,11 @@ use std::ops::RangeInclusive;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::proto::common::entry_payload::Payload;
-use crate::proto::common::Entry;
-use crate::proto::common::EntryPayload;
-use crate::proto::common::LogId;
 use crate::Result;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::entry_payload::Payload;
 
 // /// Configurable persistence strategy for Raft logs
 // #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]

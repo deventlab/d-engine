@@ -7,10 +7,10 @@ use std::sync::Arc;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::proto::common::Entry;
-use crate::proto::common::LogId;
 use crate::Error;
 use crate::HardState;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 
 /// High-performance storage abstraction for Raft consensus
 ///

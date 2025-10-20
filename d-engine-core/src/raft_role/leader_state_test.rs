@@ -3108,7 +3108,7 @@ mod trigger_background_snapshot_test {
 
     fn make_metadata() -> SnapshotMetadata {
         SnapshotMetadata {
-            last_included: Some(crate::proto::common::LogId { index: 1, term: 1 }),
+            last_included: Some(d_engine_proto::common::LogId { index: 1, term: 1 }),
             ..Default::default()
         }
     }

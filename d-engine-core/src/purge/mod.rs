@@ -1,4 +1,4 @@
-#![doc = include_str!("../../docs/architecture/raft-log-persistence-architecture.md")]
+#![doc = include_str!("../../../d-engine-docs/src/docs/architecture/raft-log-persistence-architecture.md")]
 //! Log compaction and purge management.
 //!
 //! Defines the interface for customizing log purge behavior in Raft leaders and followers.

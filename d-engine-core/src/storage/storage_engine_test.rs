@@ -5,15 +5,15 @@ use bytes::Bytes;
 use prost::Message;
 use tonic::async_trait;
 
-use crate::proto::client::write_command::Insert;
-use crate::proto::common::Entry;
-use crate::proto::common::LogId;
-use crate::proto::election::VotedFor;
-use crate::storage::StorageEngine;
 use crate::Error;
 use crate::HardState;
 use crate::LogStore;
 use crate::MetaStore;
+use crate::storage::StorageEngine;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::election::VotedFor;
 
 /// Test suite for StorageEngine implementations
 ///
@@ -280,21 +280,21 @@ fn create_test_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
 }
 
 /// Helper function to create test command payload
-fn create_test_command_payload(index: u64) -> crate::proto::common::EntryPayload {
+fn create_test_command_payload(index: u64) -> d_engine_proto::common::EntryPayload {
     // Create a simple insert command
     let key = Bytes::from(format!("key_{index}"));
     let value = Bytes::from(format!("value_{index}"));
 
     let insert = Insert { key, value };
-    let operation = crate::proto::client::write_command::Operation::Insert(insert);
-    let write_cmd = crate::proto::client::WriteCommand {
+    let operation = d_engine_proto::client::write_command::Operation::Insert(insert);
+    let write_cmd = d_engine_proto::client::WriteCommand {
         operation: Some(operation),
     };
     let mut buf = Vec::new();
     write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
     let cmd_bytes = Bytes::from(buf); // convert Vec<u8> to Bytes
-    crate::proto::common::EntryPayload {
-        payload: Some(crate::proto::common::entry_payload::Payload::Command(
+    d_engine_proto::common::EntryPayload {
+        payload: Some(d_engine_proto::common::entry_payload::Payload::Command(
             cmd_bytes,
         )),
     }

@@ -81,7 +81,7 @@ where
     /// Applies a batch of committed log entries to the state machine
     async fn apply_chunk(
         &self,
-        chunk: Vec<crate::proto::common::Entry>,
+        chunk: Vec<d_engine_proto::common::Entry>,
     ) -> Result<()>;
 
     /// Reads values from the state machine for given keys
@@ -97,7 +97,7 @@ where
         &self,
         current_term: u64,
         stream: Box<tonic::Streaming<SnapshotChunk>>,
-        ack_tx: tokio::sync::mpsc::Sender<crate::proto::storage::SnapshotAck>,
+        ack_tx: tokio::sync::mpsc::Sender<d_engine_proto::server::storage::SnapshotAck>,
         config: &crate::SnapshotConfig,
     ) -> Result<()>;
 

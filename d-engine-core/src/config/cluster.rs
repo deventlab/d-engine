@@ -6,11 +6,11 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::validate_directory;
-use crate::proto::cluster::NodeMeta;
-use crate::proto::common::NodeStatus;
 use crate::Error;
 use crate::Result;
-use crate::FOLLOWER;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
 
 /// Cluster node configuration parameters
 ///
@@ -129,7 +129,7 @@ fn default_initial_cluster() -> Vec<NodeMeta> {
     vec![NodeMeta {
         id: 1,
         address: "127.0.0.1:8080".to_string(),
-        role: FOLLOWER,
+        role: Follower.into(),
         status: NodeStatus::Active.into(),
     }]
 }

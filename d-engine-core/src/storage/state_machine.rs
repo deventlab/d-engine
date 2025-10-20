@@ -5,11 +5,11 @@ use bytes::Bytes;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::proto::common::Entry;
-use crate::proto::common::LogId;
-use crate::proto::storage::SnapshotMetadata;
 use crate::ConvertError;
 use crate::Error;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
 
 #[cfg_attr(test, automock)]
 #[async_trait]

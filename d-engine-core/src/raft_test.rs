@@ -402,7 +402,7 @@ async fn test_election_timeout_case4() {
             NodeMeta {
                 id: peer2_id,
                 address: "http://127.0.0.1:55002".to_string(),
-                role: Candidate,
+                role: Candidate.into(),
                 status: NodeStatus::Active.into(),
             },
         ]

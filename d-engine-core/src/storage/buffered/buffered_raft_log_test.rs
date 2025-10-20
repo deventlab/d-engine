@@ -1,28 +1,20 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
 
 use bytes::Bytes;
 use futures::future::join_all;
 use tempfile::tempdir;
-use tokio::time::sleep;
 use tokio::time::Instant;
+use tokio::time::sleep;
 use tracing::debug;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::alias::ROF;
-use crate::proto::common::Entry;
-use crate::proto::common::EntryPayload;
-use crate::proto::common::LogId;
-use crate::test_utils::generate_insert_commands;
-use crate::test_utils::MockStorageEngine;
-use crate::test_utils::MockTypeConfig;
-use crate::test_utils::{self};
 use crate::BufferedRaftLog;
 use crate::FileStorageEngine;
 use crate::FlushPolicy;
@@ -35,6 +27,14 @@ use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::RaftTypeConfig;
 use crate::StorageEngine;
+use crate::alias::ROF;
+use crate::test_utils::MockStorageEngine;
+use crate::test_utils::MockTypeConfig;
+use crate::test_utils::generate_insert_commands;
+use crate::test_utils::{self};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
 
 // Test utilities
 struct TestContext {
@@ -1604,8 +1604,8 @@ async fn test_term_index_performance_large_dataset() {
 mod id_allocation_tests {
     use std::collections::HashSet;
     use std::ops::RangeInclusive;
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use super::*;
     use crate::FileStorageEngine;
@@ -2539,9 +2539,9 @@ mod performance_tests {
     use tokio::time::Duration;
 
     use super::*;
-    use crate::test_utils::MockStorageEngine;
     use crate::MockLogStore;
     use crate::MockMetaStore;
+    use crate::test_utils::MockStorageEngine;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2816,14 +2816,14 @@ mod performance_tests {
 }
 
 mod batch_processor_tests {
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
     use std::time::Duration;
 
+    use tokio::sync::Notify;
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
-    use tokio::sync::Notify;
 
     use super::*;
 
@@ -2953,12 +2953,12 @@ mod batch_processor_tests {
 
 mod save_load_hard_state_tests {
     use super::*;
-    use crate::proto::election::VotedFor;
     use crate::FileStorageEngine;
     use crate::HardState;
     use crate::LogStore;
     use crate::MetaStore;
     use crate::StorageEngine;
+    use d_engine_proto::election::VotedFor;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]

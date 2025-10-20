@@ -128,11 +128,11 @@ impl RaftConfig {
         // Warn if lease duration is too long compared to election timeout
         if self.read_consistency.lease_duration_ms > self.election.election_timeout_min / 2 {
             warn!(
-                    "read_consistency.lease_duration_ms ({}) is greater than half of election_timeout_min ({}ms). \
+                "read_consistency.lease_duration_ms ({}) is greater than half of election_timeout_min ({}ms). \
                      This may cause lease expiration during normal operation.",
-                    self.read_consistency.lease_duration_ms,
-                    self.election.election_timeout_min / 2
-                );
+                self.read_consistency.lease_duration_ms,
+                self.election.election_timeout_min / 2
+            );
         }
 
         Ok(())
@@ -696,7 +696,7 @@ fn default_stale_check_interval() -> Duration {
 ///
 /// **Note:** Both strategies now fully load all log entries from disk into memory at startup.
 /// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
-#[doc = include_str!("../docs/architecture/raft-log-persistence-architecture.md")]
+#[doc = include_str!("../../../d-engine-docs/src/docs/architecture/raft-log-persistence-architecture.md")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
     /// Disk-first persistence strategy.
@@ -926,29 +926,31 @@ impl ReadConsistencyConfig {
     }
 }
 
-impl From<crate::proto::client::ReadConsistencyPolicy> for ReadConsistencyPolicy {
-    fn from(proto_policy: crate::proto::client::ReadConsistencyPolicy) -> Self {
+impl From<d_engine_proto::client::ReadConsistencyPolicy> for ReadConsistencyPolicy {
+    fn from(proto_policy: d_engine_proto::client::ReadConsistencyPolicy) -> Self {
         match proto_policy {
-            crate::proto::client::ReadConsistencyPolicy::LeaseRead => Self::LeaseRead,
-            crate::proto::client::ReadConsistencyPolicy::LinearizableRead => Self::LinearizableRead,
-            crate::proto::client::ReadConsistencyPolicy::EventualConsistency => {
+            d_engine_proto::client::ReadConsistencyPolicy::LeaseRead => Self::LeaseRead,
+            d_engine_proto::client::ReadConsistencyPolicy::LinearizableRead => {
+                Self::LinearizableRead
+            }
+            d_engine_proto::client::ReadConsistencyPolicy::EventualConsistency => {
                 Self::EventualConsistency
             }
         }
     }
 }
 
-impl From<ReadConsistencyPolicy> for crate::proto::client::ReadConsistencyPolicy {
+impl From<ReadConsistencyPolicy> for d_engine_proto::client::ReadConsistencyPolicy {
     fn from(config_policy: ReadConsistencyPolicy) -> Self {
         match config_policy {
             ReadConsistencyPolicy::LeaseRead => {
-                crate::proto::client::ReadConsistencyPolicy::LeaseRead
+                d_engine_proto::client::ReadConsistencyPolicy::LeaseRead
             }
             ReadConsistencyPolicy::LinearizableRead => {
-                crate::proto::client::ReadConsistencyPolicy::LinearizableRead
+                d_engine_proto::client::ReadConsistencyPolicy::LinearizableRead
             }
             ReadConsistencyPolicy::EventualConsistency => {
-                crate::proto::client::ReadConsistencyPolicy::EventualConsistency
+                d_engine_proto::client::ReadConsistencyPolicy::EventualConsistency
             }
         }
     }

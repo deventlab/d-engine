@@ -686,7 +686,7 @@ async fn test_handle_raft_event_case10() {
     // Step 2: Prepare the event
     let request = JoinRequest {
         node_id: 2,
-        node_role: Learner,
+        node_role: Learner.into(),
         address: "127.0.0.1:9090".to_string(),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();

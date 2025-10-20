@@ -1,11 +1,11 @@
 use super::*;
 use crate::convert::safe_kv;
 use crate::convert::skv;
-use crate::proto::cluster::ClusterMembership;
-use crate::proto::cluster::NodeMeta;
-use crate::proto::common::NodeStatus;
-use crate::FOLLOWER;
-use crate::LEARNER;
+use d_engine_proto::cluster::ClusterMembership;
+use d_engine_proto::cluster::NodeMeta;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::common::NodeStatus;
 
 /// # Case 1: restart
 ///

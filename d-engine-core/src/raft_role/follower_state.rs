@@ -634,7 +634,7 @@ impl<T: TypeConfig> FollowerState<T> {
     #[tracing::instrument]
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
-            role: Follower,
+            role: Follower.into(),
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),

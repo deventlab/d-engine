@@ -43,12 +43,12 @@
 //! ```
 
 mod builder;
-mod client_extensions;
 mod cluster;
 mod config;
 mod error;
 mod kv;
 mod pool;
+mod proto;
 mod scoped_timer;
 mod utils;
 
@@ -58,6 +58,7 @@ pub use config::*;
 pub use error::*;
 pub use kv::*;
 pub use pool::*;
+pub(crate) use proto::*;
 
 #[cfg(test)]
 mod cluster_test;

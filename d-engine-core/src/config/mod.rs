@@ -34,9 +34,9 @@ use config::File;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::proto::common::NodeStatus;
 use crate::Error;
 use crate::Result;
+use d_engine_proto::common::NodeStatus;
 
 /// Main configuration container for Raft consensus engine components
 ///

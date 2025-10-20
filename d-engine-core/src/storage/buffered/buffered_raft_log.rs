@@ -16,32 +16,28 @@
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam::channel::bounded;
 use crossbeam::channel::Sender;
+use crossbeam::channel::bounded;
 use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::interval;
 use tokio::time::Instant;
+use tokio::time::interval;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
 use tracing::warn;
 
-use crate::alias::SOF;
-use crate::proto::common::Entry;
-use crate::proto::common::LogId;
-use crate::scoped_timer::ScopedTimer;
 use crate::Error;
 use crate::FlushPolicy;
 use crate::HardState;
@@ -54,6 +50,10 @@ use crate::RaftLog;
 use crate::Result;
 use crate::StorageEngine;
 use crate::TypeConfig;
+use crate::alias::SOF;
+use crate::scoped_timer::ScopedTimer;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 
 pub struct FlushWorkerPool<T>
 where
@@ -1066,11 +1066,11 @@ where
                                     metrics::histogram!("flush_worker.success_duration")
                                         .record(duration.as_micros() as f64);
                                     debug!(
-                                    "Worker {} successfully processed flush of {} entries in {:?}",
-                                    worker_id,
-                                    indexes.len(),
-                                    duration
-                                );
+                                        "Worker {} successfully processed flush of {} entries in {:?}",
+                                        worker_id,
+                                        indexes.len(),
+                                        duration
+                                    );
                                 }
                                 Err(e) => {
                                     metrics::counter!("flush_worker.errors").increment(1);

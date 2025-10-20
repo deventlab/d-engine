@@ -212,8 +212,8 @@ fn type_mismatch_in_config_should_fail_gracefully() {
 /// Tests for node join status detection
 mod join_status_tests {
     use super::*;
-    use crate::proto::cluster::NodeMeta;
-    use crate::proto::common::NodeStatus;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
 
     /// # Case 1: Node is in joining status
     #[test]

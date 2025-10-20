@@ -31,3 +31,8 @@ pub mod server {
 pub mod client {
     include!("generated/d_engine.client.rs");
 }
+
+mod exts;
+
+#[doc(hidden)]
+pub use exts::*;
