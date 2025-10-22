@@ -17,12 +17,12 @@ use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::ScopedTimer;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
+use crate::scoped_timer::ScopedTimer;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
 

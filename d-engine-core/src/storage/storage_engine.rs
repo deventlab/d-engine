@@ -1,4 +1,4 @@
-#![doc = include_str!("../docs/server_guide/customize-storage-engine.md")]
+#![doc = include_str!("../../../d-engine-docs/src/docs/server_guide/customize-storage-engine.md")]
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;

@@ -472,7 +472,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 leader_id,
                 JoinRequest {
                     node_id: node_config.cluster.node_id,
-                    node_role: Learner,
+                    node_role: Learner.into(),
                     address: node_config.cluster.listen_address.to_string(),
                 },
                 node_config.retry.join_cluster,
@@ -537,7 +537,7 @@ impl<T: TypeConfig> LearnerState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
-            role: Learner,
+            role: Learner.into(),
         }
     }
 }

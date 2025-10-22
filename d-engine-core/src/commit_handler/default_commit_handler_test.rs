@@ -12,6 +12,7 @@ use tokio::time::{self};
 use super::CommitHandler;
 use super::CommitHandlerDependencies;
 use super::DefaultCommitHandler;
+use crate::CommitHandlerConfig;
 use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
@@ -23,7 +24,6 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::generate_insert_commands;
-use crate::{CommitHandlerConfig, EntryPayloadExt};
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
@@ -313,7 +313,14 @@ fn setup(
         },
         ..Default::default()
     };
-    DefaultCommitHandler::<MockTypeConfig>::new(1, Leader, 1, deps, Arc::new(config), new_commit_rx)
+    DefaultCommitHandler::<MockTypeConfig>::new(
+        1,
+        Leader.into(),
+        1,
+        deps,
+        Arc::new(config),
+        new_commit_rx,
+    )
 }
 
 /// # Case 1: interval_uses_correct_duration
@@ -427,7 +434,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -441,7 +448,7 @@ mod run_test {
 
         // Send commits to trigger processing
         for i in 1..=4 {
-            harness.send_commit(i, Leader).await;
+            harness.send_commit(i, Leader.into()).await;
         }
 
         // Verify snapshot triggered
@@ -464,7 +471,7 @@ mod run_test {
         );
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -476,8 +483,8 @@ mod run_test {
         );
 
         harness.run_handler().await;
-        harness.send_commit(1, Leader).await;
-        harness.send_commit(2, Follower).await;
+        harness.send_commit(1, Leader.into()).await;
+        harness.send_commit(2, Follower.into()).await;
 
         // Should not process second command
         time::sleep(Duration::from_millis(50)).await;
@@ -497,7 +504,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -509,7 +516,7 @@ mod run_test {
         );
 
         harness.run_handler().await;
-        harness.send_commit(1, Leader).await;
+        harness.send_commit(1, Leader.into()).await;
         time::sleep(Duration::from_millis(50)).await;
         harness.shutdown_tx.send(()).unwrap();
         harness.handle.unwrap().await.unwrap();
@@ -526,7 +533,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -540,7 +547,7 @@ mod run_test {
 
         // Send all commits at once
         for i in 1..=1000 {
-            harness.send_commit(i, Leader).await;
+            harness.send_commit(i, Leader.into()).await;
         }
 
         println!("Sent all commits");
@@ -576,7 +583,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -590,7 +597,7 @@ mod run_test {
 
         // Send commits to trigger processing
         for i in 1..=2 {
-            harness.send_commit(i, Leader).await;
+            harness.send_commit(i, Leader.into()).await;
         }
         tokio::time::advance(Duration::from_millis(3)).await;
         // Clean shutdown
@@ -629,7 +636,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -642,7 +649,7 @@ mod run_test {
         harness.run_handler().await;
 
         for i in 1..=batch_thresold {
-            harness.send_commit(i, Leader).await;
+            harness.send_commit(i, Leader.into()).await;
         }
         tokio::time::advance(Duration::from_millis(2)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -682,7 +689,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -695,7 +702,7 @@ mod run_test {
         harness.run_handler().await;
 
         for i in 1..=(batch_thresold - 10) {
-            harness.send_commit(i, Leader).await;
+            harness.send_commit(i, Leader.into()).await;
         }
         tokio::time::advance(Duration::from_millis(2)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -735,7 +742,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -748,7 +755,7 @@ mod run_test {
         harness.run_handler().await;
 
         for i in 1..=batch_thresold {
-            harness.send_commit(i, Leader).await;
+            harness.send_commit(i, Leader.into()).await;
         }
         tokio::time::advance(Duration::from_millis(2)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -841,7 +848,7 @@ mod process_batch_test {
     async fn processes_empty_batch_successfully() {
         let last_applied = 0;
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             vec![],
             last_applied as u64,
@@ -868,7 +875,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -900,7 +907,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -940,7 +947,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -971,7 +978,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -999,7 +1006,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -1025,7 +1032,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -1047,7 +1054,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -1082,7 +1089,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -1108,7 +1115,7 @@ mod process_batch_test {
         let entries = build_entries(r, 1);
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -1142,7 +1149,7 @@ mod process_batch_test {
         let order_capture = process_order.clone();
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,
@@ -1191,7 +1198,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader,
+            Leader.into(),
             1,
             entries,
             last_applied as u64,

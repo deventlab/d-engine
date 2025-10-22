@@ -30,6 +30,7 @@ use super::StateSnapshot;
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
 use crate::AppendResults;
+use crate::BackgroundSnapshotTransfer;
 use crate::BatchBuffer;
 use crate::ConnectionType;
 use crate::ConsensusError;
@@ -67,7 +68,6 @@ use crate::alias::SMHOF;
 use crate::client_command_to_entry_payloads;
 use crate::cluster::is_majority;
 use crate::ensure_safe_join;
-use crate::grpc::BackgroundSnapshotTransfer;
 use crate::scoped_timer::ScopedTimer;
 use crate::stream::create_production_snapshot_stream;
 use crate::utils::cluster::error;
@@ -1202,7 +1202,7 @@ impl<T: TypeConfig> LeaderState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
-            role: Leader,
+            role: Leader.into(),
         }
     }
 
@@ -1339,7 +1339,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         new_commit_index
                     );
                     self.update_commit_index_with_signal(
-                        Leader,
+                        Leader.into(),
                         self.current_term(),
                         new_commit_index,
                         role_tx,

@@ -15,7 +15,6 @@ use tracing::debug;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::BufferedRaftLog;
 use crate::FileStorageEngine;
 use crate::FlushPolicy;
 use crate::LogStore;
@@ -2958,7 +2957,7 @@ mod save_load_hard_state_tests {
     use crate::LogStore;
     use crate::MetaStore;
     use crate::StorageEngine;
-    use d_engine_proto::election::VotedFor;
+    use d_engine_proto::server::election::VotedFor;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]

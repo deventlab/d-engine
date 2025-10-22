@@ -64,20 +64,20 @@ pub fn error(
 
 #[inline]
 pub fn is_follower(role_i32: i32) -> bool {
-    role_i32 == Follower
+    role_i32 == Follower.into()
 }
 
 #[inline]
 pub fn is_candidate(role_i32: i32) -> bool {
-    role_i32 == Candidate
+    role_i32 == Candidate.into()
 }
 
 #[inline]
 pub fn is_leader(role_i32: i32) -> bool {
-    role_i32 == Leader
+    role_i32 == Leader.into()
 }
 
 #[inline]
 pub fn is_learner(role_i32: i32) -> bool {
-    role_i32 == Learner
+    role_i32 == Learner.into()
 }

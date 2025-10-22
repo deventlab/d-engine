@@ -15,7 +15,7 @@ serde = { workspace = true }
 rand = { workspace = true }
 arc-swap = "1.7.1"
 futures = { workspace = true }
-tokio-stream = { workspace = true }
+tokio-stream = "0.1.16"
 
 [dev-dependencies]
 mockall = "0.12.1"

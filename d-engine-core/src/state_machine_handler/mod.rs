@@ -125,6 +125,7 @@ where
         &self,
         before_version: u64,
         snapshot_dir: &std::path::Path,
+        snapshot_dir_prefix: &str,
     ) -> crate::Result<()>;
 
     /// Validates if a log purge request from leader is authorized

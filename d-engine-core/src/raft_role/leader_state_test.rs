@@ -37,14 +37,12 @@ use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::RaftOneshot;
 use crate::RaftRequestWithSignal;
-use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::RoleEvent;
 use crate::SnapshotError;
 use crate::client_command_to_entry_payloads;
 use crate::convert::safe_kv_bytes;
 use crate::test_utils::MockBuilder;
-use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
@@ -1163,7 +1161,7 @@ mod snapshot_created_event_tests {
             vec![NodeMeta {
                 id: 2,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1215,7 +1213,7 @@ mod snapshot_created_event_tests {
             vec![NodeMeta {
                 id: 2,
                 address: "".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1357,7 +1355,7 @@ mod snapshot_created_event_tests {
             vec![NodeMeta {
                 id: 2,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1431,7 +1429,7 @@ mod snapshot_created_event_tests {
             vec![NodeMeta {
                 id: 2,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1503,13 +1501,13 @@ mod snapshot_created_event_tests {
                 NodeMeta {
                     id: 2,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: 3,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
             ]
@@ -1655,7 +1653,7 @@ async fn test_handle_raft_event_case10_1_discover_leader_success() {
         Some(NodeMeta {
             id: 1,
             address: "127.0.0.1:50051".to_string(),
-            role: Leader,
+            role: Leader.into(),
             status: NodeStatus::Active.into(),
         })
     });
@@ -1735,7 +1733,7 @@ async fn test_handle_raft_event_case10_4_different_leader_terms() {
         Some(NodeMeta {
             id: 1,
             address: "127.0.0.1:50051".to_string(),
-            role: Leader,
+            role: Leader.into(),
             status: NodeStatus::Active.into(),
         })
     });
@@ -1781,7 +1779,7 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
         Some(NodeMeta {
             id: 1,
             address: "127.0.0.1:50051".to_string(),
-            role: Leader,
+            role: Leader.into(),
             status: NodeStatus::Active.into(),
         })
     });
@@ -1812,9 +1810,9 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
 fn test_state_size() {
     println!(
         "LeaderState size: {}",
-        size_of::<LeaderState<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>()
+        size_of::<LeaderState<MockTypeConfig>>()
     );
-    assert!(size_of::<LeaderState<RaftTypeConfig<MockStorageEngine, MockStateMachine>>>() <= 360);
+    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 360);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus
@@ -2139,13 +2137,13 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         vec![
             NodeMeta {
                 id: 2,
-                role: Follower,
+                role: Follower.into(),
                 address: "127.0.0.1:0".to_string(),
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
-                role: Follower,
+                role: Follower.into(),
                 address: "127.0.0.1:0".to_string(),
                 status: NodeStatus::Active.into(),
             },
@@ -2253,13 +2251,13 @@ async fn test_process_batch_case4_partial_timeouts() {
             NodeMeta {
                 id: 2,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
                 address: "http://127.0.0.1:55002".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
         ]
@@ -2313,13 +2311,13 @@ async fn test_process_batch_case5_all_timeout() {
             NodeMeta {
                 id: 2,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
                 address: "http://127.0.0.1:55002".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
         ]
@@ -2522,19 +2520,19 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
             NodeMeta {
                 id: 2,
                 address: "".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
                 address: "".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 4,
                 address: "".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
         ]
@@ -2725,7 +2723,7 @@ async fn test_handle_join_cluster_case1_success() {
         vec![NodeMeta {
             id: 2,
             address: "http://127.0.0.1:55001".to_string(),
-            role: Follower,
+            role: Follower.into(),
             status: NodeStatus::Active.into(),
         }]
     });
@@ -2788,7 +2786,7 @@ async fn test_handle_join_cluster_case1_success() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
-                node_role: Learner,
+                node_role: Learner.into(),
                 address: address.clone(),
             },
             sender,
@@ -2830,7 +2828,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
-                node_role: Learner,
+                node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
             },
             sender,
@@ -2886,7 +2884,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
-                node_role: Learner,
+                node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
             },
             sender,
@@ -2923,7 +2921,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
         vec![NodeMeta {
             id: 2,
             address: "http://127.0.0.1:55001".to_string(),
-            role: Follower,
+            role: Follower.into(),
             status: NodeStatus::Active.into(),
         }]
     });
@@ -2943,7 +2941,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
-                node_role: Learner,
+                node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
             },
             sender,
@@ -2986,7 +2984,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         vec![NodeMeta {
             id: 2,
             address: "http://127.0.0.1:55001".to_string(),
-            role: Follower,
+            role: Follower.into(),
             status: NodeStatus::Active.into(),
         }]
     });
@@ -3043,7 +3041,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         .handle_join_cluster(
             JoinRequest {
                 node_id,
-                node_role: Learner,
+                node_role: Learner.into(),
                 address,
             },
             sender,
@@ -3065,7 +3063,7 @@ mod trigger_background_snapshot_test {
 
     use super::*;
     use crate::SnapshotConfig;
-    use crate::core::raft_role::leader_state::LeaderState;
+    use crate::raft_role::leader_state::LeaderState;
     use d_engine_proto::server::storage::SnapshotChunk;
     use d_engine_proto::server::storage::SnapshotMetadata;
 
@@ -3170,9 +3168,9 @@ mod batch_promote_learners_test {
 
     use super::*;
     use crate::RaftContext;
-    use crate::core::raft_role::RoleEvent;
-    use crate::core::raft_role::leader_state::LeaderState;
     use crate::membership::MockMembership;
+    use crate::raft_role::RoleEvent;
+    use crate::raft_role::leader_state::LeaderState;
     use d_engine_proto::common::NodeStatus;
 
     enum VerifyInternalQuorumWithRetrySuccess {
@@ -3210,7 +3208,7 @@ mod batch_promote_learners_test {
                 .map(|id| NodeMeta {
                     id: id as u32,
                     address: format!("addr_{id}"),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 })
                 .collect()
@@ -3411,7 +3409,7 @@ mod pending_promotion_tests {
                         id,
                         address: "".to_string(),
                         status: NodeStatus::Active as i32,
-                        role: Follower,
+                        role: Follower.into(),
                     })
                     .collect()
             });
@@ -3603,7 +3601,7 @@ mod pending_promotion_tests {
                     id,
                     address: "".to_string(),
                     status: NodeStatus::Active as i32,
-                    role: Follower,
+                    role: Follower.into(),
                 })
                 .collect()
         });

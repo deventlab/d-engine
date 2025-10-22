@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tonic::Status;
 
-use crate::proto::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotChunk;
 
 pub trait RaftOneshot<T: Send> {
     type Sender: Send + Sync;
@@ -85,7 +85,7 @@ impl<T: Send> MaybeCloneOneshotSender<T> {
 impl<T: Send + Clone> MaybeCloneOneshotReceiver<T> {
     #[cfg(test)]
     pub async fn recv(&mut self) -> Result<T, broadcast::error::RecvError> {
-        if let Some(ref mut rx) = &mut self.test_inner {
+        if let Some(rx) = &mut self.test_inner {
             rx.recv().await
         } else {
             // Fallback for non-cloneable types
@@ -116,7 +116,7 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
         let this = self.get_mut();
 
         // Using the recv method of tokio::sync::broadcast::Receiver
-        if let Some(ref mut rx) = &mut this.test_inner {
+        if let Some(rx) = &mut this.test_inner {
             match rx.try_recv() {
                 Ok(value) => Poll::Ready(Ok(value)),
                 Err(broadcast::error::TryRecvError::Empty) => {

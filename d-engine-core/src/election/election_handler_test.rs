@@ -183,7 +183,7 @@ async fn test_broadcast_vote_requests_case3() {
         vec![NodeMeta {
             id: 2,
             address: "http://127.0.0.1:55001".to_string(),
-            role: Follower,
+            role: Follower.into(),
             status: NodeStatus::Active.into(),
         }]
     });

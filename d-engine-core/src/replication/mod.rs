@@ -36,12 +36,10 @@ use crate::alias::ROF;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
 
 /// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]

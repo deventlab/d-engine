@@ -29,6 +29,9 @@ use crate::cluster::is_learner;
 use crate::leader_state::LeaderState;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::mock_raft;
+use d_engine_proto::common::NodeRole::Candidate;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::NodeMeta;
@@ -396,7 +399,7 @@ async fn test_election_timeout_case4() {
             NodeMeta {
                 id: peer1_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
@@ -730,7 +733,7 @@ async fn test_handle_role_event_state_update_case1_1() {
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index,
-        role: Leader,
+        role: Leader.into(),
         current_term: 1,
     }))
     .await
@@ -760,7 +763,7 @@ async fn test_handle_role_event_state_update_case1_2() {
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index,
-        role: Leader,
+        role: Leader.into(),
         current_term: 1,
     }))
     .await
@@ -800,7 +803,7 @@ async fn test_handle_role_event_state_update_case1_3_1() {
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index,
-        role: Leader,
+        role: Leader.into(),
         current_term: 1,
     }))
     .await
@@ -831,7 +834,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
         vec![NodeMeta {
             id: 2,
             address: "http://127.0.0.1:55001".to_string(),
-            role: Follower,
+            role: Follower.into(),
             status: NodeStatus::Active.into(),
         }]
     });
@@ -912,7 +915,7 @@ async fn test_handle_role_event_state_update_case1_4() {
     raft.register_new_commit_listener(tx);
     raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index,
-        role: Leader,
+        role: Leader.into(),
         current_term: 1,
     }))
     .await

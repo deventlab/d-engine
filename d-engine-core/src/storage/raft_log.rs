@@ -125,38 +125,3 @@ pub trait RaftLog: Send + Sync + 'static {
         hard_state: &crate::HardState,
     ) -> Result<()>;
 }
-
-impl EntryPayload {
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn is_config(&self) -> bool {
-        match self.payload {
-            Some(Payload::Command(_)) => false,
-            Some(Payload::Config(_)) => true,
-            Some(Payload::Noop(_)) => false,
-            None => false,
-        }
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn is_command(&self) -> bool {
-        match self.payload {
-            Some(Payload::Command(_)) => true,
-            Some(Payload::Config(_)) => false,
-            Some(Payload::Noop(_)) => false,
-            None => false,
-        }
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn is_noop(&self) -> bool {
-        match self.payload {
-            Some(Payload::Command(_)) => false,
-            Some(Payload::Config(_)) => false,
-            Some(Payload::Noop(_)) => true,
-            None => false,
-        }
-    }
-}

@@ -3,11 +3,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::SnapshotContext;
-use crate::Leader;
 use crate::LogSizePolicy;
 use crate::SnapshotPolicy;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
 
 // Test context builder for better test readability
 fn test_context(
@@ -32,28 +32,28 @@ fn test_context(
 #[test]
 fn triggers_when_log_size_exceeds_threshold() {
     let policy = LogSizePolicy::new(1000, Duration::from_secs(1));
-    let ctx = test_context(1500, 500, Leader);
+    let ctx = test_context(1500, 500, Leader.into());
     assert!(policy.should_trigger(&ctx));
 }
 
 #[test]
 fn does_not_trigger_below_threshold() {
     let policy = LogSizePolicy::new(1000, Duration::from_secs(1));
-    let ctx = test_context(1499, 500, Leader);
+    let ctx = test_context(1499, 500, Leader.into());
     assert!(!policy.should_trigger(&ctx));
 }
 
 #[test]
 fn triggers_at_exact_threshold() {
     let policy = LogSizePolicy::new(1000, Duration::from_secs(1));
-    let ctx = test_context(1500, 500, Leader);
+    let ctx = test_context(1500, 500, Leader.into());
     assert!(policy.should_trigger(&ctx));
 }
 
 #[test]
 fn respects_cooldown_period() {
     let policy = LogSizePolicy::new(100, Duration::from_secs(1));
-    let mut ctx = test_context(200, 100, Leader);
+    let mut ctx = test_context(200, 100, Leader.into());
 
     // Initial check should trigger
     assert!(policy.should_trigger(&ctx));
@@ -66,7 +66,7 @@ fn respects_cooldown_period() {
 #[test]
 fn resets_after_cooldown_period() {
     let policy = LogSizePolicy::new(100, Duration::from_millis(100));
-    let ctx = test_context(200, 100, Leader);
+    let ctx = test_context(200, 100, Leader.into());
 
     // First trigger
     assert!(policy.should_trigger(&ctx));
@@ -79,7 +79,7 @@ fn resets_after_cooldown_period() {
 #[test]
 fn handles_concurrent_checks_with_cooldown() {
     let policy = Arc::new(LogSizePolicy::new(100, Duration::from_secs(1)));
-    let ctx = test_context(200, 100, Leader);
+    let ctx = test_context(200, 100, Leader.into());
 
     let handles: Vec<_> = (0..10)
         .map(|_| {
@@ -96,14 +96,14 @@ fn handles_concurrent_checks_with_cooldown() {
 #[test]
 fn non_leader_never_triggers() {
     let policy = LogSizePolicy::new(100, Duration::ZERO);
-    let ctx = test_context(200, 100, Follower);
+    let ctx = test_context(200, 100, Follower.into());
     assert!(!policy.should_trigger(&ctx));
 }
 
 #[test]
 fn dynamic_threshold_adjustment() {
     let policy = LogSizePolicy::new(1000, Duration::from_secs(1));
-    let ctx = test_context(1200, 500, Leader);
+    let ctx = test_context(1200, 500, Leader.into());
 
     // Initial threshold not met
     assert!(!policy.should_trigger(&ctx));
@@ -126,7 +126,7 @@ fn handles_term_regression() {
             term: 3,
         }, // Higher than current term
         current_term: 2,
-        role: Leader,
+        role: Leader.into(),
     };
 
     assert!(!policy.should_trigger(&ctx));
@@ -135,7 +135,7 @@ fn handles_term_regression() {
 #[test]
 fn high_frequency_performance() {
     let policy = LogSizePolicy::new(1000, Duration::from_millis(100));
-    let ctx = test_context(1500, 500, Leader);
+    let ctx = test_context(1500, 500, Leader.into());
 
     let start = Instant::now();
     let mut trigger_count = 0;

@@ -18,17 +18,17 @@ mod type_config;
 mod utils;
 
 pub use config::*;
+pub use errors::*;
+pub use event::*;
 pub use membership::*;
 pub use network::*;
+pub use raft::*;
 pub use storage::*;
 
 pub(crate) use commit_handler::*;
 pub(crate) use election::*;
-pub(crate) use errors::*;
-pub(crate) use event::*;
 pub(crate) use maybe_clone_oneshot::*;
 pub(crate) use purge::*;
-pub(crate) use raft::*;
 pub(crate) use raft_context::*;
 
 #[doc(hidden)]
@@ -47,13 +47,8 @@ mod raft_oneshot_test;
 #[cfg(test)]
 mod raft_test;
 
-use bytes::Bytes;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::MembershipChange;
-use d_engine_proto::common::Noop;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::common::membership_change::Change;
-use tracing::instrument;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 
 /// In raft, during any Leader to Peer communication,
 ///     if received response term is bigger than Leader's,
@@ -84,7 +79,7 @@ pub(crate) fn if_higher_term_found(
 /// entries in the  logs. If the logs have last entries with different terms, then the log with the
 /// later term is more up-to-date. If the logs end with the same term, then whichever log is longer
 /// is more up-to-date.
-#[instrument]
+#[tracing::instrument]
 pub(crate) fn is_target_log_more_recent(
     my_last_log_index: u64,
     my_last_log_term: u64,

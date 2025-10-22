@@ -3,19 +3,16 @@ use std::time::Duration;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::core::state_machine_handler::snapshot_policy::SnapshotContext;
-use crate::core::state_machine_handler::snapshot_policy::SnapshotPolicy;
+use crate::state_machine_handler::snapshot_policy::SnapshotContext;
+use crate::state_machine_handler::snapshot_policy::SnapshotPolicy;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
 
-const LEADER_ROLE: i32 = Leader.into;
-const FOLLOWER_ROLE: i32 = Follower.into();
-
 /// Creates a leader context for testing
 fn leader_ctx(last_applied_index: u64) -> SnapshotContext {
     SnapshotContext {
-        role: LEADER_ROLE,
+        role: Leader.into(),
         last_included: LogId { term: 1, index: 0 },
         last_applied: LogId {
             term: 1,
@@ -28,7 +25,7 @@ fn leader_ctx(last_applied_index: u64) -> SnapshotContext {
 /// Creates a follower context for testing
 fn follower_ctx(last_applied_index: u64) -> SnapshotContext {
     SnapshotContext {
-        role: FOLLOWER_ROLE,
+        role: Follower.into(),
         last_included: LogId { term: 1, index: 0 },
         last_applied: LogId {
             term: 1,

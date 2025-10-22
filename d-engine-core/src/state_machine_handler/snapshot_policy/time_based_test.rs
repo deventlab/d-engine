@@ -4,10 +4,10 @@ use tokio::time;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::Leader;
-use crate::core::state_machine_handler::snapshot_policy::SnapshotContext;
-use crate::core::state_machine_handler::snapshot_policy::SnapshotPolicy;
+use crate::state_machine_handler::snapshot_policy::SnapshotContext;
+use crate::state_machine_handler::snapshot_policy::SnapshotPolicy;
 use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Leader;
 
 #[tokio::test]
 #[traced_test]
@@ -19,7 +19,7 @@ async fn test_should_trigger_after_interval() {
 
     // Create context (leader)
     let ctx = SnapshotContext {
-        role: Leader, // Assuming Leader is defined elsewhere
+        role: Leader.into(), // Assuming Leader is defined elsewhere
         last_included: LogId { term: 1, index: 1 },
         last_applied: LogId { term: 1, index: 10 },
         current_term: 1,
@@ -45,7 +45,7 @@ async fn test_should_not_trigger_before_interval() {
 
     // Create context (leader)
     let ctx = SnapshotContext {
-        role: Leader,
+        role: Leader.into(),
         last_included: LogId { term: 1, index: 1 },
         last_applied: LogId { term: 1, index: 10 },
         current_term: 1,
@@ -67,7 +67,7 @@ async fn test_reset_timer_works() {
     policy.reset_timer();
 
     let ctx = SnapshotContext {
-        role: Leader,
+        role: Leader.into(),
         last_included: LogId { term: 1, index: 1 },
         last_applied: LogId { term: 1, index: 10 },
         current_term: 1,

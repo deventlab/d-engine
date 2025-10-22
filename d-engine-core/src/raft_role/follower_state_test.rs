@@ -20,20 +20,17 @@ use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
 use crate::MockReplicationCore;
-use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
 use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::RaftOneshot;
-use crate::RaftTypeConfig;
 use crate::RoleEvent;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::SystemError;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
-use crate::test_utils::MockStorageEngine;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::mock_raft_context;
 use crate::test_utils::node_config;
@@ -147,7 +144,7 @@ async fn test_new_with_restart() {
             }),
         });
         let last_applied_index_option = Some(2);
-        let state = FollowerState::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        let state = FollowerState::<MockTypeConfig>::new(
             node_id,
             node_config,
             hard_state_from_db,
@@ -1449,7 +1446,7 @@ async fn test_handle_raft_event_case10() {
     // Step 2: Prepare the event
     let request = JoinRequest {
         node_id: 2,
-        node_role: Learner,
+        node_role: Learner.into(),
         address: "127.0.0.1:9090".to_string(),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();

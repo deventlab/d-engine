@@ -53,7 +53,6 @@ use crate::TypeConfig;
 use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
-use crate::constants::SNAPSHOT_DIR_PREFIX;
 use crate::convert::classify_error;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
@@ -358,6 +357,7 @@ where
             .cleanup_snapshot(
                 self.snapshot_config.cleanup_retain_count,
                 &self.snapshot_config.snapshots_dir,
+                &self.snapshot_config.snapshots_dir_prefix,
             )
             .await
         {
@@ -380,6 +380,7 @@ where
         &self,
         retain_count: u64,
         snapshot_dir: &Path,
+        snapshot_dir_prefix: &str,
     ) -> Result<()> {
         // Phase 1: Collect and parse snapshots
         let mut snapshots = Vec::new();
@@ -396,9 +397,12 @@ where
 
             if path.extension().is_some_and(|ext| ext == "gz") {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                    let parsed = parse_snapshot_dirname(file_name).or_else(|| {
-                        file_name.strip_suffix(".tar.gz").and_then(parse_snapshot_dirname)
-                    });
+                    let parsed =
+                        parse_snapshot_dirname(file_name, snapshot_dir_prefix).or_else(|| {
+                            file_name
+                                .strip_suffix(".tar.gz")
+                                .and_then(|s| parse_snapshot_dirname(s, snapshot_dir_prefix))
+                        });
 
                     let (index, term) = if let Some(pair) = parsed {
                         pair
@@ -698,7 +702,7 @@ where
             snapshot_policy,
             path_mgr: Arc::new(SnapshotPathManager::new(
                 snapshot_config.snapshots_dir.clone(),
-                SNAPSHOT_DIR_PREFIX.to_string(),
+                snapshot_config.snapshots_dir_prefix.clone(),
             )),
             snapshot_config,
 
@@ -1108,11 +1112,14 @@ fn zero_copy_bytes_from_mmap(
 }
 
 /// Manual parsing file name format: snapshot-{index}-{term}
-fn parse_snapshot_dirname(name: &str) -> Option<(u64, u64)> {
+fn parse_snapshot_dirname(
+    name: &str,
+    snapshot_dir_prefix: &str,
+) -> Option<(u64, u64)> {
     debug!(%name, "parse_snapshot_dirname");
 
     // Check prefix and suffix
-    if !name.starts_with(SNAPSHOT_DIR_PREFIX) {
+    if !name.starts_with(snapshot_dir_prefix) {
         return None;
     }
 

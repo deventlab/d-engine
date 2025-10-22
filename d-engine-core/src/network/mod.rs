@@ -6,8 +6,11 @@
 //! are governed by timeout parameters defined in [`RaftConfig`] to ensure
 //! system responsiveness.
 
-// #[cfg(test)]
-// mod network_test;
+mod backgroup_snapshot_transfer;
+
+#[cfg(test)]
+mod backgroup_snapshot_transfer_test;
+pub(crate) use backgroup_snapshot_transfer::*;
 
 #[cfg(test)]
 use mockall::automock;

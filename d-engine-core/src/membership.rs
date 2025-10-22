@@ -2,7 +2,9 @@
 use mockall::automock;
 use tonic::async_trait;
 use tonic::transport::Channel;
+use tracing::warn;
 
+use crate::MembershipError;
 use crate::Result;
 use crate::TypeConfig;
 use d_engine_proto::common::MembershipChange;
@@ -14,13 +16,13 @@ use d_engine_proto::server::cluster::NodeMeta;
 
 // Add connection type management in RpcPeerChannels
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ConnectionType {
+pub enum ConnectionType {
     Control, // Used for key operations such as elections/heartbeats
     Data,    // Used for log replication
     Bulk,    // Used for high-traffic operations such as snapshot transmission
 }
 impl ConnectionType {
-    pub(crate) fn all() -> Vec<ConnectionType> {
+    pub fn all() -> Vec<ConnectionType> {
         vec![
             ConnectionType::Control,
             ConnectionType::Data,
@@ -190,4 +192,33 @@ where
         node_id: u32,
         role: i32,
     ) -> Result<()>;
+}
+
+pub fn ensure_safe_join(
+    node_id: u32,
+    current_voters: usize,
+) -> Result<()> {
+    // Total voters including leader = current_voters + 1
+    let total_voters = current_voters + 1;
+
+    // Always allow if cluster will have even number of voters
+    if (total_voters + 1).is_multiple_of(2) {
+        Ok(())
+    } else {
+        // metrics::counter!("cluster.unsafe_join_attempts", 1);
+        metrics::counter!(
+            "cluster.unsafe_join_attempts",
+            &[("node_id", node_id.to_string())]
+        )
+        .increment(1);
+
+        warn!(
+            "Unsafe join attempt: current_voters={} (total_voters={})",
+            current_voters, total_voters
+        );
+        Err(
+            MembershipError::JoinClusterError("Cluster must maintain odd number of voters".into())
+                .into(),
+        )
+    }
 }

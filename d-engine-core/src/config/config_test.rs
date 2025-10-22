@@ -6,7 +6,9 @@ use super::*;
 fn cleanup_all_raft_env_vars() {
     for (key, _) in std::env::vars() {
         if key.starts_with("RAFT__") || key == "CONFIG_PATH" {
-            std::env::remove_var(&key);
+            unsafe {
+                std::env::remove_var(&key);
+            }
         }
     }
 }

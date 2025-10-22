@@ -15,8 +15,6 @@ use super::ReplicationHandler;
 use crate::AppendResult;
 use crate::ConsensusError;
 use crate::Error;
-use crate::FileStorageEngine;
-use crate::Leader;
 use crate::LeaderStateSnapshot;
 use crate::MockMembership;
 use crate::MockRaftLog;
@@ -25,7 +23,6 @@ use crate::MockTransport;
 use crate::NetworkError;
 use crate::PeerUpdate;
 use crate::RaftLog;
-use crate::RaftTypeConfig;
 use crate::ReplicationError;
 use crate::StateSnapshot;
 use crate::StorageError;
@@ -44,6 +41,7 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::common::entry_payload::Payload;
@@ -888,7 +886,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::new(),
@@ -928,7 +926,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::new(),
@@ -941,7 +939,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: peer2_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -949,7 +947,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: peer2_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1008,7 +1006,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::new(),
@@ -1073,7 +1071,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 2, // Leader's term is 2
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from_iter(vec![(peer2_id, 3)]),
@@ -1106,7 +1104,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: peer2_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1142,7 +1140,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::new(),
@@ -1174,7 +1172,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: peer2_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -1229,7 +1227,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6)]),
@@ -1265,7 +1263,7 @@ mod handle_raft_request_in_batch_test {
         membership.expect_replication_peers().returning(move || {
             vec![NodeMeta {
                 id: peer2_id,
-                role: Follower,
+                role: Follower.into(),
                 address: "".to_string(),
                 status: NodeStatus::Active.into(),
             }]
@@ -1338,7 +1336,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 6,
             voted_for: None,
             commit_index: 10,
-            role: Leader,
+            role: Leader.into(),
         };
 
         // Initial next_index values from test case description
@@ -1426,7 +1424,7 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: id as u32,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 }
             })
@@ -1568,7 +1566,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6), (peer3_id, 6), (peer4_id, 6), (peer5_id, 6)]),
@@ -1622,25 +1620,25 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: peer2_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: peer3_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: peer4_id,
                     address: "http://127.0.0.1:55003".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: peer5_id,
                     address: "http://127.0.0.1:55004".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
             ]
@@ -1731,7 +1729,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6), (peer3_id, 6)]),
@@ -1775,13 +1773,13 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: peer2_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: peer3_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
             ]
@@ -1860,7 +1858,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6), (peer3_id, 6)]),
@@ -1905,13 +1903,13 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: peer2_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: peer3_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
             ]
@@ -1981,7 +1979,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6), (peer3_id, 6)]),
@@ -2026,13 +2024,13 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: peer2_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: peer3_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
             ]
@@ -2097,7 +2095,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6), (peer3_id, 6)]),
@@ -2200,7 +2198,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(peer2_id, 6)]),
@@ -2232,7 +2230,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: peer2_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -2283,13 +2281,13 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: voter_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: learner_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner,
+                    role: Learner.into(),
                     status: NodeStatus::Joining.into(),
                 },
             ]
@@ -2298,7 +2296,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: voter_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -2339,7 +2337,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(voter_id, 6), (learner_id, 6)]),
@@ -2388,13 +2386,13 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: voter_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                 },
                 NodeMeta {
                     id: pending_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner,
+                    role: Learner.into(),
                     status: NodeStatus::Syncing.into(),
                 },
             ]
@@ -2403,7 +2401,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: voter_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
             }]
         });
@@ -2444,7 +2442,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(voter_id, 6), (pending_id, 6)]),
@@ -2492,13 +2490,13 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: learner1,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Learner,
+                    role: Learner.into(),
                     status: NodeStatus::Joining.into(),
                 },
                 NodeMeta {
                     id: learner2,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner,
+                    role: Learner.into(),
                     status: NodeStatus::Joining.into(),
                 },
             ]
@@ -2541,7 +2539,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(learner1, 6), (learner2, 6)]),
@@ -2603,7 +2601,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::new(),
@@ -2646,19 +2644,19 @@ mod handle_raft_request_in_batch_test {
                 NodeMeta {
                     id: voter_id,
                     address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active as i32,
                 },
                 NodeMeta {
                     id: joining_id,
                     address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner,
+                    role: Learner.into(),
                     status: NodeStatus::Joining as i32,
                 },
                 NodeMeta {
                     id: pending_id,
                     address: "http://127.0.0.1:55003".to_string(),
-                    role: Learner,
+                    role: Learner.into(),
                     status: NodeStatus::Syncing as i32,
                 },
             ]
@@ -2667,7 +2665,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: voter_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active as i32,
             }]
         });
@@ -2713,7 +2711,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 10,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(voter_id, 11), (joining_id, 11), (pending_id, 11)]),
@@ -2759,14 +2757,14 @@ mod handle_raft_request_in_batch_test {
             vec![
                 NodeMeta {
                     id: voter_id,
-                    role: Follower,
+                    role: Follower.into(),
                     status: NodeStatus::Active.into(),
                     ..Default::default()
                 },
                 NodeMeta {
                     id: pending_id,
                     status: NodeStatus::Joining as i32,
-                    role: Learner,
+                    role: Learner.into(),
                     ..Default::default()
                 },
             ]
@@ -2774,7 +2772,7 @@ mod handle_raft_request_in_batch_test {
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
                 id: voter_id,
-                role: Follower,
+                role: Follower.into(),
                 status: NodeStatus::Active.into(),
                 ..Default::default()
             }]
@@ -2816,7 +2814,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 5,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(2, 6), (3, 6)]),
@@ -2905,7 +2903,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: leader_commit_index,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(learner_id, learner_match_index + 1)]),
@@ -2949,7 +2947,7 @@ mod handle_raft_request_in_batch_test {
             vec![NodeMeta {
                 id: learner_id,
                 address: "http://127.0.0.1:55001".to_string(),
-                role: Learner,
+                role: Learner.into(),
                 status: NodeStatus::Syncing.into(),
             }]
         });
@@ -2989,7 +2987,7 @@ mod handle_raft_request_in_batch_test {
             current_term: 1,
             voted_for: None,
             commit_index: 1,
-            role: Leader,
+            role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
             next_index: HashMap::from([(learner_id, 1 + 1)]),

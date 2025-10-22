@@ -416,6 +416,9 @@ pub struct SnapshotConfig {
     #[serde(default = "default_snapshots_dir")]
     pub snapshots_dir: PathBuf,
 
+    #[serde(default = "default_snapshots_dir_prefix")]
+    pub snapshots_dir_prefix: String,
+
     /// Size (in bytes) of individual chunks when transferring snapshots
     ///
     /// Default: `default_chunk_size()` (typically 1MB)
@@ -468,6 +471,7 @@ impl Default for SnapshotConfig {
             snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
             cleanup_retain_count: default_cleanup_retain_count(),
             snapshots_dir: default_snapshots_dir(),
+            snapshots_dir_prefix: default_snapshots_dir_prefix(),
             chunk_size: default_chunk_size(),
             retained_log_entries: default_retained_log_entries(),
             sender_yield_every_n_chunks: default_sender_yield_every_n_chunks(),
@@ -572,6 +576,10 @@ fn default_cleanup_retain_count() -> u64 {
 /// Default snapshots storage path
 fn default_snapshots_dir() -> PathBuf {
     PathBuf::from("/tmp/snapshots")
+}
+/// Default snapshots directory prefix
+fn default_snapshots_dir_prefix() -> String {
+    "snapshot-".to_string()
 }
 
 /// 1KB chunks by default

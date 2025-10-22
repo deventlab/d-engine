@@ -37,7 +37,7 @@ pub(crate) struct NewCommitData {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) enum RoleEvent {
+pub enum RoleEvent {
     BecomeFollower(Option<u32>), // BecomeFollower(Option<leader_id>)
     BecomeCandidate,
     BecomeLeader,
@@ -49,7 +49,7 @@ pub(crate) enum RoleEvent {
 }
 
 #[derive(Debug)]
-pub(crate) enum RaftEvent {
+pub enum RaftEvent {
     ReceiveVoteRequest(
         VoteRequest,
         MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
@@ -123,7 +123,7 @@ pub(crate) enum RaftEvent {
 #[cfg(test)]
 #[cfg_attr(test, derive(Debug, Clone))]
 #[allow(unused)]
-pub(crate) enum TestEvent {
+pub enum TestEvent {
     ReceiveVoteRequest(VoteRequest),
 
     ClusterConf(MetadataRequest),
@@ -159,7 +159,7 @@ pub(crate) enum TestEvent {
 }
 
 #[cfg(test)]
-pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
+pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
     match event {
         RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
         RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),

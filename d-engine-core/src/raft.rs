@@ -32,12 +32,12 @@ pub struct Raft<T>
 where
     T: TypeConfig,
 {
-    pub(crate) node_id: u32,
+    pub node_id: u32,
     pub(crate) role: RaftRole<T>,
-    pub(crate) ctx: RaftContext<T>,
+    pub ctx: RaftContext<T>,
 
     // Network & Storage events
-    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
+    pub event_tx: mpsc::Sender<RaftEvent>,
     event_rx: mpsc::Receiver<RaftEvent>,
 
     // Timer

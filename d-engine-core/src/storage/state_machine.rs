@@ -1,4 +1,4 @@
-#![doc = include_str!("../docs/server_guide/customize-state-machine.md")]
+#![doc = include_str!("../../../d-engine-docs/src/docs/server_guide/customize-state-machine.md")]
 
 use bytes::Bytes;
 #[cfg(test)]
@@ -156,23 +156,4 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Resets the state machine to its initial state.
     /// Async operation as it may involve cleaning up files and data.
     async fn reset(&self) -> Result<(), Error>;
-}
-
-impl SnapshotMetadata {
-    pub fn checksum_array(&self) -> Result<[u8; 32], Error> {
-        if self.checksum.len() == 32 {
-            let mut array = [0u8; 32];
-            array.copy_from_slice(&self.checksum);
-            Ok(array)
-        } else {
-            Err(ConvertError::ConversionFailure("Invalid checksum length".to_string()).into())
-        }
-    }
-
-    pub fn set_checksum_array(
-        &mut self,
-        array: [u8; 32],
-    ) {
-        self.checksum = Bytes::copy_from_slice(&array);
-    }
 }
