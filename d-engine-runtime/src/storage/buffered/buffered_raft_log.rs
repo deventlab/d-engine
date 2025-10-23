@@ -348,6 +348,26 @@ where
         Ok(())
     }
 
+    async fn wait_durable(
+        &self,
+        index: u64,
+    ) -> Result<()> {
+        let durable_index = self.durable_index.load(Ordering::Acquire);
+        if index <= durable_index {
+            return Ok(());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.command_sender.send(LogCommand::WaitDurable(index, tx)).map_err(|e| {
+            NetworkError::SingalSendFailed(format!("wait_durable send failed: {e:?}"))
+        })?;
+
+        rx.await
+            .map_err(|_| NetworkError::SingalSendFailed("wait_durable channel closed".into()))?;
+
+        Ok(())
+    }
+
     async fn insert_batch(
         &self,
         logs: Vec<Entry>,

@@ -15,7 +15,7 @@ use tracing::debug;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::FileStorageEngine;
+// use crate::FileStorageEngine;
 use crate::FlushPolicy;
 use crate::LogStore;
 use crate::MockLogStore;
@@ -24,7 +24,7 @@ use crate::MockStateMachine;
 use crate::PersistenceConfig;
 use crate::PersistenceStrategy;
 use crate::RaftLog;
-use crate::RaftTypeConfig;
+// use crate::RaftTypeConfig;
 use crate::StorageEngine;
 use crate::alias::ROF;
 use crate::test_utils::MockStorageEngine;
@@ -37,13 +37,13 @@ use d_engine_proto::common::LogId;
 
 // Test utilities
 struct TestContext {
-    raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
-    storage: Arc<FileStorageEngine>,
+    raft_log: Arc<ROF<MockTypeConfig>>,
+    storage: Arc<MockStorageEngine>,
     _temp_dir: Option<tempfile::TempDir>,
     strategy: PersistenceStrategy,
     flush_policy: FlushPolicy,
-    // Add instance ID to ensure proper crash recovery simulation
-    path: String,
+    // Instance ID for persistence simulation across "crashes"
+    instance_id: String,
 }
 
 impl TestContext {
@@ -53,11 +53,11 @@ impl TestContext {
         instance_id: &str,
     ) -> Self {
         let temp_dir = tempdir().unwrap();
-        let path = temp_dir.path().to_path_buf().join(instance_id);
-        // let instance_id = instance_id.to_string();
-        let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
+        let instance_id_owned = instance_id.to_string();
 
-        let (raft_log, receiver) = BufferedRaftLog::new(
+        let storage = Arc::new(MockStorageEngine::with_id(instance_id_owned.clone()));
+
+        let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
             1,
             PersistenceConfig {
                 strategy: strategy.clone(),
@@ -73,7 +73,7 @@ impl TestContext {
         std::thread::sleep(Duration::from_millis(10));
 
         Self {
-            path: path.to_str().unwrap().to_string(),
+            instance_id: instance_id_owned,
             raft_log,
             storage,
             strategy,
@@ -89,7 +89,7 @@ impl TestContext {
         // Use the same instance ID to simulate recovery from the same storage
         let storage = Arc::new(FileStorageEngine::new(PathBuf::from(self.path.clone())).unwrap());
 
-        let (raft_log, receiver) = BufferedRaftLog::new(
+        let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
             1,
             PersistenceConfig {
                 strategy: self.strategy.clone(),

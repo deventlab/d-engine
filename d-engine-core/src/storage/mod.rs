@@ -1,4 +1,3 @@
-mod buffered;
 mod raft_log;
 mod snapshot_path_manager;
 mod state_machine;
