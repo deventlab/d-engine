@@ -1,3 +1,4 @@
+use d_engine_core::MockStateMachine;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -7,15 +8,14 @@ use d_engine_core::ConsensusError;
 use d_engine_core::Error;
 
 use crate::RaftTypeConfig;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
+use crate::test_utils::MockStorageEngine;
+use crate::test_utils::MockTypeConfig;
 use d_engine_core::Membership;
 use d_engine_core::MembershipError;
-use d_engine_core::MockStateMachine;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ensure_safe_join;
-use d_engine_core::test_utils::MockNode;
-use d_engine_core::test_utils::MockRpcService;
-use d_engine_core::test_utils::MockStorageEngine;
-use d_engine_core::test_utils::MockTypeConfig;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchRemove;
 use d_engine_proto::common::MembershipChange;

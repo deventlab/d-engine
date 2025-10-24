@@ -1,5 +1,8 @@
 mod mock_node_builder;
+mod mock_rpc_services;
+
 pub use mock_node_builder::*;
+pub use mock_rpc_services::*;
 
 use crate::Node;
 use d_engine_core::{

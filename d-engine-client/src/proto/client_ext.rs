@@ -1,3 +1,11 @@
+use d_engine_proto::{
+    client::{ClientResponse, ClientResult, client_response::SuccessResult},
+    error::ErrorCode,
+};
+use tracing::error;
+
+use crate::ClientApiError;
+
 pub trait ClientResponseExt {
     /// Convert response to boolean write result
     ///
@@ -10,37 +18,13 @@ pub trait ClientResponseExt {
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    fn into_read_results(self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
-        self.validate_error()?;
-        match &self.success_result {
-            Some(SuccessResult::ReadData(data)) => data
-                .results
-                .clone()
-                .into_iter()
-                .map(|item| {
-                    Ok(Some(ClientResult {
-                        key: item.key,
-                        value: item.value,
-                    }))
-                })
-                .collect(),
-            _ => {
-                error!("Invalid response type for read operation");
-                unreachable!()
-            }
-        }
-    }
+    fn into_read_results(self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError>;
 
     /// Validate error code in response header
     ///
     /// # Internal Logic
     /// Converts numeric error code to enum variant
-    fn validate_error(&self) -> std::result::Result<(), ClientApiError> {
-        match ErrorCode::try_from(self.error).unwrap_or(ErrorCode::Uncategorized) {
-            ErrorCode::Success => Ok(()),
-            e => Err(e.into()),
-        }
-    }
+    fn validate_error(&self) -> std::result::Result<(), ClientApiError>;
 }
 
 impl ClientResponseExt for ClientResponse {

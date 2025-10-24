@@ -18,7 +18,6 @@ use crate::Error;
 use crate::LeaderStateSnapshot;
 use crate::MockMembership;
 use crate::MockRaftLog;
-use crate::MockStateMachine;
 use crate::MockTransport;
 use crate::NetworkError;
 use crate::PeerUpdate;
@@ -77,8 +76,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case1() {
     let max_entries = 100;
     let peer_next_indices =
         HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -126,8 +124,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case2() {
     let max_entries = 100;
     let peer_next_indices =
         HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -172,8 +169,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case3() {
     let max_entries = 100;
     let peer_next_indices =
         HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -226,8 +222,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_1() {
         payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let peer_next_indices = HashMap::from([(peer3_id, peer3_next_id)]);
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -283,8 +278,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case4_2() {
         payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
     }];
     let peer_next_indices = HashMap::from([(peer3_id, peer3_next_id)]);
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -322,8 +316,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
         (my_id, 1),
         (peer3_id, leader_last_index_before_inserting_new_entries),
     ]);
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     let r = handler.retrieve_to_be_synced_logs_for_peers(
         new_entries.clone(),
@@ -348,8 +341,7 @@ async fn test_retrieve_to_be_synced_logs_for_peers_case5() {
 async fn test_generate_new_entries_case1() {
     let context = setup_raft_components("/tmp/test_generate_new_entries_case1", None, false);
     let my_id = 1;
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     let commands = vec![];
     let current_term = 1;
@@ -368,8 +360,7 @@ async fn test_generate_new_entries_case1() {
 async fn test_generate_new_entries_case2() {
     let context = setup_raft_components("/tmp/test_generate_new_entries_case2", None, false);
     let my_id = 1;
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
     let last_id = context.raft_log.last_entry_id();
     debug!("last_id: {}", last_id);
     let commands = vec![WriteCommand::delete(safe_kv_bytes(1))];
@@ -406,8 +397,7 @@ async fn test_build_append_request_case() {
     let peer2_next_index = 3;
     let peer3_id = 3;
     let peer3_next_index = 1;
-    let handler =
-        ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
     entries_per_peer.insert(

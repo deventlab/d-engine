@@ -1,9 +1,8 @@
-use std::sync::Arc;
-use std::vec;
-
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use d_engine_proto::common::NodeRole;
+use std::sync::Arc;
+use std::vec;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -13,7 +12,6 @@ use crate::ClientInner;
 use crate::ClusterClient;
 use crate::ConnectionPool;
 use crate::KvClient;
-use crate::client_extensions::ClientResponseExt;
 use crate::mock_rpc_service::MockNode;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;

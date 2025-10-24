@@ -37,45 +37,44 @@
 //! - Cluster formation and interaction tests
 //! - Failure scenario testing with real component interactions
 
-mod snapshot;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-#[allow(unused)]
-pub(crate) use snapshot::*;
-use tokio::sync::watch;
-
-use super::generate_insert_commands;
 use crate::BufferedRaftLog;
-use crate::DefaultStateMachineHandler;
-use crate::ElectionHandler;
 use crate::FileStateMachine;
 use crate::FileStorageEngine;
-use crate::FlushPolicy;
-use crate::LogSizePolicy;
-use crate::MockStateMachine;
-use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
-use crate::RaftLog;
 use crate::RaftMembership;
-use crate::RaftNodeConfig;
-use crate::RaftRole;
 use crate::RaftTypeConfig;
-use crate::ReplicationHandler;
-use crate::StateMachine;
-use crate::StorageEngine;
-use crate::TypeConfig;
-use crate::alias::MOF;
-use crate::alias::ROF;
-use crate::alias::SMOF;
-use crate::alias::TROF;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::test_utils::MockTypeConfig;
 use crate::test_utils::mock_state_machine;
+use bytes::Bytes;
+use bytes::BytesMut;
+use d_engine_core::DefaultStateMachineHandler;
+use d_engine_core::ElectionHandler;
+use d_engine_core::FlushPolicy;
+use d_engine_core::LogSizePolicy;
+use d_engine_core::MockStateMachine;
+use d_engine_core::PersistenceConfig;
+use d_engine_core::PersistenceStrategy;
+use d_engine_core::RaftLog;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::RaftRole;
+use d_engine_core::ReplicationHandler;
+use d_engine_core::StateMachine;
+use d_engine_core::StorageEngine;
+use d_engine_core::TypeConfig;
+use d_engine_core::alias::MOF;
+use d_engine_core::alias::ROF;
+use d_engine_core::alias::SMOF;
+use d_engine_core::alias::TROF;
+use d_engine_core::convert::safe_kv_bytes;
+use d_engine_core::test_utils::MockTypeConfig;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::watch;
 
 #[allow(dead_code)]
 pub struct TestContext<T>
@@ -252,4 +251,66 @@ pub fn node_config(db_path: &str) -> RaftNodeConfig {
     let mut s = RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully.");
     s.cluster.db_root_dir = PathBuf::from(db_path);
     s
+}
+
+pub fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
+    let mut buffer = BytesMut::new();
+
+    for id in ids {
+        let cmd = WriteCommand::insert(safe_kv_bytes(id), safe_kv_bytes(id));
+        cmd.encode(&mut buffer).expect("Failed to encode insert command");
+    }
+
+    buffer.freeze()
+}
+
+pub fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
+    let mut buffer = BytesMut::new();
+
+    for id in range {
+        let cmd = WriteCommand::delete(safe_kv_bytes(id));
+        cmd.encode(&mut buffer).expect("Failed to encode delete command");
+    }
+
+    buffer.freeze()
+}
+
+///Dependes on external id to specify the local log entry index.
+/// If duplicated ids are specified, then the only one entry will be inserted.
+pub async fn simulate_insert_command(
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
+    ids: Vec<u64>,
+    term: u64,
+) {
+    let mut entries = Vec::new();
+    for id in ids {
+        let log = Entry {
+            index: raft_log.pre_allocate_raft_logs_next_index(),
+            term,
+            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
+        };
+        entries.push(log);
+    }
+    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.flush().await.unwrap();
+}
+
+#[allow(dead_code)]
+pub async fn simulate_delete_command(
+    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
+    id_range: RangeInclusive<u64>,
+    term: u64,
+) {
+    let mut entries = Vec::new();
+    for id in id_range {
+        let log = Entry {
+            index: raft_log.pre_allocate_raft_logs_next_index(),
+            term,
+            payload: Some(EntryPayload::command(generate_delete_commands(id..=id))),
+        };
+        entries.push(log);
+    }
+    if let Err(e) = raft_log.insert_batch(entries).await {
+        panic!("error: {e:?}");
+    }
 }

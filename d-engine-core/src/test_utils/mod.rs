@@ -5,12 +5,10 @@ mod entry_builder;
 mod mock;
 mod snapshot;
 
-pub(crate) use snapshot::*;
-pub mod mock_type_config;
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;
-pub use mock_type_config::*;
+pub(crate) use snapshot::*;
 
 pub fn node_config(db_path: &str) -> crate::RaftNodeConfig {
     let mut s =

@@ -37,7 +37,6 @@ use crate::MockStateMachine;
 use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::StorageError;
-use crate::test_utils::MOCK_STATE_MACHINE_HANDLER_PORT_BASE;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 use crate::test_utils::crate_test_snapshot_stream;

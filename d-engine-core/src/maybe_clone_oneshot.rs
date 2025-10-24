@@ -31,10 +31,9 @@ pub trait RaftOneshot<T: Send> {
     fn new() -> (Self::Sender, Self::Receiver);
 }
 
-pub(crate) struct MaybeCloneOneshot;
+pub struct MaybeCloneOneshot;
 
-#[allow(dead_code)]
-pub(crate) struct MaybeCloneOneshotSender<T: Send> {
+pub struct MaybeCloneOneshotSender<T: Send> {
     inner: oneshot::Sender<T>,
 
     #[cfg(test)]
@@ -50,8 +49,7 @@ impl<T: Send> Debug for MaybeCloneOneshotSender<T> {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) struct MaybeCloneOneshotReceiver<T: Send> {
+pub struct MaybeCloneOneshotReceiver<T: Send> {
     inner: oneshot::Receiver<T>,
 
     #[cfg(test)]
@@ -203,7 +201,7 @@ impl<T: Send> RaftOneshot<T> for MaybeCloneOneshot {
 }
 
 #[derive(Debug)]
-pub(crate) struct StreamResponseSender {
+pub struct StreamResponseSender {
     inner: oneshot::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
 
     #[cfg(test)]

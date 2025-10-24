@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 d-engine-proto = { workspace = true }
-d-engine-core = { workspace = true, features = ["test-utils"] }
+d-engine-core = { workspace = true }
 
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -32,3 +32,4 @@ temp-env = "0.3.6"
 
 tracing-test = "0.2"
 tonic-health = "0.12.3"
+tokio-stream = "0.1.16"

@@ -13,8 +13,7 @@ use tracing::warn;
 
 use super::ClientInner;
 use crate::ClientApiError;
-use crate::client_extensions::ClientResponseExt;
-use crate::client_extensions::WriteCommandExt;
+use crate::ClientResponseExt;
 use crate::scoped_timer::ScopedTimer;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;

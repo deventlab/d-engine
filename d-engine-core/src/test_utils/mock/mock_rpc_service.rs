@@ -29,9 +29,6 @@ use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceServer;
 
-// ports for unit tests
-pub(crate) const MOCK_STATE_MACHINE_HANDLER_PORT_BASE: u32 = 60400;
-
 pub struct MockNode;
 
 impl MockNode {
