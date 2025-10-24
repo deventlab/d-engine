@@ -1,24 +1,16 @@
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::SnapshotConfig;
+use crate::convert::safe_kv_bytes;
 use bytes::Bytes;
 use bytes::BytesMut;
-use prost::Message;
-
-use crate::FileStorageEngine;
-use crate::MockStateMachine;
-use crate::RaftLog;
-use crate::RaftTypeConfig;
-use crate::SnapshotConfig;
-use crate::alias::ROF;
-use crate::convert::safe_kv_bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::membership_change::Change;
+use prost::Message;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::time::Duration;
 
 pub fn create_mixed_entries() -> Vec<Entry> {
     let config_entry = Entry {
@@ -51,7 +43,7 @@ pub fn create_config_entries() -> Vec<Entry> {
     vec![entry]
 }
 
-pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
+pub fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
     let mut buffer = BytesMut::new();
 
     for id in ids {
@@ -62,7 +54,7 @@ pub(crate) fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
     buffer.freeze()
 }
 
-pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
+pub fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
     let mut buffer = BytesMut::new();
 
     for id in range {
@@ -71,45 +63,6 @@ pub(crate) fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
     }
 
     buffer.freeze()
-}
-///Dependes on external id to specify the local log entry index.
-/// If duplicated ids are specified, then the only one entry will be inserted.
-pub(crate) async fn simulate_insert_command(
-    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
-    ids: Vec<u64>,
-    term: u64,
-) {
-    let mut entries = Vec::new();
-    for id in ids {
-        let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
-            term,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
-        };
-        entries.push(log);
-    }
-    raft_log.insert_batch(entries).await.unwrap();
-    raft_log.flush().await.unwrap();
-}
-
-#[allow(dead_code)]
-pub(crate) async fn simulate_delete_command(
-    raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
-    id_range: RangeInclusive<u64>,
-    term: u64,
-) {
-    let mut entries = Vec::new();
-    for id in id_range {
-        let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
-            term,
-            payload: Some(EntryPayload::command(generate_delete_commands(id..=id))),
-        };
-        entries.push(log);
-    }
-    if let Err(e) = raft_log.insert_batch(entries).await {
-        panic!("error: {e:?}");
-    }
 }
 
 pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {

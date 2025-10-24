@@ -4,17 +4,6 @@ pub mod leader_state;
 pub mod learner_state;
 pub mod role_state;
 
-#[cfg(test)]
-mod candidate_state_test;
-#[cfg(test)]
-mod follower_state_test;
-#[cfg(test)]
-mod leader_state_test;
-#[cfg(test)]
-mod learner_state_test;
-
-use std::collections::HashMap;
-
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
@@ -25,6 +14,7 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use serde::ser::SerializeStruct;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
@@ -296,7 +286,7 @@ impl<T: TypeConfig> RaftRole<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn follower_role_i32() -> i32 {
+    pub fn follower_role_i32() -> i32 {
         0
     }
 

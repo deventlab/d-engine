@@ -1,5 +1,5 @@
-use std::fs::create_dir_all;
 use std::fs::OpenOptions;
+use std::fs::create_dir_all;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::path::Path;
@@ -198,7 +198,7 @@ pub fn validate_checksum(
 ///
 /// # Example
 /// ```rust
-/// use d_engine::file_io::convert_vec_checksum;
+/// use d_engine_core::file_io::convert_vec_checksum;
 ///
 /// let vec_checksum = vec![0u8; 32];
 /// let array_checksum = convert_vec_checksum(vec_checksum).unwrap();

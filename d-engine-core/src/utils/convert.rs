@@ -1,9 +1,8 @@
+use bytes::Bytes;
+use prost::Message;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
-
-use bytes::Bytes;
-use prost::Message;
 
 use crate::ConvertError;
 use crate::Result;
@@ -27,8 +26,8 @@ pub fn safe_kv_bytes(key: u64) -> Bytes {
 /// Converts a `u64` to an 8-byte array in big-endian byte order.
 ///
 /// # Examples
-/// ```
-/// use d_engine::convert::safe_kv;
+/// ```rust
+/// use d_engine_core::convert::safe_kv;
 ///
 /// let bytes = safe_kv(0x1234_5678_9ABC_DEF0);
 /// assert_eq!(bytes, [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);

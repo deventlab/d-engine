@@ -316,7 +316,7 @@ impl<T> ElectionHandler<T>
 where
     T: TypeConfig,
 {
-    pub(crate) fn new(my_id: u32) -> Self {
+    pub fn new(my_id: u32) -> Self {
         Self {
             my_id,
             _phantom: PhantomData,

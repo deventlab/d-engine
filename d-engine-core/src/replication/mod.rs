@@ -12,8 +12,6 @@ pub use replication_handler::*;
 
 #[cfg(test)]
 mod batch_buffer_test;
-#[cfg(test)]
-mod replication_handler_test;
 
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------

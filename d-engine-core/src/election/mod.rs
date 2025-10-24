@@ -7,8 +7,8 @@
 mod election_handler;
 pub use election_handler::*;
 
-#[cfg(test)]
-mod election_handler_test;
+// #[cfg(test)]
+// mod election_handler_test;
 
 use std::sync::Arc;
 

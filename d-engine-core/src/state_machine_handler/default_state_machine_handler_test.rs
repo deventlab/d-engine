@@ -1120,7 +1120,7 @@ async fn test_cleanup_snapshot_case1() {
     // Verify files are compressed
     for version in &[2, 3] {
         let path = temp_dir.path().join(format!(
-            "{}/{}-1.tar.gz",
+            "{}{}-1.tar.gz",
             config.snapshots_dir_prefix, version
         ));
         assert!(path.is_file(), "Snapshot file not found: {path:?}",);
@@ -1504,7 +1504,7 @@ async fn create_test_files(
     snapshots_dir_prefix: &str,
 ) {
     for id in ids {
-        let file_name = format!("{}{id}-1.tar.gz", snapshots_dir_prefix);
+        let file_name = format!("{snapshots_dir_prefix}{id}-1.tar.gz",);
         let path = temp_dir.path().join(file_name);
         debug!(?path, "create_test_files");
         let mut file = File::create(&path).await.unwrap();

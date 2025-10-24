@@ -5,7 +5,6 @@ use bytes::Bytes;
 use mockall::automock;
 use tonic::async_trait;
 
-use crate::ConvertError;
 use crate::Error;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;

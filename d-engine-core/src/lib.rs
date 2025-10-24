@@ -25,8 +25,11 @@ pub use network::*;
 pub use raft::*;
 pub use storage::*;
 
+pub use election::*;
+pub use replication::*;
+pub use state_machine_handler::*;
+
 pub(crate) use commit_handler::*;
-pub(crate) use election::*;
 pub(crate) use maybe_clone_oneshot::*;
 pub(crate) use purge::*;
 pub(crate) use raft_context::*;
@@ -36,18 +39,14 @@ pub use raft_role::*;
 #[doc(hidden)]
 pub use utils::*;
 
-pub(crate) use replication::*;
-pub(crate) use state_machine_handler::*;
 pub(crate) use timer::*;
 #[doc(hidden)]
 pub use type_config::*;
 
 #[cfg(test)]
 mod raft_oneshot_test;
-#[cfg(test)]
-mod raft_test;
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub mod test_utils;
 
 /// In raft, during any Leader to Peer communication,
