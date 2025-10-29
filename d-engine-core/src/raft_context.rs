@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::RaftNodeConfig;
+use crate::TypeConfig;
 use crate::alias::EOF;
 use crate::alias::MOF;
 use crate::alias::PE;
@@ -9,43 +11,41 @@ use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::SMOF;
 use crate::alias::TROF;
-use crate::RaftNodeConfig;
-use crate::TypeConfig;
 
-pub(crate) struct RaftStorageHandles<T: TypeConfig> {
-    pub(crate) raft_log: Arc<ROF<T>>,
-    pub(crate) state_machine: Arc<SMOF<T>>,
+pub struct RaftStorageHandles<T: TypeConfig> {
+    pub raft_log: Arc<ROF<T>>,
+    pub state_machine: Arc<SMOF<T>>,
 }
 
-pub(crate) struct RaftCoreHandlers<T: TypeConfig> {
-    pub(crate) election_handler: EOF<T>,
-    pub(crate) replication_handler: REPOF<T>,
-    pub(crate) state_machine_handler: Arc<SMHOF<T>>,
+pub struct RaftCoreHandlers<T: TypeConfig> {
+    pub election_handler: EOF<T>,
+    pub replication_handler: REPOF<T>,
+    pub state_machine_handler: Arc<SMHOF<T>>,
 
     // Raft Log Purge Executor
-    pub(crate) purge_executor: Arc<PE<T>>,
+    pub purge_executor: Arc<PE<T>>,
 }
 
-pub(crate) struct RaftContext<T>
+pub struct RaftContext<T>
 where
     T: TypeConfig,
 {
-    pub(crate) node_id: u32,
+    pub node_id: u32,
 
     // Storages
-    pub(crate) storage: RaftStorageHandles<T>,
+    pub storage: RaftStorageHandles<T>,
 
     // Network
-    pub(crate) transport: Arc<TROF<T>>,
+    pub transport: Arc<TROF<T>>,
 
     // Cluster Membership
-    pub(crate) membership: Arc<MOF<T>>,
+    pub membership: Arc<MOF<T>>,
 
     // Handlers
-    pub(crate) handlers: RaftCoreHandlers<T>,
+    pub handlers: RaftCoreHandlers<T>,
 
     // RaftNodeConfig
-    pub(crate) node_config: Arc<RaftNodeConfig>,
+    pub node_config: Arc<RaftNodeConfig>,
 }
 
 impl<T> RaftContext<T>
@@ -91,7 +91,7 @@ where
         &self.membership
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_membership(
         &mut self,
         membership: Arc<MOF<T>>,
@@ -99,7 +99,7 @@ where
         self.membership = membership;
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_transport(
         &mut self,
         transport: Arc<TROF<T>>,

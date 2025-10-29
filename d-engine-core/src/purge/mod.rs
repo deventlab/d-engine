@@ -6,12 +6,12 @@
 //! maintaining Raft's safety guarantees.
 
 mod default_executor;
-pub(crate) use default_executor::*;
+pub use default_executor::*;
 
 #[cfg(test)]
 mod default_executor_test;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -25,7 +25,7 @@ use d_engine_proto::common::LogId;
 /// 1. All entries up to `last_included.index` are preserved in snapshots
 /// 2. No concurrent modifications during purge execution
 /// 3. Atomic persistence of purge metadata
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait PurgeExecutor: Send + Sync + 'static {
     /// Physically removes log entries up to specified index (inclusive)

@@ -9,7 +9,6 @@ use tokio::sync::watch;
 use tracing::error;
 use tracing::trace;
 
-use super::MockTypeConfig;
 use crate::ElectionConfig;
 use crate::MockElectionCore;
 use crate::MockMembership;
@@ -32,6 +31,7 @@ use crate::RoleEvent;
 use crate::SignalParams;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
+use crate::mock_type_config::MockTypeConfig;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 
@@ -81,7 +81,7 @@ impl MockBuilder {
         }
     }
 
-    pub(crate) fn build_context(self) -> RaftContext<MockTypeConfig> {
+    pub fn build_context(self) -> RaftContext<MockTypeConfig> {
         let (
             raft_log,
             state_machine,

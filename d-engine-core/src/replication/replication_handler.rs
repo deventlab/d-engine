@@ -513,11 +513,11 @@ where
 }
 
 #[derive(Debug)]
-pub(super) struct ReplicationData {
-    pub(super) leader_last_index_before: u64,
-    pub(super) current_term: u64,
-    pub(super) commit_index: u64,
-    pub(super) peer_next_indices: HashMap<u32, u64>,
+pub struct ReplicationData {
+    pub leader_last_index_before: u64,
+    pub current_term: u64,
+    pub commit_index: u64,
+    pub peer_next_indices: HashMap<u32, u64>,
 }
 
 impl<T> ReplicationHandler<T>
@@ -533,7 +533,7 @@ where
 
     /// Generate a new log entry
     ///     including insert them into local raft log
-    pub(super) async fn generate_new_entries(
+    pub async fn generate_new_entries(
         &self,
         entry_payloads: Vec<EntryPayload>,
         current_term: u64,
@@ -586,7 +586,7 @@ where
     }
 
     /// Prepare the items that need to be synchronized for each node
-    pub(super) fn prepare_peer_entries(
+    pub fn prepare_peer_entries(
         &self,
         new_entries: &[Entry],
         data: &ReplicationData,
@@ -603,7 +603,7 @@ where
     }
 
     /// Build an append request for a single node
-    pub(super) fn build_append_request(
+    pub fn build_append_request(
         &self,
         raft_log: &Arc<ROF<T>>,
         peer_id: u32,
@@ -663,7 +663,7 @@ where
 ///
 /// # Returns
 /// A vector of EntryPayload containing the serialized commands
-pub(crate) fn client_command_to_entry_payloads(commands: Vec<WriteCommand>) -> Vec<EntryPayload> {
+pub fn client_command_to_entry_payloads(commands: Vec<WriteCommand>) -> Vec<EntryPayload> {
     commands
         .into_iter()
         .map(|cmd| {

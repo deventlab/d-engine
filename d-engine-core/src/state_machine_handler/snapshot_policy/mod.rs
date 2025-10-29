@@ -6,7 +6,7 @@ mod log_size;
 mod time_based;
 #[allow(unused)]
 pub(crate) use composite::*;
-pub(crate) use log_size::*;
+pub use log_size::*;
 #[allow(unused)]
 pub(crate) use time_based::*;
 
@@ -20,10 +20,10 @@ mod log_size_test;
 #[cfg(test)]
 mod time_based_test;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 pub trait SnapshotPolicy: Send + Sync {
     fn should_trigger(
         &self,

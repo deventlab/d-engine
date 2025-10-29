@@ -1,32 +1,30 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
 use tracing_test::traced_test;
 
-use super::candidate_state::CandidateState;
-use crate::ConsensusError;
-use crate::ElectionError;
-use crate::Error;
-use crate::MaybeCloneOneshot;
-use crate::MaybeCloneOneshotSender;
-use crate::MockElectionCore;
-use crate::MockMembership;
-use crate::MockReplicationCore;
-use crate::MockStateMachineHandler;
-use crate::RaftEvent;
-use crate::RaftOneshot;
-use crate::RoleEvent;
-use crate::role_state::RaftRoleState;
-use crate::test_utils::MockTypeConfig;
-use crate::test_utils::crate_test_snapshot_stream;
-use crate::test_utils::create_test_chunk;
-use crate::test_utils::mock_election_core;
-use crate::test_utils::mock_raft_context;
-use crate::test_utils::setup_raft_components;
+use d_engine_core::ConsensusError;
+use d_engine_core::ElectionError;
+use d_engine_core::Error;
+use d_engine_core::MaybeCloneOneshot;
+use d_engine_core::MaybeCloneOneshotSender;
+use d_engine_core::MockElectionCore;
+use d_engine_core::MockMembership;
+use d_engine_core::MockReplicationCore;
+use d_engine_core::MockStateMachineHandler;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::RaftEvent;
+use d_engine_core::RaftOneshot;
+use d_engine_core::RoleEvent;
+use d_engine_core::candidate_state::CandidateState;
+use d_engine_core::role_state::RaftRoleState;
+use d_engine_core::test_utils::crate_test_snapshot_stream;
+use d_engine_core::test_utils::create_test_chunk;
+use d_engine_core::test_utils::mock_election_core;
+use d_engine_core::test_utils::mock_raft_context;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -46,6 +44,7 @@ use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_runtime::test_utils::*;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
@@ -146,7 +145,7 @@ fn setup_handle_raft_event_case1_params(
     resp_tx: MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
     term: u64,
 ) -> RaftEvent {
-    crate::RaftEvent::ReceiveVoteRequest(
+    d_engine_core::RaftEvent::ReceiveVoteRequest(
         VoteRequest {
             term,
             candidate_id: 1,
@@ -263,7 +262,7 @@ async fn test_handle_raft_event_case2() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let raft_event = d_engine_core::RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
 
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
@@ -301,7 +300,7 @@ async fn test_handle_raft_event_case3() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+    let raft_event = d_engine_core::RaftEvent::ClusterConfUpdate(
         ClusterConfChangeRequest {
             id: 2, // Leader ID
             term: 1,
@@ -381,7 +380,7 @@ async fn test_handle_raft_event_case4_1() {
         leader_commit_index: new_leader_commit,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = d_engine_core::RaftEvent::AppendEntries(append_entries_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -456,7 +455,7 @@ async fn test_handle_raft_event_case4_2() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = d_engine_core::RaftEvent::AppendEntries(append_entries_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -522,7 +521,7 @@ async fn test_handle_raft_event_case4_3() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = d_engine_core::RaftEvent::AppendEntries(append_entries_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -555,7 +554,7 @@ async fn test_handle_raft_event_case5() {
 
     // Handle raft event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = crate::RaftEvent::ClientPropose(
+    let raft_event = d_engine_core::RaftEvent::ClientPropose(
         ClientWriteRequest {
             client_id: 1,
             commands: vec![],
@@ -798,11 +797,11 @@ mod role_violation_tests {
 #[cfg(test)]
 mod handle_client_read_request {
     use super::*;
-    use crate::RaftNodeConfig;
-    use crate::config::ReadConsistencyPolicy as ServerPolicy;
-    use crate::convert::safe_kv_bytes;
-    use crate::test_utils::MockBuilder;
+    use d_engine_core::RaftNodeConfig;
+    use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
+    use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
+    use d_engine_runtime::test_utils::MockBuilder;
 
     /// # Case 6.1: test ClientReadRequest with linear request
     #[tokio::test]
@@ -819,7 +818,7 @@ mod handle_client_read_request {
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let raft_event = d_engine_core::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
 
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
@@ -851,7 +850,7 @@ mod handle_client_read_request {
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = crate::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let raft_event = d_engine_core::RaftEvent::ClientReadRequest(client_read_request, resp_tx);
 
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());

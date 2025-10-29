@@ -41,21 +41,17 @@
 mod mock_raft_builder;
 mod mock_rpc;
 mod mock_rpc_service;
-mod mock_storage_engine;
-mod mock_type_config;
 
 pub use mock_raft_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
-pub use mock_storage_engine::*;
-pub use mock_type_config::*;
 
 use super::node_config;
-use crate::RaftContext;
+use crate::{RaftContext, mock_type_config::MockTypeConfig};
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::sync::watch;
 
-pub(crate) fn mock_raft_context(
+pub fn mock_raft_context(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,

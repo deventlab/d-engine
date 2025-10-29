@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 use tonic::transport::Channel;
@@ -31,7 +31,7 @@ impl ConnectionType {
     }
 }
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
 where

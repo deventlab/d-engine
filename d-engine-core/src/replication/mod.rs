@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::Status;
 use tonic::async_trait;
@@ -56,7 +56,7 @@ pub struct AppendResponseWithUpdates {
 }
 
 /// Core replication protocol operations
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
 where

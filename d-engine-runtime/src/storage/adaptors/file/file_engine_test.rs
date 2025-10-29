@@ -5,13 +5,13 @@ use tonic::async_trait;
 use tracing_test::traced_test;
 
 use super::FileStorageEngine;
-use crate::storage::state_machine_test::StateMachineBuilder;
-use crate::storage::state_machine_test::StateMachineTestSuite;
-use crate::storage::storage_engine_test::StorageEngineBuilder;
-use crate::storage::storage_engine_test::StorageEngineTestSuite;
-use crate::Error;
 use crate::FileStateMachine;
-use crate::StateMachine;
+use d_engine_core::Error;
+use d_engine_core::StateMachine;
+use d_engine_core::state_machine_test::StateMachineBuilder;
+use d_engine_core::state_machine_test::StateMachineTestSuite;
+use d_engine_core::storage_engine_test::StorageEngineBuilder;
+use d_engine_core::storage_engine_test::StorageEngineTestSuite;
 
 struct FileStorageEngineBuilder {
     temp_dir: TempDir,

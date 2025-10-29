@@ -1,2 +1,2 @@
+#[cfg(test)]
 mod components;
-mod raft_test;

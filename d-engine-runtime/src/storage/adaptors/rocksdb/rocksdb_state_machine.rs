@@ -19,9 +19,9 @@ use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 
-use crate::Error;
-use crate::StateMachine;
-use crate::StorageError;
+use d_engine_core::Error;
+use d_engine_core::StateMachine;
+use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
@@ -29,7 +29,7 @@ use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::SnapshotMetadata;
 
 const STATE_MACHINE_CF: &str = "state_machine";
 const STATE_MACHINE_META_CF: &str = "state_machine_meta";

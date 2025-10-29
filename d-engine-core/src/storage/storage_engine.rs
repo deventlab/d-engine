@@ -3,7 +3,7 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -33,7 +33,7 @@ pub trait StorageEngine: Send + Sync + 'static {
     fn meta_store(&self) -> Arc<Self::MetaStore>;
 }
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait LogStore: Send + Sync + 'static {
     /// Batch persist entries into disk (optimized for sequential writes)
@@ -93,7 +93,7 @@ pub trait LogStore: Send + Sync + 'static {
 }
 
 /// Metadata storage operations
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait MetaStore: Send + Sync + 'static {
     /// Atomically persist hard state (current term and votedFor)

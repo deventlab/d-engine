@@ -68,7 +68,7 @@ impl SnapshotPolicy for LogSizePolicy {
 }
 
 impl LogSizePolicy {
-    pub(crate) fn new(
+    pub fn new(
         threshold: u64,
         cooldown: Duration,
     ) -> Self {

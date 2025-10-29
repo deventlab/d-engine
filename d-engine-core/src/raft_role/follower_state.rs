@@ -63,7 +63,7 @@ pub struct FollowerState<T: TypeConfig> {
     // -- Log Compaction & Purge --
     /// === Persistent State ===
     /// Last physically purged log index (inclusive)
-    pub(super) last_purged_index: Option<LogId>,
+    pub last_purged_index: Option<LogId>,
 
     // -- Cluster Configuration --
     /// Node configuration (shared immutable reference)
@@ -665,7 +665,7 @@ impl<T: TypeConfig> FollowerState<T> {
     /// - Critical for follower's log matching property during reelections
     /// - Prevents "phantom entries" when combined with §5.4.2 election restriction
     #[instrument(skip(self))]
-    pub(super) fn can_purge_logs(
+    pub fn can_purge_logs(
         &self,
         last_purge_index: Option<LogId>,
         last_included_in_request: LogId,

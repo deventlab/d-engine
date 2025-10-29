@@ -22,22 +22,22 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::AppendResult;
-use crate::BackoffPolicy;
-use crate::ClusterUpdateResult;
-use crate::ConnectionType;
-use crate::Error;
-use crate::InstallSnapshotBackoffPolicy;
-use crate::Membership;
-use crate::RetryPolicies;
-use crate::VoteResult;
-use crate::alias::MOF;
-use crate::grpc_task_with_timeout_and_exponential_backoff;
 use crate::scoped_timer::ScopedTimer;
+use d_engine_core::AppendResult;
+use d_engine_core::BackoffPolicy;
+use d_engine_core::ClusterUpdateResult;
+use d_engine_core::ConnectionType;
+use d_engine_core::Error;
+use d_engine_core::InstallSnapshotBackoffPolicy;
+use d_engine_core::Membership;
 use d_engine_core::NetworkError;
 use d_engine_core::Result;
+use d_engine_core::RetryPolicies;
 use d_engine_core::Transport;
 use d_engine_core::TypeConfig;
+use d_engine_core::VoteResult;
+use d_engine_core::alias::MOF;
+use d_engine_core::grpc_task_with_timeout_and_exponential_backoff;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::JoinResponse;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
@@ -48,11 +48,11 @@ use d_engine_proto::server::election::raft_election_service_client::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_client::RaftReplicationServiceClient;
-use d_engine_proto::storage::PurgeLogRequest;
-use d_engine_proto::storage::PurgeLogResponse;
-use d_engine_proto::storage::SnapshotAck;
-use d_engine_proto::storage::SnapshotChunk;
-use d_engine_proto::storage::snapshot_service_client::SnapshotServiceClient;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
 
 pub struct PeerAppender {
     pub(crate) sender: mpsc::Sender<AppendRequest>,
@@ -453,7 +453,7 @@ where
     async fn join_cluster(
         &self,
         leader_id: u32,
-        request: crate::proto::cluster::JoinRequest,
+        request: d_engine_proto::server::cluster::JoinRequest,
         retry: BackoffPolicy,
         membership: Arc<MOF<T>>,
     ) -> Result<JoinResponse> {

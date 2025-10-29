@@ -16,16 +16,24 @@ mod grpc_raft_service_test;
 #[cfg(test)]
 mod grpc_transport_test;
 
-//-------------------------------------------------------------------------------
-// Start RPC Server
+use crate::Node;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::Result;
+use d_engine_core::SystemError;
+use d_engine_core::TlsConfig;
+use d_engine_core::TypeConfig;
+use d_engine_proto::client::raft_client_service_server::RaftClientServiceServer;
+use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementServiceServer;
+use d_engine_proto::server::election::raft_election_service_server::RaftElectionServiceServer;
+use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationServiceServer;
+use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceServer;
+use futures::FutureExt;
+use rcgen::CertifiedKey;
+use rcgen::generate_simple_self_signed;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-
-use futures::FutureExt;
-use rcgen::CertifiedKey;
-use rcgen::generate_simple_self_signed;
 use tokio::sync::watch;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Certificate;
@@ -36,18 +44,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-use crate::Node;
-use crate::RaftNodeConfig;
-use crate::SystemError;
-use crate::TlsConfig;
-use d_engine_core::Result;
-use d_engine_core::TypeConfig;
-use d_engine_proto::client::raft_client_service_server::RaftClientServiceServer;
-use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementServiceServer;
-use d_engine_proto::server::election::raft_election_service_server::RaftElectionServiceServer;
-use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationServiceServer;
-use d_engine_proto::storage::snapshot_service_server::SnapshotServiceServer;
 
 /// RPC server works for RAFT protocol
 /// It mainly listens on two request: Vote RPC Request and Append Entries RPC

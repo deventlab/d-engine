@@ -1,34 +1,33 @@
+use bytes::Bytes;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-
-use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
 use tracing::debug;
 use tracing_test::traced_test;
 
-use crate::AppendResponseWithUpdates;
-use crate::ConsensusError;
-use crate::Error;
-use crate::MaybeCloneOneshot;
-use crate::MembershipError;
-use crate::MockMembership;
-use crate::MockReplicationCore;
-use crate::MockTransport;
-use crate::NetworkError;
-use crate::NewCommitData;
-use crate::RaftContext;
-use crate::RaftEvent;
-use crate::RaftOneshot;
-use crate::RoleEvent;
-use crate::SystemError;
-use crate::learner_state::LearnerState;
-use crate::role_state::RaftRoleState;
-use crate::test_utils::MockTypeConfig;
-use crate::test_utils::mock_membership;
-use crate::test_utils::mock_raft_context;
+use d_engine_core::AppendResponseWithUpdates;
+use d_engine_core::ConsensusError;
+use d_engine_core::Error;
+use d_engine_core::MaybeCloneOneshot;
+use d_engine_core::MembershipError;
+use d_engine_core::MockMembership;
+use d_engine_core::MockReplicationCore;
+use d_engine_core::MockTransport;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::NetworkError;
+use d_engine_core::NewCommitData;
+use d_engine_core::RaftContext;
+use d_engine_core::RaftEvent;
+use d_engine_core::RaftOneshot;
+use d_engine_core::RoleEvent;
+use d_engine_core::SystemError;
+use d_engine_core::learner_state::LearnerState;
+use d_engine_core::role_state::RaftRoleState;
+use d_engine_core::test_utils::mock_membership;
+use d_engine_core::test_utils::mock_raft_context;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::common::LogId;
@@ -151,7 +150,7 @@ async fn test_handle_raft_event_case3() {
     // Prepare function params
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = crate::RaftEvent::ClusterConfUpdate(
+    let raft_event = d_engine_core::RaftEvent::ClusterConfUpdate(
         ClusterConfChangeRequest {
             id: 2, // Leader ID
             term: 1,

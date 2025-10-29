@@ -38,20 +38,20 @@ use tracing::error;
 use tracing::trace;
 use tracing::warn;
 
-use crate::Error;
-use crate::FlushPolicy;
-use crate::HardState;
-use crate::LogStore;
-use crate::MetaStore;
-use crate::NetworkError;
-use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
-use crate::RaftLog;
-use crate::Result;
-use crate::StorageEngine;
-use crate::TypeConfig;
-use crate::alias::SOF;
 use crate::scoped_timer::ScopedTimer;
+use d_engine_core::Error;
+use d_engine_core::FlushPolicy;
+use d_engine_core::HardState;
+use d_engine_core::LogStore;
+use d_engine_core::MetaStore;
+use d_engine_core::NetworkError;
+use d_engine_core::PersistenceConfig;
+use d_engine_core::PersistenceStrategy;
+use d_engine_core::RaftLog;
+use d_engine_core::Result;
+use d_engine_core::StorageEngine;
+use d_engine_core::TypeConfig;
+use d_engine_core::alias::SOF;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 
@@ -61,7 +61,7 @@ where
 {
     sender: Option<Sender<FlushTask<T>>>,
     shutdown: Arc<AtomicBool>,
-    pub(crate) worker_handles: Vec<JoinHandle<()>>,
+    pub worker_handles: Vec<JoinHandle<()>>,
 }
 
 pub struct FlushTask<T>
@@ -108,19 +108,19 @@ where
     #[allow(dead_code)]
     node_id: u32,
 
-    pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
-    pub(crate) meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
+    pub log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
+    pub meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
 
     pub(crate) strategy: PersistenceStrategy,
     pub(crate) flush_policy: FlushPolicy,
 
     // --- In-memory state ---
     // Pending entries
-    pub(crate) entries: SkipMap<u64, Entry>,
+    pub entries: SkipMap<u64, Entry>,
     // Tracks the highest index that has been persisted to disk
-    pub(crate) durable_index: AtomicU64,
+    pub durable_index: AtomicU64,
     // The next index to be allocated
-    pub(crate) next_id: AtomicU64,
+    pub next_id: AtomicU64,
 
     // --- In-memory index ---
     min_index: AtomicU64, // Smallest log index (0 if empty)
@@ -134,10 +134,10 @@ where
     pub(crate) command_sender: mpsc::UnboundedSender<LogCommand>,
     // Track flush state
     pub(crate) flush_state: Mutex<FlushState>,
-    pub(crate) waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
+    pub waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
 
     // --- Flush worker pool ---
-    pub(crate) flush_workers: FlushWorkerPool<T>,
+    pub flush_workers: FlushWorkerPool<T>,
 }
 
 #[async_trait]
@@ -851,7 +851,7 @@ where
 
     /// Process entries for flush operation
     /// Separated to make error handling clearer
-    pub(super) async fn process_flush(
+    pub async fn process_flush(
         &self,
         indexes: &[u64],
     ) -> Result<()> {
@@ -950,7 +950,7 @@ where
 
     /// Efficient range removal with targeted term index updates
     /// O(k + t) where k = number of entries removed, t = number of affected terms
-    pub(crate) fn remove_range(
+    pub fn remove_range(
         &self,
         range: RangeInclusive<u64>,
     ) {
@@ -1183,8 +1183,8 @@ where
         debug!("Flush worker pool shut down successfully");
     }
 
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 }

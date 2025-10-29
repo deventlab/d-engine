@@ -10,12 +10,12 @@ use tracing::debug;
 
 use super::*;
 use crate::Error;
+use crate::MockTypeConfig;
 use crate::NetworkError;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
 use crate::StorageError;
 use crate::test_utils::MockNode;
-use crate::test_utils::MockTypeConfig;
 use crate::test_utils::create_snapshot_stream;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;

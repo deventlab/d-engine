@@ -33,7 +33,7 @@ where
     T: TypeConfig,
 {
     pub node_id: u32,
-    pub(crate) role: RaftRole<T>,
+    pub role: RaftRole<T>,
     pub ctx: RaftContext<T>,
 
     // Network & Storage events
@@ -41,7 +41,7 @@ where
     event_rx: mpsc::Receiver<RaftEvent>,
 
     // Timer
-    pub(crate) role_tx: mpsc::UnboundedSender<RoleEvent>,
+    pub role_tx: mpsc::UnboundedSender<RoleEvent>,
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
 
     // For business logic to apply logs into state machine
@@ -51,19 +51,19 @@ where
     shutdown_signal: watch::Receiver<()>,
 
     // For unit test
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     test_role_transition_listener: Vec<mpsc::UnboundedSender<i32>>,
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     test_raft_event_listener: Vec<mpsc::UnboundedSender<super::TestEvent>>,
 }
 
-pub(crate) struct SignalParams {
-    pub(crate) role_tx: mpsc::UnboundedSender<RoleEvent>,
-    pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
-    pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
-    pub(crate) shutdown_signal: watch::Receiver<()>,
+pub struct SignalParams {
+    pub role_tx: mpsc::UnboundedSender<RoleEvent>,
+    pub role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+    pub event_tx: mpsc::Sender<RaftEvent>,
+    pub event_rx: mpsc::Receiver<RaftEvent>,
+    pub shutdown_signal: watch::Receiver<()>,
 }
 
 impl<T> Raft<T>
@@ -71,7 +71,7 @@ where
     T: TypeConfig,
 {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         node_id: u32,
         role: RaftRole<T>,
         storage: RaftStorageHandles<T>,
@@ -105,10 +105,10 @@ where
 
             shutdown_signal: signal_params.shutdown_signal,
 
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             test_role_transition_listener: Vec::new(),
 
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             test_raft_event_listener: Vec::new(),
         }
     }
@@ -226,7 +226,7 @@ where
 
     /// `handle_role_event` will be responsbile to process role trasnsition and
     /// role state events.
-    pub(crate) async fn handle_role_event(
+    pub async fn handle_role_event(
         &mut self,
         role_event: RoleEvent,
     ) -> Result<()> {
@@ -313,14 +313,14 @@ where
         Ok(())
     }
 
-    pub(crate) fn register_new_commit_listener(
+    pub fn register_new_commit_listener(
         &mut self,
         tx: mpsc::UnboundedSender<NewCommitData>,
     ) {
         self.new_commit_listener.push(tx);
     }
 
-    pub(crate) fn notify_new_commit(
+    pub fn notify_new_commit(
         &self,
         new_commit_data: NewCommitData,
     ) {
@@ -333,32 +333,32 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn register_role_transition_listener(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn register_role_transition_listener(
         &mut self,
         tx: mpsc::UnboundedSender<i32>,
     ) {
         self.test_role_transition_listener.push(tx);
     }
 
-    #[cfg(test)]
-    pub(crate) fn notify_role_transition(&self) {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn notify_role_transition(&self) {
         let new_role_i32 = self.role.as_i32();
         for tx in &self.test_role_transition_listener {
             tx.send(new_role_i32).expect("should succeed");
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn register_raft_event_listener(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn register_raft_event_listener(
         &mut self,
         tx: mpsc::UnboundedSender<super::TestEvent>,
     ) {
         self.test_raft_event_listener.push(tx);
     }
 
-    #[cfg(test)]
-    pub(crate) fn notify_raft_event(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn notify_raft_event(
         &self,
         event: super::TestEvent,
     ) {
@@ -369,8 +369,8 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_role(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_role(
         &mut self,
         role: RaftRole<T>,
     ) {

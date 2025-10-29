@@ -32,7 +32,7 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 
 #[async_trait]
-pub(crate) trait RaftRoleState: Send + Sync + 'static {
+pub trait RaftRoleState: Send + Sync + 'static {
     type T: TypeConfig;
 
     //--- For sharing state behaviors

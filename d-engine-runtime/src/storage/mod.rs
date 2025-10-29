@@ -16,4 +16,4 @@ mod adaptors;
 mod buffered;
 
 pub use adaptors::*;
-pub(crate) use buffered::*;
+pub use buffered::*;

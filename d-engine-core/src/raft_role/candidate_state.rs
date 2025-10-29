@@ -62,7 +62,7 @@ pub struct CandidateState<T: TypeConfig> {
     /// Note:
     /// Even though candidates don’t purge logs, they must keep last_purged_index from the
     /// follower. Otherwise, the system may lose purge info and get into an inconsistent state.
-    pub(super) last_purged_index: Option<LogId>,
+    pub last_purged_index: Option<LogId>,
 
     // -- Election Timing --
     /// Election timeout manager
@@ -610,7 +610,7 @@ impl<T: TypeConfig> CandidateState<T> {
         }
     }
 
-    pub(super) fn send_become_follower_event(
+    pub fn send_become_follower_event(
         &self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -621,7 +621,7 @@ impl<T: TypeConfig> CandidateState<T> {
         })
     }
 
-    pub(super) fn send_replay_raft_event(
+    pub fn send_replay_raft_event(
         &self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         raft_event: RaftEvent,
@@ -634,7 +634,7 @@ impl<T: TypeConfig> CandidateState<T> {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn new(
         node_id: u32,
         node_config: Arc<RaftNodeConfig>,

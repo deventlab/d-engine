@@ -14,12 +14,13 @@
 use crate::Result;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-#[cfg(test)]
+
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use std::ops::RangeInclusive;
 use tonic::async_trait;
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait RaftLog: Send + Sync + 'static {
     // =========================================================================

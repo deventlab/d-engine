@@ -1,34 +1,37 @@
+use d_engine_core::MockReplicationCore;
+use d_engine_core::RaftEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time;
 use tokio::time::timeout;
 use tracing_test::traced_test;
 
-use super::*;
-use crate::AppendResults;
-use crate::ConsensusError;
-use crate::ElectionError;
-use crate::Error;
-use crate::MaybeCloneOneshot;
-use crate::MockElectionCore;
-use crate::MockMembership;
-use crate::MockRaftLog;
-use crate::MockTransport;
-use crate::PeerUpdate;
-use crate::RaftOneshot;
-use crate::VoteResult;
-use crate::candidate_state::CandidateState;
-use crate::cluster::is_candidate;
-use crate::cluster::is_follower;
-use crate::cluster::is_leader;
-use crate::cluster::is_learner;
-use crate::leader_state::LeaderState;
-use crate::test_utils::MockTypeConfig;
-use crate::test_utils::mock_raft;
+use d_engine_core::AppendResults;
+use d_engine_core::ConsensusError;
+use d_engine_core::ElectionError;
+use d_engine_core::Error;
+use d_engine_core::MaybeCloneOneshot;
+use d_engine_core::MockElectionCore;
+use d_engine_core::MockMembership;
+use d_engine_core::MockRaftLog;
+use d_engine_core::MockTransport;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::NewCommitData;
+use d_engine_core::PeerUpdate;
+use d_engine_core::RaftOneshot;
+use d_engine_core::RaftRole;
+use d_engine_core::RoleEvent;
+use d_engine_core::TestEvent;
+use d_engine_core::VoteResult;
+use d_engine_core::candidate_state::CandidateState;
+use d_engine_core::cluster::is_candidate;
+use d_engine_core::cluster::is_follower;
+use d_engine_core::cluster::is_leader;
+use d_engine_core::cluster::is_learner;
+use d_engine_core::leader_state::LeaderState;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
@@ -36,6 +39,7 @@ use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteResponse;
+use d_engine_runtime::mock_raft;
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]

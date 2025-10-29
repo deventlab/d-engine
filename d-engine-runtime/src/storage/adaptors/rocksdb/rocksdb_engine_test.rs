@@ -9,11 +9,11 @@ use tracing_test::traced_test;
 use uuid::Uuid;
 
 use super::*;
-use crate::Error;
-use crate::LogStore;
-use crate::StorageEngine;
-use crate::storage::storage_engine_test::StorageEngineBuilder;
-use crate::storage::storage_engine_test::StorageEngineTestSuite;
+use d_engine_core::Error;
+use d_engine_core::LogStore;
+use d_engine_core::StorageEngine;
+use d_engine_core::storage_engine_test::StorageEngineBuilder;
+use d_engine_core::storage_engine_test::StorageEngineTestSuite;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::common::Entry;
 
@@ -97,19 +97,19 @@ async fn test_rocksdb_performance() -> Result<(), Error> {
     Ok(())
 }
 
-fn create_test_command_payload(index: u64) -> crate::proto::common::EntryPayload {
+fn create_test_command_payload(index: u64) -> d_engine_proto::common::EntryPayload {
     // Create a simple insert command
     let key = Bytes::from(format!("key_{index}").into_bytes());
     let value = Bytes::from(format!("value_{index}").into_bytes());
 
     let insert = Insert { key, value };
-    let operation = crate::proto::client::write_command::Operation::Insert(insert);
-    let write_cmd = crate::proto::client::WriteCommand {
+    let operation = d_engine_proto::client::write_command::Operation::Insert(insert);
+    let write_cmd = d_engine_proto::client::WriteCommand {
         operation: Some(operation),
     };
 
-    crate::proto::common::EntryPayload {
-        payload: Some(crate::proto::common::entry_payload::Payload::Command(
+    d_engine_proto::common::EntryPayload {
+        payload: Some(d_engine_proto::common::entry_payload::Payload::Command(
             write_cmd.encode_to_vec().into(),
         )),
     }

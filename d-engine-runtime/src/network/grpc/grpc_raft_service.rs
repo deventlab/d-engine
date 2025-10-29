@@ -41,12 +41,12 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
-use d_engine_proto::storage::PurgeLogRequest;
-use d_engine_proto::storage::PurgeLogResponse;
-use d_engine_proto::storage::SnapshotAck;
-use d_engine_proto::storage::SnapshotChunk;
-use d_engine_proto::storage::SnapshotResponse;
-use d_engine_proto::storage::snapshot_service_server::SnapshotService;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotResponse;
+use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>

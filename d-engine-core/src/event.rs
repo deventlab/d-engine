@@ -29,10 +29,10 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
 
 #[derive(Debug, Clone)]
-pub(crate) struct NewCommitData {
-    pub(crate) new_commit_index: u64,
-    pub(crate) role: i32,
-    pub(crate) current_term: u64,
+pub struct NewCommitData {
+    pub new_commit_index: u64,
+    pub role: i32,
+    pub current_term: u64,
 }
 
 #[derive(Debug)]
@@ -120,8 +120,8 @@ pub enum RaftEvent {
     PromoteReadyLearners,
 }
 
-#[cfg(test)]
-#[cfg_attr(test, derive(Debug, Clone))]
+#[cfg(any(test, feature = "test-utils"))]
+#[cfg_attr(any(test, feature = "test-utils"), derive(Debug, Clone))]
 #[allow(unused)]
 pub enum TestEvent {
     ReceiveVoteRequest(VoteRequest),
@@ -158,7 +158,7 @@ pub enum TestEvent {
     PromoteReadyLearners,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
     match event {
         RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),

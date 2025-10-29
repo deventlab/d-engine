@@ -1,39 +1,39 @@
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tokio::sync::Mutex;
 use tracing::error;
 use tracing::trace;
 
 use super::MockTypeConfig;
-use crate::follower_state::FollowerState;
-use crate::grpc;
-use crate::ElectionConfig;
-use crate::MockElectionCore;
-use crate::MockMembership;
-use crate::MockPurgeExecutor;
-use crate::MockRaftLog;
-use crate::MockReplicationCore;
-use crate::MockStateMachine;
-use crate::MockStateMachineHandler;
-use crate::MockTransport;
 use crate::Node;
-use crate::Raft;
-use crate::RaftConfig;
-use crate::RaftContext;
-use crate::RaftCoreHandlers;
-use crate::RaftEvent;
-use crate::RaftLog;
-use crate::RaftNodeConfig;
-use crate::RaftRole;
-use crate::RaftStorageHandles;
-use crate::RoleEvent;
-use crate::SignalParams;
-use crate::StateMachine;
+use crate::grpc;
+use d_engine_core::ElectionConfig;
+use d_engine_core::MockElectionCore;
+use d_engine_core::MockMembership;
+use d_engine_core::MockPurgeExecutor;
+use d_engine_core::MockRaftLog;
+use d_engine_core::MockReplicationCore;
+use d_engine_core::MockStateMachine;
+use d_engine_core::MockStateMachineHandler;
+use d_engine_core::MockTransport;
+use d_engine_core::Raft;
+use d_engine_core::RaftConfig;
+use d_engine_core::RaftContext;
+use d_engine_core::RaftCoreHandlers;
+use d_engine_core::RaftEvent;
+use d_engine_core::RaftLog;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::RaftRole;
+use d_engine_core::RaftStorageHandles;
+use d_engine_core::RoleEvent;
+use d_engine_core::SignalParams;
+use d_engine_core::StateMachine;
+use d_engine_core::follower_state::FollowerState;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 
@@ -83,7 +83,7 @@ impl MockBuilder {
         }
     }
 
-    pub(crate) fn build_context(self) -> RaftContext<MockTypeConfig> {
+    pub fn build_context(self) -> RaftContext<MockTypeConfig> {
         let (
             raft_log,
             state_machine,

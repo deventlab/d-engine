@@ -55,15 +55,13 @@ pub use default_commit_handler::*;
 #[cfg(test)]
 mod default_commit_handler_test;
 
-//--------------------------------
-// CommitHandler trait definition
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
 use crate::Result;
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait CommitHandler: Send + Sync + 'static {
     async fn run(&mut self) -> Result<()>;

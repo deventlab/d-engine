@@ -9,8 +9,8 @@ use http_body_util::BodyExt;
 use http_body_util::StreamBody;
 use prost::Message;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::Code;
 use tonic::Status;
 use tonic::Streaming; // Adjust path as needed
@@ -47,7 +47,7 @@ pub fn encode_varint(
 }
 
 impl<T> GrpcStreamDecoder<T> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         GrpcStreamDecoder {
             _marker: PhantomData,
         }

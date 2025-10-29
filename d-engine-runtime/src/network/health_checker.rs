@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::predicate::*;
 use tonic::async_trait;
 use tonic::transport::Channel;
@@ -12,12 +12,12 @@ use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
 use tracing::error;
 
-use crate::NetworkConfig;
 use crate::net::address_str;
+use d_engine_core::NetworkConfig;
 use d_engine_core::NetworkError;
 use d_engine_core::Result;
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub(crate) trait HealthCheckerApis {
     async fn check_peer_is_ready(

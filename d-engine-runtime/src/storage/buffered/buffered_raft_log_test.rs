@@ -1,3 +1,5 @@
+use bytes::Bytes;
+use futures::future::join_all;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -5,9 +7,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::vec;
-
-use bytes::Bytes;
-use futures::future::join_all;
 use tempfile::tempdir;
 use tokio::time::Instant;
 use tokio::time::sleep;
@@ -15,35 +14,36 @@ use tracing::debug;
 use tracing_test::traced_test;
 
 use super::*;
-// use crate::FileStorageEngine;
-use crate::FlushPolicy;
-use crate::LogStore;
-use crate::MockLogStore;
-use crate::MockMetaStore;
-use crate::MockStateMachine;
-use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
-use crate::RaftLog;
-// use crate::RaftTypeConfig;
-use crate::StorageEngine;
-use crate::alias::ROF;
-use crate::test_utils::MockStorageEngine;
-use crate::test_utils::MockTypeConfig;
+use crate::BufferedRaftLog;
+use crate::FileStorageEngine;
+use crate::RaftTypeConfig;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::{self};
+use d_engine_core::FlushPolicy;
+use d_engine_core::LogStore;
+use d_engine_core::MockLogStore;
+use d_engine_core::MockMetaStore;
+use d_engine_core::MockStateMachine;
+use d_engine_core::MockStorageEngine;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::PersistenceConfig;
+use d_engine_core::PersistenceStrategy;
+use d_engine_core::RaftLog;
+use d_engine_core::StorageEngine;
+use d_engine_core::alias::ROF;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 
 // Test utilities
 struct TestContext {
-    raft_log: Arc<ROF<MockTypeConfig>>,
-    storage: Arc<MockStorageEngine>,
+    raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
+    storage: Arc<FileStorageEngine>,
     _temp_dir: Option<tempfile::TempDir>,
     strategy: PersistenceStrategy,
     flush_policy: FlushPolicy,
-    // Instance ID for persistence simulation across "crashes"
-    instance_id: String,
+    // Add instance ID to ensure proper crash recovery simulation
+    path: String,
 }
 
 impl TestContext {
@@ -53,11 +53,11 @@ impl TestContext {
         instance_id: &str,
     ) -> Self {
         let temp_dir = tempdir().unwrap();
-        let instance_id_owned = instance_id.to_string();
+        let path = temp_dir.path().to_path_buf().join(instance_id);
+        // let instance_id = instance_id.to_string();
+        let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
 
-        let storage = Arc::new(MockStorageEngine::with_id(instance_id_owned.clone()));
-
-        let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+        let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
                 strategy: strategy.clone(),
@@ -73,7 +73,7 @@ impl TestContext {
         std::thread::sleep(Duration::from_millis(10));
 
         Self {
-            instance_id: instance_id_owned,
+            path: path.to_str().unwrap().to_string(),
             raft_log,
             storage,
             strategy,
@@ -89,7 +89,7 @@ impl TestContext {
         // Use the same instance ID to simulate recovery from the same storage
         let storage = Arc::new(FileStorageEngine::new(PathBuf::from(self.path.clone())).unwrap());
 
-        let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+        let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
                 strategy: self.strategy.clone(),
@@ -2081,8 +2081,8 @@ mod disk_first_tests {
 mod mem_first_tests {
 
     use super::*;
-    use crate::LogStore;
-    use crate::StorageEngine;
+    use d_engine_core::LogStore;
+    use d_engine_core::StorageEngine;
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
@@ -2538,9 +2538,9 @@ mod performance_tests {
     use tokio::time::Duration;
 
     use super::*;
-    use crate::MockLogStore;
-    use crate::MockMetaStore;
-    use crate::test_utils::MockStorageEngine;
+    use d_engine_core::MockLogStore;
+    use d_engine_core::MockMetaStore;
+    use d_engine_core::MockStorageEngine;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2953,10 +2953,10 @@ mod batch_processor_tests {
 mod save_load_hard_state_tests {
     use super::*;
     use crate::FileStorageEngine;
-    use crate::HardState;
-    use crate::LogStore;
-    use crate::MetaStore;
-    use crate::StorageEngine;
+    use d_engine_core::HardState;
+    use d_engine_core::LogStore;
+    use d_engine_core::MetaStore;
+    use d_engine_core::StorageEngine;
     use d_engine_proto::server::election::VotedFor;
 
     /// Test that hard state operations use the meta tree and not the log tree
@@ -4511,7 +4511,7 @@ mod durable_index_test {
     use tempfile::tempdir;
     use tokio::sync::oneshot;
 
-    use crate::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
+    use d_engine_core::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
 
     use super::*;
     use std::sync::atomic::Ordering;

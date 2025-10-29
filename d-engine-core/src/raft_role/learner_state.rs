@@ -554,7 +554,7 @@ impl<T: TypeConfig> LearnerState<T> {
         }
     }
 
-    pub(crate) async fn broadcast_discovery(
+    pub async fn broadcast_discovery(
         &self,
         membership: Arc<MOF<T>>,
         ctx: &RaftContext<T>,
@@ -627,7 +627,7 @@ impl<T: TypeConfig> LearnerState<T> {
     }
 
     /// @return Option<(leader_id, Channel)>
-    pub(super) async fn select_valid_leader(
+    pub async fn select_valid_leader(
         &self,
         responses: Vec<LeaderDiscoveryResponse>,
     ) -> Option<u32> {

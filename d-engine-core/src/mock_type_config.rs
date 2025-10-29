@@ -9,7 +9,7 @@ use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockTransport;
 use crate::TypeConfig;
-use crate::test_utils::MockStorageEngine;
+use crate::mock_storage_engine::MockStorageEngine;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MockTypeConfig;

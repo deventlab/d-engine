@@ -47,11 +47,10 @@ mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;
 
-use std::sync::Arc;
-
 use futures::stream::BoxStream;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
+use std::sync::Arc;
 use tonic::async_trait;
 
 use super::NewCommitData;
@@ -65,7 +64,7 @@ use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait StateMachineHandler<T>: Send + Sync + 'static
 where

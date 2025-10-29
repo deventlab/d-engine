@@ -55,7 +55,6 @@ use d_engine_core::PersistenceConfig;
 use d_engine_core::PersistenceStrategy;
 use d_engine_core::RaftLog;
 use d_engine_core::RaftNodeConfig;
-use d_engine_core::RaftRole;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
@@ -65,12 +64,13 @@ use d_engine_core::alias::ROF;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::TROF;
 use d_engine_core::convert::safe_kv_bytes;
-use d_engine_core::test_utils::MockTypeConfig;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
+use prost::Message;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -143,7 +143,7 @@ pub fn setup_raft_components(
     let peers_meta = if let Some(meta) = peers_meta_option {
         meta
     } else {
-        let follower_role = RaftRole::<MockTypeConfig>::follower_role_i32();
+        let follower_role = Follower.into();
         vec![
             NodeMeta {
                 id: 1,

@@ -8,9 +8,9 @@ use super::*;
 use crate::net::address_str;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::{self};
-use crate::ConnectionParams;
-use crate::ConnectionType;
-use crate::NetworkConfig;
+use d_engine_core::ConnectionParams;
+use d_engine_core::ConnectionType;
+use d_engine_core::NetworkConfig;
 
 // Helper to create test config
 fn test_config() -> NetworkConfig {

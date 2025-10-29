@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 ///--------------------------------------
 /// Trait Definition
-#[cfg(test)]
+
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -36,7 +37,7 @@ pub struct StateUpdate {
     pub new_voted_for: Option<VotedFor>,
 }
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait ElectionCore<T>: Send + Sync + 'static
 where

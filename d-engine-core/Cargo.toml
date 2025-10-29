@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 
+[features]
+test-utils = ["mockall","uuid", "tonic-health"]
+
 [dependencies]
 d-engine-proto = { workspace = true }
 
@@ -35,18 +38,17 @@ http-body = "1.0"
 http-body-util = "0.1.3"
 crossbeam-skiplist = "0.1"
 crossbeam = "0.8"
-
+mockall = { version = "0.12.1", optional = true }
+tonic-health = { version = "0.12.3", optional = true }
 # Compress/decompress data stream
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 async-stream = "0.3.6"
+uuid = { version = "1", features = ["v4"], optional = true  }
 
 [dev-dependencies]
-mockall = "0.12.1"
 tracing-test = "0.2"
 serial_test = "3.2.0"
 temp-env = "0.3.6"
 tokio = { version = "1", features = ["test-util", "process"] }
 parking_lot = "0.12.3"
-uuid = { version = "1", features = ["v4"] }
-tonic-health = "0.12.3"
 nix = { version = "0.30.1", features = ["fs"] }

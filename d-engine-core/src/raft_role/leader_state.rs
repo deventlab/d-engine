@@ -96,13 +96,13 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 
 // Supporting data structures
 #[derive(Debug, Clone)]
-pub(crate) struct PendingPromotion {
-    pub(super) node_id: u32,
-    pub(super) ready_since: Instant,
+pub struct PendingPromotion {
+    pub node_id: u32,
+    pub ready_since: Instant,
 }
 
 impl PendingPromotion {
-    pub(crate) fn new(
+    pub fn new(
         node_id: u32,
         ready_since: Instant,
     ) -> Self {
@@ -129,7 +129,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// For each server (node_id), index of the next log entry to send to that server
     ///
     /// Raft Paper: §5.3 Figure 2 (nextIndex)
-    pub(super) next_index: HashMap<u32, u64>,
+    pub next_index: HashMap<u32, u64>,
 
     /// === Volatile State ===
     /// For each server (node_id), index of highest log entry known to be replicated
@@ -150,7 +150,7 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// The actual log purge is performed by a background task, which may be delayed
     /// due to resource constraints or retry mechanisms.
-    pub(super) scheduled_purge_upto: Option<LogId>,
+    pub scheduled_purge_upto: Option<LogId>,
 
     /// === Persistent State (MUST be on disk) ===
     /// The last log position that has been **physically removed** from stable storage.
@@ -162,17 +162,17 @@ pub struct LeaderState<T: TypeConfig> {
     /// Raft safety invariant:
     /// Any log entry with index ≤ `last_purged_index` is guaranteed to be
     /// reflected in the latest snapshot.
-    pub(super) last_purged_index: Option<LogId>,
+    pub last_purged_index: Option<LogId>,
 
     /// === Volatile State ===
     /// Peer purge progress tracking for flow control
     ///
     /// Key: Peer node ID
     /// Value: Last confirmed purge index from peer
-    pub(super) peer_purge_progress: HashMap<u32, u64>,
+    pub peer_purge_progress: HashMap<u32, u64>,
 
     /// Record if there is on-going snapshot creation activity
-    pub(super) snapshot_in_progress: AtomicBool,
+    pub snapshot_in_progress: AtomicBool,
 
     // -- Request Processing --
     /// Batched proposal buffer for client requests
@@ -216,10 +216,10 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Rationale: Avoiding frequent full scans improves batching efficiency and reduces CPU spikes
     /// in high-load environments (particularly crucial for RocketMQ-on-DLedger workflows).
-    pub(super) next_membership_maintenance_check: Instant,
+    pub next_membership_maintenance_check: Instant,
 
     /// Queue of learners that have caught up and are pending promotion to voter.
-    pub(super) pending_promotions: VecDeque<PendingPromotion>,
+    pub pending_promotions: VecDeque<PendingPromotion>,
 
     /// Lease timestamp for LeaseRead policy
     /// Tracks when leadership was last confirmed with quorum
@@ -1219,7 +1219,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// # Params
     /// - `execute_now`: should this propose been executed immediatelly. e.g.
     ///   enforce_quorum_consensus expected to be executed immediatelly
-    pub(crate) async fn process_raft_request(
+    pub async fn process_raft_request(
         &mut self,
         raft_request_with_signal: RaftRequestWithSignal,
         ctx: &RaftContext<T>,
@@ -1283,7 +1283,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ///    - Client response: `ProposeFailed`
     ///    - State update: none
     ///    - Return: original error
-    pub(super) async fn process_batch(
+    pub async fn process_batch(
         &mut self,
         batch: VecDeque<RaftRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -1525,7 +1525,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     #[allow(dead_code)]
-    pub(super) async fn batch_promote_learners(
+    pub async fn batch_promote_learners(
         &mut self,
         ready_learners_ids: Vec<u32>,
         ctx: &RaftContext<T>,
@@ -1637,7 +1637,7 @@ impl<T: TypeConfig> LeaderState<T> {
         (false, current_commit_index)
     }
 
-    pub(crate) fn ensure_state_machine_upto_commit_index(
+    pub fn ensure_state_machine_upto_commit_index(
         &self,
         state_machine_handler: &Arc<SMHOF<T>>,
         last_applied: u64,
@@ -1749,7 +1749,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// - Design differs from followers by requiring full cluster confirmation (Raft extension for
     ///   enhanced durability)
     #[instrument(skip(self))]
-    pub(super) fn can_purge_logs(
+    pub fn can_purge_logs(
         &self,
         last_purge_index: Option<LogId>,
         last_included_in_snapshot: LogId,
@@ -1766,7 +1766,7 @@ impl<T: TypeConfig> LeaderState<T> {
             && self.peer_purge_progress.values().all(|&v| v >= last_included_in_snapshot.index)
     }
 
-    pub(super) async fn handle_join_cluster(
+    pub async fn handle_join_cluster(
         &mut self,
         join_request: JoinRequest,
         sender: MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -1886,8 +1886,8 @@ impl<T: TypeConfig> LeaderState<T> {
         Err(error)
     }
 
-    #[cfg(test)]
-    pub(crate) fn new(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new(
         node_id: u32,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
@@ -1926,7 +1926,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    pub(super) async fn trigger_background_snapshot(
+    pub async fn trigger_background_snapshot(
         node_id: u32,
         metadata: SnapshotMetadata,
         state_machine_handler: Arc<SMHOF<T>>,
@@ -1973,7 +1973,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Processes all pending promotions while respecting the cluster's odd-node constraint
-    pub(super) async fn process_pending_promotions(
+    pub async fn process_pending_promotions(
         &mut self,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -2118,7 +2118,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Periodic check triggered every ~30s in the worst-case scenario
     /// using priority-based lazy scheduling. Actual average frequency
     /// is inversely proportional to system load.
-    pub(super) async fn conditionally_purge_stale_learners(
+    pub async fn conditionally_purge_stale_learners(
         &mut self,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
@@ -2225,7 +2225,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    pub(super) fn reset_next_membership_maintenance_check(
+    pub fn reset_next_membership_maintenance_check(
         &mut self,
         membership_maintenance_interval: Duration,
     ) {
@@ -2233,7 +2233,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// FINRA Rule 4370-approved remediation
-    pub(super) async fn handle_stale_learner(
+    pub async fn handle_stale_learner(
         &mut self,
         node_id: u32,
         ctx: &RaftContext<T>,
@@ -2256,7 +2256,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Check if current lease is still valid for LeaseRead policy
-    pub(super) fn is_lease_valid(
+    pub fn is_lease_valid(
         &self,
         ctx: &RaftContext<T>,
     ) -> bool {
@@ -2286,12 +2286,12 @@ impl<T: TypeConfig> LeaderState<T> {
         self.lease_timestamp.store(now, std::sync::atomic::Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn test_update_lease_timestamp(&self) {
         self.update_lease_timestamp();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn test_set_lease_timestamp(
         &self,
         timestamp: u64,
@@ -2361,7 +2361,7 @@ impl<T: TypeConfig> Debug for LeaderState<T> {
 /// - `available`: number of ready learners pending promotion
 ///
 /// Returns the maximum number of nodes to promote (0 if no safe promotion exists)
-pub(super) fn calculate_safe_batch_size(
+pub fn calculate_safe_batch_size(
     current: usize,
     available: usize,
 ) -> usize {

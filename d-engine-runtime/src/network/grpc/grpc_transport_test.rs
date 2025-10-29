@@ -11,19 +11,19 @@ use tonic::transport::Endpoint;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::ConnectionType;
-use crate::Error;
-use crate::RaftNodeConfig;
-use crate::RetryPolicies;
-use crate::SystemError;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::test_utils::MockNode;
-use crate::test_utils::MockTypeConfig;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::node_config;
+use d_engine_core::ConnectionType;
+use d_engine_core::Error;
 use d_engine_core::MockMembership;
+use d_engine_core::MockTypeConfig;
 use d_engine_core::NetworkError;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::RetryPolicies;
+use d_engine_core::SystemError;
 use d_engine_core::Transport;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
@@ -38,9 +38,9 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::storage::PurgeLogRequest;
-use d_engine_proto::storage::PurgeLogResponse;
-use d_engine_proto::storage::SnapshotChunk;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotChunk;
 
 fn mock_membership(
     peers: Vec<(u32, i32)>, //(node_id, role_i32)

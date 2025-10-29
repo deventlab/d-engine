@@ -10,10 +10,10 @@ use d_engine_core::Error;
 use crate::RaftTypeConfig;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
-use crate::test_utils::MockStorageEngine;
-use crate::test_utils::MockTypeConfig;
 use d_engine_core::Membership;
 use d_engine_core::MembershipError;
+use d_engine_core::MockStorageEngine;
+use d_engine_core::MockTypeConfig;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ensure_safe_join;
 use d_engine_proto::common::AddNode;
@@ -930,10 +930,10 @@ mod check_cluster_is_ready_test {
     use tokio::sync::oneshot;
 
     use super::*;
-    use crate::MockStateMachine;
     use crate::test_utils::MockNode;
     use crate::test_utils::MockRpcService;
-    use crate::test_utils::MockStorageEngine;
+    use d_engine_core::MockStateMachine;
+    use d_engine_core::MockStorageEngine;
 
     /// Case 1: Test all peers are healthy
     #[tokio::test]

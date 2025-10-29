@@ -33,7 +33,7 @@ impl<T: TypeConfig> PurgeExecutor for DefaultPurgeExecutor<T> {
 }
 
 impl<T: TypeConfig> DefaultPurgeExecutor<T> {
-    pub(crate) fn new(raft_log: Arc<ROF<T>>) -> Self {
+    pub fn new(raft_log: Arc<ROF<T>>) -> Self {
         DefaultPurgeExecutor {
             raft_log,
             pending_purge: None,

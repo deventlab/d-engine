@@ -6,7 +6,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::warn;
 
-use crate::BackoffPolicy;
+use d_engine_core::BackoffPolicy;
 use d_engine_core::NetworkError;
 use d_engine_core::Result;
 

@@ -1,3 +1,4 @@
+use prost::Message;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs::File;
@@ -14,8 +15,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-
-use prost::Message;
 use tonic::async_trait;
 use tracing::info;
 
@@ -223,7 +222,7 @@ impl FileLogStore {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn reset_sync(&self) -> Result<(), Error> {
         {
             let mut file = self.file_handle.lock().unwrap();

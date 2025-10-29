@@ -185,7 +185,7 @@ impl<T: TypeConfig> RaftRole<T> {
 
     #[allow(dead_code)]
     #[inline]
-    pub(crate) fn as_i32(&self) -> i32 {
+    pub fn as_i32(&self) -> i32 {
         match self {
             RaftRole::Follower(_) => 0,
             RaftRole::Candidate(_) => 1,
@@ -223,29 +223,29 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().is_learner()
     }
 
-    pub(crate) fn current_term(&self) -> u64 {
+    pub fn current_term(&self) -> u64 {
         self.state().current_term()
     }
 
     #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) fn voted_for(&self) -> Result<Option<VotedFor>> {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.state().voted_for()
     }
     #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) fn commit_index(&self) -> u64 {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn commit_index(&self) -> u64 {
         self.state().commit_index()
     }
-    #[cfg(test)]
-    pub(crate) fn match_index(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn match_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
         self.state().match_index(node_id)
     }
-    #[cfg(test)]
-    pub(crate) fn next_index(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn next_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
@@ -285,7 +285,7 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn follower_role_i32() -> i32 {
         0
     }
@@ -339,7 +339,7 @@ impl<'de> Deserialize<'de> for HardState {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum QuorumVerificationResult {
+pub enum QuorumVerificationResult {
     Success,        // Leadership confirmation successful
     LeadershipLost, // Confirmation of leadership loss (need to abdicate)
     RetryRequired,  // Retry required (leadership still exists)

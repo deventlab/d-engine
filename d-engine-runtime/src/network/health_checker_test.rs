@@ -6,8 +6,8 @@ use super::*;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
 use crate::test_utils::{self};
-use crate::ConnectionParams;
-use crate::NetworkConfig;
+use d_engine_core::ConnectionParams;
+use d_engine_core::NetworkConfig;
 
 /// Case 1: server is not ready
 #[tokio::test]

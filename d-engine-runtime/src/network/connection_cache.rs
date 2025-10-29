@@ -7,8 +7,8 @@ use tonic::transport::Endpoint;
 use tracing::debug;
 use tracing::trace;
 
-use crate::ConnectionType;
-use crate::NetworkConfig;
+use d_engine_core::ConnectionType;
+use d_engine_core::NetworkConfig;
 use d_engine_core::NetworkError;
 use d_engine_core::Result;
 

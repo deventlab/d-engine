@@ -1,3 +1,5 @@
+use bytes::Bytes;
+use futures::future::join_all;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -5,35 +7,32 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::vec;
-
-use bytes::Bytes;
-use futures::future::join_all;
 use tempfile::tempdir;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tracing::debug;
 use tracing_test::traced_test;
 
-use super::*;
-use crate::FileStorageEngine;
-use crate::FlushPolicy;
-use crate::LogStore;
-use crate::MockLogStore;
-use crate::MockMetaStore;
-use crate::MockStateMachine;
-use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
-use crate::RaftLog;
-use crate::RaftTypeConfig;
-use crate::StorageEngine;
-use crate::alias::ROF;
-use crate::test_utils::MockStorageEngine;
-use crate::test_utils::MockTypeConfig;
-use crate::test_utils::generate_insert_commands;
-use crate::test_utils::{self};
+use d_engine_core::FlushPolicy;
+use d_engine_core::LogStore;
+use d_engine_core::MockLogStore;
+use d_engine_core::MockMetaStore;
+use d_engine_core::MockStateMachine;
+use d_engine_core::MockStorageEngine;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::PersistenceConfig;
+use d_engine_core::PersistenceStrategy;
+use d_engine_core::RaftLog;
+use d_engine_core::StorageEngine;
+use d_engine_core::alias::ROF;
+use d_engine_core::test_utils::generate_insert_commands;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
+use d_engine_runtime::BufferedRaftLog;
+use d_engine_runtime::FileStorageEngine;
+use d_engine_runtime::RaftTypeConfig;
+use d_engine_runtime::test_utils;
 
 // Test utilities
 struct TestContext {
@@ -1607,7 +1606,7 @@ mod id_allocation_tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
-    use crate::FileStorageEngine;
+    use d_engine_runtime::FileStorageEngine;
 
     // In-memory test setup
     fn setup_memory() -> Arc<BufferedRaftLog<RaftTypeConfig<FileStorageEngine, MockStateMachine>>> {
@@ -2081,8 +2080,8 @@ mod disk_first_tests {
 mod mem_first_tests {
 
     use super::*;
-    use crate::LogStore;
-    use crate::StorageEngine;
+    use d_engine_core::LogStore;
+    use d_engine_core::StorageEngine;
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
@@ -2377,7 +2376,7 @@ mod common_tests {
 
 mod filter_out_conflicts_and_append_performance_tests {
     use super::*;
-    use crate::FileStorageEngine;
+    use d_engine_runtime::FileStorageEngine;
 
     #[tokio::test]
     async fn test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster()
@@ -2533,14 +2532,13 @@ mod filter_out_conflicts_and_append_performance_tests {
 
 mod performance_tests {
     use std::sync::Arc;
-
     use tokio::sync::Barrier;
     use tokio::time::Duration;
 
     use super::*;
-    use crate::MockLogStore;
-    use crate::MockMetaStore;
-    use crate::test_utils::MockStorageEngine;
+    use d_engine_core::MockLogStore;
+    use d_engine_core::MockMetaStore;
+    use d_engine_core::MockStorageEngine;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2815,11 +2813,11 @@ mod performance_tests {
 }
 
 mod batch_processor_tests {
+    use d_engine_runtime::LogCommand;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
-
     use tokio::sync::Notify;
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
@@ -2952,12 +2950,12 @@ mod batch_processor_tests {
 
 mod save_load_hard_state_tests {
     use super::*;
-    use crate::FileStorageEngine;
-    use crate::HardState;
-    use crate::LogStore;
-    use crate::MetaStore;
-    use crate::StorageEngine;
+    use d_engine_core::HardState;
+    use d_engine_core::LogStore;
+    use d_engine_core::MetaStore;
+    use d_engine_core::StorageEngine;
     use d_engine_proto::server::election::VotedFor;
+    use d_engine_runtime::FileStorageEngine;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]
@@ -3213,7 +3211,7 @@ async fn test_last_entry_id_performance() {
 #[cfg(test)]
 mod remove_range_tests {
     use super::*;
-    use crate::test_utils;
+    use d_engine_runtime::test_utils;
 
     #[tokio::test]
     async fn test_remove_middle_range() {
@@ -4511,7 +4509,7 @@ mod durable_index_test {
     use tempfile::tempdir;
     use tokio::sync::oneshot;
 
-    use crate::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
+    use d_engine_core::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
 
     use super::*;
     use std::sync::atomic::Ordering;

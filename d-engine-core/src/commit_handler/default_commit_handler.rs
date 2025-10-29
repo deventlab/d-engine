@@ -114,7 +114,7 @@ impl<T> DefaultCommitHandler<T>
 where
     T: TypeConfig,
 {
-    pub(crate) fn new(
+    pub fn new(
         my_id: u32,
         my_role: i32,
         my_current_term: u64,

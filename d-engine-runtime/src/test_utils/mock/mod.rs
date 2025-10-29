@@ -5,14 +5,13 @@ pub use mock_node_builder::*;
 pub use mock_rpc_services::*;
 
 use crate::Node;
-use d_engine_core::{
-    Raft,
-    test_utils::{MockTypeConfig, node_config},
-};
+use d_engine_core::{MockTypeConfig, Raft};
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::sync::watch;
 
-pub(crate) fn mock_node(
+use super::node_config;
+
+pub fn mock_node(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
@@ -26,7 +25,7 @@ pub(crate) fn mock_node(
     MockBuilder::new(shutdown_signal).with_node_config(node_config).build_node()
 }
 
-pub(crate) fn mock_raft(
+pub fn mock_raft(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,

@@ -25,17 +25,17 @@ pub use network::*;
 pub use raft::*;
 pub use storage::*;
 
+pub use commit_handler::*;
 pub use election::*;
+pub use maybe_clone_oneshot::*;
+pub use purge::*;
+pub use raft_context::*;
 pub use replication::*;
 pub use state_machine_handler::*;
 
-pub(crate) use commit_handler::*;
-pub(crate) use maybe_clone_oneshot::*;
-pub(crate) use purge::*;
-pub(crate) use raft_context::*;
-
 #[doc(hidden)]
 pub use raft_role::*;
+
 #[doc(hidden)]
 pub use utils::*;
 
@@ -46,8 +46,22 @@ pub use type_config::*;
 #[cfg(test)]
 mod raft_oneshot_test;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use test_utils::*;
+
+#[cfg(any(test, feature = "test-utils"))]
+mod mock_storage_engine;
+#[cfg(any(test, feature = "test-utils"))]
+mod mock_type_config;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use mock_storage_engine::*;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use mock_type_config::*;
 
 /// In raft, during any Leader to Peer communication,
 ///     if received response term is bigger than Leader's,

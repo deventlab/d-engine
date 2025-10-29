@@ -12,7 +12,7 @@ mod backgroup_snapshot_transfer;
 mod backgroup_snapshot_transfer_test;
 pub(crate) use backgroup_snapshot_transfer::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -33,7 +33,7 @@ use d_engine_proto::server::storage::SnapshotChunk;
 
 // Define a structured return value
 #[derive(Debug, Clone)]
-pub(crate) struct AppendResults {
+pub struct AppendResults {
     /// Whether a majority quorum is achieved (can be directly determined via
     /// peer_updates)
     pub commit_quorum_achieved: bool,
@@ -44,7 +44,7 @@ pub(crate) struct AppendResults {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PeerUpdate {
+pub struct PeerUpdate {
     pub match_index: Option<u64>,
     pub next_index: u64,
     /// if peer response success
@@ -90,7 +90,7 @@ pub struct ClusterUpdateResult {
     pub responses: Vec<Result<ClusterConfUpdateResponse>>,
 }
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait Transport<T>: Send + Sync + 'static
 where
@@ -302,7 +302,7 @@ use tracing::warn;
 use crate::Error;
 
 /// As soon as task has return we should return from this function
-pub(crate) async fn grpc_task_with_timeout_and_exponential_backoff<F, T, U>(
+pub async fn grpc_task_with_timeout_and_exponential_backoff<F, T, U>(
     task_name: &'static str,
     mut task: F,
     policy: BackoffPolicy,

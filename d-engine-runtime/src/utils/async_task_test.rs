@@ -1,14 +1,12 @@
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-
-use futures::future::join_all;
-
 use crate::async_task::spawn_task;
 use crate::async_task::task_with_timeout_and_exponential_backoff;
-use crate::BackoffPolicy;
-use crate::Error;
+use d_engine_core::BackoffPolicy;
+use d_engine_core::Error;
+use futures::future::join_all;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_task_with_timeout_and_exponential_backoff_success() {
@@ -22,7 +20,7 @@ async fn test_task_with_timeout_and_exponential_backoff_success() {
             if current == 0 {
                 Err(Error::Fatal("First attempt fails".to_string()))
             } else {
-                Ok::<_, crate::Error>(current)
+                Ok::<_, d_engine_core::Error>(current)
             }
         }
     };

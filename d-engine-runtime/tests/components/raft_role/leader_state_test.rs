@@ -1,12 +1,13 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use d_engine_runtime::test_utils::*;
 
 use bytes::Bytes;
 use futures::StreamExt;
 use mockall::predicate::eq;
 use nanoid::nanoid;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::Code;
@@ -14,41 +15,40 @@ use tonic::Status;
 use tonic::transport::Endpoint;
 use tracing_test::traced_test;
 
-use super::leader_state::LeaderState;
-use super::role_state::RaftRoleState;
-use crate::AppendResults;
-use crate::ConsensusError;
-use crate::Error;
-use crate::MaybeCloneOneshot;
-use crate::MaybeCloneOneshotReceiver;
-use crate::MaybeCloneOneshotSender;
-use crate::MockMembership;
-use crate::MockPurgeExecutor;
-use crate::MockRaftLog;
-use crate::MockReplicationCore;
-use crate::MockStateMachine;
-use crate::MockStateMachineHandler;
-use crate::MockTransport;
-use crate::NewCommitData;
-use crate::PeerUpdate;
-use crate::QuorumVerificationResult;
-use crate::RaftContext;
-use crate::RaftEvent;
-use crate::RaftNodeConfig;
-use crate::RaftOneshot;
-use crate::RaftRequestWithSignal;
-use crate::ReplicationError;
-use crate::RoleEvent;
-use crate::SnapshotError;
-use crate::client_command_to_entry_payloads;
-use crate::convert::safe_kv_bytes;
-use crate::test_utils::MockBuilder;
-use crate::test_utils::MockTypeConfig;
-use crate::test_utils::crate_test_snapshot_stream;
-use crate::test_utils::create_test_chunk;
-use crate::test_utils::mock_raft_context;
-use crate::test_utils::node_config;
-use crate::test_utils::setup_raft_components;
+use d_engine_core::AppendResults;
+use d_engine_core::ConsensusError;
+use d_engine_core::Error;
+use d_engine_core::MaybeCloneOneshot;
+use d_engine_core::MaybeCloneOneshotReceiver;
+use d_engine_core::MaybeCloneOneshotSender;
+use d_engine_core::MockMembership;
+use d_engine_core::MockPurgeExecutor;
+use d_engine_core::MockRaftLog;
+use d_engine_core::MockReplicationCore;
+use d_engine_core::MockStateMachine;
+use d_engine_core::MockStateMachineHandler;
+use d_engine_core::MockTransport;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::NewCommitData;
+use d_engine_core::PeerUpdate;
+use d_engine_core::QuorumVerificationResult;
+use d_engine_core::RaftContext;
+use d_engine_core::RaftEvent;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::RaftOneshot;
+use d_engine_core::RaftRequestWithSignal;
+use d_engine_core::ReplicationError;
+use d_engine_core::RoleEvent;
+use d_engine_core::SnapshotError;
+use d_engine_core::client_command_to_entry_payloads;
+use d_engine_core::convert::safe_kv_bytes;
+use d_engine_core::leader_state::LeaderState;
+use d_engine_core::role_state::RaftRoleState;
+use d_engine_core::test_utils::MockBuilder;
+use d_engine_core::test_utils::crate_test_snapshot_stream;
+use d_engine_core::test_utils::create_test_chunk;
+use d_engine_core::test_utils::mock_raft_context;
+use d_engine_core::test_utils::node_config;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -3057,13 +3057,12 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
 
 #[cfg(test)]
 mod trigger_background_snapshot_test {
+    use futures::stream;
     use std::sync::Arc;
 
-    use futures::stream;
-
     use super::*;
-    use crate::SnapshotConfig;
-    use crate::raft_role::leader_state::LeaderState;
+    use d_engine_core::SnapshotConfig;
+    use d_engine_core::leader_state::LeaderState;
     use d_engine_proto::server::storage::SnapshotChunk;
     use d_engine_proto::server::storage::SnapshotMetadata;
 
@@ -3083,7 +3082,7 @@ mod trigger_background_snapshot_test {
         let mut handler = MockStateMachineHandler::<MockTypeConfig>::new();
         handler.expect_load_snapshot_data().returning(move |_| {
             if should_fail {
-                Err(crate::SnapshotError::OperationFailed("mock error".to_string()).into())
+                Err(d_engine_core::SnapshotError::OperationFailed("mock error".to_string()).into())
             } else {
                 let chunk = SnapshotChunk {
                     data: Bytes::from(vec![1, 2, 3]),
@@ -3119,7 +3118,7 @@ mod trigger_background_snapshot_test {
         let config = default_snapshot_config();
         let metadata = make_metadata();
 
-        let result = LeaderState::<crate::test_utils::MockTypeConfig>::trigger_background_snapshot(
+        let result = LeaderState::<MockTypeConfig>::trigger_background_snapshot(
             2, metadata, sm_handler, membership, config,
         )
         .await;
@@ -3135,7 +3134,7 @@ mod trigger_background_snapshot_test {
         let config = default_snapshot_config();
         let metadata = make_metadata();
 
-        let result = LeaderState::<crate::test_utils::MockTypeConfig>::trigger_background_snapshot(
+        let result = LeaderState::<MockTypeConfig>::trigger_background_snapshot(
             2, metadata, sm_handler, membership, config,
         )
         .await;
@@ -3151,7 +3150,7 @@ mod trigger_background_snapshot_test {
         let config = default_snapshot_config();
         let metadata = make_metadata();
 
-        let result = LeaderState::<crate::test_utils::MockTypeConfig>::trigger_background_snapshot(
+        let result = LeaderState::<MockTypeConfig>::trigger_background_snapshot(
             2, metadata, sm_handler, membership, config,
         )
         .await;
@@ -3167,10 +3166,10 @@ mod batch_promote_learners_test {
     use mockall::predicate::*;
 
     use super::*;
-    use crate::RaftContext;
-    use crate::membership::MockMembership;
-    use crate::raft_role::RoleEvent;
-    use crate::raft_role::leader_state::LeaderState;
+    use d_engine_core::MockMembership;
+    use d_engine_core::RaftContext;
+    use d_engine_core::RoleEvent;
+    use d_engine_core::leader_state::LeaderState;
     use d_engine_proto::common::NodeStatus;
 
     enum VerifyInternalQuorumWithRetrySuccess {
@@ -3370,8 +3369,8 @@ mod pending_promotion_tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::leader_state::PendingPromotion;
-    use crate::leader_state::calculate_safe_batch_size;
+    use d_engine_core::leader_state::PendingPromotion;
+    use d_engine_core::leader_state::calculate_safe_batch_size;
 
     // Test fixture
     struct TestFixture {
@@ -3741,14 +3740,12 @@ mod pending_promotion_tests {
 mod stale_learner_tests {
     use std::sync::Arc;
     use std::time::Duration;
-
     use tokio::time::Instant;
 
     use super::*;
-    use crate::RaftNodeConfig;
-    use crate::leader_state::PendingPromotion;
-    use crate::test_utils;
-    use crate::test_utils::*; // Assuming you have test utilities
+    use d_engine_core::RaftNodeConfig;
+    use d_engine_core::leader_state::PendingPromotion;
+    use d_engine_core::test_utils;
 
     // Setup helper
     fn create_test_leader_state(
@@ -3947,8 +3944,8 @@ mod stale_learner_tests {
 #[cfg(test)]
 mod handle_client_read_request {
     use super::*;
-    use crate::config::ReadConsistencyPolicy as ServerPolicy;
-    use crate::convert::safe_kv_bytes;
+    use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
+    use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
 
     /// Test LeaseRead policy with valid lease
@@ -4179,8 +4176,8 @@ mod handle_client_read_request {
 #[cfg(test)]
 mod lease_validity_tests {
     use super::*;
-    use crate::RaftNodeConfig;
-    use crate::test_utils::MockBuilder;
+    use d_engine_core::RaftNodeConfig;
+    use d_engine_core::test_utils::MockBuilder;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::watch;

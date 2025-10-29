@@ -2,7 +2,7 @@ use bytes::Bytes;
 use prost::Message;
 
 use crate::FileStateMachine;
-use crate::StateMachine;
+use d_engine_core::StateMachine;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::client::write_command::Operation;
