@@ -1,8 +1,8 @@
 use bytes::Bytes;
 
-use d_engine_proto::common::membership_change::Change;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::membership_change::Change;
 
 pub struct EntryBuilder {
     index: u64,

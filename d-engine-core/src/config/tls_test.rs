@@ -1,7 +1,7 @@
 use tempfile::NamedTempFile;
 
-use crate::config::tls::TlsConfig;
 use crate::Error;
+use crate::config::tls::TlsConfig;
 
 #[test]
 fn test_tls_config_default_values() {
@@ -88,9 +88,11 @@ fn test_validate_self_signed_with_cert_paths_should_fail() {
 
     let error = result.unwrap_err();
     assert!(matches!(error, Error::Config(_)));
-    assert!(error
-        .to_string()
-        .contains("Cannot specify certificate paths with generate_self_signed_certificates=true"));
+    assert!(
+        error.to_string().contains(
+            "Cannot specify certificate paths with generate_self_signed_certificates=true"
+        )
+    );
 }
 
 #[test]

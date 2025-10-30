@@ -5,11 +5,10 @@ use tonic::Streaming;
 use tracing::trace;
 
 use crate::test_utils::crate_test_snapshot_stream;
-use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementService;
+use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
@@ -18,18 +17,19 @@ use d_engine_proto::server::cluster::JoinResponse;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::cluster::MetadataRequest;
-use d_engine_proto::server::election::raft_election_service_server::RaftElectionService;
+use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementService;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
+use d_engine_proto::server::election::raft_election_service_server::RaftElectionService;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
+use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
+use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 
 #[derive(Clone, Default)]
 pub struct MockRpcService {
@@ -218,7 +218,7 @@ impl SnapshotService for MockRpcService {
             None => {
                 return Err(tonic::Status::unknown(
                     "No mock install_snapshot response set",
-                ))
+                ));
             }
         }
     }

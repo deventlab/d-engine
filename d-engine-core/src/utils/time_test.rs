@@ -1,9 +1,9 @@
 use std::thread::sleep;
 
 use crate::time::get_duration_since_epoch;
-use crate::time::get_now_as_u128;
 use crate::time::get_now_as_u32;
 use crate::time::get_now_as_u64;
+use crate::time::get_now_as_u128;
 use crate::time::timestamp_millis;
 
 #[test]

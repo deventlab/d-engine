@@ -1,24 +1,24 @@
 use std::io::Write;
 use std::os::fd::AsRawFd;
 
-use nix::libc::flock;
 use nix::libc::LOCK_EX;
+use nix::libc::flock;
 use sha2::Digest;
 use sha2::Sha256;
-use tempfile::tempdir;
 use tempfile::NamedTempFile;
+use tempfile::tempdir;
 use tracing_test::traced_test;
 
+use crate::Error;
+use crate::FileError;
+use crate::StorageError;
+use crate::SystemError;
 use crate::file_io;
 use crate::file_io::compute_checksum_from_folder_path;
 use crate::file_io::convert_vec_checksum;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
 use crate::file_io::move_directory;
-use crate::Error;
-use crate::FileError;
-use crate::StorageError;
-use crate::SystemError;
 
 /// Passed: "/tmp/files/data.txt"
 /// Expected: "/tmp/files" created
@@ -290,8 +290,8 @@ mod validate_compressed_format_tests {
     use tracing::trace;
 
     use super::*;
-    use crate::file_io::validate_compressed_format;
     use crate::Result;
+    use crate::file_io::validate_compressed_format;
 
     /// Test valid GZIP files with supported extensions
     #[tokio::test]

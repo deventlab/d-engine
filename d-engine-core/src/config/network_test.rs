@@ -1,6 +1,6 @@
+use crate::Error;
 use crate::config::network::ConnectionParams;
 use crate::config::network::NetworkConfig;
-use crate::Error;
 
 // Helper function to create a valid base ConnectionParams for tests
 fn valid_base_params() -> ConnectionParams {
