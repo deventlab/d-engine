@@ -2,8 +2,6 @@ use std::fmt;
 
 use crate::convert::abs_ceil;
 use crate::convert::classify_error;
-use crate::convert::convert_high_and_low_fromu64_to_u128;
-use crate::convert::convert_u128_to_u64_with_high_and_low;
 use crate::convert::safe_kv;
 use crate::convert::safe_kv_bytes;
 use crate::convert::skv;
@@ -59,42 +57,6 @@ fn test_skv() {
     let result = skv(name);
     // The exact encoding depends on prost, but it should not be empty
     assert!(!result.is_empty());
-}
-
-#[test]
-fn test_convert_u128_to_u64_with_high_and_low() {
-    // Test basic conversion
-    let n: u128 = 0x1234_5678_9ABC_DEF0_0987_6543_21FE_DCBA;
-    let (high, low) = convert_u128_to_u64_with_high_and_low(n);
-    assert_eq!(high, 0x1234_5678_9ABC_DEF0);
-    assert_eq!(low, 0x0987_6543_21FE_DCBA);
-
-    // Test zero
-    let (high, low) = convert_u128_to_u64_with_high_and_low(0);
-    assert_eq!(high, 0);
-    assert_eq!(low, 0);
-
-    // Test max value
-    let (high, low) = convert_u128_to_u64_with_high_and_low(u128::MAX);
-    assert_eq!(high, u64::MAX);
-    assert_eq!(low, u64::MAX);
-}
-
-#[test]
-fn test_convert_high_and_low_fromu64_to_u128() {
-    // Test basic conversion
-    let high: u64 = 0x1234_5678_9ABC_DEF0;
-    let low: u64 = 0x0987_6543_21FE_DCBA;
-    let result = convert_high_and_low_fromu64_to_u128(high, low);
-    assert_eq!(result, 0x1234_5678_9ABC_DEF0_0987_6543_21FE_DCBA);
-
-    // Test zero
-    let result = convert_high_and_low_fromu64_to_u128(0, 0);
-    assert_eq!(result, 0);
-
-    // Test max values
-    let result = convert_high_and_low_fromu64_to_u128(u64::MAX, u64::MAX);
-    assert_eq!(result, u128::MAX);
 }
 
 #[test]

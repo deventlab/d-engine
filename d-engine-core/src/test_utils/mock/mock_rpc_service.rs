@@ -112,7 +112,7 @@ impl MockNode {
     }
 
     // Update helper functions to handle dynamic ports
-    pub(crate) async fn mock_channel_with_port(port: u16) -> Channel {
+    pub async fn mock_channel_with_port(port: u16) -> Channel {
         Channel::from_shared(format!("http://127.0.0.1:{port}"))
             .expect("valid address")
             .connect()
@@ -120,11 +120,11 @@ impl MockNode {
             .expect("connection failed")
     }
 
-    pub(crate) fn tcp_addr_to_http_addr(addr: String) -> String {
+    pub fn tcp_addr_to_http_addr(addr: String) -> String {
         format!("http://{addr}")
     }
 
-    pub(crate) async fn simulate_send_votes_mock_server(
+    pub async fn simulate_send_votes_mock_server(
         response: VoteResponse,
         rx: oneshot::Receiver<()>,
     ) -> Result<(Channel, u16)> {
@@ -139,7 +139,7 @@ impl MockNode {
         Ok((channel, port))
     }
 
-    pub(crate) async fn simulate_purge_mock_server(
+    pub async fn simulate_purge_mock_server(
         response: PurgeLogResponse,
         rx: oneshot::Receiver<()>,
     ) -> Result<(Channel, u16)> {
@@ -155,7 +155,7 @@ impl MockNode {
     }
 
     // Return channel + port
-    pub(crate) async fn simulate_snapshot_mock_server(
+    pub async fn simulate_snapshot_mock_server(
         response: std::result::Result<SnapshotResponse, tonic::Status>,
         rx: oneshot::Receiver<()>,
     ) -> Result<(Channel, u16)> {
@@ -170,7 +170,7 @@ impl MockNode {
     }
 
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn simulate_mock_service_with_cluster_conf_reps(
+    pub async fn simulate_mock_service_with_cluster_conf_reps(
         rx: oneshot::Receiver<()>,
         response_builder: Option<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
@@ -197,7 +197,7 @@ impl MockNode {
         Ok((channel, port))
     }
 
-    pub(crate) async fn simulate_append_entries_mock_server(
+    pub async fn simulate_append_entries_mock_server(
         response: std::result::Result<AppendEntriesResponse, Status>,
         rx: oneshot::Receiver<()>,
     ) -> Result<(Channel, u16)> {
@@ -212,7 +212,7 @@ impl MockNode {
     }
 
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn simulate_mock_service_with_join_cluster_reps(
+    pub async fn simulate_mock_service_with_join_cluster_reps(
         rx: oneshot::Receiver<()>,
         metadata_response_builder: Option<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
@@ -243,7 +243,7 @@ impl MockNode {
     }
 
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn simulate_client_read_mock_server(
+    pub async fn simulate_client_read_mock_server(
         rx: oneshot::Receiver<()>,
         metadata_response_builder: Option<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
@@ -274,7 +274,7 @@ impl MockNode {
     }
 
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn simulate_client_write_mock_server(
+    pub async fn simulate_client_write_mock_server(
         rx: oneshot::Receiver<()>,
         metadata_response_builder: Option<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,

@@ -3,6 +3,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream;
+use futures::stream::BoxStream;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tonic::Status;
@@ -15,10 +16,34 @@ use crate::NetworkError;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
 use crate::StorageError;
-use crate::test_utils::MockNode;
-use crate::test_utils::create_snapshot_stream;
+use crate::crate_test_snapshot_stream;
+use crate::create_test_chunk;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
+
+/// Helper to create a valid snapshot stream
+fn create_snapshot_stream(
+    chunks: usize,
+    chunk_size: usize,
+) -> BoxStream<'static, Result<SnapshotChunk>> {
+    let chunks: Vec<SnapshotChunk> = (0..chunks)
+        .map(|seq| {
+            let data = vec![seq as u8; chunk_size];
+            create_test_chunk(
+                seq as u32,
+                &data,
+                1, // term
+                1, // leader_id
+                chunks as u32,
+            )
+        })
+        .collect();
+
+    let stream = crate_test_snapshot_stream(chunks);
+    Box::pin(
+        stream.map(|item| item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())),
+    )
+}
 
 fn default_snapshot_config() -> SnapshotConfig {
     SnapshotConfig {
@@ -53,7 +78,7 @@ fn create_snapshot_chunk(
 #[cfg(test)]
 mod run_push_transfer_test {
     use super::*;
-    use crate::SystemError;
+    use crate::{MockNode, SystemError};
 
     #[tokio::test]
     async fn test_push_transfer_success() {

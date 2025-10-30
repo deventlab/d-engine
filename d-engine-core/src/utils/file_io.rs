@@ -1,6 +1,5 @@
 use std::fs::OpenOptions;
 use std::fs::create_dir_all;
-use std::io::ErrorKind;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
@@ -62,7 +61,8 @@ pub fn open_file_for_append(path: PathBuf) -> Result<std::fs::File> {
     Ok(log_file)
 }
 
-pub(crate) async fn write_into_file(
+#[allow(dead_code)]
+pub async fn write_into_file(
     path: PathBuf,
     buf: Vec<u8>,
 ) {
@@ -92,7 +92,8 @@ pub(crate) async fn write_into_file(
 ///
 /// # Error
 /// Returns a custom FileError error type, including various possible failure scenarios
-pub(crate) async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
+#[allow(dead_code)]
+pub async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     let display_path = path.display().to_string();
 
@@ -225,80 +226,6 @@ pub fn convert_vec_checksum(checksum: Vec<u8>) -> Result<[u8; 32]> {
     }
 }
 
-pub(crate) async fn move_directory(
-    temp_dir: &PathBuf,
-    final_dir: &PathBuf,
-) -> Result<()> {
-    // Check if final_dir already exists
-    if fs::metadata(final_dir).await.is_ok() {
-        return Err(StorageError::PathError {
-            path: final_dir.to_path_buf(),
-            source: std::io::Error::new(ErrorKind::AlreadyExists, "Target directory exists"),
-        }
-        .into());
-    }
-
-    // Attempt to rename/move the directory
-    fs::rename(&temp_dir, &final_dir).await.map_err(|e| StorageError::PathError {
-        path: temp_dir.to_path_buf(),
-        source: e,
-    })?;
-
-    Ok(())
-}
-
-pub(crate) async fn is_dir(path: &Path) -> Result<bool> {
-    let metadata = fs::metadata(path).await.map_err(StorageError::IoError)?;
-
-    // Check if it's a directory
-    Ok(metadata.is_dir())
-}
-
-/// Computes a SHA-256 checksum for a directory by hashing the contents of its files.
-///
-/// IMPORTANT: Files are processed in lexicographical order by filename. This is critical because:
-/// 1. File system enumeration order (via `read_dir`) is implementation-defined and
-///    non-deterministic
-/// 2. SHA-256 is order-sensitive: `hash(fileA + fileB) ≠ hash(fileB + fileA)`
-///
-/// The algorithm:
-/// 1. Collects all top-level files in the directory (ignores subdirectories and symlinks)
-/// 2. Sorts files by filename to ensure consistent processing order
-/// 3. Reads each file's content in sorted order
-/// 4. Updates hasher with each file's bytes sequentially
-/// 5. Finalizes and returns the SHA-256 hash
-///
-/// Notes:
-/// - Non-files (directories/symlinks) are silently ignored
-/// - Only top-level files are processed (no recursion into subdirectories)
-/// - File read order is determined by filename sort, not creation time or modification time
-/// - Empty directories will return the SHA-256 hash of empty data
-pub(crate) async fn compute_checksum_from_folder_path(folder_path: &Path) -> Result<[u8; 32]> {
-    let mut hasher = Sha256::new();
-    let mut entries = fs::read_dir(folder_path).await.map_err(StorageError::IoError)?;
-
-    // Collect files while preserving DirEntry information
-    let mut files = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
-        if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
-            files.push(entry);
-        }
-    }
-
-    // Critical sorting: Filenames compared as OsString but sorted by simple byte order.
-    // This matches lexical order for valid UTF-8 names, and provides consistent ordering
-    // for non-UTF names across platforms.
-    files.sort_by_key(|entry| entry.file_name());
-
-    // Process files in deterministic sorted order
-    for entry in files {
-        let data = fs::read(entry.path()).await.map_err(StorageError::IoError)?;
-        hasher.update(data);
-    }
-
-    Ok(hasher.finalize().into())
-}
-
 /// Computes a SHA-256 checksum for a file by hashing its contents.
 ///
 /// The algorithm:
@@ -311,7 +238,8 @@ pub(crate) async fn compute_checksum_from_folder_path(folder_path: &Path) -> Res
 /// - Processes the entire file content sequentially
 /// - Uses buffered reading to handle large files efficiently
 /// - Consistent across platforms and file systems
-pub(crate) async fn compute_checksum_from_file_path(file_path: &Path) -> Result<[u8; 32]> {
+#[allow(dead_code)]
+pub async fn compute_checksum_from_file_path(file_path: &Path) -> Result<[u8; 32]> {
     let mut file = tokio::fs::File::open(file_path).await.map_err(StorageError::IoError)?;
 
     let mut hasher = Sha256::new();
@@ -365,4 +293,12 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[allow(dead_code)]
+pub(super) async fn is_dir(path: &Path) -> Result<bool> {
+    let metadata = fs::metadata(path).await.map_err(StorageError::IoError)?;
+
+    // Check if it's a directory
+    Ok(metadata.is_dir())
 }

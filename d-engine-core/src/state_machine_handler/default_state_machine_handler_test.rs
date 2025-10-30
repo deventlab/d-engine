@@ -4,7 +4,6 @@ use mockall::Sequence;
 use mockall::predicate::eq;
 use std::collections::HashSet;
 use std::fs;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -308,9 +307,9 @@ mod apply_chunk_test {
     }
 }
 
-fn listen_addr(port: u32) -> SocketAddr {
-    format!("127.0.0.1:{port}",).parse().unwrap()
-}
+// fn listen_addr(port: u32) -> SocketAddr {
+//     format!("127.0.0.1:{port}",).parse().unwrap()
+// }
 
 // /// Case1: Complete successful snapshot installation
 // #[tokio::test]

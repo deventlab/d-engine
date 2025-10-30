@@ -51,18 +51,6 @@ pub fn skv(name: String) -> Vec<u8> {
     name.encode_to_vec()
 }
 
-/// return (high, low)
-pub(crate) fn convert_u128_to_u64_with_high_and_low(n: u128) -> (u64, u64) {
-    ((n >> 64) as u64, n as u64)
-}
-/// return (high, low)
-pub(crate) fn convert_high_and_low_fromu64_to_u128(
-    high: u64,
-    low: u64,
-) -> u128 {
-    ((high as u128) << 64) | (low as u128)
-}
-
 /// abs_ceil(0.3) = 1
 /// abs_ceil(0.5) = 1
 /// abs_ceil(1.1) = 2

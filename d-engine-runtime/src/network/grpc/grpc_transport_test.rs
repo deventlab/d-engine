@@ -12,7 +12,6 @@ use tracing_test::traced_test;
 
 use super::*;
 use crate::grpc::grpc_transport::GrpcTransport;
-use crate::test_utils::MockNode;
 use d_engine_core::ConnectionType;
 use d_engine_core::Error;
 use d_engine_core::MockMembership;
@@ -24,6 +23,7 @@ use d_engine_core::SystemError;
 use d_engine_core::Transport;
 use d_engine_core::crate_test_snapshot_stream;
 use d_engine_core::create_test_chunk;
+use d_engine_core::test_utils::MockNode;
 use d_engine_core::test_utils::node_config;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;

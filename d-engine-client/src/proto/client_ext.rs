@@ -12,6 +12,7 @@ pub trait ClientResponseExt {
     /// # Returns
     /// - `Ok(true)` on successful write
     /// - `Err` with converted error code on failure
+    #[allow(dead_code)]
     fn into_write_result(self) -> std::result::Result<bool, ClientApiError>;
 
     /// Convert response to read results

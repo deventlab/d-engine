@@ -6,11 +6,10 @@ use tracing_test::traced_test;
 
 use super::*;
 use crate::net::address_str;
-use crate::test_utils::MockRpcService;
-use crate::test_utils::{self};
 use d_engine_core::ConnectionParams;
 use d_engine_core::ConnectionType;
 use d_engine_core::NetworkConfig;
+use d_engine_core::test_utils::MockRpcService;
 
 // Helper to create test config
 fn test_config() -> NetworkConfig {
@@ -27,7 +26,9 @@ async fn mock_address() -> (String, oneshot::Sender<()>) {
     let is_ready = true;
     let mock_service = MockRpcService::default();
     let (_port, addr) =
-        test_utils::MockNode::mock_listener(mock_service, rx, is_ready).await.unwrap();
+        d_engine_core::test_utils::MockNode::mock_listener(mock_service, rx, is_ready)
+            .await
+            .unwrap();
 
     (address_str(&addr.to_string()), tx)
 }

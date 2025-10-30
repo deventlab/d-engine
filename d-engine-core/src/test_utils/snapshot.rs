@@ -5,7 +5,6 @@ use crc32fast::Hasher;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
-use futures::stream::BoxStream;
 use http_body::Frame;
 use http_body_util::BodyExt;
 use http_body_util::StreamBody;
@@ -18,36 +17,10 @@ use tonic::Code;
 use tonic::Status;
 use tracing::debug;
 
-use crate::NetworkError;
-use crate::Result;
 use crate::stream::GrpcStreamDecoder;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
-
-/// Helper to create a valid snapshot stream
-pub(crate) fn create_snapshot_stream(
-    chunks: usize,
-    chunk_size: usize,
-) -> BoxStream<'static, Result<SnapshotChunk>> {
-    let chunks: Vec<SnapshotChunk> = (0..chunks)
-        .map(|seq| {
-            let data = vec![seq as u8; chunk_size];
-            create_test_chunk(
-                seq as u32,
-                &data,
-                1, // term
-                1, // leader_id
-                chunks as u32,
-            )
-        })
-        .collect();
-
-    let stream = crate_test_snapshot_stream(chunks);
-    Box::pin(
-        stream.map(|item| item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())),
-    )
-}
 
 pub fn crate_test_snapshot_stream<T>(chunks: Vec<T>) -> tonic::Streaming<T>
 where

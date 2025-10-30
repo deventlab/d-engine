@@ -34,6 +34,7 @@ pub trait RaftOneshot<T: Send> {
 pub struct MaybeCloneOneshot;
 
 pub struct MaybeCloneOneshotSender<T: Send> {
+    #[allow(dead_code)]
     inner: oneshot::Sender<T>,
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -50,6 +51,7 @@ impl<T: Send> Debug for MaybeCloneOneshotSender<T> {
 }
 
 pub struct MaybeCloneOneshotReceiver<T: Send> {
+    #[allow(dead_code)]
     inner: oneshot::Receiver<T>,
 
     #[cfg(any(test, feature = "test-utils"))]

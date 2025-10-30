@@ -3,11 +3,10 @@ use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::test_utils::MockNode;
-use crate::test_utils::MockRpcService;
-use crate::test_utils::{self};
 use d_engine_core::ConnectionParams;
 use d_engine_core::NetworkConfig;
+use d_engine_core::test_utils::MockNode;
+use d_engine_core::test_utils::MockRpcService;
 
 /// Case 1: server is not ready
 #[tokio::test]
@@ -16,7 +15,12 @@ async fn test_check_peer_is_ready_case1() {
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = false;
     let mock_service = MockRpcService::default();
-    let (_port, addr) = match test_utils::MockNode::mock_listener(mock_service, rx, is_ready).await
+    let (_port, addr) = match d_engine_core::test_utils::MockNode::mock_listener(
+        mock_service,
+        rx,
+        is_ready,
+    )
+    .await
     {
         Ok(a) => a,
         Err(e) => {
@@ -68,7 +72,12 @@ async fn test_check_peer_is_ready_case2() {
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = true;
     let mock_service = MockRpcService::default();
-    let (_port, addr) = match test_utils::MockNode::mock_listener(mock_service, rx, is_ready).await
+    let (_port, addr) = match d_engine_core::test_utils::MockNode::mock_listener(
+        mock_service,
+        rx,
+        is_ready,
+    )
+    .await
     {
         Ok(a) => a,
         Err(e) => {

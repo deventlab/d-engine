@@ -1187,6 +1187,16 @@ where
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Returns true if the buffer contains no entries.
+    ///
+    /// This complements the `len()` method to follow Rust API conventions.
+    /// Clippy requires: Any struct with a public `len` method should also
+    /// have a public `is_empty` method.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 impl<T> Drop for BufferedRaftLog<T>
