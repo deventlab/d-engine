@@ -9,3 +9,14 @@ pub mod cluster_ext;
 pub mod common_ext;
 pub mod replication_ext;
 pub mod storage_ext;
+
+#[cfg(test)]
+mod client_ext_test;
+#[cfg(test)]
+mod cluster_ext_test;
+#[cfg(test)]
+mod common_ext_test;
+#[cfg(test)]
+mod replication_ext_test;
+#[cfg(test)]
+mod storage_ext_test;

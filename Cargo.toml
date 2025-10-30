@@ -1,3 +1,4 @@
+
 [workspace]
 members = [
   "d-engine-proto",
@@ -5,6 +6,13 @@ members = [
   "d-engine-client",
   "d-engine-runtime",
   "d-engine-docs",
+]
+
+exclude = [
+  "examples/client_usage",
+  "examples/rocksdb-cluster",
+  "examples/sled-cluster",
+  "examples/three-nodes-cluster",
 ]
 
 resolver = "2"
