@@ -198,28 +198,26 @@ build-release: check check-workspace
 # TESTING
 # ============================================================================
 
-## test                 Run unit and integration tests (with logging)
+## test                 Run all tests (lib + bins + examples + integration)
 test: install-tools check-workspace
-	@echo "$(BLUE)Running unit and integration tests...$(NC)"
+	@echo "$(BLUE)Running tests on all targets...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --lib --all-targets --no-fail-fast -- --test-threads=1 --nocapture
-	@echo "$(BLUE)Running integration tests...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --test '*' --no-fail-fast -- --nocapture
+		$(CARGO) test --workspace --all-targets --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
-## test-unit            Run unit tests only (--lib flag)
+## test-unit            Run unit tests only (library code only)
 test-unit: install-tools check-workspace
-	@echo "$(BLUE)Running unit tests...$(NC)"
+	@echo "$(BLUE)Running unit tests (lib only)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 		$(CARGO) test --workspace --lib --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ Unit tests passed$(NC)"
+
 
 ## test-integration     Run integration tests only (--test flag)
 test-integration: install-tools check-workspace
 	@echo "$(BLUE)Running integration tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --test '*' --no-fail-fast -- --nocapture
+		$(CARGO) test --workspace --tests --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ Integration tests passed$(NC)"
 
 ## test-doc             Run documentation tests only

@@ -3424,7 +3424,10 @@ mod remove_range_tests {
         let duration = start.elapsed();
 
         println!("Removed 50,000 entries in {duration:?}");
-        assert!(duration < std::time::Duration::from_millis(100));
+        assert!(
+            duration < std::time::Duration::from_millis(100),
+            "Operations took too long: {duration:?}"
+        );
 
         // Verify state
         assert_eq!(context.raft_log.len(), 50_000);

@@ -16,7 +16,7 @@ use super::RaftEvent;
 use super::RaftRole;
 use super::RaftStorageHandles;
 use super::RoleEvent;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use super::raft_event_to_test_event;
 use crate::Membership;
 use crate::NetworkError;
@@ -209,14 +209,14 @@ where
                 Some(raft_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?raft_event, "receive raft event");
 
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-utils"))]
                     let event = raft_event_to_test_event(&raft_event);
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
                         error!(%self.node_id, ?e, "handle_raft_event error");
                     }
 
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-utils"))]
                     self.notify_raft_event(event);
                 }
 
@@ -237,7 +237,7 @@ where
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
 
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
 
                 //TODO: update membership
@@ -246,7 +246,7 @@ where
                 debug!("BecomeCandidate");
                 self.role = self.role.become_candidate()?;
 
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLeader => {
@@ -282,14 +282,14 @@ where
                     })?;
                 }
 
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLearner => {
                 debug!("BecomeLearner");
                 self.role = self.role.become_learner()?;
 
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
             }
             RoleEvent::NotifyNewCommitIndex(new_commit_data) => {

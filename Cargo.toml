@@ -110,30 +110,30 @@ tempfile = "3.19.1"
 # tonic-build = "0.12"
 # vergen = { version = "8.1", features = ["git", "gitcl"] }
 
-# [profile.dev]
-# opt-level = 1      # Main code is low-optimized to speed up compilation
-# incremental = true # Enable incremental compilation (enabled by default, requires confirmation)
-# codegen-units = 16 # Appropriately reduce parallel units to reduce memory usage
-# lto = false
+[profile.dev]
+opt-level = 1      # Main code is low-optimized to speed up compilation
+incremental = true # Enable incremental compilation (enabled by default, requires confirmation)
+codegen-units = 16 # Appropriately reduce parallel units to reduce memory usage
+lto = false
 
-# [profile.dev.package."*"]
-# opt-level = 3 # All dependency optimization levels
+[profile.dev.package."*"]
+opt-level = 3 # All dependency optimization levels
 
-# [profile.release]
-# incremental = true
-# debug = false
-# # opt-level = 3
-# opt-level = 'z'        # Optimized for minimum size
-# overflow-checks = true
-# lto = true             # Eliminate redundant code and reduce size
-# codegen-units = 1      # Reduce parallel code generation units to improve optimization effect
+[profile.release]
+incremental = true
+debug = false
+# opt-level = 3
+opt-level = 'z'        # Optimized for minimum size
+overflow-checks = true
+lto = true             # Eliminate redundant code and reduce size
+codegen-units = 1      # Reduce parallel code generation units to improve optimization effect
 
 
-# [profile.test]
-# incremental = true
-# codegen-units = 16           # Take advantage of M2 multi-core
-# split-debuginfo = "unpacked" # macOS-specific optimization
-# debug = 1                    # Reduce debug information
+[profile.test]
+incremental = true
+codegen-units = 16           # Take advantage of M2 multi-core
+split-debuginfo = "unpacked" # macOS-specific optimization
+debug = 1                    # Reduce debug information
 
-# [profile.test.build-override]
-# opt-level = 3 # Full optimization of dependencies
+[profile.test.build-override]
+opt-level = 3 # Full optimization of dependencies
