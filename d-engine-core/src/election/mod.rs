@@ -12,9 +12,6 @@ pub use election_handler::*;
 
 use std::sync::Arc;
 
-///--------------------------------------
-/// Trait Definition
-
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;

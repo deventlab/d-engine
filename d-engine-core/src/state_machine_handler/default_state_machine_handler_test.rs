@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use bytes::Bytes;
+use futures::StreamExt;
+use mockall::Sequence;
+use mockall::predicate::eq;
 use std::collections::HashSet;
 use std::fs;
 use std::net::SocketAddr;
@@ -6,54 +9,36 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-
-use bytes::Bytes;
-use futures::StreamExt;
-use mockall::Sequence;
-use mockall::predicate::eq;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use tokio::fs::File;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time;
 use tracing::debug;
 use tracing_test::traced_test;
 
 use super::DefaultStateMachineHandler;
-use super::MockStateMachineHandler;
 use super::StateMachineHandler;
-use crate::AppendResults;
 use crate::ConsensusError;
-use crate::ElectionError;
 use crate::Error;
-use crate::MockElectionCore;
 use crate::MockRaftLog;
-use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockTypeConfig;
 use crate::SnapshotError;
-use crate::StateUpdate;
 use crate::StorageError;
-use crate::test_utils::MockBuilder;
 use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
-use crate::test_utils::node_config;
 use crate::test_utils::snapshot_config;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
 
 // Case 1: normal update
 #[test]

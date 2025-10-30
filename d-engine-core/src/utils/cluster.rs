@@ -1,9 +1,8 @@
+use dashmap::DashSet;
+use metrics::gauge;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
-
-use dashmap::DashSet;
-use metrics::gauge;
 use tracing::error;
 
 use d_engine_proto::common::Entry;

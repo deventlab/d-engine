@@ -1,11 +1,11 @@
-mod client_ext;
-mod cluster_ext;
-mod common_ext;
-mod replication_ext;
-mod storage_ext;
+//! Protocol buffer type extensions
+//!
+//! This module provides additional trait implementations and helper methods
+//! for protobuf-generated types. While the imports appear unused at the module level,
+//! they are re-exported for use by dependent crates (d-engine-core, d-engine-runtime, d-engine-client).
 
-pub use client_ext::*;
-pub use cluster_ext::*;
-pub use common_ext::*;
-pub use replication_ext::*;
-pub use storage_ext::*;
+pub mod client_ext;
+pub mod cluster_ext;
+pub mod common_ext;
+pub mod replication_ext;
+pub mod storage_ext;

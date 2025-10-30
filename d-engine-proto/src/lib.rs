@@ -1,7 +1,8 @@
-//! Protocol Buffer definitions and generated code for RPC services.
+//! Protocol buffer type extensions
 //!
-//! This module contains auto-generated Rust types from Protobuf definitions,
-//! typically created using [`tonic-build`] or `protoc` compiler plugins.
+//! This module provides additional trait implementations and helper methods
+//! for protobuf-generated types. The re-exports here are used by dependent crates
+//! (d-engine-core, d-engine-runtime, d-engine-client) when they import from this crate.
 
 pub mod common {
     include!("generated/d_engine.common.rs");
@@ -32,7 +33,4 @@ pub mod client {
     include!("generated/d_engine.client.rs");
 }
 
-mod exts;
-
-#[doc(hidden)]
-pub use exts::*;
+pub mod exts;

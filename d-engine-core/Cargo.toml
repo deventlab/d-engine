@@ -52,3 +52,6 @@ temp-env = "0.3.6"
 tokio = { version = "1", features = ["test-util", "process"] }
 parking_lot = "0.12.3"
 nix = { version = "0.30.1", features = ["fs"] }
+mockall = "0.12.1"
+tonic-health = "0.12.3"
+uuid = { version = "1", features = ["v4"] }
