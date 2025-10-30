@@ -1173,7 +1173,7 @@ mod pre_warm_connections_tests {
 
     use super::*;
     use crate::net::address_str;
-    
+
     use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 

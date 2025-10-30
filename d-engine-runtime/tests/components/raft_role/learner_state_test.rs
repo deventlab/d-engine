@@ -626,7 +626,6 @@ fn mock_context(
 ) -> RaftContext<MockTypeConfig> {
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join(case_name);
-    
 
     mock_raft_context(case_path.to_str().unwrap(), shutdown_signal, None)
 }
