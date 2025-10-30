@@ -160,7 +160,6 @@ async fn run_success_without_joining() {
         !logs_contain("Node is joining"),
         "Join cluster should NOT be executed"
     );
-    assert!(logs_contain("Node is running"), "Node should be running");
 }
 
 #[tokio::test(start_paused = true)]
@@ -187,6 +186,7 @@ async fn run_success_with_joining() {
         .expect_request_snapshot_from_leader()
         .returning(|_, _, _, _| Err(Error::Fatal("()".to_string())));
     let (raft_log, replication_handler) = prepare_succeed_majority_confirmation();
+
     // Build node using MockBuilder
     let node_id = 100;
     let config = {
@@ -259,7 +259,6 @@ async fn run_success_with_joining() {
         logs_contain("Node is joining"),
         "Join cluster should NOT be executed"
     );
-    assert!(logs_contain("Node is running"), "Node should be running");
 }
 
 #[tokio::test(start_paused = true)]

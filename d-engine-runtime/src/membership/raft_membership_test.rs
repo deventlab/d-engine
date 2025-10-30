@@ -941,6 +941,11 @@ mod check_cluster_is_ready_test {
         let peer_ids = vec![2, 3];
         let mut mock_services = Vec::new();
 
+        let mut config = RaftNodeConfig::default();
+        config.retry.membership.max_retries = 3;
+        config.raft.membership.cluster_healthcheck_probe_service_name =
+            "d_engine.server.cluster.ClusterManagementService".to_string();
+
         // Create membership with 2 peers
         let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
             1,
@@ -953,7 +958,7 @@ mod check_cluster_is_ready_test {
                     status: NodeStatus::Active.into(),
                 })
                 .collect(),
-            RaftNodeConfig::default(),
+            config,
         );
 
         // Create mock services for peers
@@ -962,8 +967,11 @@ mod check_cluster_is_ready_test {
             let service = MockRpcService::default();
             let (port, addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
             membership.update_node_address(id, format!("127.0.0.1:{port}")).await.unwrap();
+            println!("{:?}---", &addr);
             mock_services.push((tx, addr));
         }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Verify cluster health
         let result = membership.check_cluster_is_ready().await;

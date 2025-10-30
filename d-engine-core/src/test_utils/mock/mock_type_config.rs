@@ -7,9 +7,9 @@ use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
+use crate::MockStorageEngine;
 use crate::MockTransport;
 use crate::TypeConfig;
-use crate::mock_storage_engine::MockStorageEngine;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MockTypeConfig;

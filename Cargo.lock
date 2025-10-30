@@ -496,6 +496,7 @@ dependencies = [
  "crossbeam-skiplist",
  "d-engine-core",
  "d-engine-proto",
+ "d-engine-runtime",
  "dashmap",
  "futures",
  "http-body",

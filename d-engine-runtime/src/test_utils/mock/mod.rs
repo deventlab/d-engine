@@ -5,11 +5,10 @@ pub use mock_node_builder::*;
 pub use mock_rpc_services::*;
 
 use crate::Node;
+use d_engine_core::node_config;
 use d_engine_core::{MockTypeConfig, Raft};
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::sync::watch;
-
-use super::node_config;
 
 pub fn mock_node(
     db_path: &str,

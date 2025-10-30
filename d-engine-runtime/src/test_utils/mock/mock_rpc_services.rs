@@ -43,7 +43,7 @@ use tonic_health::server::health_reporter;
 use tracing::trace;
 use tracing::{debug, info};
 
-use crate::test_utils::crate_test_snapshot_stream;
+use d_engine_core::crate_test_snapshot_stream;
 
 #[derive(Clone, Default)]
 pub struct MockRpcService {

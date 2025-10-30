@@ -52,17 +52,6 @@ pub mod test_utils;
 #[cfg(any(test, feature = "test-utils"))]
 pub use test_utils::*;
 
-#[cfg(any(test, feature = "test-utils"))]
-mod mock_storage_engine;
-#[cfg(any(test, feature = "test-utils"))]
-mod mock_type_config;
-
-#[cfg(any(test, feature = "test-utils"))]
-pub use mock_storage_engine::*;
-
-#[cfg(any(test, feature = "test-utils"))]
-pub use mock_type_config::*;
-
 /// In raft, during any Leader to Peer communication,
 ///     if received response term is bigger than Leader's,
 ///     the current Leader need downgrade to follower

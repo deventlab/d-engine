@@ -224,10 +224,16 @@ fn test_config_override_priority() {
     "#,
     );
 
+    let temp_env_dir = tempdir().unwrap();
+    let env_db_path = temp_env_dir.path().join("env_db");
+
     temp_env::with_vars(
         vec![
             ("CONFIG_PATH", Some(config_path.as_str())),
-            ("RAFT__CLUSTER__DB_ROOT_DIR", Some("/env/db")),
+            (
+                "RAFT__CLUSTER__DB_ROOT_DIR",
+                Some(env_db_path.to_str().unwrap()),
+            ),
         ],
         || {
             let config = RaftNodeConfig::new().unwrap();
@@ -235,8 +241,7 @@ fn test_config_override_priority() {
             // Verify that environment variables have higher priority than configuration
             // files
             assert_eq!(
-                config.cluster.db_root_dir,
-                PathBuf::from("/env/db"),
+                config.cluster.db_root_dir, env_db_path,
                 "Environment variable should override file config"
             );
         },

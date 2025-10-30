@@ -1,12 +1,8 @@
+use bytes::Bytes;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
-use bytes::Bytes;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tracing::error;
 use tracing::trace;
 
 use crate::ElectionConfig;
@@ -18,6 +14,7 @@ use crate::MockReplicationCore;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
 use crate::MockTransport;
+use crate::MockTypeConfig;
 use crate::Raft;
 use crate::RaftConfig;
 use crate::RaftContext;
@@ -31,7 +28,6 @@ use crate::RoleEvent;
 use crate::SignalParams;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
-use crate::mock_type_config::MockTypeConfig;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 

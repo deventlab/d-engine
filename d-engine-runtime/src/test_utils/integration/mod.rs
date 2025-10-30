@@ -44,8 +44,6 @@ use crate::RaftMembership;
 use crate::RaftTypeConfig;
 use crate::grpc::grpc_transport::GrpcTransport;
 use crate::test_utils::mock_state_machine;
-use bytes::Bytes;
-use bytes::BytesMut;
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
 use d_engine_core::FlushPolicy;
@@ -63,14 +61,13 @@ use d_engine_core::alias::MOF;
 use d_engine_core::alias::ROF;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::TROF;
-use d_engine_core::convert::safe_kv_bytes;
-use d_engine_proto::client::WriteCommand;
+use d_engine_core::generate_delete_commands;
+use d_engine_core::generate_insert_commands;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use prost::Message;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -209,7 +206,7 @@ pub fn setup_raft_components(
     }
 }
 
-pub(crate) async fn insert_raft_log(
+pub async fn insert_raft_log(
     raft_log: &Arc<ROF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     ids: Vec<u64>,
     term: u64,
@@ -228,7 +225,7 @@ pub(crate) async fn insert_raft_log(
     }
 }
 
-pub(crate) async fn insert_state_machine(
+pub async fn insert_state_machine(
     state_machine: &SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>,
     ids: Vec<u64>,
     term: u64,
@@ -245,34 +242,6 @@ pub(crate) async fn insert_state_machine(
     if let Err(e) = state_machine.apply_chunk(entries).await {
         panic!("error: {e:?}");
     }
-}
-
-pub fn node_config(db_path: &str) -> RaftNodeConfig {
-    let mut s = RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully.");
-    s.cluster.db_root_dir = PathBuf::from(db_path);
-    s
-}
-
-pub fn generate_insert_commands(ids: Vec<u64>) -> Bytes {
-    let mut buffer = BytesMut::new();
-
-    for id in ids {
-        let cmd = WriteCommand::insert(safe_kv_bytes(id), safe_kv_bytes(id));
-        cmd.encode(&mut buffer).expect("Failed to encode insert command");
-    }
-
-    buffer.freeze()
-}
-
-pub fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
-    let mut buffer = BytesMut::new();
-
-    for id in range {
-        let cmd = WriteCommand::delete(safe_kv_bytes(id));
-        cmd.encode(&mut buffer).expect("Failed to encode delete command");
-    }
-
-    buffer.freeze()
 }
 
 ///Dependes on external id to specify the local log entry index.

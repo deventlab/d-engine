@@ -305,7 +305,7 @@ impl Default for MembershipConfig {
     }
 }
 fn default_probe_service() -> String {
-    "raft.cluster.ClusterManagementService".to_string()
+    "d_engine.server.cluster.ClusterManagementService".to_string()
 }
 
 // 30 seconds
