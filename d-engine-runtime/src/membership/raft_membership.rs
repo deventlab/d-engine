@@ -25,7 +25,6 @@ use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::instrument;
 use tracing::warn;
 
 use super::MembershipGuard;

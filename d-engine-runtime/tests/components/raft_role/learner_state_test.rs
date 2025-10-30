@@ -626,9 +626,9 @@ fn mock_context(
 ) -> RaftContext<MockTypeConfig> {
     let temp_dir = tempfile::tempdir().unwrap();
     let case_path = temp_dir.path().join(case_name);
-    let raft_context = mock_raft_context(case_path.to_str().unwrap(), shutdown_signal, None);
+    
 
-    raft_context
+    mock_raft_context(case_path.to_str().unwrap(), shutdown_signal, None)
 }
 
 /// Tests leader selection with multiple valid responses

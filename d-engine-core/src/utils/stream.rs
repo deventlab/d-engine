@@ -46,6 +46,12 @@ pub fn encode_varint(
     buf.put_u8(value as u8);
 }
 
+impl<T> Default for GrpcStreamDecoder<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> GrpcStreamDecoder<T> {
     pub fn new() -> Self {
         GrpcStreamDecoder {
