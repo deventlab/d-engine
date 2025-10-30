@@ -17,7 +17,8 @@
 
 .PHONY: help all check fmt fmt-check clippy clippy-fix test test-unit \
         test-integration test-doc bench clean doc build build-release \
-        pre-release install check-env audit deny troubleshoot
+        pre-release install check-env audit deny troubleshoot \
+        test-crate test-examples test-detailed
 
 # ============================================================================
 # CONFIGURATION SECTION
@@ -65,6 +66,7 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)Testing:$(NC)"
 	@echo "    make test           # Run unit + integration tests"
+	@echo "    make test-detailed  # Run tests with detailed failure output"
 	@echo "    make test-all       # Run all tests including benchmarks"
 	@echo "    make test-unit      # Run unit tests only"
 	@echo ""
@@ -205,13 +207,30 @@ test: install-tools check-workspace
 		$(CARGO) test --workspace --all-targets --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
+## test-detailed        Run tests with detailed failure output for each crate
+test-detailed: install-tools check-workspace
+	@echo "$(BLUE)Running tests with detailed output per crate...$(NC)"
+	@for member in $(WORKSPACE_MEMBERS); do \
+		echo "$(CYAN)Testing crate: $$member$(NC)"; \
+		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) test -p $$member --all-targets --no-fail-fast -- --test-threads=1 --nocapture || \
+		{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		echo "$(GREEN)✓ Tests passed for crate: $$member$(NC)"; \
+		echo ""; \
+	done
+	@echo "$(BLUE)Running examples tests...$(NC)"
+	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) test --workspace --examples --no-fail-fast -- --test-threads=1 --nocapture || \
+		{ echo "$(RED)✗ Examples tests failed$(NC)"; exit 1; }
+	@echo "$(GREEN)✓ All examples tests passed$(NC)"
+	@echo "$(GREEN)✓ All tests passed with detailed output$(NC)"
+
 ## test-unit            Run unit tests only (library code only)
 test-unit: install-tools check-workspace
 	@echo "$(BLUE)Running unit tests (lib only)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 		$(CARGO) test --workspace --lib --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ Unit tests passed$(NC)"
-
 
 ## test-integration     Run integration tests only (--test flag)
 test-integration: install-tools check-workspace
@@ -226,15 +245,33 @@ test-doc: install-tools check-workspace
 	@$(CARGO) test --doc --workspace
 	@echo "$(GREEN)✓ Documentation tests passed$(NC)"
 
+## test-examples        Run tests for examples only
+test-examples: install-tools check-workspace
+	@echo "$(BLUE)Running examples tests...$(NC)"
+	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) test --workspace --examples --no-fail-fast -- --test-threads=1 --nocapture
+	@echo "$(GREEN)✓ Examples tests passed$(NC)"
+
+## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine-runtime)
+test-crate: install-tools check-workspace
+ifndef CRATE
+	@echo "$(RED)Error: CRATE variable not set. Usage: make test-crate CRATE=crate-name$(NC)"
+	@exit 1
+endif
+	@echo "$(BLUE)Running tests for crate: $(CRATE)$(NC)"
+	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) test -p $(CRATE) --all-targets --no-fail-fast -- --test-threads=1 --nocapture --show-output
+	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
+
 ## test-all             Run all tests: unit + integration + doc + benchmarks
-test-all: test test-doc bench
+test-all: test-detailed test-doc bench
 	@echo "$(GREEN)✓ All test suites passed$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace
 	@echo "$(BLUE)Running tests (verbose, single-threaded)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace -- --nocapture --test-threads=1
+		$(CARGO) test --workspace --all-targets --no-fail-fast -- --nocapture --test-threads=1 --show-output
 	@echo "$(GREEN)✓ Verbose test run completed$(NC)"
 
 # ============================================================================
