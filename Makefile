@@ -34,7 +34,7 @@ RUST_LOG_LEVEL ?= d_engine=debug
 RUST_BACKTRACE ?= 1
 
 # Workspace member crates
-WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-runtime d-engine-docs
+WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine-docs
 
 # Color codes for formatted output
 RED := \033[0;31m
@@ -252,7 +252,7 @@ test-examples: install-tools check-workspace
 		$(CARGO) test --workspace --examples --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ Examples tests passed$(NC)"
 
-## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine-runtime)
+## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine)
 test-crate: install-tools check-workspace
 ifndef CRATE
 	@echo "$(RED)Error: CRATE variable not set. Usage: make test-crate CRATE=crate-name$(NC)"

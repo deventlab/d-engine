@@ -4,8 +4,8 @@ members = [
   "d-engine-proto",
   "d-engine-core",
   "d-engine-client",
-  "d-engine-runtime",
   "d-engine-docs",
+  "d-engine-server",
 ]
 
 exclude = [
@@ -13,6 +13,7 @@ exclude = [
   "examples/rocksdb-cluster",
   "examples/sled-cluster",
   "examples/three-nodes-cluster",
+  "benches/d-engine-bench",
 ]
 
 resolver = "2"
@@ -21,7 +22,7 @@ resolver = "2"
 d-engine-proto = { path = "./d-engine-proto" }
 d-engine-core = { path = "./d-engine-core" }
 d-engine-client = { path = "./d-engine-client" }
-d-engine-runtime = { path = "./d-engine-runtime" }
+d-engine-server = { path = "./d-engine-server" }
 
 tokio = { version = "1.4", features = [
     "macros",

@@ -1,11 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use d_engine::{
-    proto::{client::write_command::Insert, common::Entry},
-    storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite},
-    Error, LogStore, StorageEngine,
-};
+use d_engine_server::StorageEngine;
 use prost::Message;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -79,23 +75,21 @@ async fn test_sled_performance() -> Result<(), Error> {
     Ok(())
 }
 
-fn create_test_command_payload(index: u64) -> d_engine::proto::common::EntryPayload {
+fn create_test_command_payload(index: u64) -> common::EntryPayload {
     // Create a simple insert command
     let key = Bytes::from(format!("key_{index}").into_bytes());
     let value = Bytes::from(format!("value_{index}").into_bytes());
 
     let insert = Insert { key, value };
-    let operation = d_engine::proto::client::write_command::Operation::Insert(insert);
-    let write_cmd = d_engine::proto::client::WriteCommand {
+    let operation = client::write_command::Operation::Insert(insert);
+    let write_cmd = client::WriteCommand {
         operation: Some(operation),
     };
 
     let mut buffer = BytesMut::new();
     write_cmd.encode(&mut buffer).expect("Failed to encode insert command");
     let buffer = buffer.freeze();
-    d_engine::proto::common::EntryPayload {
-        payload: Some(d_engine::proto::common::entry_payload::Payload::Command(
-            buffer,
-        )),
+    common::EntryPayload {
+        payload: Some(common::entry_payload::Payload::Command(buffer)),
     }
 }

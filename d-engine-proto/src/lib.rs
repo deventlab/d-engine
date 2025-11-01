@@ -2,7 +2,7 @@
 //!
 //! This module provides additional trait implementations and helper methods
 //! for protobuf-generated types. The re-exports here are used by dependent crates
-//! (d-engine-core, d-engine-runtime, d-engine-client) when they import from this crate.
+//! (d-engine-core, d-engine, d-engine-client) when they import from this crate.
 
 pub mod common {
     include!("generated/d_engine.common.rs");

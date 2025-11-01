@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # d-engine = "0.1.4"
-d-engine = { path = "../../../d-engine", features = ["rocksdb"] }
+d-engine-server = { path = "../../d-engine-server", features = ["rocksdb"] }
 
 bytes = "1.10"
 prost = { version = "0.13", default-features = false }

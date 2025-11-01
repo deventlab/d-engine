@@ -15,15 +15,15 @@ use d_engine::convert::safe_kv;
 use d_engine::file_io::compute_checksum_from_folder_path;
 use d_engine::init_sled_state_machine_db;
 use d_engine::init_sled_storages;
-use d_engine::proto::common::Entry;
-use d_engine::proto::common::EntryPayload;
-use d_engine::proto::common::LogId;
-use d_engine::proto::storage::SnapshotMetadata;
 use d_engine::test_utils::generate_delete_commands;
 use d_engine::test_utils::generate_insert_commands;
 use d_engine::test_utils::reset_dbs;
 use d_engine::test_utils::reuse_dbs;
 use d_engine::StateMachine;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::storage::SnapshotMetadata;
 
 pub fn setup_raft_components(
     db_path: &str,

@@ -41,7 +41,7 @@ d-engine = { version = "0.1.4", features = ["rocksdb"] }
 use d-engine::{RaftCore, MemoryStorage, Config};
 
 ```rust
-use d_engine::{NodeBuilder, FileStorageEngine, FileStateMachine};
+use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
 use tokio::sync::watch;
 use std::sync::Arc;
 use std::path::PathBuf;

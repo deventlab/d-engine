@@ -7,8 +7,10 @@ use std::time::Instant;
 
 use clap::Parser;
 use clap::Subcommand;
-use d_engine::proto::client::ReadConsistencyPolicy;
-use d_engine::ClientBuilder;
+use d_engine_client::Client;
+use d_engine_client::ClientApiError;
+use d_engine_client::ClientBuilder;
+use d_engine_proto::client::ReadConsistencyPolicy;
 use hdrhistogram::Histogram;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
@@ -53,7 +55,7 @@ enum Commands {
 }
 
 struct ClientPool {
-    clients: Vec<Arc<d_engine::Client>>,
+    clients: Vec<Arc<Client>>,
     counter: AtomicU64,
 }
 
@@ -70,7 +72,7 @@ impl ClientPool {
     async fn new(
         endpoints: Vec<String>,
         pool_size: usize,
-    ) -> Result<Self, d_engine::ClientApiError> {
+    ) -> Result<Self, ClientApiError> {
         let mut clients = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
             let client = ClientBuilder::new(endpoints.clone())
@@ -87,7 +89,7 @@ impl ClientPool {
         })
     }
 
-    fn next(&self) -> Arc<d_engine::Client> {
+    fn next(&self) -> Arc<Client> {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed);
         let len = self.clients.len() as u64;
         self.clients[(idx % len) as usize].clone()
