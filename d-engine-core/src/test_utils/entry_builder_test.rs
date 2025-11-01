@@ -1,4 +1,3 @@
-
 use crate::test_utils::EntryBuilder;
 use d_engine_proto::common::{AddNode, RemoveNode, membership_change::Change};
 
