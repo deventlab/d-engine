@@ -297,17 +297,21 @@ bench: check-workspace
 # DOCUMENTATION
 # ============================================================================
 
-## docs                Generate API documentation and open in browser
+## docs                Generate API documentation and open in browser (opens d-engine-docs hub)
 docs: check-workspace
 	@echo "$(BLUE)Generating API documentation for all workspace crates...$(NC)"
-	@$(CARGO) doc --workspace --no-deps --open
-	@echo "$(GREEN)✓ Documentation generated and opened$(NC)"
+	@$(CARGO) doc --workspace --no-deps
+	@echo "$(GREEN)✓ Documentation generated$(NC)"
+	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
+	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"
 
 ## docs-all             Generate documentation with all features enabled
 docs-all: check-workspace
 	@echo "$(BLUE)Generating API documentation (all features)...$(NC)"
-	@$(CARGO) doc --workspace --all-features --no-deps --open
-	@echo "$(GREEN)✓ Documentation generated and opened$(NC)"
+	@$(CARGO) doc --workspace --all-features --no-deps
+	@echo "$(GREEN)✓ Documentation generated$(NC)"
+	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
+	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"
 
 ## docs-check           Check documentation without opening browser (CI-safe)
 docs-check: check-workspace
@@ -324,8 +328,10 @@ docs-check-all: check-workspace
 ## docs-private         Generate documentation including private items (architecture)
 docs-private: check-workspace
 	@echo "$(BLUE)Generating documentation with private items...$(NC)"
-	@$(CARGO) doc --workspace --no-deps --document-private-items --open
-	@echo "$(GREEN)✓ Documentation generated with private items$(NC)"
+	@$(CARGO) doc --workspace --no-deps --document-private-items
+	@echo "$(GREEN)✓ Documentation generated$(NC)"
+	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
+	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"
 
 ## docs-crate           Generate documentation for a single crate (usage: make docs-crate CRATE=d-engine-server)
 docs-crate: check-workspace
@@ -334,8 +340,10 @@ ifndef CRATE
 	@exit 1
 endif
 	@echo "$(BLUE)Generating documentation for crate: $(CRATE)...$(NC)"
-	@$(CARGO) doc -p $(CRATE) --no-deps --open
-	@echo "$(GREEN)✓ Documentation generated for $(CRATE)$(NC)"
+	@$(CARGO) doc -p $(CRATE) --no-deps
+	@echo "$(GREEN)✓ Documentation generated$(NC)"
+	@echo "$(CYAN)Opening crate documentation at: target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html$(NC)"
+	@open "file://$$(pwd)/target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html" 2>/dev/null || echo "Please open: target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html"
 
 ## docs-clean           Remove generated documentation artifacts
 docs-clean:
