@@ -5,18 +5,17 @@ This project strictly follows the **Single Responsibility Principle (SRP)** to e
 ### **1. Core Design Philosophy**
 
 - **Main Loop Responsibility**:
-    
-    The `main_loop` (in `src/core/raft.rs`) **only orchestrates event routing**. It:
-    
-    1. Listens for events (e.g., RPCs, timers).
-    2. Delegates handling to the **current role** (e.g., `LeaderState`, `FollowerState`).
-    3. Manages role transitions (e.g., `Leader → Follower`).
+
+  The `main_loop` (in `src/core/raft.rs`) **only orchestrates event routing**. It:
+  1. Listens for events (e.g., RPCs, timers).
+  2. Delegates handling to the **current role** (e.g., `LeaderState`, `FollowerState`).
+  3. Manages role transitions (e.g., `Leader → Follower`).
+
 - **Role-Specific Logic**:
-    
-    Each role (`LeaderState`, `FollowerState`, etc.) **owns its state and behavior**. For example:
-    
-    - `LeaderState` handles log replication and heartbeat management.
-    - `FollowerState` processes leader requests and election timeouts.
+
+  Each role (`LeaderState`, `FollowerState`, etc.) **owns its state and behavior**. For example:
+  - `LeaderState` handles log replication and heartbeat management.
+  - `FollowerState` processes leader requests and election timeouts.
 
 ---
 
@@ -120,7 +119,7 @@ impl FollowerState {
 
 The codebase enforces SRP through role-specific modules:
 
-```ignore
+```text
 src/core/raft_role/
 ├── leader_state.rs          # Leader-only logic (e.g., log replication)
 ├── follower_state.rs        # Follower-only logic (e.g., election timeout)
@@ -137,9 +136,9 @@ When extending the project:
 1. **Identify Ownership**: Should the logic belong to a role, the main loop, or a utility module?
 2. **Avoid Hybrid Roles**: Never create a `LeaderFollowerHybridState`. Use role transitions instead.
 3. **Example**: Adding a "Learner" role:
-    - Create `learner_state.rs` with Learner-specific logic.
-    - Update `main_loop` to handle `Role::Learner`.
-    - Add `RoleEvent::BecomeLearner` for transitions.
+   - Create `learner_state.rs` with Learner-specific logic.
+   - Update `main_loop` to handle `Role::Learner`.
+   - Add `RoleEvent::BecomeLearner` for transitions.
 
 ---
 

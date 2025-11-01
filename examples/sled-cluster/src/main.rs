@@ -2,6 +2,7 @@ use d_engine_server::NodeBuilder;
 use sled_demo::{SledStateMachine, SledStorageEngine};
 use std::env;
 use std::error::Error;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,6 +88,21 @@ async fn start_dengine_server(
     }
 
     println!("Exiting program.");
+}
+
+/// Opens a file for appending, creating parent directories if needed
+fn open_file_for_append<P: AsRef<Path>>(path: P) -> std::io::Result<File> {
+    let path = path.as_ref();
+
+    // Create parent directories if they don't exist
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    // Open file for appending, create if doesn't exist
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error + Send>> {

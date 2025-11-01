@@ -1,7 +1,7 @@
 //! Raft node container and lifecycle management.
 //!
 //! The [`Node`] struct acts as a host for a Raft consensus participant,
-//! coordinating between the core protocol implementation ([`crate::raft::Raft`])
+//! coordinating between the core protocol implementation (provided by `d-engine-core`)
 //! and external subsystems:
 //!
 //! ## Key Responsibilities

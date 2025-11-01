@@ -1,13 +1,13 @@
-use d_engine_server::file_io::open_file_for_append;
 use d_engine_server::NodeBuilder;
 use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use std::env;
 use std::error::Error;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
+use tokio::signal::unix::signal;
 use tokio::sync::watch;
 use tracing::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -124,4 +124,17 @@ async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {
     graceful_tx.send(()).unwrap();
 
     info!("Shutdown completed");
+}
+
+fn open_file_for_append(path: PathBuf) -> Result<std::fs::File, Box<dyn Error>> {
+    // Create parent directories if they don't exist
+    if let Some(parent) = path.parent() {
+        if parent != Path::new("") {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let log_file = OpenOptions::new().append(true).create(true).open(&path)?;
+
+    Ok(log_file)
 }

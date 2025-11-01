@@ -41,7 +41,8 @@ impl KvClient {
     ///
     /// # Errors
     /// - [`crate::ClientApiError::Network`] on network failures
-    /// - [`crate::ClientApiError::InvalidResponse`] for malformed server responses
+    /// - [`crate::ClientApiError::Protocol`] for protocol errors
+    /// - [`crate::ClientApiError::Storage`] for server-side storage errors
     pub async fn put(
         &self,
         key: impl AsRef<[u8]>,
@@ -88,8 +89,9 @@ impl KvClient {
     ///   (e.g. `String`, `&str`, `Vec<u8>`)
     ///
     /// # Errors
-    /// - [`Error::FailedToSendWriteRequestError`] if unable to reach the leader node
-    /// - [`Error::InvalidResponse`] for malformed server responses
+    /// - [`crate::ClientApiError::Network`] if unable to reach the leader node
+    /// - [`crate::ClientApiError::Protocol`] for protocol errors
+    /// - [`crate::ClientApiError::Storage`] for server-side storage errors
     pub async fn delete(
         &self,
         key: impl AsRef<[u8]>,

@@ -1,10 +1,10 @@
 [package]
 name = "dengine-client-demo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-d-engine = { path = "../../../d-engine" }
+d-engine-client = { path = "../../d-engine-client" }
 
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1.36.0", features = ["full"] }

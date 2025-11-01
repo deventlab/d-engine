@@ -66,7 +66,8 @@ pub struct FileMetaStore {
 ///
 /// # Performance
 ///
-/// Suitable for development and testing. For production, use [`RocksDBStorageEngine`].
+/// Suitable for development and testing. For production, consider using RocksDB storage engine
+/// via the `rocksdb` feature.
 #[derive(Debug)]
 pub struct FileStorageEngine {
     log_store: Arc<FileLogStore>,

@@ -171,23 +171,23 @@ if config.max_bandwidth_mbps > 0 {
 
 #### Generating a new snapshot:
 
-1. [**StateMachine**] Generate new DB based on the temporary file provided by the [**StateMachineHandler**] →
-2. [**StateMachine**] Generate data →
-3. [**StateMachine**] Dump current DB into the new DB →
-4. [**StateMachineHandler**] Verify policy conditions and finalize the snapshot and updating the snapshot version.
+1. \[**StateMachine**\] Generate new DB based on the temporary file provided by the \[**StateMachineHandler**\] →
+2. \[**StateMachine**\] Generate data →
+3. \[**StateMachine**\] Dump current DB into the new DB →
+4. \[**StateMachineHandler**\] Verify policy conditions and finalize the snapshot and updating the snapshot version.
 
 #### Applying a snapshot:
 
-1. [**StateMachineHandler**] Snapshot chunk reception and validation →
-2. [**StateMachineHandler**] Write chunks into a temporary file until success →
-3. [**StateMachineHandler**] Error handling and sends error response back to the sender and terminates the process →
-4. After all chunks have been successfully processed and validated, the [**StateMachineHandler**] finalizes the snapshot →
-5. [**StateMachineHandler**] Passing the snapshot file to the [**StateMachine**] →
-6. [**StateMachine**] Apply Snapshot and do online replacement - replacing the old state with the new one based on the snapshot.
+1. \[**StateMachineHandler**\] Snapshot chunk reception and validation →
+2. \[**StateMachineHandler**\] Write chunks into a temporary file until success →
+3. \[**StateMachineHandler**\] Error handling and sends error response back to the sender and terminates the process →
+4. After all chunks have been successfully processed and validated, the \[**StateMachineHandler**\] finalizes the snapshot →
+5. \[**StateMachineHandler**\] Passing the snapshot file to the \[**StateMachine**\] →
+6. \[**StateMachine**\] Apply Snapshot and do online replacement - replacing the old state with the new one based on the snapshot.
 
 #### Cleaning up old snapshots:
 
-[**StateMachineHandler**] automatically maintains old snapshots according to version policies, while the **StateMachine** is not aware of it.
+\[**StateMachineHandler**\] automatically maintains old snapshots according to version policies, while the **StateMachine** is not aware of it.
 
 ## **Purge Log Design**
 

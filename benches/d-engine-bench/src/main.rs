@@ -1,7 +1,7 @@
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -10,11 +10,11 @@ use clap::Subcommand;
 use d_engine_client::Client;
 use d_engine_client::ClientApiError;
 use d_engine_client::ClientBuilder;
-use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_client::protocol::ReadConsistencyPolicy;
 use hdrhistogram::Histogram;
-use rand::distributions::Alphanumeric;
 use rand::Rng;
 use rand::SeedableRng;
+use rand::distributions::Alphanumeric;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug, Clone)]
@@ -283,10 +283,10 @@ mod tests {
     #[test]
     fn test_sequential_keys() {
         // Test the order keys from high to low
-        assert_eq!(generate_key(true, 6, 0), "999999");
-        assert_eq!(generate_key(true, 6, 1), "999998");
-        assert_eq!(generate_key(true, 3, 0), "999");
-        assert_eq!(generate_key(true, 3, 1), "998");
+        assert_eq!(generate_prefixed_key(true, 6, 0), "999999");
+        assert_eq!(generate_prefixed_key(true, 6, 1), "999998");
+        assert_eq!(generate_prefixed_key(true, 3, 0), "999");
+        assert_eq!(generate_prefixed_key(true, 3, 1), "998");
     }
 
     #[test]
@@ -300,17 +300,17 @@ mod tests {
     #[test]
     fn test_large_index() {
         // Test large index values ​​(will saturate to minimum value)
-        assert_eq!(generate_key(true, 3, 9999), "000"); // Saturate to minimum value
+        assert_eq!(generate_prefixed_key(true, 3, 9999), "000"); // Saturate to minimum value
     }
 
     #[test]
     fn test_random_keys() {
         // Test the determinism and randomness of the random key
-        let key1 = generate_key(false, 8, 42);
-        let key2 = generate_key(false, 8, 42);
+        let key1 = generate_prefixed_key(false, 8, 42);
+        let key2 = generate_prefixed_key(false, 8, 42);
         assert_eq!(key1, key2);
 
-        let key3 = generate_key(false, 8, 43);
+        let key3 = generate_prefixed_key(false, 8, 43);
         assert_ne!(key1, key3);
     }
 }

@@ -9,12 +9,12 @@
 //! - Protocol definitions (re-exported from `d-engine-proto`)
 //!
 //! ## Quick Start
-//! ```no_run
+//! ```ignore
 //! use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
 //! use std::sync::Arc;
 //! use std::path::PathBuf;
 //!
-//! #[tokio::main]
+//! #[tokio::main(flavor = "current_thread")]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let (tx, rx) = tokio::sync::watch::channel(());
 //!
@@ -81,18 +81,56 @@ pub use storage::{RocksDBStateMachine, RocksDBStorageEngine};
 
 // -------------------- Extension Traits --------------------
 
-/// Storage trait for custom implementations
+/// Storage trait for implementing custom storage backends
 ///
-/// Implement this to create your own storage backend.
+/// Implement this trait to create your own storage engine.
 pub use d_engine_core::{StateMachine, StorageEngine};
 
-// -------------------- Common Types --------------------
+/// Log storage trait
+pub use d_engine_core::LogStore;
 
-/// Raft error types
-pub use d_engine_core::{Error as RaftError, Result, StorageError};
+/// Metadata storage trait
+pub use d_engine_core::MetaStore;
 
-// Protocol types (minimal set for custom storage implementations)
-pub use d_engine_proto::common::{Entry, LogId};
+// -------------------- Error Types --------------------
+
+/// Unified error type for all d-engine operations
+pub use d_engine_core::Error;
+
+/// Unified result type (equivalent to Result<T, Error>)
+pub use d_engine_core::Result;
+
+/// Storage-specific error type
+pub use d_engine_core::StorageError;
+
+/// Snapshot operation error type
+pub use d_engine_core::SnapshotError;
+
+/// Protocol buffer error type
+pub use d_engine_core::ProstError;
+
+/// Hard state (Raft persistent state: term, voted_for, log)
+pub use d_engine_core::HardState;
+
+// -------------------- Data Types --------------------
+
+/// Common Raft protocol types
+pub mod common {
+    // Basic types used in Raft consensus protocol
+    pub use d_engine_proto::common::{Entry, EntryPayload, LogId, entry_payload};
+}
+
+/// Client protocol types
+pub mod client {
+    // Client write command types for custom business logic
+    pub use d_engine_proto::client::{WriteCommand, write_command};
+}
+
+/// Server storage protocol types
+pub mod server_storage {
+    // Server storage protocol types (snapshots, replication)
+    pub use d_engine_proto::server::storage::SnapshotMetadata;
+}
 
 // ==================== Internal API (Hidden) ====================
 mod membership;

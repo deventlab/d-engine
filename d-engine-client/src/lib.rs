@@ -58,6 +58,31 @@ pub use config::*;
 pub use error::*;
 pub use kv::*;
 pub use pool::*;
+pub use utils::*;
+
+// ==================== Protocol Types (Essential for Public API) ====================
+
+/// Protocol types needed for client operations
+///
+/// These types are used in the public API and must be imported for client usage:
+/// - `ClientResult`: Response type from read operations
+/// - `ReadConsistencyPolicy`: Consistency guarantees for reads
+/// - `WriteCommand`: Write operation specifications
+pub mod protocol {
+    pub use d_engine_proto::client::{ClientResult, ReadConsistencyPolicy, WriteCommand};
+}
+
+/// Cluster management protocol types
+///
+/// Types required for cluster administration operations:
+/// - `NodeMeta`: Cluster node metadata
+/// - `NodeStatus`: Node status enumeration
+pub mod cluster_types {
+    pub use d_engine_proto::common::NodeStatus;
+    pub use d_engine_proto::server::cluster::NodeMeta;
+}
+
+// ==================== Hide Implementation Details ====================
 pub(crate) use proto::*;
 
 #[cfg(test)]

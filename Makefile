@@ -18,7 +18,8 @@
 .PHONY: help all check fmt fmt-check clippy clippy-fix test test-unit \
         test-integration test-doc bench clean doc build build-release \
         pre-release install check-env audit deny troubleshoot \
-        test-crate test-examples test-detailed
+        test-crate test-examples test-detailed \
+        docs docs-all docs-check docs-check-all
 
 # ============================================================================
 # CONFIGURATION SECTION
@@ -64,6 +65,12 @@ help:
 	@echo "    make fmt-fix        # Auto-fix formatting issues"
 	@echo "    make clippy-fix     # Apply clippy suggestions"
 	@echo ""
+	@echo "  $(YELLOW)Documentation:$(NC)"
+	@echo "    make docs           # Build and open documentation in browser"
+	@echo "    make docs-check     # Verify docs compile without warnings"
+	@echo "    make docs-private   # Build docs with private items visible"
+	@echo "    make docs-crate CRATE=name  # Build docs for specific crate"
+	@echo ""
 	@echo "  $(YELLOW)Testing:$(NC)"
 	@echo "    make test           # Run unit + integration tests"
 	@echo "    make test-detailed  # Run tests with detailed failure output"
@@ -76,6 +83,7 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)Maintenance:$(NC)"
 	@echo "    make clean          # Remove all build artifacts"
+	@echo "    make docs-clean     # Remove generated documentation"
 	@echo "    make audit          # Check for security vulnerabilities"
 	@echo "    make troubleshoot   # Diagnostic information"
 	@echo ""
@@ -289,17 +297,57 @@ bench: check-workspace
 # DOCUMENTATION
 # ============================================================================
 
-## doc                  Generate API documentation and open in browser
-doc: check-workspace
-	@echo "$(BLUE)Generating API documentation...$(NC)"
+## docs                Generate API documentation and open in browser
+docs: check-workspace
+	@echo "$(BLUE)Generating API documentation for all workspace crates...$(NC)"
+	@$(CARGO) doc --workspace --no-deps --open
+	@echo "$(GREEN)✓ Documentation generated and opened$(NC)"
+
+## docs-all             Generate documentation with all features enabled
+docs-all: check-workspace
+	@echo "$(BLUE)Generating API documentation (all features)...$(NC)"
 	@$(CARGO) doc --workspace --all-features --no-deps --open
 	@echo "$(GREEN)✓ Documentation generated and opened$(NC)"
 
-## doc-check            Generate documentation without opening browser
-doc-check: check-workspace
+## docs-check           Check documentation without opening browser (CI-safe)
+docs-check: check-workspace
 	@echo "$(BLUE)Checking documentation generation...$(NC)"
-	@$(CARGO) doc --workspace --all-features --no-deps
-	@echo "$(GREEN)✓ Documentation generated successfully$(NC)"
+	@RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps
+	@echo "$(GREEN)✓ Documentation compiled without warnings$(NC)"
+
+## docs-check-all       Check documentation with all features and strict warnings
+docs-check-all: check-workspace
+	@echo "$(BLUE)Checking documentation (all features, strict mode)...$(NC)"
+	@RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --all-features --no-deps
+	@echo "$(GREEN)✓ Documentation compiled without warnings$(NC)"
+
+## docs-private         Generate documentation including private items (architecture)
+docs-private: check-workspace
+	@echo "$(BLUE)Generating documentation with private items...$(NC)"
+	@$(CARGO) doc --workspace --no-deps --document-private-items --open
+	@echo "$(GREEN)✓ Documentation generated with private items$(NC)"
+
+## docs-crate           Generate documentation for a single crate (usage: make docs-crate CRATE=d-engine-server)
+docs-crate: check-workspace
+ifndef CRATE
+	@echo "$(RED)Error: CRATE variable not set. Usage: make docs-crate CRATE=crate-name$(NC)"
+	@exit 1
+endif
+	@echo "$(BLUE)Generating documentation for crate: $(CRATE)...$(NC)"
+	@$(CARGO) doc -p $(CRATE) --no-deps --open
+	@echo "$(GREEN)✓ Documentation generated for $(CRATE)$(NC)"
+
+## docs-clean           Remove generated documentation artifacts
+docs-clean:
+	@echo "$(BLUE)Cleaning documentation artifacts...$(NC)"
+	@rm -rf target/doc
+	@echo "$(GREEN)✓ Documentation cleaned$(NC)"
+
+## doc                  (Deprecated alias) Use 'docs' instead
+doc: docs
+
+## doc-check            (Deprecated alias) Use 'docs-check' instead
+doc-check: docs-check
 
 # ============================================================================
 # SECURITY & DEPENDENCY AUDITING

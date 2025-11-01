@@ -2,6 +2,17 @@
 name = "d-engine-core"
 version = "0.1.0"
 edition = "2024"
+authors = ["Joshua Chi <joshokn@gmail.com>"]
+description = "Core Raft consensus algorithm implementation and traits"
+homepage = "https://github.com/deventlab/d-engine"
+repository = "https://github.com/deventlab/d-engine"
+license = "MIT OR Apache-2.0"
+keywords = ["raft", "consensus", "algorithm"]
+categories = ["algorithms", "concurrency"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 
 [features]
