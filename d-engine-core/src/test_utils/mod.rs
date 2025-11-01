@@ -5,6 +5,12 @@ mod entry_builder;
 mod mock;
 mod snapshot;
 
+#[cfg(test)]
+mod common_test;
+
+#[cfg(test)]
+mod entry_builder_test;
+
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;

@@ -44,6 +44,9 @@ pub(crate) use timer::*;
 pub use type_config::*;
 
 #[cfg(test)]
+mod maybe_clone_oneshot_test;
+
+#[cfg(test)]
 mod raft_oneshot_test;
 
 #[cfg(any(test, feature = "test-utils"))]
