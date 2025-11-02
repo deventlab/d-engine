@@ -9,6 +9,7 @@ repository = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
 keywords = ["raft", "consensus", "documentation"]
 categories = ["documentation"]
+publish = false
 
 [package.metadata.docs.rs]
 all-features = true

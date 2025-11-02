@@ -275,6 +275,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "d-engine"
+version = "0.2.0"
+dependencies = [
+ "d-engine-client",
+]
+
+[[package]]
 name = "d-engine-client"
 version = "0.2.0"
 dependencies = [
@@ -310,7 +317,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "d-engine-client",
+ "d-engine",
  "env_logger",
  "tokio",
 ]

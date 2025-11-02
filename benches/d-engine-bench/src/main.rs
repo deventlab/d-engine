@@ -7,10 +7,10 @@ use std::time::Instant;
 
 use clap::Parser;
 use clap::Subcommand;
-use d_engine_client::Client;
-use d_engine_client::ClientApiError;
-use d_engine_client::ClientBuilder;
-use d_engine_client::protocol::ReadConsistencyPolicy;
+use d_engine::Client;
+use d_engine::ClientApiError;
+use d_engine::ClientBuilder;
+use d_engine::protocol::ReadConsistencyPolicy;
 use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::SeedableRng;

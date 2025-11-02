@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
-use d_engine_client::{
+use d_engine::{
     cluster_types::{NodeMeta, NodeStatus},
     protocol::{ClientResult, ReadConsistencyPolicy},
     Client, ClientApiError, ClientBuilder,

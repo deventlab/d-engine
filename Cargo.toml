@@ -1,11 +1,12 @@
 
 [workspace]
 members = [
+  "d-engine",
   "d-engine-proto",
   "d-engine-core",
   "d-engine-client",
   "d-engine-docs",
-  "d-engine-server",
+  "d-engine-server"
 ]
 
 exclude = [

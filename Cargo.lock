@@ -405,6 +405,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "d-engine"
+version = "0.2.0"
+dependencies = [
+ "d-engine-client",
+ "d-engine-server",
+]
+
+[[package]]
 name = "d-engine-client"
 version = "0.2.0"
 dependencies = [

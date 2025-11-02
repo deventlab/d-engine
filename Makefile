@@ -468,6 +468,81 @@ all: check
 	@echo "$(GREEN)✓ Check suite completed$(NC)"
 
 # ============================================================================
+# EXAMPLES AND BENCHMARKS VALIDATION
+# ============================================================================
+
+## check-examples       Check all examples compile without errors
+check-examples:
+	@echo "$(CYAN)Checking all examples...$(NC)"
+	@for example in examples/*/; do \
+		if [ -f "$$example/Cargo.toml" ]; then \
+			example_name=$$(basename "$$example"); \
+			echo "$(YELLOW)→ Checking example: $$example_name$(NC)"; \
+			(cd "$$example" && $(CARGO) check 2>&1) || { \
+				echo "$(RED)✗ Example $$example_name failed$(NC)"; \
+				exit 1; \
+			}; \
+			echo "$(GREEN)✓ Example $$example_name OK$(NC)"; \
+		fi \
+	done
+	@echo "$(GREEN)✓ All examples checked successfully$(NC)"
+
+## check-benches        Check all benchmarks compile without errors
+check-benches:
+	@echo "$(CYAN)Checking all benchmarks...$(NC)"
+	@for bench in benches/*/; do \
+		if [ -f "$$bench/Cargo.toml" ]; then \
+			bench_name=$$(basename "$$bench"); \
+			echo "$(YELLOW)→ Checking benchmark: $$bench_name$(NC)"; \
+			(cd "$$bench" && $(CARGO) check 2>&1) || { \
+				echo "$(RED)✗ Benchmark $$bench_name failed$(NC)"; \
+				exit 1; \
+			}; \
+			echo "$(GREEN)✓ Benchmark $$bench_name OK$(NC)"; \
+		fi \
+	done
+	@echo "$(GREEN)✓ All benchmarks checked successfully$(NC)"
+
+## check-all-projects   Check workspace + examples + benchmarks
+check-all-projects: check check-examples check-benches
+	@echo ""
+	@echo "$(GREEN)════════════════════════════════════════$(NC)"
+	@echo "$(GREEN)✓ ALL PROJECTS VALIDATED SUCCESSFULLY$(NC)"
+	@echo "$(GREEN)════════════════════════════════════════$(NC)"
+
+## build-examples       Build all examples
+build-examples:
+	@echo "$(CYAN)Building all examples...$(NC)"
+	@for example in examples/*/; do \
+		if [ -f "$$example/Cargo.toml" ]; then \
+			example_name=$$(basename "$$example"); \
+			echo "$(YELLOW)→ Building example: $$example_name$(NC)"; \
+			(cd "$$example" && $(CARGO) build 2>&1) || { \
+				echo "$(RED)✗ Example $$example_name failed$(NC)"; \
+				exit 1; \
+			}; \
+			echo "$(GREEN)✓ Example $$example_name built$(NC)"; \
+		fi \
+	done
+	@echo "$(GREEN)✓ All examples built successfully$(NC)"
+
+## test-examples        Run tests in all examples
+test-examples:
+	@echo "$(CYAN)Testing all examples...$(NC)"
+	@for example in examples/*/; do \
+		if [ -f "$$example/Cargo.toml" ]; then \
+			example_name=$$(basename "$$example"); \
+			echo "$(YELLOW)→ Testing example: $$example_name$(NC)"; \
+			(cd "$$example" && $(CARGO) test 2>&1) || { \
+				echo "$(RED)✗ Example $$example_name tests failed$(NC)"; \
+				exit 1; \
+			}; \
+			echo "$(GREEN)✓ Example $$example_name tests passed$(NC)"; \
+		fi \
+	done
+	@echo "$(GREEN)✓ All example tests passed$(NC)"
+
+# ============================================================================
 # DEFAULT TARGET
 # ============================================================================
 

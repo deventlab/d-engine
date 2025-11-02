@@ -3,7 +3,7 @@
 //! This module provides utility functions for serializing/deserializing
 //! u64 values to/from byte arrays used as keys in sled.
 
-use d_engine_server::StorageError;
+use d_engine::StorageError;
 use sled::IVec;
 
 /// Convert a u64 value to an 8-byte big-endian vector.
@@ -26,7 +26,7 @@ pub(crate) fn safe_kv(value: u64) -> Vec<u8> {
 /// # Returns
 /// `Ok(u64)` if the slice is exactly 8 bytes, `Err` otherwise
 #[inline]
-pub(crate) fn safe_vk(bytes: &[u8]) -> Result<u64, d_engine_server::StorageError> {
+pub(crate) fn safe_vk(bytes: &[u8]) -> Result<u64, StorageError> {
     if bytes.len() != 8 {
         return Err(StorageError::DbError(format!(
             "Invalid byte length: expected 8, got {}",
@@ -42,6 +42,6 @@ pub(crate) fn safe_vk(bytes: &[u8]) -> Result<u64, d_engine_server::StorageError
 ///
 /// This is a convenience wrapper around `safe_vk` for sled's IVec type.
 #[inline]
-pub(crate) fn safe_vk_ivec(ivec: IVec) -> Result<u64, d_engine_server::StorageError> {
+pub(crate) fn safe_vk_ivec(ivec: IVec) -> Result<u64, StorageError> {
     safe_vk(&ivec[..])
 }

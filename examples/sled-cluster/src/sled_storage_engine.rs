@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
-use d_engine_server::{
+use d_engine::{
     common::{Entry, LogId},
     Error, HardState, LogStore, MetaStore, ProstError, Result, StorageEngine, StorageError,
 };

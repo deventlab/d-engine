@@ -20,10 +20,10 @@ use d_engine::test_utils::generate_insert_commands;
 use d_engine::test_utils::reset_dbs;
 use d_engine::test_utils::reuse_dbs;
 use d_engine::StateMachine;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::storage::SnapshotMetadata;
+use d_engine::common::Entry;
+use d_engine::common::EntryPayload;
+use d_engine::common::LogId;
+use d_engine::storage::SnapshotMetadata;
 
 pub fn setup_raft_components(
     db_path: &str,

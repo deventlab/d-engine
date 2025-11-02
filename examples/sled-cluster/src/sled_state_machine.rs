@@ -4,11 +4,13 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
-use d_engine_server::{
-    client::write_command::{Delete, Insert, Operation},
-    client::WriteCommand,
+use d_engine::{
     common::{entry_payload::Payload, Entry, LogId},
-    server_storage::SnapshotMetadata,
+    storage::SnapshotMetadata,
+    write_command::{
+        write_command::{Delete, Insert, Operation},
+        WriteCommand,
+    },
     Result, SnapshotError, StateMachine, StorageError,
 };
 use parking_lot::Mutex;

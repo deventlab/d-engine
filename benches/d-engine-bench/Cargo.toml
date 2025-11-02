@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-d-engine-client = { path = "../../d-engine-client" }
+d-engine = { path = "../../d-engine", features = ["client"] }
 
 
 tokio = { version = "1.44", features = ["full"] }

@@ -463,6 +463,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "d-engine"
+version = "0.2.0"
+dependencies = [
+ "d-engine-server",
+]
+
+[[package]]
 name = "d-engine-core"
 version = "0.1.0"
 dependencies = [
@@ -1684,7 +1691,7 @@ dependencies = [
  "async-trait",
  "bincode 2.0.1",
  "bytes",
- "d-engine-server",
+ "d-engine",
  "metrics-exporter-prometheus",
  "prost",
  "tokio",
