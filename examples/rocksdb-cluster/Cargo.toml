@@ -1,11 +1,11 @@
 [package]
 name = "rocksdb-demo"
-version = "0.1.3"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 
 [dependencies]
+d-engine = { path = "../../d-engine", features = ["server", "rocksdb"] }
 # d-engine = "0.1.4"
-d-engine = { path = "../../../d-engine", features = ["rocksdb"] }
 
 bytes = "1.10"
 prost = { version = "0.13", default-features = false }

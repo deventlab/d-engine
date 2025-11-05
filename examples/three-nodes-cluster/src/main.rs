@@ -1,11 +1,11 @@
-use d_engine::file_io::open_file_for_append;
-use d_engine::node::NodeBuilder;
+use d_engine::NodeBuilder;
 // use d_engine::FileStateMachine;
 // use d_engine::FileStorageEngine;
 use d_engine::RocksDBStateMachine;
 use d_engine::RocksDBStorageEngine;
 use std::env;
 use std::error::Error;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -189,4 +189,17 @@ async fn collect_tokio_metrics(
             }
         }
     }
+}
+
+fn open_file_for_append(path: PathBuf) -> Result<std::fs::File, Box<dyn Error>> {
+    // Create parent directories if they don't exist
+    if let Some(parent) = path.parent() {
+        if parent != Path::new("") {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let log_file = OpenOptions::new().append(true).create(true).open(&path)?;
+
+    Ok(log_file)
 }

@@ -4,8 +4,8 @@ version = "0.1.4"
 edition = "2021"
 
 [dependencies]
+d-engine = { path = "../../d-engine", features = ["server", "rocksdb"] }
 # d-engine = "0.1.1"
-d-engine = { path = "../../../d-engine", features = ["rocksdb"] }
 # d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
 
 metrics-exporter-prometheus = "0.17.2"

@@ -52,7 +52,7 @@ sender_yield_every_n_chunks = 1
 receiver_yield_every_n_chunks = 1
 
 [raft.membership]
-cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"
+cluster_healthcheck_probe_service_name = "d_engine.server.cluster.ClusterManagementService"
 
 [raft.auto_join]
 rpc_enable_compression = true

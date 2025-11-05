@@ -1,0 +1,32 @@
+[package]
+name = "d-engine"
+version = "0.2.0"
+edition = "2024"
+authors = ["Joshua Chi <joshokn@gmail.com>"]
+description = "A lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems."
+homepage = "https://github.com/deventlab/d-engine"
+repository = "https://github.com/deventlab/d-engine"
+license = "MIT OR Apache-2.0"
+keywords = [
+    "raft",
+    "consensus",
+    "distributed-systems",
+    "storage",
+    "fault-tolerance",
+]
+categories = ["concurrency", "asynchronous", "algorithms", "database"]
+readme = "../README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+client = ["dep:d-engine-client"]
+server = ["dep:d-engine-server"]
+full = ["client", "server"]
+rocksdb = ["server", "d-engine-server/rocksdb"]
+
+[dependencies]
+d-engine-client = { workspace = true, optional = true }
+d-engine-server = { workspace = true, optional = true }

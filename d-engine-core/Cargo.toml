@@ -1,0 +1,69 @@
+[package]
+name = "d-engine-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Joshua Chi <joshokn@gmail.com>"]
+description = "Core Raft consensus algorithm implementation and traits"
+homepage = "https://github.com/deventlab/d-engine"
+repository = "https://github.com/deventlab/d-engine"
+license = "MIT OR Apache-2.0"
+keywords = ["raft", "consensus", "algorithm"]
+categories = ["algorithms", "concurrency"]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+
+[features]
+test-utils = ["mockall","uuid", "tonic-health"]
+
+[dependencies]
+d-engine-proto = { workspace = true }
+
+tokio = { workspace = true }
+tonic = { workspace = true }
+bytes =  { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+prost = { workspace = true }
+bincode = "1.3"
+thiserror = "1.0"
+nanoid = "0.4.0"
+sha2 = "0.10.9"
+# using Dashset
+dashmap = "5.5.3"
+tempfile = "3.19.1"
+metrics = { version = "0.24", features = [] }
+config = { version = "0.14.0", default-features = false, features = ["toml"] }
+tokio-stream = "0.1.16"
+# Packing/unpacking TAR archives
+tokio-tar = "0.3"
+rand = "0.8.5"
+lru = "0.15.0"
+memmap2 = "0.9.5"
+crc32fast = "1.4.2"
+# used in stream
+http-body = "1.0"
+http-body-util = "0.1.3"
+crossbeam-skiplist = "0.1"
+crossbeam = "0.8"
+mockall = { version = "0.12.1", optional = true }
+tonic-health = { version = "0.12.3", optional = true }
+# Compress/decompress data stream
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+async-stream = "0.3.6"
+uuid = { version = "1", features = ["v4"], optional = true  }
+
+[dev-dependencies]
+tracing-test = "0.2"
+serial_test = "3.2.0"
+temp-env = "0.3.6"
+tokio = { version = "1", features = ["test-util", "process"] }
+parking_lot = "0.12.3"
+nix = { version = "0.30.1", features = ["fs"] }
+mockall = "0.12.1"
+tonic-health = "0.12.3"
+uuid = { version = "1", features = ["v4"] }

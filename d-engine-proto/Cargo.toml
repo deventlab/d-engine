@@ -1,0 +1,29 @@
+[package]
+name = "d-engine-proto"
+version = "0.2.0"
+edition = "2021"
+authors = ["Joshua Chi <joshokn@gmail.com>"]
+description = "Protocol definitions and message types for d-engine using Prost"
+homepage = "https://github.com/deventlab/d-engine"
+repository = "https://github.com/deventlab/d-engine"
+license = "MIT OR Apache-2.0"
+keywords = ["raft", "protobuf", "grpc"]
+categories = ["encoding", "network-programming"]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+# prost = { workspace = true }
+prost = { version = "0.13", features = ["derive"] }
+tonic = { workspace = true }
+serde = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+
+
+[build-dependencies]
+tonic-build = "0.12"
+vergen = { version = "8.1", features = ["git", "gitcl"] }

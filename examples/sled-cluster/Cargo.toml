@@ -4,9 +4,8 @@ version = "0.1.3"
 edition = "2021"
 
 [dependencies]
+d-engine = { path = "../../d-engine", features = ["server"] }
 # d-engine = "0.1.4"
-d-engine = { path = "../../../d-engine" }
-
 
 sled = { version = "0.34.7", features = [
     "compression",
