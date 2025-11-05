@@ -1,6 +1,5 @@
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use d_engine_proto::common::NodeRole;
 use std::sync::Arc;
 use std::vec;
 use tokio::sync::oneshot;
@@ -16,10 +15,8 @@ use crate::mock_rpc_service::MockNode;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::common::NodeStatus;
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::NodeMeta;
 
 #[tokio::test]
 #[traced_test]
@@ -130,13 +127,6 @@ async fn test_get_success() {
     })));
 
     // Set up mock response
-    let mut leader_node = NodeMeta {
-        id: 1,
-        role: NodeRole::Leader.into(),
-        address: "127.0.0.1:50051".to_string(),
-        status: NodeStatus::Active.into(),
-    };
-    leader_node.role = NodeRole::Leader.into();
 
     let result = client.get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead)).await;
     println!("{:?}", &result);

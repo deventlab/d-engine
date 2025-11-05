@@ -21,8 +21,8 @@ use d_engine_core::RaftOneshot;
 use d_engine_core::RoleEvent;
 use d_engine_core::candidate_state::CandidateState;
 use d_engine_core::role_state::RaftRoleState;
-use d_engine_core::test_utils::crate_test_snapshot_stream;
 use d_engine_core::test_utils::create_test_chunk;
+use d_engine_core::test_utils::create_test_snapshot_stream;
 use d_engine_core::test_utils::mock_election_core;
 use d_engine_core::test_utils::mock_raft_context;
 use d_engine_proto::client::ClientReadRequest;
@@ -618,7 +618,7 @@ async fn test_handle_raft_event_case7() {
 
     // Step 2: Prepare the InstallSnapshotChunk event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let stream = crate_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
+    let stream = create_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
     let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
 
     // Step 3: Call handle_raft_event

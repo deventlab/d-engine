@@ -79,9 +79,7 @@ impl ClusterManagementService for MockRpcService {
         match &self.expected_join_cluster_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown(
-                "No mock get_cluster_metadata response set",
-            )),
+            None => Err(tonic::Status::unknown("No mock join_cluster response set")),
         }
     }
 
@@ -93,7 +91,7 @@ impl ClusterManagementService for MockRpcService {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown(
-                "No mock get_cluster_metadata response set",
+                "No mock discover_leader response set",
             )),
         }
     }

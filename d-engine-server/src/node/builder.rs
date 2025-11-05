@@ -332,13 +332,13 @@ where
                 purge_executor: Arc::new(purge_executor),
             },
             membership.clone(),
-            SignalParams {
+            SignalParams::new(
                 role_tx,
                 role_rx,
                 event_tx,
                 event_rx,
-                shutdown_signal: shutdown_signal.clone(),
-            },
+                shutdown_signal.clone(),
+            ),
             node_config_arc.clone(),
         );
 
@@ -364,7 +364,7 @@ where
         );
         self.enable_state_machine_commit_listener(commit_handler);
 
-        let event_tx = raft_core.event_tx.clone();
+        let event_tx = raft_core.event_sender();
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,
             raft_core: Arc::new(Mutex::new(raft_core)),

@@ -4,7 +4,7 @@ use tokio_stream::StreamExt;
 use tonic::Streaming;
 use tracing::trace;
 
-use crate::test_utils::crate_test_snapshot_stream;
+use crate::test_utils::create_test_snapshot_stream;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -132,9 +132,7 @@ impl ClusterManagementService for MockRpcService {
         match &self.expected_join_cluster_response {
             Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
             Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown(
-                "No mock get_cluster_metadata response set",
-            )),
+            None => Err(tonic::Status::unknown("No mock join_cluster response set")),
         }
     }
 
@@ -192,7 +190,7 @@ impl SnapshotService for MockRpcService {
         match &self.expected_stream_snapshot_response {
             Some(Ok(response)) => {
                 let streaming: Self::StreamSnapshotStream =
-                    crate_test_snapshot_stream(vec![response.clone()]);
+                    create_test_snapshot_stream(vec![response.clone()]);
                 Ok(tonic::Response::new(streaming))
             }
             Some(Err(status)) => Err(status.clone()),

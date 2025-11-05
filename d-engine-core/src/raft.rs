@@ -37,11 +37,11 @@ where
     pub ctx: RaftContext<T>,
 
     // Network & Storage events
-    pub event_tx: mpsc::Sender<RaftEvent>,
+    event_tx: mpsc::Sender<RaftEvent>,
     event_rx: mpsc::Receiver<RaftEvent>,
 
     // Timer
-    pub role_tx: mpsc::UnboundedSender<RoleEvent>,
+    role_tx: mpsc::UnboundedSender<RoleEvent>,
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
 
     // For business logic to apply logs into state machine
@@ -59,11 +59,33 @@ where
 }
 
 pub struct SignalParams {
-    pub role_tx: mpsc::UnboundedSender<RoleEvent>,
-    pub role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-    pub event_tx: mpsc::Sender<RaftEvent>,
-    pub event_rx: mpsc::Receiver<RaftEvent>,
-    pub shutdown_signal: watch::Receiver<()>,
+    pub(crate) role_tx: mpsc::UnboundedSender<RoleEvent>,
+    pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
+    pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
+    pub(crate) shutdown_signal: watch::Receiver<()>,
+}
+
+impl SignalParams {
+    /// Creates a new SignalParams with the provided channels.
+    ///
+    /// This is the only way to construct SignalParams from outside d-engine-core,
+    /// ensuring controlled initialization of the internal communication channels.
+    pub fn new(
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+        event_tx: mpsc::Sender<RaftEvent>,
+        event_rx: mpsc::Receiver<RaftEvent>,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
+        Self {
+            role_tx,
+            role_rx,
+            event_tx,
+            event_rx,
+            shutdown_signal,
+        }
+    }
 }
 
 impl<T> Raft<T>
@@ -375,6 +397,30 @@ where
         role: RaftRole<T>,
     ) {
         self.role = role
+    }
+
+    /// Returns a cloned event sender for external use.
+    ///
+    /// This provides controlled access to send validated RaftEvents to the Raft core.
+    /// Events sent through this sender are still processed through the normal validation
+    /// pipeline in the main event loop.
+    ///
+    /// # Security Note
+    /// While this provides access to the event channel, all events are still validated
+    /// by the Raft state machine before being applied. The event handler in `handle_raft_event`
+    /// performs necessary checks based on current term, role, and state.
+    pub fn event_sender(&self) -> mpsc::Sender<RaftEvent> {
+        self.event_tx.clone()
+    }
+
+    /// Returns a cloned role event sender for internal use.
+    ///
+    /// # Warning
+    /// This is primarily for internal components that need to trigger role transitions.
+    /// External callers should not use this unless they understand the Raft protocol deeply.
+    #[doc(hidden)]
+    pub fn role_event_sender(&self) -> mpsc::UnboundedSender<RoleEvent> {
+        self.role_tx.clone()
     }
 }
 

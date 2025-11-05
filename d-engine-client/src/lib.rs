@@ -95,6 +95,8 @@ mod mock_rpc;
 mod mock_rpc_service;
 #[cfg(test)]
 mod pool_test;
+#[cfg(test)]
+mod utils_test;
 
 /// Main entry point for interacting with the d_engine cluster
 ///

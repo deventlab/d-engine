@@ -64,7 +64,7 @@ jobs:
 
       - name: Run tests with nextest and generate coverage
         run: |
-          cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex "src/generated/.*|src/errors.rs|d-engine-core/src/event.rs"
+          cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex "src/generated/.*|src/errors.rs"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3

@@ -45,8 +45,8 @@ use d_engine_core::convert::safe_kv_bytes;
 use d_engine_core::leader_state::LeaderState;
 use d_engine_core::role_state::RaftRoleState;
 use d_engine_core::test_utils::MockBuilder;
-use d_engine_core::test_utils::crate_test_snapshot_stream;
 use d_engine_core::test_utils::create_test_chunk;
+use d_engine_core::test_utils::create_test_snapshot_stream;
 use d_engine_core::test_utils::mock_raft_context;
 use d_engine_core::test_utils::node_config;
 use d_engine_proto::client::ClientReadRequest;
@@ -1008,7 +1008,7 @@ async fn test_handle_raft_event_case7() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
 
-    let stream = crate_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
+    let stream = create_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
     let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();

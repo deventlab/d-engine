@@ -13,10 +13,28 @@ pub fn get_duration_since_epoch() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards")
 }
 
-/// accept ip either like 127.0.0.1 or docker host name: node1
+/// Normalizes an address string by ensuring it has a proper scheme prefix.
+///
+/// This function:
+/// - Detects and preserves existing "http://" or "https://" schemes
+/// - Defaults to "http://" when no scheme is present
+/// - Prevents scheme duplication
+///
+/// # Examples
+/// - "127.0.0.1:9000" -> "http://127.0.0.1:9000"
+/// - "http://127.0.0.1:9000" -> "http://127.0.0.1:9000"
+/// - "https://127.0.0.1:9000" -> "https://127.0.0.1:9000"
+/// - "node1:9000" -> "http://node1:9000"
 pub(crate) fn address_str(addr: &str) -> String {
-    // Strip existing "http://" or "https://" prefixes if duplicated.
-    let normalized = addr.trim_start_matches("http://").trim_start_matches("https://");
-    // Re-add a single "http://" prefix (or use HTTPS if needed).
-    format!("http://{normalized}")
+    // Detect if the address already has a scheme
+    if addr.starts_with("https://") {
+        // Preserve HTTPS scheme
+        addr.to_string()
+    } else if addr.starts_with("http://") {
+        // Preserve HTTP scheme
+        addr.to_string()
+    } else {
+        // No scheme present, default to HTTP
+        format!("http://{addr}",)
+    }
 }

@@ -54,7 +54,7 @@ async fn test_tick_priority_over_role_event() {
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_core;
     // 2. Add state listeners
-    let role_tx = raft.role_tx.clone();
+    let role_tx = raft.role_event_sender();
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(monitor_tx);
 
@@ -102,8 +102,8 @@ async fn test_role_event_priority_over_event_rx() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // 2. Add state listeners
-    let raft_tx = raft.event_tx.clone();
-    let role_tx = raft.role_tx.clone();
+    let raft_tx = raft.event_sender();
+    let role_tx = raft.role_event_sender();
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(monitor_tx.clone());
     let (event_monitor_tx, mut event_monitor_rx) = mpsc::unbounded_channel::<TestEvent>();
@@ -1000,7 +1000,7 @@ async fn test_handle_role_event_state_update_case1_5_1() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // 2. Add state listeners
-    let role_tx = raft.role_tx.clone();
+    let role_tx = raft.role_event_sender();
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(monitor_tx);
 
@@ -1058,7 +1058,7 @@ async fn test_handle_role_event_state_update_case1_5_2() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // 2. Add state listeners
-    let role_tx = raft.role_tx.clone();
+    let role_tx = raft.role_event_sender();
     let (monitor_tx, mut monitor_rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(monitor_tx);
 

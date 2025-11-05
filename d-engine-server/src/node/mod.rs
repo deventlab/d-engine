@@ -176,7 +176,7 @@ where
     /// Create a Node from a pre-built Raft instance
     /// This method is designed to support testing and external builders
     pub fn from_raft(raft: Raft<T>) -> Self {
-        let event_tx = raft.event_tx.clone();
+        let event_tx = raft.event_sender();
         let node_config = raft.ctx.node_config();
         let membership = raft.ctx.membership();
         let node_id = raft.node_id;

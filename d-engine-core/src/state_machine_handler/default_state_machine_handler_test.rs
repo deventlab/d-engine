@@ -27,9 +27,9 @@ use crate::MockStateMachine;
 use crate::MockTypeConfig;
 use crate::SnapshotError;
 use crate::StorageError;
-use crate::test_utils::crate_test_snapshot_stream;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
+use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::snapshot_config;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
@@ -454,7 +454,7 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     };
     chunks.push(chunk);
 
-    let streaming_request = crate_test_snapshot_stream(chunks);
+    let streaming_request = create_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
     // Spawn the handler in a separate task to prevent deadlock
@@ -493,7 +493,7 @@ async fn test_apply_snapshot_stream_from_leader_case3() {
 
     // Create ACK channel
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let stream = crate_test_snapshot_stream(vec![bad_chunk]);
+    let stream = create_test_snapshot_stream(vec![bad_chunk]);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
@@ -530,7 +530,7 @@ async fn test_apply_snapshot_stream_from_leader_case4() {
     ];
 
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let stream = crate_test_snapshot_stream(chunks);
+    let stream = create_test_snapshot_stream(chunks);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
@@ -572,7 +572,7 @@ async fn test_apply_snapshot_stream_from_leader_case5() {
         TEST_LEADER_ID,
         2,
     )];
-    let stream = crate_test_snapshot_stream(chunks);
+    let stream = create_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
     let handler_task = tokio::spawn({
@@ -608,7 +608,7 @@ async fn test_apply_snapshot_stream_from_leader_case6() {
     invalid_chunk.metadata = None;
 
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let stream = crate_test_snapshot_stream(vec![invalid_chunk]);
+    let stream = create_test_snapshot_stream(vec![invalid_chunk]);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
@@ -680,7 +680,7 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         chunks.push(chunk);
     }
 
-    let streaming_request = crate_test_snapshot_stream(chunks);
+    let streaming_request = create_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
     // Spawn the handler in a separate task
@@ -1906,7 +1906,7 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
         chunk_checksum: Bytes::from(chunk_checksum),
     };
 
-    let streaming_request = crate_test_snapshot_stream(vec![chunk]);
+    let streaming_request = create_test_snapshot_stream(vec![chunk]);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
     let handler_task = tokio::spawn({

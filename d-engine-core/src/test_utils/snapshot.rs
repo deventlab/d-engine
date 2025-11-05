@@ -22,7 +22,7 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 
-pub fn crate_test_snapshot_stream<T>(chunks: Vec<T>) -> tonic::Streaming<T>
+pub fn create_test_snapshot_stream<T>(chunks: Vec<T>) -> tonic::Streaming<T>
 where
     T: prost::Message + Default + 'static,
 {
@@ -102,7 +102,7 @@ pub async fn create_test_compressed_snapshot() -> (Vec<u8>, SnapshotMetadata) {
 }
 
 #[allow(unused)]
-pub(crate) fn crate_test_snapshot_stream_from_receiver<T>(
+pub(crate) fn create_test_snapshot_stream_from_receiver<T>(
     receiver: mpsc::Receiver<T>
 ) -> tonic::Streaming<T>
 where

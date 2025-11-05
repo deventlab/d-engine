@@ -21,8 +21,8 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::RetryPolicies;
 use d_engine_core::SystemError;
 use d_engine_core::Transport;
-use d_engine_core::crate_test_snapshot_stream;
 use d_engine_core::create_test_chunk;
+use d_engine_core::create_test_snapshot_stream;
 use d_engine_core::test_utils::MockNode;
 use d_engine_core::test_utils::node_config;
 use d_engine_proto::common::LogId;
@@ -1060,7 +1060,7 @@ fn create_failing_stream(fail_at: usize) -> BoxStream<'static, Result<SnapshotCh
         chunks.push(create_test_chunk(i as u32, &data, 1, 1, 5));
     }
 
-    let stream = crate_test_snapshot_stream(chunks);
+    let stream = create_test_snapshot_stream(chunks);
     Box::pin(stream::unfold(
         (stream, 0),
         move |(mut stream, count)| async move {

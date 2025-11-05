@@ -283,13 +283,7 @@ impl MockBuilder {
                 purge_executor: Arc::new(purge_executor),
             },
             membership,
-            SignalParams {
-                role_tx,
-                role_rx,
-                event_tx,
-                event_rx,
-                shutdown_signal: self.shutdown_signal,
-            },
+            SignalParams::new(role_tx, role_rx, event_tx, event_rx, self.shutdown_signal),
             arc_node_config.clone(),
         )
     }
@@ -299,7 +293,7 @@ impl MockBuilder {
     /// Wraps the Raft instance in a Node container for integration testing.
     pub fn build_node(self) -> Node<MockTypeConfig> {
         let raft = self.build_raft();
-        let event_tx = raft.event_tx.clone();
+        let event_tx = raft.event_sender();
         let node_config = raft.ctx.node_config.clone();
         let membership = raft.ctx.membership.clone();
         Node::<MockTypeConfig> {
@@ -321,7 +315,7 @@ impl MockBuilder {
         let node_config_option = self.node_config.clone();
 
         let raft = self.build_raft();
-        let event_tx = raft.event_tx.clone();
+        let event_tx = raft.event_sender();
         let node_config = node_config_option.unwrap_or_else(|| {
             RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
         });

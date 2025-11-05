@@ -16,8 +16,8 @@ use crate::NetworkError;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
 use crate::StorageError;
-use crate::crate_test_snapshot_stream;
 use crate::create_test_chunk;
+use crate::create_test_snapshot_stream;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 
@@ -39,7 +39,7 @@ fn create_snapshot_stream(
         })
         .collect();
 
-    let stream = crate_test_snapshot_stream(chunks);
+    let stream = create_test_snapshot_stream(chunks);
     Box::pin(
         stream.map(|item| item.map_err(|s| NetworkError::TonicStatusError(Box::new(s)).into())),
     )
