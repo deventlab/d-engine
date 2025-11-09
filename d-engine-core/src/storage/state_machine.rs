@@ -11,6 +11,15 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use tonic::async_trait;
 
+/// State machine trait for Raft consensus
+///
+/// # Thread Safety Requirements
+///
+/// **CRITICAL**: Implementations MUST be thread-safe.
+///
+/// - Read methods (`get()`, `len()`) may be called concurrently
+/// - Write methods should use internal synchronization
+/// - No assumptions about caller's threading model
 #[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {

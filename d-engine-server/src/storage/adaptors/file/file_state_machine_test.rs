@@ -26,6 +26,7 @@ async fn test_wal_replay_after_crash() {
                 payload: Some(Payload::Command(
                     WriteCommand {
                         operation: Some(Operation::Insert(Insert {
+                            ttl_secs: None,
                             key: Bytes::from("key1"),
                             value: Bytes::from("value1"),
                         })),
@@ -42,6 +43,7 @@ async fn test_wal_replay_after_crash() {
                 payload: Some(Payload::Command(
                     WriteCommand {
                         operation: Some(Operation::Insert(Insert {
+                            ttl_secs: None,
                             key: Bytes::from("key2"),
                             value: Bytes::from("value2"),
                         })),
@@ -72,6 +74,7 @@ async fn test_wal_replay_after_crash() {
         "INSERT".to_string(),
         Bytes::from("key3"),
         Some(Bytes::from("value3")),
+        None, // No TTL
     )];
     sm.append_to_wal(crash_entries).await.unwrap();
 
@@ -94,4 +97,34 @@ async fn test_wal_replay_after_crash() {
         sm_recovered.get(b"key3").unwrap(),
         Some(Bytes::from("value3"))
     );
+}
+
+#[tokio::test]
+#[ignore] // Optional: run with `cargo test -- --ignored`
+async fn test_file_state_machine_performance() {
+    use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+    use std::sync::Arc;
+    use tonic::async_trait;
+
+    struct FileStateMachineBuilder {
+        temp_dir: tempfile::TempDir,
+    }
+
+    #[async_trait]
+    impl StateMachineBuilder for FileStateMachineBuilder {
+        async fn build(&self) -> Result<Arc<dyn StateMachine>, d_engine_core::Error> {
+            let sm = FileStateMachine::new(self.temp_dir.path().to_path_buf()).await?;
+            Ok(Arc::new(sm))
+        }
+
+        async fn cleanup(&self) -> Result<(), d_engine_core::Error> {
+            Ok(())
+        }
+    }
+
+    let builder = FileStateMachineBuilder {
+        temp_dir: tempfile::tempdir().unwrap(),
+    };
+
+    StateMachineTestSuite::run_performance_tests(builder).await.unwrap();
 }

@@ -208,11 +208,11 @@ build-release: check check-workspace
 # TESTING
 # ============================================================================
 
-## test                 Run all tests (lib + bins + examples + integration)
+## test                 Run all tests (lib + bins + examples + integration, excluding benches)
 test: install-tools check-workspace
 	@echo "$(BLUE)Running tests on all targets...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --all-targets --no-fail-fast -- --test-threads=1 --nocapture
+		$(CARGO) test --workspace --lib --bins --tests --examples --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 ## test-detailed        Run tests with detailed failure output for each crate
@@ -221,7 +221,7 @@ test-detailed: install-tools check-workspace
 	@for member in $(WORKSPACE_MEMBERS); do \
 		echo "$(CYAN)Testing crate: $$member$(NC)"; \
 		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $$member --all-targets --no-fail-fast -- --test-threads=1 --nocapture || \
+		$(CARGO) test -p $$member --lib --bins --tests --examples --no-fail-fast -- --test-threads=1 --nocapture || \
 		{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
 		echo "$(GREEN)✓ Tests passed for crate: $$member$(NC)"; \
 		echo ""; \
@@ -279,7 +279,7 @@ test-all: test-detailed test-doc bench
 test-verbose: install-tools check-workspace
 	@echo "$(BLUE)Running tests (verbose, single-threaded)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --all-targets --no-fail-fast -- --nocapture --test-threads=1 --show-output
+		$(CARGO) test --workspace --lib --bins --tests --examples --no-fail-fast -- --nocapture --test-threads=1 --show-output
 	@echo "$(GREEN)✓ Verbose test run completed$(NC)"
 
 # ============================================================================
@@ -290,8 +290,16 @@ test-verbose: install-tools check-workspace
 bench: check-workspace
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
 	@$(CARGO) bench --workspace --all-features --no-fail-fast -- --nocapture || \
-		{ echo "$(YELLOW)Note: No benchmarks configured or not supported in this workspace$(NC)"; }
+		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Benchmark run completed$(NC)"
+	@echo "$(CYAN)→ View detailed results: target/criterion/report/index.html$(NC)"
+
+## bench-compile        Check that benchmarks compile without running them
+bench-compile: check-workspace
+	@echo "$(BLUE)Checking benchmark compilation...$(NC)"
+	@$(CARGO) bench --no-run --workspace || \
+		{ echo "$(RED)✗ Benchmark compilation failed$(NC)"; exit 1; }
+	@echo "$(GREEN)✓ Benchmarks compile successfully$(NC)"
 
 # ============================================================================
 # DOCUMENTATION

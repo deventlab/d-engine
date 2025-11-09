@@ -14,6 +14,11 @@
 //! storage backends without changing the Raft protocol logic.
 mod adaptors;
 mod buffered;
+mod ttl_manager;
 
 pub use adaptors::*;
 pub use buffered::*;
+pub use ttl_manager::TtlManager;
+
+#[cfg(test)]
+mod ttl_integration_test;

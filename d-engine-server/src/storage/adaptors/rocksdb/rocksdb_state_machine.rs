@@ -1,9 +1,12 @@
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use parking_lot::RwLock;
 use prost::Message;
@@ -17,8 +20,10 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
+use tracing::trace;
 use tracing::warn;
 
+use crate::storage::TtlManager;
 use d_engine_core::Error;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
@@ -36,20 +41,30 @@ const STATE_MACHINE_META_CF: &str = "state_machine_meta";
 const LAST_APPLIED_INDEX_KEY: &[u8] = b"last_applied_index";
 const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
+const TTL_STATE_KEY: &[u8] = b"ttl_state";
 
-/// RocksDB-based state machine implementation
+/// RocksDB-based state machine implementation with TTL support
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
-    db: Arc<DB>,
+    db: Arc<ArcSwap<DB>>,
+    db_path: PathBuf,
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
     last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
+
+    // TTL management for automatic key expiration
+    ttl_manager: RwLock<TtlManager>,
+
+    // TTL cleanup tracking
+    apply_counter: AtomicU64, // Track number of applies for piggyback cleanup
 }
 
 impl RocksDBStateMachine {
     /// Creates a new RocksDB-based state machine
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let db_path = path.as_ref().to_path_buf();
+
         // Configure high-performance RocksDB options
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -88,20 +103,66 @@ impl RocksDBStateMachine {
 
         let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
 
-        let db = DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let db =
+            DB::open_cf(&opts, &db_path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
         let db_arc = Arc::new(db);
 
         // Load metadata
         let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db_arc)?;
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
+        let ttl_manager = Self::load_ttl_metadata(&db_arc)?;
 
         Ok(Self {
-            db: db_arc,
+            db: Arc::new(ArcSwap::new(db_arc)),
+            db_path,
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
+            ttl_manager: RwLock::new(ttl_manager),
+            apply_counter: AtomicU64::new(0),
         })
+    }
+
+    /// Opens RocksDB with the standard configuration
+    fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, Error> {
+        // Same options as new()
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Memory and write optimization
+        opts.set_max_write_buffer_number(4);
+        opts.set_min_write_buffer_number_to_merge(2);
+        opts.set_write_buffer_size(128 * 1024 * 1024);
+
+        // Compression optimization
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts.set_compression_options(-14, 0, 0, 0);
+
+        // WAL-related optimizations
+        opts.set_wal_bytes_per_sync(1024 * 1024);
+        opts.set_manual_wal_flush(true);
+        opts.set_use_fsync(false);
+
+        // Performance Tuning
+        opts.set_max_background_jobs(4);
+        opts.set_max_open_files(5000);
+        opts.set_use_direct_io_for_flush_and_compaction(true);
+        opts.set_use_direct_reads(true);
+
+        // Leveled Compaction Configuration
+        opts.set_level_compaction_dynamic_level_bytes(true);
+        opts.set_target_file_size_base(64 * 1024 * 1024);
+        opts.set_max_bytes_for_level_base(256 * 1024 * 1024);
+
+        // Block cache configuration
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024);
+        opts.set_row_cache(&cache);
+
+        let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
+        DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()).into())
     }
 
     fn load_state_machine_metadata(db: &Arc<DB>) -> Result<(u64, u64), Error> {
@@ -149,45 +210,179 @@ impl RocksDBStateMachine {
         }
     }
 
+    fn load_ttl_metadata(db: &Arc<DB>) -> Result<TtlManager, Error> {
+        let cf = db
+            .cf_handle(STATE_MACHINE_META_CF)
+            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
+
+        match db
+            .get_cf(&cf, TTL_STATE_KEY)
+            .map_err(|e| StorageError::DbError(e.to_string()))?
+        {
+            Some(bytes) => {
+                let ttl_manager = TtlManager::from_snapshot(&bytes);
+                info!(
+                    "Loaded TTL state from RocksDB: {} active TTLs",
+                    ttl_manager.len()
+                );
+                Ok(ttl_manager)
+            }
+            None => {
+                debug!("No TTL state found in RocksDB, starting with empty TTL manager");
+                Ok(TtlManager::new())
+            }
+        }
+    }
+
     fn persist_state_machine_metadata(&self) -> Result<(), Error> {
-        let cf = self
-            .db
+        let db = self.db.load();
+        let cf = db
             .cf_handle(STATE_MACHINE_META_CF)
             .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
 
         let index = self.last_applied_index.load(Ordering::SeqCst);
         let term = self.last_applied_term.load(Ordering::SeqCst);
 
-        self.db
-            .put_cf(&cf, LAST_APPLIED_INDEX_KEY, index.to_be_bytes())
+        db.put_cf(&cf, LAST_APPLIED_INDEX_KEY, index.to_be_bytes())
             .map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.db
-            .put_cf(&cf, LAST_APPLIED_TERM_KEY, term.to_be_bytes())
+        db.put_cf(&cf, LAST_APPLIED_TERM_KEY, term.to_be_bytes())
             .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         Ok(())
     }
 
     fn persist_snapshot_metadata(&self) -> Result<(), Error> {
-        let cf = self
-            .db
+        let db = self.db.load();
+        let cf = db
             .cf_handle(STATE_MACHINE_META_CF)
             .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
 
         if let Some(metadata) = self.last_snapshot_metadata.read().clone() {
             let bytes = bincode::serialize(&metadata).map_err(StorageError::BincodeError)?;
-            self.db
-                .put_cf(&cf, SNAPSHOT_METADATA_KEY, bytes)
+            db.put_cf(&cf, SNAPSHOT_METADATA_KEY, bytes)
                 .map_err(|e| StorageError::DbError(e.to_string()))?;
         }
         Ok(())
+    }
+
+    fn persist_ttl_metadata(&self) -> Result<(), Error> {
+        let db = self.db.load();
+        let cf = db
+            .cf_handle(STATE_MACHINE_META_CF)
+            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
+
+        let ttl_snapshot = {
+            let ttl_manager = self.ttl_manager.read();
+            ttl_manager.to_snapshot()
+        };
+
+        db.put_cf(&cf, TTL_STATE_KEY, ttl_snapshot)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        debug!("Persisted TTL state to RocksDB");
+        Ok(())
+    }
+
+    /// Piggyback cleanup: Remove expired keys with time budget
+    ///
+    /// This method is called during apply_chunk to cleanup expired keys
+    /// opportunistically (piggyback on existing Raft events).
+    ///
+    /// # Arguments
+    /// * `max_duration_ms` - Maximum time budget for cleanup (milliseconds)
+    ///
+    /// # Returns
+    /// Number of keys deleted
+    ///
+    /// # Performance
+    /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
+    /// - Cleanup: O(log N + K) where K = expired keys
+    /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
+    fn maybe_cleanup_expired(
+        &self,
+        max_duration_ms: u64,
+    ) -> usize {
+        let start = std::time::Instant::now();
+        let now = SystemTime::now();
+        let mut deleted_count = 0;
+
+        // Fast path: skip if TTL never used (lazy activation)
+        {
+            let ttl_manager = self.ttl_manager.read();
+            if !ttl_manager.has_ttl_keys() {
+                return 0; // No TTL keys, skip cleanup (~10ns overhead)
+            }
+
+            // Quick check: any expired keys?
+            if !ttl_manager.may_have_expired_keys(now) {
+                return 0; // No expired keys, skip cleanup (~30ns overhead)
+            }
+        }
+
+        // Get database handle
+        let db = self.db.load();
+        let cf = match db.cf_handle(STATE_MACHINE_CF) {
+            Some(cf) => cf,
+            None => {
+                error!("State machine CF not found during TTL cleanup");
+                return 0;
+            }
+        };
+
+        // Cleanup expired keys with time budget
+        let max_duration = std::time::Duration::from_millis(max_duration_ms);
+
+        loop {
+            // Check time budget
+            if start.elapsed() >= max_duration {
+                debug!(
+                    "Piggyback cleanup time budget exceeded: deleted {} keys in {:?}",
+                    deleted_count,
+                    start.elapsed()
+                );
+                break;
+            }
+
+            // Get next batch of expired keys
+            let expired_keys = {
+                let mut ttl_manager = self.ttl_manager.write();
+                ttl_manager.get_expired_keys(now)
+            };
+
+            if expired_keys.is_empty() {
+                break; // No more expired keys
+            }
+
+            // Delete expired keys from RocksDB using batch for efficiency
+            let mut batch = WriteBatch::default();
+            for key in expired_keys {
+                batch.delete_cf(&cf, &key);
+                deleted_count += 1;
+            }
+
+            // Apply batch delete
+            if let Err(e) = db.write(batch) {
+                error!("Failed to delete expired keys: {}", e);
+                break;
+            }
+        }
+
+        if deleted_count > 0 {
+            debug!(
+                "Piggyback cleanup: deleted {} expired keys in {:?}",
+                deleted_count,
+                start.elapsed()
+            );
+        }
+
+        deleted_count
     }
 
     fn apply_batch(
         &self,
         batch: WriteBatch,
     ) -> Result<(), Error> {
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.load().write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 }
@@ -214,16 +409,39 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
-        let cf = self
-            .db
+        // Passive expiration check: check TTL on read access
+        {
+            let ttl_manager = self.ttl_manager.read();
+            if let Some(expire_at) = ttl_manager.get_expiration(key_buffer) {
+                if expire_at <= SystemTime::now() {
+                    // Key has expired, delete it
+                    drop(ttl_manager); // Release read lock before acquiring write lock
+
+                    let db = self.db.load();
+                    let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                        StorageError::DbError("State machine CF not found".to_string())
+                    })?;
+
+                    // Delete from RocksDB
+                    db.delete_cf(&cf, key_buffer)
+                        .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+                    // Unregister from TTL manager
+                    let mut ttl_manager_write = self.ttl_manager.write();
+                    ttl_manager_write.unregister(key_buffer);
+
+                    debug!("Passive expiration: deleted key {:?}", key_buffer);
+                    return Ok(None);
+                }
+            }
+        }
+
+        let db = self.db.load();
+        let cf = db
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
 
-        match self
-            .db
-            .get_cf(&cf, key_buffer)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
-        {
+        match db.get_cf(&cf, key_buffer).map_err(|e| StorageError::DbError(e.to_string()))? {
             Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
             None => Ok(None),
         }
@@ -238,13 +456,14 @@ impl StateMachine for RocksDBStateMachine {
         None
     }
 
+    /// Thread-safe: called serially by single-task CommitHandler
     #[instrument(skip(self, chunk))]
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
     ) -> Result<(), Error> {
-        let cf = self
-            .db
+        let db = self.db.load();
+        let cf = db
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
 
@@ -273,11 +492,27 @@ impl StateMachine for RocksDBStateMachine {
                 }
                 Some(Payload::Command(data)) => match WriteCommand::decode(&data[..]) {
                     Ok(write_cmd) => match write_cmd.operation {
-                        Some(Operation::Insert(Insert { key, value })) => {
-                            batch.put_cf(&cf, &key, value);
+                        Some(Operation::Insert(Insert {
+                            key,
+                            value,
+                            ttl_secs,
+                        })) => {
+                            batch.put_cf(&cf, &key, &value);
+
+                            // Register TTL if specified
+                            if let Some(ttl) = ttl_secs {
+                                if ttl > 0 {
+                                    let mut ttl_manager = self.ttl_manager.write();
+                                    ttl_manager.register(key.clone(), ttl);
+                                }
+                            }
                         }
                         Some(Operation::Delete(Delete { key })) => {
                             batch.delete_cf(&cf, &key);
+
+                            // Unregister TTL for deleted key
+                            let mut ttl_manager = self.ttl_manager.write();
+                            ttl_manager.unregister(&key);
                         }
                         None => {
                             warn!("WriteCommand without operation at index {}", entry.index);
@@ -300,21 +535,41 @@ impl StateMachine for RocksDBStateMachine {
 
         self.apply_batch(batch)?;
 
+        // Piggyback TTL cleanup (outside lock, non-blocking)
+        // Cleanup every 100 applies (configurable via StorageConfig in future)
+        let apply_count = self.apply_counter.fetch_add(1, Ordering::Relaxed);
+        const PIGGYBACK_FREQUENCY: u64 = 100; // TODO: Make configurable via StorageConfig
+        const MAX_CLEANUP_DURATION_MS: u64 = 1; // TODO: Make configurable via StorageConfig
+
+        if apply_count % PIGGYBACK_FREQUENCY == 0 {
+            let deleted = self.maybe_cleanup_expired(MAX_CLEANUP_DURATION_MS);
+            if deleted > 0 {
+                trace!(
+                    "Piggyback cleanup at apply {}: deleted {} keys",
+                    apply_count, deleted
+                );
+            }
+        }
+
         if let Some(log_id) = highest_index_entry {
             self.update_last_applied(log_id);
         }
+
+        // Persist TTL state after applying changes
+        self.persist_ttl_metadata()?;
 
         Ok(())
     }
 
     fn len(&self) -> usize {
-        let cf = match self.db.cf_handle(STATE_MACHINE_CF) {
+        let db = self.db.load();
+        let cf = match db.cf_handle(STATE_MACHINE_CF) {
             Some(cf) => cf,
             None => return 0,
         };
 
         // Note: This is an expensive operation because it iterates over all keys.
-        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        let iter = db.iterator_cf(&cf, IteratorMode::Start);
         iter.count()
     }
 
@@ -365,12 +620,84 @@ impl StateMachine for RocksDBStateMachine {
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
-        _snapshot_path: std::path::PathBuf,
+        snapshot_dir: std::path::PathBuf,
     ) -> Result<(), Error> {
-        // For RocksDB, applying a snapshot from a file might involve replacing the entire DB.
-        // This is a complex operation and might require locking.
-        // Here, we'll just log a warning as this is a simplified implementation.
-        warn!("Applying snapshot from file is not fully implemented for RocksDBStateMachine");
+        info!("Applying snapshot from checkpoint: {:?}", snapshot_dir);
+
+        // PHASE 1: Stop serving requests
+        self.is_serving.store(false, Ordering::SeqCst);
+        info!("Stopped serving requests for snapshot restoration");
+
+        // PHASE 2: Flush and prepare old DB for replacement
+        {
+            let old_db = self.db.load();
+            old_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+            old_db.cancel_all_background_work(true);
+            info!("Flushed and stopped background work on old DB");
+        }
+
+        // PHASE 3: Atomic directory replacement
+        let backup_dir = self.db_path.with_extension("backup");
+
+        // Remove old backup if exists
+        if backup_dir.exists() {
+            tokio::fs::remove_dir_all(&backup_dir).await?;
+        }
+
+        // Move current DB to backup
+        tokio::fs::rename(&self.db_path, &backup_dir).await?;
+        info!("Backed up current DB to: {:?}", backup_dir);
+
+        // Move checkpoint to DB path
+        tokio::fs::rename(&snapshot_dir, &self.db_path).await.map_err(|e| {
+            // Rollback: restore from backup
+            let _ = std::fs::rename(&backup_dir, &self.db_path);
+            e
+        })?;
+        info!("Moved checkpoint to DB path: {:?}", self.db_path);
+
+        // PHASE 4: Open new DB from checkpoint
+        let new_db = Self::open_db(&self.db_path).map_err(|e| {
+            // Rollback: restore from backup
+            let _ = std::fs::rename(&backup_dir, &self.db_path);
+            error!("Failed to open new DB, rolled back to backup: {:?}", e);
+            e
+        })?;
+
+        // Atomically swap DB reference
+        self.db.store(Arc::new(new_db));
+        info!("Atomically swapped to new DB instance");
+
+        // PHASE 5: Restore TTL state
+        let ttl_path = self.db_path.join("ttl_state.bin");
+        if ttl_path.exists() {
+            let ttl_data = tokio::fs::read(&ttl_path).await?;
+            let ttl_manager_new = TtlManager::from_snapshot(&ttl_data);
+            *self.ttl_manager.write() = ttl_manager_new;
+            info!("TTL manager state restored from snapshot");
+        } else {
+            warn!("No TTL state found in snapshot, initializing empty TTL manager");
+            *self.ttl_manager.write() = TtlManager::new();
+        }
+
+        // PHASE 6: Update metadata
+        *self.last_snapshot_metadata.write() = Some(metadata.clone());
+        if let Some(last_included) = &metadata.last_included {
+            self.update_last_applied(*last_included);
+        }
+
+        // PHASE 7: Resume serving
+        self.is_serving.store(true, Ordering::SeqCst);
+        info!("Resumed serving requests");
+
+        // PHASE 8: Clean up backup (best effort)
+        if let Err(e) = tokio::fs::remove_dir_all(&backup_dir).await {
+            warn!("Failed to remove backup directory: {}", e);
+        } else {
+            info!("Cleaned up backup directory");
+        }
+
+        info!("Snapshot applied successfully - full DB restoration complete");
         Ok(())
     }
 
@@ -381,11 +708,25 @@ impl StateMachine for RocksDBStateMachine {
         last_included: LogId,
     ) -> Result<Bytes, Error> {
         // Create a checkpoint in the new_snapshot_dir
-        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        checkpoint
-            .create_checkpoint(&new_snapshot_dir)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Use scope to ensure checkpoint is dropped before await
+        {
+            let db = self.db.load();
+            let checkpoint = rocksdb::checkpoint::Checkpoint::new(db.as_ref())
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            checkpoint
+                .create_checkpoint(&new_snapshot_dir)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        } // checkpoint dropped here, before any await
+
+        // Persist TTL manager state alongside the checkpoint
+        let ttl_snapshot = {
+            let ttl_manager = self.ttl_manager.read();
+            ttl_manager.to_snapshot()
+        };
+
+        // Write TTL data to a separate file in the snapshot directory
+        let ttl_path = new_snapshot_dir.join("ttl_state.bin");
+        tokio::fs::write(&ttl_path, ttl_snapshot).await?;
 
         // Update metadata
         let checksum = [0; 32]; // For now, we return a dummy checksum.
@@ -395,6 +736,7 @@ impl StateMachine for RocksDBStateMachine {
         };
         self.persist_last_snapshot_metadata(&snapshot_metadata)?;
 
+        info!("Snapshot generated at {:?} with TTL data", new_snapshot_dir);
         Ok(Bytes::copy_from_slice(&checksum))
     }
 
@@ -405,7 +747,7 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.load().flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
@@ -415,30 +757,37 @@ impl StateMachine for RocksDBStateMachine {
 
     #[instrument(skip(self))]
     async fn reset(&self) -> Result<(), Error> {
-        let cf = self
-            .db
+        let db = self.db.load();
+        let cf = db
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
 
         // Delete all keys in the state machine
         let mut batch = WriteBatch::default();
-        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        let iter = db.iterator_cf(&cf, IteratorMode::Start);
 
         for item in iter {
             let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Reset metadata
         self.last_applied_index.store(0, Ordering::SeqCst);
         self.last_applied_term.store(0, Ordering::SeqCst);
         *self.last_snapshot_metadata.write() = None;
 
+        // Reset TTL manager
+        {
+            let mut ttl_manager = self.ttl_manager.write();
+            *ttl_manager = TtlManager::new();
+        }
+
         self.persist_state_machine_metadata()?;
         self.persist_snapshot_metadata()?;
 
+        info!("RocksDB state machine reset completed");
         Ok(())
     }
 }

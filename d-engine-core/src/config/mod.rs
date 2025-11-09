@@ -11,12 +11,14 @@ use std::path::Path;
 mod network;
 mod raft;
 mod retry;
+mod storage;
 mod tls;
 pub use cluster::*;
 use config::ConfigError;
 pub use network::*;
 pub use raft::*;
 pub use retry::*;
+pub use storage::*;
 pub use tls::*;
 #[cfg(test)]
 mod config_test;
@@ -56,6 +58,8 @@ pub struct RaftNodeConfig {
     pub retry: RetryPolicies,
     /// TLS/SSL security configuration
     pub tls: TlsConfig,
+    /// Storage and data lifecycle configuration
+    pub storage: StorageConfig,
 }
 impl Debug for RaftNodeConfig {
     fn fmt(
@@ -166,6 +170,7 @@ impl RaftNodeConfig {
         self.network.validate()?;
         self.tls.validate()?;
         self.retry.validate()?;
+        self.storage.validate()?;
         Ok(())
     }
 

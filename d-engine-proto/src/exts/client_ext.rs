@@ -56,6 +56,28 @@ impl WriteCommand {
         let cmd = write_command::Insert {
             key: key.into(),
             value: value.into(),
+            ttl_secs: None,
+        };
+        Self {
+            operation: Some(write_command::Operation::Insert(cmd)),
+        }
+    }
+
+    /// Create write command for key-value pair with TTL
+    ///
+    /// # Parameters
+    /// - `key`: Byte array for storage key
+    /// - `value`: Byte array to be stored
+    /// - `ttl_secs`: Time-to-live in seconds
+    pub fn insert_with_ttl(
+        key: impl Into<Bytes>,
+        value: impl Into<Bytes>,
+        ttl_secs: u64,
+    ) -> Self {
+        let cmd = write_command::Insert {
+            key: key.into(),
+            value: value.into(),
+            ttl_secs: Some(ttl_secs),
         };
         Self {
             operation: Some(write_command::Operation::Insert(cmd)),

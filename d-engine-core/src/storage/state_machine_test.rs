@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use prost::Message;
@@ -45,6 +46,15 @@ impl StateMachineTestSuite {
         Self::test_snapshot_operations(builder.build().await?).await?;
         Self::test_persistence(builder.build().await?).await?;
         Self::test_reset_operation(builder.build().await?).await?;
+
+        builder.cleanup().await?;
+        Ok(())
+    }
+
+    /// Run performance tests (optional, not included in run_all_tests)
+    pub async fn run_performance_tests<B: StateMachineBuilder>(builder: B) -> Result<(), Error> {
+        Self::test_apply_chunk_performance_smoke(builder.build().await?).await?;
+        Self::test_apply_chunk_scalability(builder.build().await?).await?;
 
         builder.cleanup().await?;
         Ok(())
@@ -297,6 +307,86 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
+    /// Performance smoke test: apply_chunk baseline
+    ///
+    /// Ensures apply_chunk doesn't have catastrophic performance issues.
+    /// Threshold: 100 entries in < 1 second (generous for CI stability).
+    async fn test_apply_chunk_performance_smoke(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let entries: Vec<_> = (1..=100)
+            .map(|i| {
+                create_insert_entry(
+                    i,
+                    Bytes::from(format!("perf_key_{}", i)),
+                    Bytes::from(format!("perf_value_{}", i)),
+                )
+            })
+            .collect();
+
+        let start = Instant::now();
+        state_machine.apply_chunk(entries).await?;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Performance regression: apply_chunk(100) took {:?} (expected < 1s)",
+            elapsed
+        );
+
+        Ok(())
+    }
+
+    /// Performance scalability test: verify O(N) complexity
+    ///
+    /// Tests that 1000 entries take ~10x longer than 100 entries (not 100x).
+    /// Detects algorithmic issues (e.g., O(N²) instead of O(N)).
+    async fn test_apply_chunk_scalability(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        // Baseline: 100 entries
+        let small_entries: Vec<_> = (1..=100)
+            .map(|i| {
+                create_insert_entry(
+                    i,
+                    Bytes::from(format!("scale_key_{}", i)),
+                    Bytes::from(format!("scale_value_{}", i)),
+                )
+            })
+            .collect();
+
+        let start_small = Instant::now();
+        state_machine.apply_chunk(small_entries).await?;
+        let elapsed_small = start_small.elapsed();
+
+        // Large batch: 1000 entries
+        let large_entries: Vec<_> = (101..=1100)
+            .map(|i| {
+                create_insert_entry(
+                    i,
+                    Bytes::from(format!("scale_key_{}", i)),
+                    Bytes::from(format!("scale_value_{}", i)),
+                )
+            })
+            .collect();
+
+        let start_large = Instant::now();
+        state_machine.apply_chunk(large_entries).await?;
+        let elapsed_large = start_large.elapsed();
+
+        // Verify linear scalability: 1000 entries should be 5x-15x slower (not 100x)
+        let ratio = elapsed_large.as_micros() as f64 / elapsed_small.as_micros().max(1) as f64;
+
+        assert!(
+            ratio < 20.0,
+            "Scalability issue: 1000 entries took {:.1}x longer than 100 entries (expected ~10x). \
+             Possible O(N²) complexity.",
+            ratio
+        );
+
+        Ok(())
+    }
+
     /// Test reset operation functionality
     ///
     /// This test verifies that the reset operation:
@@ -396,7 +486,11 @@ fn create_insert_entry(
     value: Bytes,
 ) -> Entry {
     // 1. Build the WriteCommand
-    let insert = Insert { key, value };
+    let insert = Insert {
+        key,
+        value,
+        ttl_secs: None,
+    };
     let operation = Operation::Insert(insert);
     let write_cmd = WriteCommand {
         operation: Some(operation),

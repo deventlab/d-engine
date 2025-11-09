@@ -1,9 +1,85 @@
+//! File-based state machine implementation with crash recovery
+//!
+//! This module provides a durable state machine implementation using file-based storage
+//! with Write-Ahead Logging (WAL) for crash consistency.
+//!
+//! # Architecture
+//!
+//! ## Storage Components
+//!
+//! - **`state.data`**: Serialized key-value store (persisted after each apply_chunk)
+//! - **`wal.log`**: Write-Ahead Log for crash recovery (cleared after successful persistence)
+//! - **`ttl_state.bin`**: TTL manager state (persisted alongside state.data)
+//! - **`metadata.bin`**: Raft metadata (last_applied_index, last_applied_term)
+//!
+//! ## Write-Ahead Log (WAL) Design
+//!
+//! The WAL ensures crash consistency by recording operations before they are applied to
+//! in-memory state. Each WAL entry contains:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ Entry Index (8 bytes) │ Entry Term (8 bytes) │ OpCode (1 byte) │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │ Key Length (8 bytes)  │ Key Data (N bytes)                      │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │ Value Length (8 bytes)│ Value Data (M bytes, if present)        │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │ TTL (4 bytes, 0 = no TTL)                                       │
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ### Why TTL is Included in WAL
+//!
+//! TTL metadata MUST be included in WAL for crash recovery correctness:
+//!
+//! **Scenario without TTL in WAL:**
+//! 1. Client inserts key="foo", value="bar", ttl=3600s
+//! 2. Operation written to WAL (without TTL field)
+//! 3. Node crashes before persist_data_async() completes
+//! 4. On restart, replay_wal() restores key="foo" from WAL
+//! 5. **BUG**: Key is restored but TTL manager has no expiration record
+//! 6. **Result**: Key becomes permanent (should expire in 3600s)
+//!
+//! **With TTL in WAL:**
+//! 1. WAL includes TTL field (4 bytes, 0 for no TTL)
+//! 2. On crash recovery, replay_wal() reads TTL from WAL
+//! 3. Calls `ttl_manager.register(key, ttl)` to restore expiration
+//! 4. **Result**: TTL semantics preserved across crashes
+//!
+//! ### WAL Lifecycle
+//!
+//! ```text
+//! apply_chunk() → append_to_wal() → [crash safe] → persist_data_async()
+//!                                                 → persist_ttl_data()
+//!                                                 → clear_wal_async()
+//! ```
+//!
+//! After successful persistence, WAL is cleared since state is now in `state.data`.
+//!
+//! ## Crash Recovery Flow
+//!
+//! On node startup (`new()`):
+//! 1. `load_metadata()` - Restore Raft state
+//! 2. `load_data()` - Load persisted key-value data
+//! 3. `load_ttl_data()` - Load persisted TTL state
+//! 4. `replay_wal()` - **Critical**: Replay uncommitted operations from WAL
+//!    - Restores keys AND their TTL metadata
+//!    - Ensures crash consistency (operations are idempotent)
+//!
+//! ## TTL Cleanup Strategies
+//!
+//! - **Passive Deletion**: Keys are checked and deleted on read access (`get()`)
+//! - **Piggyback Cleanup**: Batch cleanup during `apply_chunk()` (every 100 applies)
+//! - **Lazy Activation**: Cleanup skipped if TTL never used (zero overhead)
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -21,6 +97,7 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
+use crate::storage::TtlManager;
 use d_engine_core::Error;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
@@ -73,10 +150,14 @@ impl WalOpCode {
 /// - Write-ahead logging for crash consistency
 /// - Efficient snapshot handling with file-based storage
 /// - Thread-safe with minimal lock contention
+/// - TTL support for automatic key expiration
 #[derive(Debug)]
 pub struct FileStateMachine {
     // Key-value storage with disk persistence
     data: FileStateMachineDataType, // (value, term)
+
+    // TTL management for automatic key expiration
+    ttl_manager: RwLock<TtlManager>,
 
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
@@ -85,6 +166,9 @@ pub struct FileStateMachine {
 
     // Operational state
     running: AtomicBool,
+
+    // TTL cleanup tracking
+    apply_counter: AtomicU64, // Track number of applies for piggyback cleanup
 
     // File handles for persistence
     data_dir: PathBuf,
@@ -108,10 +192,12 @@ impl FileStateMachine {
 
         let machine = Self {
             data: RwLock::new(HashMap::new()),
+            ttl_manager: RwLock::new(TtlManager::new()),
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
             running: AtomicBool::new(true),
+            apply_counter: AtomicU64::new(0),
             data_dir: data_dir.clone(),
         };
 
@@ -129,10 +215,37 @@ impl FileStateMachine {
         // Load key-value data from data file
         self.load_data().await?;
 
+        // Load TTL data from disk
+        self.load_ttl_data().await?;
+
         // Replay write-ahead log for crash recovery
         self.replay_wal().await?;
 
         info!("Loaded state machine data from disk");
+        Ok(())
+    }
+
+    /// Loads TTL data from disk
+    async fn load_ttl_data(&self) -> Result<(), Error> {
+        let ttl_path = self.data_dir.join("ttl_state.bin");
+        if !ttl_path.exists() {
+            debug!("No TTL state file found, starting with empty TTL manager");
+            return Ok(());
+        }
+
+        let ttl_data = tokio::fs::read(&ttl_path).await?;
+        let ttl_manager_restored = TtlManager::from_snapshot(&ttl_data);
+
+        // Replace the TTL manager
+        {
+            let mut ttl_manager = self.ttl_manager.write();
+            *ttl_manager = ttl_manager_restored;
+        }
+
+        info!(
+            "Loaded TTL state from disk: {} active TTLs",
+            self.ttl_manager.read().len()
+        );
         Ok(())
     }
 
@@ -344,7 +457,21 @@ impl FileStateMachine {
                 None
             };
 
-            operations.push((op_code, key, value, term));
+            // Read TTL (4 bytes) - 0 means no TTL
+            let ttl_secs = if pos + 4 <= buffer.len() {
+                let ttl = u32::from_be_bytes(buffer[pos..pos + 4].try_into().unwrap());
+                pos += 4;
+                if ttl > 0 { Some(ttl) } else { None }
+            } else {
+                // Backward compatibility: if no TTL field, assume no TTL
+                debug!(
+                    "No TTL field at position {}, assuming no TTL (backward compatibility)",
+                    pos
+                );
+                None
+            };
+
+            operations.push((op_code, key, value, term, ttl_secs));
             replayed_count += 1;
         }
 
@@ -357,19 +484,30 @@ impl FileStateMachine {
         let mut applied_count = 0;
         {
             let mut data = self.data.write();
-            for (op_code, key, value, term) in operations {
+            let mut ttl_manager = self.ttl_manager.write();
+
+            for (op_code, key, value, term, ttl_secs) in operations {
                 match op_code {
                     WalOpCode::Insert => {
                         if let Some(value_data) = value {
-                            data.insert(key, (value_data, term));
+                            data.insert(key.clone(), (value_data, term));
+
+                            // Restore TTL from WAL
+                            if let Some(ttl) = ttl_secs {
+                                ttl_manager.register(key.clone(), ttl as u64);
+                                debug!("Replayed INSERT with TTL: key={:?}, ttl={}s", key, ttl);
+                            } else {
+                                debug!("Replayed INSERT: key={:?}", key);
+                            }
+
                             applied_count += 1;
-                            debug!("Applied INSERT");
                         } else {
                             warn!("INSERT operation without value");
                         }
                     }
                     WalOpCode::Delete => {
                         data.remove(&key);
+                        ttl_manager.unregister(&key);
                         applied_count += 1;
                         debug!("Replayed DELETE: key={:?}", key);
                     }
@@ -475,6 +613,24 @@ impl FileStateMachine {
         }
 
         file.flush().await?;
+
+        // Persist TTL data alongside state data
+        self.persist_ttl_data().await?;
+
+        Ok(())
+    }
+
+    /// Persists TTL manager state to disk
+    async fn persist_ttl_data(&self) -> Result<(), Error> {
+        let ttl_snapshot = {
+            let ttl_manager = self.ttl_manager.read();
+            ttl_manager.to_snapshot()
+        };
+
+        let ttl_path = self.data_dir.join("ttl_state.bin");
+        tokio::fs::write(&ttl_path, ttl_snapshot).await?;
+
+        debug!("Persisted TTL state to disk");
         Ok(())
     }
 
@@ -625,7 +781,7 @@ impl FileStateMachine {
     /// - M bytes: value data (only if length > 0)
     pub(crate) async fn append_to_wal(
         &self,
-        entries: Vec<(Entry, String, Bytes, Option<Bytes>)>,
+        entries: Vec<(Entry, String, Bytes, Option<Bytes>, Option<u64>)>,
     ) -> Result<(), Error> {
         if entries.is_empty() {
             return Ok(());
@@ -639,15 +795,15 @@ impl FileStateMachine {
         // Pre-allocate buffer with estimated size
         let estimated_size: usize = entries
             .iter()
-            .map(|(_, _, key, value)| {
-                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len())
+            .map(|(_, _, key, value, _)| {
+                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len()) + 4
             })
             .sum();
 
         // Single batched write instead of multiple small writes
         let mut batch_buffer = Vec::with_capacity(estimated_size);
 
-        for (entry, operation, key, value) in entries {
+        for (entry, operation, key, value, ttl_secs) in entries {
             // Write entry index and term (16 bytes total)
             batch_buffer.extend_from_slice(&entry.index.to_be_bytes());
             batch_buffer.extend_from_slice(&entry.term.to_be_bytes());
@@ -669,12 +825,98 @@ impl FileStateMachine {
                 // Write 0 length for operations without value
                 batch_buffer.extend_from_slice(&0u64.to_be_bytes());
             }
+
+            // Write TTL (4 bytes) - 0 means no TTL
+            // Convert u64 to u32 for space efficiency (4 bytes is enough for TTL in seconds)
+            let ttl_value = ttl_secs.unwrap_or(0).min(u32::MAX as u64) as u32;
+            batch_buffer.extend_from_slice(&ttl_value.to_be_bytes());
         }
 
         file.write_all(&batch_buffer).await?;
         file.flush().await?;
 
         Ok(())
+    }
+
+    /// Piggyback cleanup: Remove expired keys with time budget
+    ///
+    /// This method is called during apply_chunk to cleanup expired keys
+    /// opportunistically (piggyback on existing Raft events).
+    ///
+    /// # Arguments
+    /// * `max_duration_ms` - Maximum time budget for cleanup (milliseconds)
+    ///
+    /// # Returns
+    /// Number of keys deleted
+    ///
+    /// # Performance
+    /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
+    /// - Cleanup: O(log N + K) where K = expired keys
+    /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
+    fn maybe_cleanup_expired(
+        &self,
+        max_duration_ms: u64,
+    ) -> usize {
+        let start = std::time::Instant::now();
+        let now = SystemTime::now();
+        let mut deleted_count = 0;
+
+        // Fast path: skip if TTL never used (lazy activation)
+        {
+            let ttl_manager = self.ttl_manager.read();
+            if !ttl_manager.has_ttl_keys() {
+                return 0; // No TTL keys, skip cleanup (~10ns overhead)
+            }
+
+            // Quick check: any expired keys?
+            if !ttl_manager.may_have_expired_keys(now) {
+                return 0; // No expired keys, skip cleanup (~30ns overhead)
+            }
+        }
+
+        // Cleanup expired keys with time budget
+        let max_duration = std::time::Duration::from_millis(max_duration_ms);
+
+        loop {
+            // Check time budget
+            if start.elapsed() >= max_duration {
+                debug!(
+                    "Piggyback cleanup time budget exceeded: deleted {} keys in {:?}",
+                    deleted_count,
+                    start.elapsed()
+                );
+                break;
+            }
+
+            // Get next batch of expired keys
+            let expired_keys = {
+                let mut ttl_manager = self.ttl_manager.write();
+                ttl_manager.get_expired_keys(now)
+            };
+
+            if expired_keys.is_empty() {
+                break; // No more expired keys
+            }
+
+            // Delete expired keys from data store
+            {
+                let mut data = self.data.write();
+                for key in expired_keys {
+                    data.remove(&key);
+                    deleted_count += 1;
+                }
+            }
+        }
+
+        if deleted_count > 0 {
+            debug!(
+                "Piggyback cleanup: deleted {} expired keys in {:?}",
+                deleted_count,
+                start.elapsed()
+            );
+        }
+
+        deleted_count
     }
 
     /// Checkpoint: Persist memory to disk and clear WAL
@@ -727,6 +969,25 @@ impl StateMachine for FileStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
+        // Passive expiration check: check TTL on read access
+        {
+            let ttl_manager = self.ttl_manager.read();
+            if let Some(expire_at) = ttl_manager.get_expiration(key_buffer) {
+                if expire_at <= SystemTime::now() {
+                    // Key has expired, delete it
+                    drop(ttl_manager); // Release read lock before acquiring write lock
+
+                    let mut data = self.data.write();
+                    let mut ttl_manager_write = self.ttl_manager.write();
+                    data.remove(key_buffer);
+                    ttl_manager_write.unregister(key_buffer);
+
+                    debug!("Passive expiration: deleted key {:?}", key_buffer);
+                    return Ok(None);
+                }
+            }
+        }
+
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
@@ -739,6 +1000,7 @@ impl StateMachine for FileStateMachine {
         data.values().find(|(_, index)| *index == entry_id).map(|(_, term)| *term)
     }
 
+    /// Thread-safe: called serially by single-task CommitHandler
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
@@ -772,21 +1034,31 @@ impl StateMachine for FileStateMachine {
             match entry.payload.as_ref().unwrap().payload.as_ref() {
                 Some(Payload::Noop(_)) => {
                     debug!("Handling NOOP command at index {}", entry.index);
-                    batch_operations.push((entry, "NOOP", Bytes::new(), None));
+                    batch_operations.push((entry, "NOOP", Bytes::new(), None, None));
                 }
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
                     Ok(write_cmd) => {
                         // Extract operation data for batch processing
                         match write_cmd.operation {
-                            Some(Operation::Insert(Insert { key, value })) => {
-                                batch_operations.push((entry, "INSERT", key, Some(value)));
+                            Some(Operation::Insert(Insert {
+                                key,
+                                value,
+                                ttl_secs,
+                            })) => {
+                                batch_operations.push((
+                                    entry,
+                                    "INSERT",
+                                    key,
+                                    Some(value),
+                                    ttl_secs,
+                                ));
                             }
                             Some(Operation::Delete(Delete { key })) => {
-                                batch_operations.push((entry, "DELETE", key, None));
+                                batch_operations.push((entry, "DELETE", key, None, None));
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
-                                batch_operations.push((entry, "NOOP", Bytes::new(), None));
+                                batch_operations.push((entry, "NOOP", Bytes::new(), None, None));
                             }
                         }
                     }
@@ -800,7 +1072,7 @@ impl StateMachine for FileStateMachine {
                 },
                 Some(Payload::Config(_config_change)) => {
                     debug!("Ignoring config change at index {}", entry.index);
-                    batch_operations.push((entry, "CONFIG", Bytes::new(), None));
+                    batch_operations.push((entry, "CONFIG", Bytes::new(), None, None));
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }
@@ -810,13 +1082,14 @@ impl StateMachine for FileStateMachine {
 
         // PHASE 2: Batch WAL writes (minimize I/O latency)
         let mut wal_entries = Vec::new();
-        for (entry, operation, key, value) in &batch_operations {
-            // Prepare WAL data without immediate I/O
+        for (entry, operation, key, value, ttl_secs) in &batch_operations {
+            // Prepare WAL data without immediate I/O - include TTL for crash recovery
             wal_entries.push((
                 entry.clone(),
                 operation.to_string(),
                 key.clone(),
                 value.clone(),
+                *ttl_secs, // ttl_secs is already Option<u32> from protobuf
             ));
         }
 
@@ -826,18 +1099,27 @@ impl StateMachine for FileStateMachine {
         // PHASE 3: Fast in-memory updates with minimal lock time (ZERO-COPY)
         {
             let mut data = self.data.write();
+            let mut ttl_manager = self.ttl_manager.write();
 
             // Process all operations without any awaits inside the lock
-            for (entry, operation, key, value) in batch_operations {
+            for (entry, operation, key, value, ttl_secs) in batch_operations {
                 match operation {
                     "INSERT" => {
                         if let Some(value) = value {
                             // ZERO-COPY: Use existing Bytes without cloning if possible
-                            data.insert(key, (value, entry.term));
+                            data.insert(key.clone(), (value, entry.term));
+
+                            // Register TTL if specified
+                            if let Some(ttl) = ttl_secs {
+                                if ttl > 0 {
+                                    ttl_manager.register(key, ttl as u64);
+                                }
+                            }
                         }
                     }
                     "DELETE" => {
                         data.remove(&key);
+                        ttl_manager.unregister(&key);
                     }
                     "NOOP" | "CONFIG" => {
                         // No data modification needed
@@ -846,6 +1128,22 @@ impl StateMachine for FileStateMachine {
                 }
             }
         } // Lock released immediately - no awaits inside!
+
+        // PHASE 4: Piggyback TTL cleanup (outside lock, non-blocking)
+        // Cleanup every 100 applies (configurable via StorageConfig in future)
+        let apply_count = self.apply_counter.fetch_add(1, Ordering::Relaxed);
+        const PIGGYBACK_FREQUENCY: u64 = 100; // TODO: Make configurable via StorageConfig
+        const MAX_CLEANUP_DURATION_MS: u64 = 1; // TODO: Make configurable via StorageConfig
+
+        if apply_count % PIGGYBACK_FREQUENCY == 0 {
+            let deleted = self.maybe_cleanup_expired(MAX_CLEANUP_DURATION_MS);
+            if deleted > 0 {
+                trace!(
+                    "Piggyback cleanup at apply {}: deleted {} keys",
+                    apply_count, deleted
+                );
+            }
+        }
 
         if let Some(log_id) = highest_index_entry {
             debug!("State machine - updated last_applied: {:?}", log_id);
@@ -1001,10 +1299,37 @@ impl StateMachine for FileStateMachine {
             new_data.insert(key, (value, term));
         }
 
-        // Atomically replace the data
+        // Read TTL data if present
+        let ttl_manager_new = if pos + 8 <= buffer.len() {
+            let ttl_len_bytes = &buffer[pos..pos + 8];
+            let ttl_len = u64::from_be_bytes([
+                ttl_len_bytes[0],
+                ttl_len_bytes[1],
+                ttl_len_bytes[2],
+                ttl_len_bytes[3],
+                ttl_len_bytes[4],
+                ttl_len_bytes[5],
+                ttl_len_bytes[6],
+                ttl_len_bytes[7],
+            ]) as usize;
+            pos += 8;
+
+            if pos + ttl_len <= buffer.len() {
+                let ttl_data = &buffer[pos..pos + ttl_len];
+                TtlManager::from_snapshot(ttl_data)
+            } else {
+                TtlManager::new()
+            }
+        } else {
+            TtlManager::new()
+        };
+
+        // Atomically replace the data and TTL manager
         {
             let mut data = self.data.write();
+            let mut ttl_manager = self.ttl_manager.write();
             *data = new_data;
+            *ttl_manager = ttl_manager_new;
         }
 
         // Update metadata
@@ -1061,6 +1386,19 @@ impl StateMachine for FileStateMachine {
             // Write term (8 bytes)
             file.write_all(&term.to_be_bytes()).await?;
         }
+
+        // Write TTL manager state
+        let ttl_snapshot = {
+            let ttl_manager = self.ttl_manager.read();
+            ttl_manager.to_snapshot()
+        };
+
+        // Write TTL data length
+        let ttl_len = ttl_snapshot.len() as u64;
+        file.write_all(&ttl_len.to_be_bytes()).await?;
+
+        // Write TTL data
+        file.write_all(&ttl_snapshot).await?;
 
         file.flush().await?;
 
