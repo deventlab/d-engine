@@ -44,7 +44,7 @@
 //! **With TTL in WAL:**
 //! 1. WAL includes TTL field (4 bytes, 0 for no TTL)
 //! 2. On crash recovery, replay_wal() reads TTL from WAL
-//! 3. Calls `ttl_manager.register(key, ttl)` to restore expiration
+//! 3. Calls `lease.register(key, ttl)` to restore expiration
 //! 4. **Result**: TTL semantics preserved across crashes
 //!
 //! ### WAL Lifecycle
@@ -76,10 +76,10 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -97,8 +97,9 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
-use crate::storage::TtlManager;
+use crate::storage::DefaultLease;
 use d_engine_core::Error;
+use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
@@ -156,8 +157,10 @@ pub struct FileStateMachine {
     // Key-value storage with disk persistence
     data: FileStateMachineDataType, // (value, term)
 
-    // TTL management for automatic key expiration
-    ttl_manager: RwLock<TtlManager>,
+    // Lease management for automatic key expiration
+    // DefaultLease is thread-safe internally (uses DashMap + Mutex)
+    // Injected by NodeBuilder after construction
+    lease: Option<Arc<DefaultLease>>,
 
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
@@ -166,9 +169,6 @@ pub struct FileStateMachine {
 
     // Operational state
     running: AtomicBool,
-
-    // TTL cleanup tracking
-    apply_counter: AtomicU64, // Track number of applies for piggyback cleanup
 
     // File handles for persistence
     data_dir: PathBuf,
@@ -180,9 +180,10 @@ pub struct FileStateMachine {
 impl FileStateMachine {
     /// Creates a new file-based state machine with persistence
     ///
+    /// Lease will be injected by NodeBuilder after construction.
+    ///
     /// # Arguments
     /// * `data_dir` - Directory where data files will be stored
-    /// * `node_id` - Unique identifier for this node
     ///
     /// # Returns
     /// Result containing the initialized FileStateMachine
@@ -192,12 +193,11 @@ impl FileStateMachine {
 
         let machine = Self {
             data: RwLock::new(HashMap::new()),
-            ttl_manager: RwLock::new(TtlManager::new()),
+            lease: None, // Will be injected by NodeBuilder
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
             running: AtomicBool::new(true),
-            apply_counter: AtomicU64::new(0),
             data_dir: data_dir.clone(),
         };
 
@@ -205,6 +205,18 @@ impl FileStateMachine {
         machine.load_from_disk().await?;
 
         Ok(machine)
+    }
+
+    /// Sets the lease manager for this state machine.
+    ///
+    /// This is an internal method called by NodeBuilder during initialization.
+    /// The lease will also be restored from snapshot during `apply_snapshot_from_file()`.
+    /// Also available for testing and benchmarks.
+    pub fn set_lease(
+        &mut self,
+        lease: Arc<DefaultLease>,
+    ) {
+        self.lease = Some(lease);
     }
 
     /// Loads state machine data from disk files
@@ -225,27 +237,33 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Loads TTL data from disk
+    /// Loads TTL data from disk (if lease is configured)
     async fn load_ttl_data(&self) -> Result<(), Error> {
+        // Lease will be injected by NodeBuilder later
+        // The lease data will be loaded after injection
+        // For now, just skip this step during construction
+        Ok(())
+    }
+
+    /// Loads TTL data into the configured lease
+    ///
+    /// Called after NodeBuilder injects the lease.
+    /// Also available for testing and benchmarks.
+    pub async fn load_lease_data(&self) -> Result<(), Error> {
+        let Some(ref lease) = self.lease else {
+            return Ok(()); // No lease configured
+        };
+
         let ttl_path = self.data_dir.join("ttl_state.bin");
         if !ttl_path.exists() {
-            debug!("No TTL state file found, starting with empty TTL manager");
+            debug!("No TTL state file found");
             return Ok(());
         }
 
         let ttl_data = tokio::fs::read(&ttl_path).await?;
-        let ttl_manager_restored = TtlManager::from_snapshot(&ttl_data);
+        lease.reload(&ttl_data)?;
 
-        // Replace the TTL manager
-        {
-            let mut ttl_manager = self.ttl_manager.write();
-            *ttl_manager = ttl_manager_restored;
-        }
-
-        info!(
-            "Loaded TTL state from disk: {} active TTLs",
-            self.ttl_manager.read().len()
-        );
+        info!("Loaded TTL state from disk: {} active TTLs", lease.len());
         Ok(())
     }
 
@@ -484,7 +502,6 @@ impl FileStateMachine {
         let mut applied_count = 0;
         {
             let mut data = self.data.write();
-            let mut ttl_manager = self.ttl_manager.write();
 
             for (op_code, key, value, term, ttl_secs) in operations {
                 match op_code {
@@ -492,10 +509,12 @@ impl FileStateMachine {
                         if let Some(value_data) = value {
                             data.insert(key.clone(), (value_data, term));
 
-                            // Restore TTL from WAL
+                            // Restore TTL from WAL (if lease configured)
                             if let Some(ttl) = ttl_secs {
-                                ttl_manager.register(key.clone(), ttl as u64);
-                                debug!("Replayed INSERT with TTL: key={:?}, ttl={}s", key, ttl);
+                                if let Some(ref lease) = self.lease {
+                                    lease.register(key.clone(), ttl as u64);
+                                    debug!("Replayed INSERT with TTL: key={:?}, ttl={}s", key, ttl);
+                                }
                             } else {
                                 debug!("Replayed INSERT: key={:?}", key);
                             }
@@ -507,7 +526,9 @@ impl FileStateMachine {
                     }
                     WalOpCode::Delete => {
                         data.remove(&key);
-                        ttl_manager.unregister(&key);
+                        if let Some(ref lease) = self.lease {
+                            lease.unregister(&key);
+                        }
                         applied_count += 1;
                         debug!("Replayed DELETE: key={:?}", key);
                     }
@@ -620,15 +641,13 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Persists TTL manager state to disk
+    /// Persists lease state to disk (if configured)
     async fn persist_ttl_data(&self) -> Result<(), Error> {
-        let ttl_snapshot = {
-            let ttl_manager = self.ttl_manager.read();
-            ttl_manager.to_snapshot()
-        };
-
-        let ttl_path = self.data_dir.join("ttl_state.bin");
-        tokio::fs::write(&ttl_path, ttl_snapshot).await?;
+        if let Some(ref lease) = self.lease {
+            let ttl_snapshot = lease.to_snapshot();
+            let ttl_path = self.data_dir.join("ttl_state.bin");
+            tokio::fs::write(&ttl_path, ttl_snapshot).await?;
+        }
 
         debug!("Persisted TTL state to disk");
         Ok(())
@@ -853,72 +872,6 @@ impl FileStateMachine {
     /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
     /// - Cleanup: O(log N + K) where K = expired keys
     /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
-    fn maybe_cleanup_expired(
-        &self,
-        max_duration_ms: u64,
-    ) -> usize {
-        let start = std::time::Instant::now();
-        let now = SystemTime::now();
-        let mut deleted_count = 0;
-
-        // Fast path: skip if TTL never used (lazy activation)
-        {
-            let ttl_manager = self.ttl_manager.read();
-            if !ttl_manager.has_ttl_keys() {
-                return 0; // No TTL keys, skip cleanup (~10ns overhead)
-            }
-
-            // Quick check: any expired keys?
-            if !ttl_manager.may_have_expired_keys(now) {
-                return 0; // No expired keys, skip cleanup (~30ns overhead)
-            }
-        }
-
-        // Cleanup expired keys with time budget
-        let max_duration = std::time::Duration::from_millis(max_duration_ms);
-
-        loop {
-            // Check time budget
-            if start.elapsed() >= max_duration {
-                debug!(
-                    "Piggyback cleanup time budget exceeded: deleted {} keys in {:?}",
-                    deleted_count,
-                    start.elapsed()
-                );
-                break;
-            }
-
-            // Get next batch of expired keys
-            let expired_keys = {
-                let mut ttl_manager = self.ttl_manager.write();
-                ttl_manager.get_expired_keys(now)
-            };
-
-            if expired_keys.is_empty() {
-                break; // No more expired keys
-            }
-
-            // Delete expired keys from data store
-            {
-                let mut data = self.data.write();
-                for key in expired_keys {
-                    data.remove(&key);
-                    deleted_count += 1;
-                }
-            }
-        }
-
-        if deleted_count > 0 {
-            debug!(
-                "Piggyback cleanup: deleted {} expired keys in {:?}",
-                deleted_count,
-                start.elapsed()
-            );
-        }
-
-        deleted_count
-    }
-
     /// Checkpoint: Persist memory to disk and clear WAL
     /// This is the "safe point" after which WAL is no longer needed
     #[allow(unused)]
@@ -969,22 +922,16 @@ impl StateMachine for FileStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
-        // Passive expiration check: check TTL on read access
-        {
-            let ttl_manager = self.ttl_manager.read();
-            if let Some(expire_at) = ttl_manager.get_expiration(key_buffer) {
-                if expire_at <= SystemTime::now() {
-                    // Key has expired, delete it
-                    drop(ttl_manager); // Release read lock before acquiring write lock
+        // Passive expiration check: DefaultLease handles expiration logic
+        if let Some(ref lease) = self.lease {
+            if lease.is_expired(key_buffer) {
+                // Key has expired, delete it
+                let mut data = self.data.write();
+                data.remove(key_buffer);
+                lease.unregister(key_buffer);
 
-                    let mut data = self.data.write();
-                    let mut ttl_manager_write = self.ttl_manager.write();
-                    data.remove(key_buffer);
-                    ttl_manager_write.unregister(key_buffer);
-
-                    debug!("Passive expiration: deleted key {:?}", key_buffer);
-                    return Ok(None);
-                }
+                debug!("Passive expiration: deleted key {:?}", key_buffer);
+                return Ok(None);
             }
         }
 
@@ -1099,7 +1046,6 @@ impl StateMachine for FileStateMachine {
         // PHASE 3: Fast in-memory updates with minimal lock time (ZERO-COPY)
         {
             let mut data = self.data.write();
-            let mut ttl_manager = self.ttl_manager.write();
 
             // Process all operations without any awaits inside the lock
             for (entry, operation, key, value, ttl_secs) in batch_operations {
@@ -1109,17 +1055,21 @@ impl StateMachine for FileStateMachine {
                             // ZERO-COPY: Use existing Bytes without cloning if possible
                             data.insert(key.clone(), (value, entry.term));
 
-                            // Register TTL if specified
-                            if let Some(ttl) = ttl_secs {
-                                if ttl > 0 {
-                                    ttl_manager.register(key, ttl as u64);
+                            // Register lease if specified and lease is configured
+                            if let Some(ref lease) = self.lease {
+                                if let Some(ttl) = ttl_secs {
+                                    if ttl > 0 {
+                                        lease.register(key, ttl as u64);
+                                    }
                                 }
                             }
                         }
                     }
                     "DELETE" => {
                         data.remove(&key);
-                        ttl_manager.unregister(&key);
+                        if let Some(ref lease) = self.lease {
+                            lease.unregister(&key);
+                        }
                     }
                     "NOOP" | "CONFIG" => {
                         // No data modification needed
@@ -1129,19 +1079,16 @@ impl StateMachine for FileStateMachine {
             }
         } // Lock released immediately - no awaits inside!
 
-        // PHASE 4: Piggyback TTL cleanup (outside lock, non-blocking)
-        // Cleanup every 100 applies (configurable via StorageConfig in future)
-        let apply_count = self.apply_counter.fetch_add(1, Ordering::Relaxed);
-        const PIGGYBACK_FREQUENCY: u64 = 100; // TODO: Make configurable via StorageConfig
-        const MAX_CLEANUP_DURATION_MS: u64 = 1; // TODO: Make configurable via StorageConfig
-
-        if apply_count % PIGGYBACK_FREQUENCY == 0 {
-            let deleted = self.maybe_cleanup_expired(MAX_CLEANUP_DURATION_MS);
-            if deleted > 0 {
-                trace!(
-                    "Piggyback cleanup at apply {}: deleted {} keys",
-                    apply_count, deleted
-                );
+        // PHASE 4: Lease cleanup (DefaultLease handles strategy internally)
+        // Zero overhead if lease cleanup is disabled - DefaultLease checks config
+        if let Some(ref lease) = self.lease {
+            let expired_keys = lease.on_apply();
+            if !expired_keys.is_empty() {
+                let mut data = self.data.write();
+                for key in &expired_keys {
+                    data.remove(key);
+                }
+                trace!("Lease cleanup: deleted {} expired keys", expired_keys.len());
             }
         }
 
@@ -1299,8 +1246,8 @@ impl StateMachine for FileStateMachine {
             new_data.insert(key, (value, term));
         }
 
-        // Read TTL data if present
-        let ttl_manager_new = if pos + 8 <= buffer.len() {
+        // Read and reload lease data if present
+        if pos + 8 <= buffer.len() {
             let ttl_len_bytes = &buffer[pos..pos + 8];
             let ttl_len = u64::from_be_bytes([
                 ttl_len_bytes[0],
@@ -1316,20 +1263,16 @@ impl StateMachine for FileStateMachine {
 
             if pos + ttl_len <= buffer.len() {
                 let ttl_data = &buffer[pos..pos + ttl_len];
-                TtlManager::from_snapshot(ttl_data)
-            } else {
-                TtlManager::new()
+                if let Some(ref lease) = self.lease {
+                    lease.reload(ttl_data)?;
+                }
             }
-        } else {
-            TtlManager::new()
-        };
+        }
 
-        // Atomically replace the data and TTL manager
+        // Atomically replace the data
         {
             let mut data = self.data.write();
-            let mut ttl_manager = self.ttl_manager.write();
             *data = new_data;
-            *ttl_manager = ttl_manager_new;
         }
 
         // Update metadata
@@ -1387,18 +1330,19 @@ impl StateMachine for FileStateMachine {
             file.write_all(&term.to_be_bytes()).await?;
         }
 
-        // Write TTL manager state
-        let ttl_snapshot = {
-            let ttl_manager = self.ttl_manager.read();
-            ttl_manager.to_snapshot()
+        // Write lease state if configured
+        let lease_snapshot = if let Some(ref lease) = self.lease {
+            lease.to_snapshot()
+        } else {
+            Vec::new()
         };
 
-        // Write TTL data length
-        let ttl_len = ttl_snapshot.len() as u64;
-        file.write_all(&ttl_len.to_be_bytes()).await?;
+        // Write lease data length
+        let lease_len = lease_snapshot.len() as u64;
+        file.write_all(&lease_len.to_be_bytes()).await?;
 
-        // Write TTL data
-        file.write_all(&ttl_snapshot).await?;
+        // Write lease data
+        file.write_all(&lease_snapshot).await?;
 
         file.flush().await?;
 

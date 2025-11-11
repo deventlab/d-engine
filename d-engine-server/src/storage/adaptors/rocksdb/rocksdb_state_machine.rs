@@ -23,8 +23,9 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
-use crate::storage::TtlManager;
+use crate::storage::DefaultLease;
 use d_engine_core::Error;
+use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
@@ -43,7 +44,7 @@ const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 const TTL_STATE_KEY: &[u8] = b"ttl_state";
 
-/// RocksDB-based state machine implementation with TTL support
+/// RocksDB-based state machine implementation with lease support
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
     db: Arc<ArcSwap<DB>>,
@@ -53,15 +54,16 @@ pub struct RocksDBStateMachine {
     last_applied_term: AtomicU64,
     last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
 
-    // TTL management for automatic key expiration
-    ttl_manager: RwLock<TtlManager>,
-
-    // TTL cleanup tracking
-    apply_counter: AtomicU64, // Track number of applies for piggyback cleanup
+    // Lease management for automatic key expiration
+    // DefaultLease is thread-safe internally (uses DashMap + Mutex)
+    // Injected by NodeBuilder after construction
+    lease: Option<Arc<DefaultLease>>,
 }
 
 impl RocksDBStateMachine {
     /// Creates a new RocksDB-based state machine
+    ///
+    /// Lease will be injected by NodeBuilder after construction.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db_path = path.as_ref().to_path_buf();
 
@@ -110,7 +112,6 @@ impl RocksDBStateMachine {
         // Load metadata
         let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db_arc)?;
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
-        let ttl_manager = Self::load_ttl_metadata(&db_arc)?;
 
         Ok(Self {
             db: Arc::new(ArcSwap::new(db_arc)),
@@ -119,9 +120,20 @@ impl RocksDBStateMachine {
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
-            ttl_manager: RwLock::new(ttl_manager),
-            apply_counter: AtomicU64::new(0),
+            lease: None, // Will be injected by NodeBuilder
         })
+    }
+
+    /// Sets the lease manager for this state machine.
+    ///
+    /// This is an internal method called by NodeBuilder during initialization.
+    /// The lease will also be restored from snapshot during `apply_snapshot_from_file()`.
+    /// Also available for testing and benchmarks.
+    pub fn set_lease(
+        &mut self,
+        lease: Arc<DefaultLease>,
+    ) {
+        self.lease = Some(lease);
     }
 
     /// Opens RocksDB with the standard configuration
@@ -210,30 +222,6 @@ impl RocksDBStateMachine {
         }
     }
 
-    fn load_ttl_metadata(db: &Arc<DB>) -> Result<TtlManager, Error> {
-        let cf = db
-            .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
-
-        match db
-            .get_cf(&cf, TTL_STATE_KEY)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
-        {
-            Some(bytes) => {
-                let ttl_manager = TtlManager::from_snapshot(&bytes);
-                info!(
-                    "Loaded TTL state from RocksDB: {} active TTLs",
-                    ttl_manager.len()
-                );
-                Ok(ttl_manager)
-            }
-            None => {
-                debug!("No TTL state found in RocksDB, starting with empty TTL manager");
-                Ok(TtlManager::new())
-            }
-        }
-    }
-
     fn persist_state_machine_metadata(&self) -> Result<(), Error> {
         let db = self.db.load();
         let cf = db
@@ -266,20 +254,49 @@ impl RocksDBStateMachine {
     }
 
     fn persist_ttl_metadata(&self) -> Result<(), Error> {
+        if let Some(ref lease) = self.lease {
+            let db = self.db.load();
+            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
+                StorageError::DbError("State machine meta CF not found".to_string())
+            })?;
+
+            let ttl_snapshot = lease.to_snapshot();
+
+            db.put_cf(&cf, TTL_STATE_KEY, ttl_snapshot)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+            debug!("Persisted TTL state to RocksDB");
+        }
+        Ok(())
+    }
+
+    /// Loads TTL state from RocksDB metadata after lease injection.
+    ///
+    /// Called after NodeBuilder injects the lease.
+    /// Also available for testing and benchmarks.
+    pub async fn load_lease_data(&self) -> Result<(), Error> {
+        let Some(ref lease) = self.lease else {
+            return Ok(()); // No lease configured
+        };
+
         let db = self.db.load();
         let cf = db
             .cf_handle(STATE_MACHINE_META_CF)
             .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
 
-        let ttl_snapshot = {
-            let ttl_manager = self.ttl_manager.read();
-            ttl_manager.to_snapshot()
-        };
+        match db
+            .get_cf(&cf, TTL_STATE_KEY)
+            .map_err(|e| StorageError::DbError(e.to_string()))?
+        {
+            Some(ttl_data) => {
+                lease.reload(&ttl_data)?;
+                debug!("Loaded TTL state from RocksDB: {} active TTLs", lease.len());
+            }
+            None => {
+                debug!("No TTL state found in RocksDB");
+            }
+        }
 
-        db.put_cf(&cf, TTL_STATE_KEY, ttl_snapshot)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        debug!("Persisted TTL state to RocksDB");
         Ok(())
     }
 
@@ -298,6 +315,7 @@ impl RocksDBStateMachine {
     /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
     /// - Cleanup: O(log N + K) where K = expired keys
     /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
+    #[allow(dead_code)]
     fn maybe_cleanup_expired(
         &self,
         max_duration_ms: u64,
@@ -307,16 +325,17 @@ impl RocksDBStateMachine {
         let mut deleted_count = 0;
 
         // Fast path: skip if TTL never used (lazy activation)
-        {
-            let ttl_manager = self.ttl_manager.read();
-            if !ttl_manager.has_ttl_keys() {
+        if let Some(ref lease) = self.lease {
+            if !lease.has_lease_keys() {
                 return 0; // No TTL keys, skip cleanup (~10ns overhead)
             }
 
             // Quick check: any expired keys?
-            if !ttl_manager.may_have_expired_keys(now) {
+            if !lease.may_have_expired_keys(now) {
                 return 0; // No expired keys, skip cleanup (~30ns overhead)
             }
+        } else {
+            return 0; // No lease configured
         }
 
         // Get database handle
@@ -344,9 +363,10 @@ impl RocksDBStateMachine {
             }
 
             // Get next batch of expired keys
-            let expired_keys = {
-                let mut ttl_manager = self.ttl_manager.write();
-                ttl_manager.get_expired_keys(now)
+            let expired_keys = if let Some(ref lease) = self.lease {
+                lease.get_expired_keys(now)
+            } else {
+                vec![]
             };
 
             if expired_keys.is_empty() {
@@ -409,30 +429,24 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
-        // Passive expiration check: check TTL on read access
-        {
-            let ttl_manager = self.ttl_manager.read();
-            if let Some(expire_at) = ttl_manager.get_expiration(key_buffer) {
-                if expire_at <= SystemTime::now() {
-                    // Key has expired, delete it
-                    drop(ttl_manager); // Release read lock before acquiring write lock
+        // Passive expiration check: DefaultLease handles expiration logic
+        if let Some(ref lease) = self.lease {
+            if lease.is_expired(key_buffer) {
+                // Key has expired, delete it
+                let db = self.db.load();
+                let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                    StorageError::DbError("State machine CF not found".to_string())
+                })?;
 
-                    let db = self.db.load();
-                    let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                        StorageError::DbError("State machine CF not found".to_string())
-                    })?;
+                // Delete from RocksDB
+                db.delete_cf(&cf, key_buffer)
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
 
-                    // Delete from RocksDB
-                    db.delete_cf(&cf, key_buffer)
-                        .map_err(|e| StorageError::DbError(e.to_string()))?;
+                // Unregister from lease
+                lease.unregister(key_buffer);
 
-                    // Unregister from TTL manager
-                    let mut ttl_manager_write = self.ttl_manager.write();
-                    ttl_manager_write.unregister(key_buffer);
-
-                    debug!("Passive expiration: deleted key {:?}", key_buffer);
-                    return Ok(None);
-                }
+                debug!("Passive expiration: deleted key {:?}", key_buffer);
+                return Ok(None);
             }
         }
 
@@ -502,8 +516,9 @@ impl StateMachine for RocksDBStateMachine {
                             // Register TTL if specified
                             if let Some(ttl) = ttl_secs {
                                 if ttl > 0 {
-                                    let mut ttl_manager = self.ttl_manager.write();
-                                    ttl_manager.register(key.clone(), ttl);
+                                    if let Some(ref lease) = self.lease {
+                                        lease.register(key.clone(), ttl);
+                                    }
                                 }
                             }
                         }
@@ -511,8 +526,9 @@ impl StateMachine for RocksDBStateMachine {
                             batch.delete_cf(&cf, &key);
 
                             // Unregister TTL for deleted key
-                            let mut ttl_manager = self.ttl_manager.write();
-                            ttl_manager.unregister(&key);
+                            if let Some(ref lease) = self.lease {
+                                lease.unregister(&key);
+                            }
                         }
                         None => {
                             warn!("WriteCommand without operation at index {}", entry.index);
@@ -535,19 +551,22 @@ impl StateMachine for RocksDBStateMachine {
 
         self.apply_batch(batch)?;
 
-        // Piggyback TTL cleanup (outside lock, non-blocking)
-        // Cleanup every 100 applies (configurable via StorageConfig in future)
-        let apply_count = self.apply_counter.fetch_add(1, Ordering::Relaxed);
-        const PIGGYBACK_FREQUENCY: u64 = 100; // TODO: Make configurable via StorageConfig
-        const MAX_CLEANUP_DURATION_MS: u64 = 1; // TODO: Make configurable via StorageConfig
+        // TTL cleanup (DefaultLease handles strategy internally)
+        // Zero overhead if TTL cleanup is disabled - DefaultLease checks config
+        if let Some(ref lease) = self.lease {
+            let expired_keys = lease.on_apply();
+            if !expired_keys.is_empty() {
+                let db = self.db.load();
+                let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                    StorageError::DbError("State machine CF not found".to_string())
+                })?;
 
-        if apply_count % PIGGYBACK_FREQUENCY == 0 {
-            let deleted = self.maybe_cleanup_expired(MAX_CLEANUP_DURATION_MS);
-            if deleted > 0 {
-                trace!(
-                    "Piggyback cleanup at apply {}: deleted {} keys",
-                    apply_count, deleted
-                );
+                let mut batch = WriteBatch::default();
+                for key in &expired_keys {
+                    batch.delete_cf(&cf, key);
+                }
+                self.apply_batch(batch)?;
+                trace!("TTL cleanup: deleted {} expired keys", expired_keys.len());
             }
         }
 
@@ -668,16 +687,16 @@ impl StateMachine for RocksDBStateMachine {
         self.db.store(Arc::new(new_db));
         info!("Atomically swapped to new DB instance");
 
-        // PHASE 5: Restore TTL state
-        let ttl_path = self.db_path.join("ttl_state.bin");
-        if ttl_path.exists() {
-            let ttl_data = tokio::fs::read(&ttl_path).await?;
-            let ttl_manager_new = TtlManager::from_snapshot(&ttl_data);
-            *self.ttl_manager.write() = ttl_manager_new;
-            info!("TTL manager state restored from snapshot");
-        } else {
-            warn!("No TTL state found in snapshot, initializing empty TTL manager");
-            *self.ttl_manager.write() = TtlManager::new();
+        // PHASE 5: Restore TTL state (if lease is configured)
+        if let Some(ref lease) = self.lease {
+            let ttl_path = self.db_path.join("ttl_state.bin");
+            if ttl_path.exists() {
+                let ttl_data = tokio::fs::read(&ttl_path).await?;
+                lease.reload(&ttl_data)?;
+                info!("Lease state restored from snapshot");
+            } else {
+                warn!("No lease state found in snapshot");
+            }
         }
 
         // PHASE 6: Update metadata
@@ -718,15 +737,12 @@ impl StateMachine for RocksDBStateMachine {
                 .map_err(|e| StorageError::DbError(e.to_string()))?;
         } // checkpoint dropped here, before any await
 
-        // Persist TTL manager state alongside the checkpoint
-        let ttl_snapshot = {
-            let ttl_manager = self.ttl_manager.read();
-            ttl_manager.to_snapshot()
-        };
-
-        // Write TTL data to a separate file in the snapshot directory
-        let ttl_path = new_snapshot_dir.join("ttl_state.bin");
-        tokio::fs::write(&ttl_path, ttl_snapshot).await?;
+        // Persist lease state alongside the checkpoint (if configured)
+        if let Some(ref lease) = self.lease {
+            let ttl_snapshot = lease.to_snapshot();
+            let ttl_path = new_snapshot_dir.join("ttl_state.bin");
+            tokio::fs::write(&ttl_path, ttl_snapshot).await?;
+        }
 
         // Update metadata
         let checksum = [0; 32]; // For now, we return a dummy checksum.
@@ -778,11 +794,7 @@ impl StateMachine for RocksDBStateMachine {
         self.last_applied_term.store(0, Ordering::SeqCst);
         *self.last_snapshot_metadata.write() = None;
 
-        // Reset TTL manager
-        {
-            let mut ttl_manager = self.ttl_manager.write();
-            *ttl_manager = TtlManager::new();
-        }
+        // Note: Lease is managed by NodeBuilder and doesn't need reset
 
         self.persist_state_machine_metadata()?;
         self.persist_snapshot_metadata()?;

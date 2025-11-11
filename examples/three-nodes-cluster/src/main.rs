@@ -96,8 +96,7 @@ async fn start_dengine_server(
 ) {
     // Option 1: RAW FILE
     // let storage_engine = Arc::new(FileStorageEngine::new(db_path.join("storage_engine")).unwrap());
-    // let state_machine =
-    //     Arc::new(FileStateMachine::new(db_path.join("state_machine")).await.unwrap());
+    // let state_machine = Arc::new(FileStateMachine::new(db_path.join("state_machine")).await.unwrap());
 
     // Option 2: ROCKSDB
     let storage_engine = Arc::new(RocksDBStorageEngine::new(db_path.join("storage")).unwrap());

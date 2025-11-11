@@ -11,9 +11,12 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::StateMachine;
-use d_engine_proto::client::{WriteCommand, write_command::{Insert, Operation}};
+use d_engine_proto::client::{
+    WriteCommand,
+    write_command::{Insert, Operation},
+};
 use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
 use d_engine_server::storage::FileStateMachine;
 use prost::Message;
@@ -29,7 +32,10 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
 }
 
 /// Helper to create write entries without TTL
-fn create_entries_without_ttl(count: usize, start_index: u64) -> Vec<Entry> {
+fn create_entries_without_ttl(
+    count: usize,
+    start_index: u64,
+) -> Vec<Entry> {
     (0..count)
         .map(|i| {
             let key = format!("key_{}", start_index + i as u64);
@@ -57,7 +63,11 @@ fn create_entries_without_ttl(count: usize, start_index: u64) -> Vec<Entry> {
 }
 
 /// Helper to create write entries with TTL
-fn create_entries_with_ttl(count: usize, start_index: u64, ttl_secs: u64) -> Vec<Entry> {
+fn create_entries_with_ttl(
+    count: usize,
+    start_index: u64,
+    ttl_secs: u64,
+) -> Vec<Entry> {
     (0..count)
         .map(|i| {
             let key = format!("key_ttl_{}", start_index + i as u64);
@@ -87,14 +97,11 @@ fn create_entries_with_ttl(count: usize, start_index: u64, ttl_secs: u64) -> Vec
 /// Benchmark: Apply operations WITHOUT TTL
 /// Target: < 10ns overhead per operation
 fn bench_apply_without_ttl(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     c.bench_function("apply_without_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (mut sm, _temp_dir) = create_test_state_machine().await;
+            let (sm, _temp_dir) = create_test_state_machine().await;
             let entries = create_entries_without_ttl(1, 1);
 
             // Measure pure apply performance
@@ -106,14 +113,11 @@ fn bench_apply_without_ttl(c: &mut Criterion) {
 /// Benchmark: Apply operations WITH TTL
 /// This measures the overhead of registering TTL entries
 fn bench_apply_with_ttl(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     c.bench_function("apply_with_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (mut sm, _temp_dir) = create_test_state_machine().await;
+            let (sm, _temp_dir) = create_test_state_machine().await;
             let entries = create_entries_with_ttl(1, 1, 3600); // 1 hour TTL
 
             // Measure apply with TTL registration
@@ -125,14 +129,11 @@ fn bench_apply_with_ttl(c: &mut Criterion) {
 /// Benchmark: Get operation WITHOUT TTL data
 /// Baseline for read performance
 fn bench_get_without_ttl(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     // Setup state machine once before benchmark
-    let (mut sm, _temp_dir) = runtime.block_on(async {
-        let (mut sm, temp_dir) = create_test_state_machine().await;
+    let (sm, _temp_dir) = runtime.block_on(async {
+        let (sm, temp_dir) = create_test_state_machine().await;
         let entries = create_entries_without_ttl(100, 1);
         sm.apply_chunk(entries).await.unwrap();
         (sm, temp_dir)
@@ -150,14 +151,11 @@ fn bench_get_without_ttl(c: &mut Criterion) {
 /// Benchmark: Get operation WITH TTL passive check
 /// Target: < 50ns overhead compared to non-TTL reads
 fn bench_get_with_ttl_check(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     // Setup state machine once before benchmark
-    let (mut sm, _temp_dir) = runtime.block_on(async {
-        let (mut sm, temp_dir) = create_test_state_machine().await;
+    let (sm, _temp_dir) = runtime.block_on(async {
+        let (sm, temp_dir) = create_test_state_machine().await;
         let entries = create_entries_with_ttl(100, 1, 3600); // Long TTL
         sm.apply_chunk(entries).await.unwrap();
         (sm, temp_dir)
@@ -175,14 +173,11 @@ fn bench_get_with_ttl_check(c: &mut Criterion) {
 /// Benchmark: Get operation with EXPIRED TTL entry
 /// This measures the cost of passive deletion
 fn bench_get_expired_ttl(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     // Setup state machine once before benchmark
-    let (mut sm, _temp_dir) = runtime.block_on(async {
-        let (mut sm, temp_dir) = create_test_state_machine().await;
+    let (sm, _temp_dir) = runtime.block_on(async {
+        let (sm, temp_dir) = create_test_state_machine().await;
         let entries = create_entries_with_ttl(100, 1, 1); // 1 second TTL
         sm.apply_chunk(entries).await.unwrap();
 
@@ -204,16 +199,13 @@ fn bench_get_expired_ttl(c: &mut Criterion) {
 /// Benchmark: Batch apply operations (scaling test)
 /// Verify that performance scales linearly with batch size
 fn bench_batch_apply(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let mut group = c.benchmark_group("batch_apply");
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let (mut sm, _temp_dir) = create_test_state_machine().await;
+                let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_without_ttl(size, 1);
 
                 black_box(sm.apply_chunk(entries).await.unwrap());
@@ -226,16 +218,13 @@ fn bench_batch_apply(c: &mut Criterion) {
 
 /// Benchmark: Batch apply with TTL (scaling test)
 fn bench_batch_apply_with_ttl(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let mut group = c.benchmark_group("batch_apply_with_ttl");
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let (mut sm, _temp_dir) = create_test_state_machine().await;
+                let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_with_ttl(size, 1, 3600);
 
                 black_box(sm.apply_chunk(entries).await.unwrap());

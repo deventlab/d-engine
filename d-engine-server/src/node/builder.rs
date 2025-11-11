@@ -35,6 +35,7 @@
 //! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory
 //!   config.
 
+use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -45,6 +46,7 @@ use tokio::sync::watch;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::warn;
 
 use super::RaftTypeConfig;
 use crate::Node;
@@ -52,6 +54,10 @@ use crate::membership::RaftMembership;
 use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::storage::BufferedRaftLog;
+use crate::storage::DefaultLease;
+use crate::storage::FileStateMachine;
+#[cfg(feature = "rocksdb")]
+use crate::storage::RocksDBStateMachine;
 use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
@@ -237,7 +243,47 @@ where
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
         // Handle state machine initialization
-        let state_machine = self.state_machine.take().expect("State machine must be set");
+        let mut state_machine = self.state_machine.take().expect("State machine must be set");
+
+        // Inject lease into state machine
+        // Note: Even if cleanup_strategy is "disabled", we inject the lease object
+        // The DefaultLease internally handles the disabled case with zero overhead
+        {
+            let lease_config = &node_config.raft.state_machine.lease;
+            let lease = Arc::new(DefaultLease::new(lease_config.clone()));
+
+            // Try to inject lease into concrete state machine types
+            // We need mutable access, so try Arc::get_mut first
+            if let Some(sm) = Arc::get_mut(&mut state_machine) {
+                let sm_any = sm as &mut dyn Any;
+
+                #[cfg(feature = "rocksdb")]
+                if let Some(rocksdb_sm) = sm_any.downcast_mut::<RocksDBStateMachine>() {
+                    rocksdb_sm.set_lease(lease.clone());
+                    // RocksDBStateMachine needs to load persisted lease data after injection
+                    if let Err(e) =
+                        tokio::runtime::Handle::current().block_on(rocksdb_sm.load_lease_data())
+                    {
+                        error!("Failed to load lease data for RocksDBStateMachine: {:?}", e);
+                    }
+                    debug!("Lease injected into RocksDBStateMachine and data loaded");
+                    // Continue to check FileStateMachine
+                }
+
+                if let Some(file_sm) = sm_any.downcast_mut::<FileStateMachine>() {
+                    file_sm.set_lease(lease.clone());
+                    // FileStateMachine needs to load persisted lease data after injection
+                    if let Err(e) =
+                        tokio::runtime::Handle::current().block_on(file_sm.load_lease_data())
+                    {
+                        error!("Failed to load lease data for FileStateMachine: {:?}", e);
+                    }
+                    debug!("Lease injected into FileStateMachine and data loaded");
+                }
+            } else {
+                warn!("Cannot inject lease: state machine Arc is already shared");
+            }
+        }
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().expect("Storage engine must be set");
