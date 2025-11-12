@@ -98,7 +98,6 @@ use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::trace;
 use tracing::warn;
 
 use crate::storage::DefaultLease;
@@ -1018,8 +1017,6 @@ impl StateMachine for FileStateMachine {
         &self,
         chunk: Vec<Entry>,
     ) -> Result<(), Error> {
-        trace!("Applying chunk: {:?}.", chunk);
-
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch_operations = Vec::new();
 
@@ -1155,7 +1152,6 @@ impl StateMachine for FileStateMachine {
                 for key in &expired_keys {
                     data.remove(key);
                 }
-                trace!("Lease cleanup: deleted {} expired keys", expired_keys.len());
             }
         }
 

@@ -35,7 +35,6 @@ use tokio::time::interval;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
-use tracing::trace;
 use tracing::warn;
 
 use d_engine_core::Error;
@@ -651,12 +650,10 @@ where
         this: std::sync::Weak<Self>,
         mut receiver: mpsc::UnboundedReceiver<LogCommand>,
     ) {
-        trace!("Starting command processor");
         while let Some(cmd) = receiver.recv().await {
             let Some(this) = this.upgrade() else { break };
             this.handle_command(cmd).await;
         }
-        trace!("Command processor shutting down");
     }
 
     async fn batch_processor(
@@ -718,7 +715,6 @@ where
                 }
             }
         }
-        trace!("Batch processor shutting down");
     }
 
     async fn handle_command(
@@ -1203,8 +1199,6 @@ where
         if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
             error!("Failed to send shutdown command: {:?}", e);
         }
-
-        trace!("BufferedRaftLog dropped");
     }
 }
 
