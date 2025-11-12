@@ -222,16 +222,6 @@ impl FileStateMachine {
     /// Injects lease configuration into this state machine.
     ///
     /// Framework-internal method: called by NodeBuilder::build() during initialization.
-    /// Creates a DefaultLease from the provided configuration and stores it.
-    pub(crate) fn inject_lease_config(
-        &mut self,
-        config: d_engine_core::config::LeaseConfig,
-    ) -> Result<(), Error> {
-        let lease = Arc::new(DefaultLease::new(config));
-        self.lease = Some(lease);
-        Ok(())
-    }
-
     /// Loads state machine data from disk files
     async fn load_from_disk(&self) -> Result<(), Error> {
         // Load last applied index and term from metadata file
@@ -924,6 +914,15 @@ impl StateMachine for FileStateMachine {
         // Ensure all data is flushed to disk before stopping
         self.running.store(false, Ordering::SeqCst);
         info!("File state machine stopped");
+        Ok(())
+    }
+
+    fn try_inject_lease(
+        &mut self,
+        config: d_engine_core::config::LeaseConfig,
+    ) -> Result<(), Error> {
+        let lease = Arc::new(DefaultLease::new(config));
+        self.lease = Some(lease);
         Ok(())
     }
 

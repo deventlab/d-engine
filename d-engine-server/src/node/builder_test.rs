@@ -26,6 +26,7 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
+use d_engine_core::config::LeaseConfig;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
@@ -102,11 +103,17 @@ async fn test_set_raft_log_replaces_default() {
 #[traced_test]
 async fn test_build_creates_node() {
     let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
-        "/tmp/test_build_creates_node",
+    let temp_dir = tempdir().unwrap();
+
+    // Use FileStateMachine instead of MockStateMachine to properly test try_inject_lease
+    // MockStateMachine has issues with mockall not generating proper expectations for &mut self methods
+    let file_sm = FileStateMachine::new(temp_dir.path().join("sm")).await.expect("create file sm");
+
+    let builder = NodeBuilder::<MockStorageEngine, FileStateMachine>::new_from_db_path(
+        temp_dir.path().to_str().unwrap(),
         shutdown_rx,
     )
-    .state_machine(Arc::new(mock_state_machine()))
+    .state_machine(Arc::new(file_sm))
     .storage_engine(Arc::new(MockStorageEngine::new()))
     .build()
     .await

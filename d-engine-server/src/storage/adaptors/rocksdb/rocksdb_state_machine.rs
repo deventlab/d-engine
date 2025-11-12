@@ -139,16 +139,6 @@ impl RocksDBStateMachine {
     /// Injects lease configuration into this state machine.
     ///
     /// Framework-internal method: called by NodeBuilder::build() during initialization.
-    /// Creates a DefaultLease from the provided configuration and stores it.
-    pub(crate) fn inject_lease_config(
-        &mut self,
-        config: d_engine_core::config::LeaseConfig,
-    ) -> Result<(), Error> {
-        let lease = Arc::new(DefaultLease::new(config));
-        self.lease = Some(lease);
-        Ok(())
-    }
-
     /// Opens RocksDB with the standard configuration
     fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, Error> {
         // Same options as new()
@@ -431,6 +421,15 @@ impl StateMachine for RocksDBStateMachine {
     fn stop(&self) -> Result<(), Error> {
         self.is_serving.store(false, Ordering::SeqCst);
         info!("RocksDB state machine stopped");
+        Ok(())
+    }
+
+    fn try_inject_lease(
+        &mut self,
+        config: d_engine_core::config::LeaseConfig,
+    ) -> Result<(), Error> {
+        let lease = Arc::new(DefaultLease::new(config));
+        self.lease = Some(lease);
         Ok(())
     }
 

@@ -355,7 +355,7 @@ mod file_state_machine_tests {
 
         // Insert 5 keys with 1 second TTL
         for i in 0..5 {
-            let key = format!("piggyback_key_{}", i);
+            let key = format!("piggyback_key_{i}");
             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", Some(1));
             sm.apply_chunk(vec![entry]).await.unwrap();
         }
@@ -371,7 +371,7 @@ mod file_state_machine_tests {
 
         // Expired keys should be cleaned up by piggyback mechanism
         for i in 0..5 {
-            let key = format!("piggyback_key_{}", i);
+            let key = format!("piggyback_key_{i}");
             let value = sm.get(key.as_bytes()).unwrap();
             assert_eq!(
                 value, None,
@@ -390,7 +390,7 @@ mod file_state_machine_tests {
 
         // Insert keys WITHOUT TTL
         for i in 0..10 {
-            let key = format!("no_ttl_key_{}", i);
+            let key = format!("no_ttl_key_{i}");
             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", None);
             sm.apply_chunk(vec![entry]).await.unwrap();
         }
@@ -403,7 +403,7 @@ mod file_state_machine_tests {
 
         // All keys should still exist (no TTL, lazy activation should skip cleanup)
         for i in 0..10 {
-            let key = format!("no_ttl_key_{}", i);
+            let key = format!("no_ttl_key_{i}");
             let value = sm.get(key.as_bytes()).unwrap();
             assert_eq!(value, Some(Bytes::from("value")));
         }
@@ -810,7 +810,7 @@ mod rocksdb_state_machine_tests {
 
         // Insert 5 keys with 1 second TTL
         for i in 0..5 {
-            let key = format!("piggyback_key_{}", i);
+            let key = format!("piggyback_key_{i}");
             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", Some(1));
             sm.apply_chunk(vec![entry]).await.unwrap();
         }
@@ -826,7 +826,7 @@ mod rocksdb_state_machine_tests {
 
         // Expired keys should be cleaned up by piggyback mechanism
         for i in 0..5 {
-            let key = format!("piggyback_key_{}", i);
+            let key = format!("piggyback_key_{i}");
             let value = sm.get(key.as_bytes()).unwrap();
             assert_eq!(
                 value, None,
@@ -847,7 +847,7 @@ mod rocksdb_state_machine_tests {
 
         // Insert keys WITHOUT TTL
         for i in 0..10 {
-            let key = format!("no_ttl_key_{}", i);
+            let key = format!("no_ttl_key_{i}");
             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", None);
             sm.apply_chunk(vec![entry]).await.unwrap();
         }
@@ -860,7 +860,7 @@ mod rocksdb_state_machine_tests {
 
         // All keys should still exist (no TTL, lazy activation should skip cleanup)
         for i in 0..10 {
-            let key = format!("no_ttl_key_{}", i);
+            let key = format!("no_ttl_key_{i}");
             let value = sm.get(key.as_bytes()).unwrap();
             assert_eq!(value, Some(Bytes::from("value")));
         }
