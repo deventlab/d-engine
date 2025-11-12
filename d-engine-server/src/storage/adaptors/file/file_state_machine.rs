@@ -875,8 +875,10 @@ impl FileStateMachine {
     /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
     /// - Cleanup: O(log N + K) where K = expired keys
     /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
-    /// Checkpoint: Persist memory to disk and clear WAL
-    /// This is the "safe point" after which WAL is no longer needed
+    ///
+    /// # Checkpoint
+    /// Persist memory to disk and clear WAL.
+    /// This is the "safe point" after which WAL is no longer needed.
     #[allow(unused)]
     pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
         // 1. Persist current state
@@ -1071,6 +1073,7 @@ impl StateMachine for FileStateMachine {
                             if let Some(ref lease) = self.lease {
                                 if let Some(ttl) = ttl_secs {
                                     if ttl > 0 {
+                                        #[allow(clippy::unnecessary_cast)]
                                         lease.register(key, ttl as u64);
                                     }
                                 }

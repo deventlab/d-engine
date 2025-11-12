@@ -29,7 +29,7 @@
 CARGO ?= cargo
 
 # Rust logging level for tests
-RUST_LOG_LEVEL ?= d_engine=debug
+RUST_LOG_LEVEL ?= debug
 
 # Backtrace level for debugging
 RUST_BACKTRACE ?= 1
@@ -152,11 +152,27 @@ fmt fmt-fix: install-tools check-workspace
 # ============================================================================
 
 ## clippy               Run Clippy linter (fail on warnings with -D flag)
-clippy: check-workspace
+## clippy                Run Clippy linter on all crates
+clippy: check-workspace clippy-excluded
 	@echo "$(BLUE)Running Clippy linter on all crates...$(NC)"
 	@$(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
 		{ echo "$(RED)✗ Clippy warnings found. Run 'make clippy-fix' for suggestions.$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Clippy lint check passed$(NC)"
+
+## clippy-excluded        Run Clippy on excluded projects (examples, benches)
+clippy-excluded:
+	@for example in examples/*/; do \
+		if [ -f "$$example/Cargo.toml" ]; then \
+			(cd "$$example" && $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
+			{ echo "$(RED)✗ Clippy check failed for $$example$(NC)"; exit 1; }; \
+		fi \
+	done
+	@for bench in benches/*/; do \
+		if [ -f "$$bench/Cargo.toml" ]; then \
+			(cd "$$bench" && $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
+			{ echo "$(RED)✗ Clippy check failed for $$bench$(NC)"; exit 1; }; \
+		fi \
+	done
 
 ## clippy-fix           Automatically apply Clippy suggestions (review changes!)
 clippy-fix: install-tools check-workspace
@@ -217,6 +233,8 @@ test: install-tools check-workspace
 
 ## test-detailed        Run tests with detailed failure output for each crate
 test-detailed: install-tools check-workspace
+	@echo "$(BLUE)Validating excluded projects (examples, benches)...$(NC)"
+	@$(MAKE) check-examples check-benches
 	@echo "$(BLUE)Running tests with detailed output per crate...$(NC)"
 	@for member in $(WORKSPACE_MEMBERS); do \
 		echo "$(CYAN)Testing crate: $$member$(NC)"; \
@@ -271,8 +289,8 @@ endif
 		$(CARGO) test -p $(CRATE) --lib --tests --no-fail-fast -- --test-threads=1 --nocapture --show-output
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
-## test-all             Run all tests: unit + integration + doc + benchmarks
-test-all: test-detailed test-doc bench
+## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
+test-all: clippy test-detailed test-doc bench
 	@echo "$(GREEN)✓ All test suites passed$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution

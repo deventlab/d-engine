@@ -296,8 +296,7 @@ impl Lease for DefaultLease {
         let snapshot: LeaseSnapshot = bincode::deserialize(data).map_err(|e| {
             crate::Error::System(d_engine_core::SystemError::Storage(
                 d_engine_core::StorageError::StateMachineError(format!(
-                    "Failed to deserialize lease snapshot: {}",
-                    e
+                    "Failed to deserialize lease snapshot: {e}"
                 )),
             ))
         })?;

@@ -65,14 +65,12 @@ async fn start_dengine_server(
 ) {
     let storage_engine = Arc::new(RocksDBStorageEngine::new(db_path.join("storage")).unwrap());
     let state_machine = Arc::new(RocksDBStateMachine::new(db_path.join("state_machine")).unwrap());
-    // Build Node
+    // Start Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
         .state_machine(state_machine)
-        .build()
-        .start_rpc_server()
+        .start_server()
         .await
-        .ready()
         .expect("start node failed.");
 
     // Start Node

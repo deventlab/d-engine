@@ -105,7 +105,8 @@ fn bench_apply_without_ttl(c: &mut Criterion) {
             let entries = create_entries_without_ttl(1, 1);
 
             // Measure pure apply performance
-            black_box(sm.apply_chunk(entries).await.unwrap());
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
         });
     });
 }
@@ -121,7 +122,8 @@ fn bench_apply_with_ttl(c: &mut Criterion) {
             let entries = create_entries_with_ttl(1, 1, 3600); // 1 hour TTL
 
             // Measure apply with TTL registration
-            black_box(sm.apply_chunk(entries).await.unwrap());
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
         });
     });
 }
@@ -208,7 +210,8 @@ fn bench_batch_apply(c: &mut Criterion) {
                 let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_without_ttl(size, 1);
 
-                black_box(sm.apply_chunk(entries).await.unwrap());
+                sm.apply_chunk(entries).await.unwrap();
+                black_box(());
             });
         });
     }
@@ -227,7 +230,8 @@ fn bench_batch_apply_with_ttl(c: &mut Criterion) {
                 let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_with_ttl(size, 1, 3600);
 
-                black_box(sm.apply_chunk(entries).await.unwrap());
+                sm.apply_chunk(entries).await.unwrap();
+                black_box(());
             });
         });
     }

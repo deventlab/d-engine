@@ -402,20 +402,13 @@ fn default_max_entries_per_chunk() -> usize {
 /// and other data lifecycle features. This configuration affects how the state machine
 /// processes applied log entries and manages data.
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Default)]
 pub struct StateMachineConfig {
     /// Lease (time-based expiration) configuration
     ///
     /// For backward compatibility, can also be configured via `ttl` in TOML files.
     #[serde(alias = "ttl")]
     pub lease: LeaseConfig,
-}
-
-impl Default for StateMachineConfig {
-    fn default() -> Self {
-        Self {
-            lease: LeaseConfig::default(),
-        }
-    }
 }
 
 impl StateMachineConfig {

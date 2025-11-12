@@ -1,3 +1,6 @@
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::uninlined_format_args)]
+
 //! Integration tests for Lease functionality across the full stack
 //!
 //! This module contains comprehensive tests for:

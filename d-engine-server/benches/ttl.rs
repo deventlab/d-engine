@@ -28,8 +28,10 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     // For TTL benchmarks, we need piggyback cleanup enabled
-    let mut lease_config = d_engine_core::config::LeaseConfig::default();
-    lease_config.cleanup_strategy = "piggyback".to_string();
+    let lease_config = d_engine_core::config::LeaseConfig {
+        cleanup_strategy: "piggyback".to_string(),
+        ..Default::default()
+    };
 
     let mut sm = FileStateMachine::new(temp_dir.path().to_path_buf())
         .await
@@ -116,7 +118,8 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
                     // Measure piggyback cleanup by applying a no-op entry
                     // This should trigger cleanup of expired entries
                     let noop = create_noop_entry(10000);
-                    black_box(sm.apply_chunk(vec![noop]).await.unwrap());
+                    sm.apply_chunk(vec![noop]).await.unwrap();
+                    black_box(());
                 });
             },
         );
@@ -137,7 +140,8 @@ fn bench_ttl_registration(c: &mut Criterion) {
             // Measure the cost of applying entries with TTL
             // (which includes TTL registration)
             let entries = create_entries_with_ttl(1, 1, 3600);
-            black_box(sm.apply_chunk(entries).await.unwrap());
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
         });
     });
 }
@@ -154,7 +158,8 @@ fn bench_batch_ttl_registration(c: &mut Criterion) {
                 let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_with_ttl(size, 1, 3600);
 
-                black_box(sm.apply_chunk(entries).await.unwrap());
+                sm.apply_chunk(entries).await.unwrap();
+                black_box(());
             });
         });
     }
@@ -189,7 +194,8 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Measure cleanup performance in mixed scenario
             let noop = create_noop_entry(10000);
-            black_box(sm.apply_chunk(vec![noop]).await.unwrap());
+            sm.apply_chunk(vec![noop]).await.unwrap();
+            black_box(());
         });
     });
 }
@@ -219,8 +225,9 @@ fn bench_piggyback_high_frequency(c: &mut Criterion) {
             // This tests the cost of frequent cleanup checks
             for i in 0..10 {
                 let noop = create_noop_entry(10000 + i);
-                black_box(sm.apply_chunk(vec![noop]).await.unwrap());
+                sm.apply_chunk(vec![noop]).await.unwrap();
             }
+            black_box(());
         });
     });
 }
@@ -242,7 +249,8 @@ fn bench_varying_ttl_durations(c: &mut Criterion) {
                     let (sm, _temp_dir) = create_test_state_machine().await;
                     let entries = create_entries_with_ttl(100, 1, ttl_secs);
 
-                    black_box(sm.apply_chunk(entries).await.unwrap());
+                    sm.apply_chunk(entries).await.unwrap();
+                    black_box(());
                 });
             },
         );
@@ -274,7 +282,8 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Measure cleanup when all entries are expired
             let noop = create_noop_entry(10000);
-            black_box(sm.apply_chunk(vec![noop]).await.unwrap());
+            sm.apply_chunk(vec![noop]).await.unwrap();
+            black_box(());
         });
     });
 }
@@ -299,7 +308,8 @@ fn bench_best_case_no_expired(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Measure cleanup when nothing is expired (should be very fast)
             let noop = create_noop_entry(10000);
-            black_box(sm.apply_chunk(vec![noop]).await.unwrap());
+            sm.apply_chunk(vec![noop]).await.unwrap();
+            black_box(());
         });
     });
 }

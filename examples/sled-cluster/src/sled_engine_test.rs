@@ -1,13 +1,11 @@
 use super::*;
 use bytes::{Bytes, BytesMut};
 use d_engine::{
-    client::{
-        write_command::{Insert, Operation},
-        WriteCommand,
-    },
     common::{entry_payload::Payload, Entry, EntryPayload},
+    write_command::{write_command::Operation, WriteCommand},
     LogStore, Result, StorageEngine,
 };
+use d_engine_proto::client::write_command::Insert;
 use prost::Message;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -100,7 +98,11 @@ fn create_test_command_payload(index: u64) -> EntryPayload {
     let key = Bytes::from(format!("key_{index}").into_bytes());
     let value = Bytes::from(format!("value_{index}").into_bytes());
 
-    let insert = Insert { key, value };
+    let insert = Insert {
+        key,
+        value,
+        ttl_secs: None,
+    };
     let operation = Operation::Insert(insert);
     let write_cmd = WriteCommand {
         operation: Some(operation),

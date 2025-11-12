@@ -10,7 +10,7 @@
 //!   state machines (no implicit defaults).
 //! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`,
 //!   `state_machine()`, `transport()`).
-//! - **Lifecycle Management**:
+//! - **Simple Startup: One method to start the node: `start_server().await?`**:
 //!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`],
 //!     replication, election).
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
@@ -52,8 +52,6 @@ use crate::membership::RaftMembership;
 use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::storage::BufferedRaftLog;
-#[cfg(feature = "rocksdb")]
-use crate::storage::RocksDBStateMachine;
 use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
@@ -465,6 +463,24 @@ where
         } else {
             panic!("failed to start RPC server");
         }
+    }
+
+    /// Unified method to build and start the server.
+    ///
+    /// This method combines the following steps:
+    /// 1. Initialize the state machine (including lease injection if applicable)
+    /// 2. Build the Raft core and node
+    /// 3. Start the gRPC server for cluster communication
+    ///
+    /// # Returns
+    /// An `Arc<Node>` ready for operation
+    ///
+    /// # Errors
+    /// Returns an error if any initialization step fails
+    pub async fn start_server(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
+        let builder = self.build().await?;
+        let builder = builder.start_rpc_server().await;
+        builder.ready()
     }
 
     /// Returns the built node instance after successful construction.

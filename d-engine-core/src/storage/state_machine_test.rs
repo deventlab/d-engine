@@ -318,8 +318,8 @@ impl StateMachineTestSuite {
             .map(|i| {
                 create_insert_entry(
                     i,
-                    Bytes::from(format!("perf_key_{}", i)),
-                    Bytes::from(format!("perf_value_{}", i)),
+                    Bytes::from(format!("perf_key_{i}")),
+                    Bytes::from(format!("perf_value_{i}")),
                 )
             })
             .collect();
@@ -330,8 +330,7 @@ impl StateMachineTestSuite {
 
         assert!(
             elapsed < Duration::from_secs(1),
-            "Performance regression: apply_chunk(100) took {:?} (expected < 1s)",
-            elapsed
+            "Performance regression: apply_chunk(100) took {elapsed:?} (expected < 1s)",
         );
 
         Ok(())
@@ -349,8 +348,8 @@ impl StateMachineTestSuite {
             .map(|i| {
                 create_insert_entry(
                     i,
-                    Bytes::from(format!("scale_key_{}", i)),
-                    Bytes::from(format!("scale_value_{}", i)),
+                    Bytes::from(format!("scale_key_{i}")),
+                    Bytes::from(format!("scale_value_{i}")),
                 )
             })
             .collect();
@@ -364,8 +363,8 @@ impl StateMachineTestSuite {
             .map(|i| {
                 create_insert_entry(
                     i,
-                    Bytes::from(format!("scale_key_{}", i)),
-                    Bytes::from(format!("scale_value_{}", i)),
+                    Bytes::from(format!("scale_key_{i}")),
+                    Bytes::from(format!("scale_value_{i}")),
                 )
             })
             .collect();
@@ -379,9 +378,8 @@ impl StateMachineTestSuite {
 
         assert!(
             ratio < 20.0,
-            "Scalability issue: 1000 entries took {:.1}x longer than 100 entries (expected ~10x). \
-             Possible O(N²) complexity.",
-            ratio
+            "Scalability issue: 1000 entries took {ratio:.1}x longer than 100 entries (expected ~10x). \
+             Possible O(N²) complexity."
         );
 
         Ok(())

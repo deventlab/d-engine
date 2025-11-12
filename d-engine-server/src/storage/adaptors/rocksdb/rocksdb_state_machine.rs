@@ -680,10 +680,9 @@ impl StateMachine for RocksDBStateMachine {
         info!("Backed up current DB to: {:?}", backup_dir);
 
         // Move checkpoint to DB path
-        tokio::fs::rename(&snapshot_dir, &self.db_path).await.map_err(|e| {
+        tokio::fs::rename(&snapshot_dir, &self.db_path).await.inspect_err(|_e| {
             // Rollback: restore from backup
             let _ = std::fs::rename(&backup_dir, &self.db_path);
-            e
         })?;
         info!("Moved checkpoint to DB path: {:?}", self.db_path);
 
@@ -784,7 +783,7 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     async fn post_start_init(&self) -> Result<(), Error> {
-        if let Some(ref lease) = self.lease {
+        if let Some(ref _lease) = self.lease {
             self.load_lease_data().await?;
             debug!("Lease data loaded during state machine initialization");
         }

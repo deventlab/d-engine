@@ -86,9 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = NodeBuilder::new(None, shutdown_rx)
         .storage_engine(storage)
         .state_machine(state_machine)
-        .build()
-        .start_rpc_server().await?
-        .ready()?;
+        .start_server()
+        .await?;
 
     // Run until shutdown
     node.run().await?;
@@ -117,9 +116,8 @@ peers:
 let node = NodeBuilder::new(Some("cluster.yaml"), shutdown_rx)
     .storage_engine(storage)
     .state_machine(state_machine)
-    .build()
-    .start_rpc_server().await?
-    .ready()?;
+    .start_server()
+    .await?;
 
 node.run().await?;
 ```

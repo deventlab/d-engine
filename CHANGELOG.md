@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v0.2.0] - 2025-11-12 [✅ Released]
+
+### 🚀 Features
+
+- **TTL/Lease Support**: Implemented time-to-live (TTL) functionality with configurable cleanup strategies (piggyback, lazy, scheduled) for automatic key expiration
+- **Unified NodeBuilder API**: Simplified node startup with new `start_server()` method that combines `build()`, `start_rpc_server()`, and `ready()` into a single async call
+- **Improved State Machine Initialization**: Enhanced state machine lifecycle with `try_inject_lease()` and `post_start_init()` hooks for transparent lease configuration
+
+### 🔄 Breaking Changes
+
+- **NodeBuilder API**: `build().start_rpc_server().await.ready()` is now replaced with `.start_server().await`
+  - See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for detailed migration instructions
+  - Old API is no longer supported
+
+### 📝 Documentation
+
+- Added comprehensive MIGRATION_GUIDE.md for API changes
+- Updated all README files with new `start_server()` API
+- Updated server guide documentation for custom implementations
+- Updated quick-start examples in overview documentation
+
+### 🐛 Fixes
+
+- Fixed Zed editor clippy warnings in benchmark code
+- Fixed unused imports in test utilities
+- Fixed log level filtering configuration (RUST_LOG_LEVEL now applies to all crates)
+
+### ✨ Quality
+
+- All benchmarks pass clippy without warnings
+- TTL benchmarks validate cleanup performance targets
+- State machine benchmarks validate scaling characteristics
+
+---
+
 ## [v0.1.4] - 2025-10-12 [✅ Released]
 
 ### Features

@@ -14,7 +14,6 @@ use crate::node::RaftTypeConfig;
 use crate::storage::BufferedRaftLog;
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
-use crate::test_utils::mock_state_machine;
 use d_engine_core::Error;
 use d_engine_core::FlushPolicy;
 use d_engine_core::LogStore;
@@ -26,7 +25,6 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
-use d_engine_core::config::LeaseConfig;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
