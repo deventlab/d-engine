@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use crate::election::ElectionCore;
-use crate::election::ElectionHandler;
 use crate::MockRaftLog;
 use crate::MockTypeConfig;
+use crate::election::ElectionCore;
+use crate::election::ElectionHandler;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
@@ -66,10 +66,7 @@ async fn test_handle_vote_request_grant_higher_term() {
     let request = create_vote_request(2, 1, 2, 2);
     let current_term = 1u64;
     let voted_for_option = None;
-    let last_log_id = Some(LogId {
-        index: 1,
-        term: 1,
-    });
+    let last_log_id = Some(LogId { index: 1, term: 1 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -115,10 +112,7 @@ async fn test_handle_vote_request_deny_lower_term() {
     let request = create_vote_request(2, 1, 5, 2);
     let current_term = 3u64;
     let voted_for_option = None;
-    let last_log_id = Some(LogId {
-        index: 5,
-        term: 3,
-    });
+    let last_log_id = Some(LogId { index: 5, term: 3 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -155,10 +149,7 @@ async fn test_handle_vote_request_deny_stale_log() {
     let request = create_vote_request(1, 1, 5, 1); // Candidate has older log
     let current_term = 1u64;
     let voted_for_option = None;
-    let last_log_id = Some(LogId {
-        index: 10,
-        term: 2,
-    }); // Local log is more recent
+    let last_log_id = Some(LogId { index: 10, term: 2 }); // Local log is more recent
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -195,10 +186,7 @@ async fn test_handle_vote_request_deny_already_voted_different_candidate() {
         voted_for_id: 1,
         voted_for_term: 2,
     }); // Already voted for node 1
-    let last_log_id = Some(LogId {
-        index: 3,
-        term: 2,
-    });
+    let last_log_id = Some(LogId { index: 3, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -235,10 +223,7 @@ async fn test_handle_vote_request_grant_revote_same_candidate() {
         voted_for_id: 1,
         voted_for_term: 2,
     }); // Already voted for node 1
-    let last_log_id = Some(LogId {
-        index: 3,
-        term: 2,
-    });
+    let last_log_id = Some(LogId { index: 3, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -280,10 +265,7 @@ async fn test_handle_vote_request_grant_higher_term_resets_vote() {
         voted_for_id: 1,
         voted_for_term: 2,
     }); // Voted for node 1 in term 2
-    let last_log_id = Some(LogId {
-        index: 3,
-        term: 2,
-    });
+    let last_log_id = Some(LogId { index: 3, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -325,10 +307,7 @@ async fn test_handle_vote_request_grant_higher_log_term() {
     let request = create_vote_request(1, 1, 5, 2); // Higher log term
     let current_term = 1u64;
     let voted_for_option = None;
-    let last_log_id = Some(LogId {
-        index: 10,
-        term: 1,
-    });
+    let last_log_id = Some(LogId { index: 10, term: 1 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
@@ -360,10 +339,7 @@ async fn test_handle_vote_request_grant_higher_index_same_term() {
     let request = create_vote_request(1, 1, 10, 2); // Same term, higher index
     let current_term = 1u64;
     let voted_for_option = None;
-    let last_log_id = Some(LogId {
-        index: 5,
-        term: 2,
-    });
+    let last_log_id = Some(LogId { index: 5, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
 
     // Act
