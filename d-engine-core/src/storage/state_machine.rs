@@ -11,6 +11,15 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use tonic::async_trait;
 
+/// State machine trait for Raft consensus
+///
+/// # Thread Safety Requirements
+///
+/// **CRITICAL**: Implementations MUST be thread-safe.
+///
+/// - Read methods (`get()`, `len()`) may be called concurrently
+/// - Write methods should use internal synchronization
+/// - No assumptions about caller's threading model
 #[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
@@ -156,4 +165,65 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Resets the state machine to its initial state.
     /// Async operation as it may involve cleaning up files and data.
     async fn reset(&self) -> Result<(), Error>;
+
+    /// Framework-internal: Inject lease configuration if supported.
+    ///
+    /// This is an optional feature for state machine implementations.
+    /// Built-in state machines (RocksDB, File) override this to support lease-based TTL.
+    /// User-defined state machines can optionally implement this for TTL support.
+    ///
+    /// # Default Implementation
+    /// No-op - user-defined SMs that don't need TTL don't have to implement this.
+    ///
+    /// # Arguments
+    /// * `config` - Lease configuration from NodeConfig
+    ///
+    /// # Returns
+    /// - Ok(()) - Configuration injected successfully, or not applicable
+    /// - Err(Error) - Framework error during injection
+    ///
+    /// # Called By
+    /// Framework calls this in NodeBuilder::build() before start() is called,
+    /// when the state machine is still mutable and unwrapped from Arc.
+    ///
+    /// # Example (Implementation in RocksDBStateMachine)
+    /// ```ignore
+    /// fn try_inject_lease(&mut self, config: LeaseConfig) -> Result<(), Error> {
+    ///     let lease = Arc::new(DefaultLease::new(config));
+    ///     self.lease = Some(lease);
+    ///     Ok(())
+    /// }
+    /// ```
+    fn try_inject_lease(
+        &mut self,
+        _config: crate::config::LeaseConfig,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Post-start async initialization hook.
+    ///
+    /// Called after `start()` and after the state machine is wrapped in Arc.
+    /// Use this for async operations like loading persisted lease data.
+    ///
+    /// # Default Implementation
+    /// No-op, suitable for simple state machines or user-defined implementations
+    /// that don't require async initialization.
+    ///
+    /// # Called By
+    /// Framework calls this in NodeBuilder::build() after start() completes.
+    /// Guaranteed to complete before the node becomes operational.
+    ///
+    /// # Example (d-engine built-in state machines)
+    /// ```ignore
+    /// async fn post_start_init(&self) -> Result<(), Error> {
+    ///     if let Some(ref lease) = self.lease {
+    ///         self.load_lease_data().await?;
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    async fn post_start_init(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }

@@ -46,3 +46,4 @@ docker/monitoring/prometheus/data/
 lcov.info
 
 CONTEXT
+*.bak*

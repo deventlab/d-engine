@@ -104,7 +104,9 @@ impl StateMachine for CustomStateMachine {
 
 ## 4. Testing Your Implementation
 
-Use the built-in test patterns from d-engine's test suite:
+### 4.1 Functional Tests
+
+Use the built-in test suite to validate correctness:
 
 ```rust,ignore
 use d_engine::{StateMachine, Error};
@@ -145,26 +147,47 @@ async fn test_custom_state_machine() -> Result<(), Error> {
     Ok(())
 }
 
+```
+
+### 4.2 Performance Tests
+
+Use `run_performance_tests()` to detect performance regressions:
+
+```rust,ignore
+use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+
 #[tokio::test]
+#[ignore] // Run with: cargo test -- --ignored
 async fn test_performance() -> Result<(), Error> {
-    let builder = TestStateMachineBuilder::new();
-    let sm = builder.build().await?;
-    sm.start()?;
+    struct MyStateMachineBuilder { /* ... */ }
 
-    // Performance test: apply 10,000 entries
-    let start = std::time::Instant::now();
-    let entries = (1..=10000)
-        .map(|i| create_test_entry(i, i))
-        .collect();
+    #[async_trait]
+    impl StateMachineBuilder for MyStateMachineBuilder {
+        async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+            // Create your state machine
+            Ok(Arc::new(MyStateMachine::new().await?))
+        }
 
-    sm.apply_chunk(entries).await?;
-    let duration = start.elapsed();
+        async fn cleanup(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
 
-    assert!(duration.as_millis() < 1000, "Should apply 10k entries in <1s");
+    let builder = MyStateMachineBuilder::new();
+
+    // Runs smoke test (100 entries < 1s) and scalability test (O(N) complexity)
+    StateMachineTestSuite::run_performance_tests(builder).await?;
     Ok(())
 }
 
 ```
+
+**Performance Thresholds:**
+
+- **Smoke Test**: 100 entries in < 1 second
+- **Scalability**: 1000 entries should be ~10x slower than 100 entries (not 100x)
+
+Run performance tests locally: `cargo test -- --ignored`
 
 ## 5. Register with NodeBuilder
 
@@ -175,8 +198,8 @@ let custom_sm = Arc::new(CustomStateMachine::new().await?);
 
 NodeBuilder::new(config, shutdown_rx)
     .state_machine(custom_sm)  // Required component
-    .build();
-
+    .start_server()
+    .await?;
 ```
 
 ## 6. Production Examples
@@ -191,5 +214,4 @@ Enable RocksDB feature in your `Cargo.toml`:
 
 ```toml
 d-engine = { version = "0.1.4", features = ["rocksdb"] }
-
 ```

@@ -70,14 +70,12 @@ async fn start_dengine_server(
     let state_machine =
         Arc::new(SledStateMachine::new(db_path.join("state_machine"), node_id).unwrap());
 
-    // Build Node
+    // Start Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
         .state_machine(state_machine)
-        .build()
-        .start_rpc_server()
+        .start_server()
         .await
-        .ready()
         .expect("start node failed.");
 
     // Start Node

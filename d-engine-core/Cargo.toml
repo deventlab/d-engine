@@ -34,7 +34,7 @@ thiserror = "1.0"
 nanoid = "0.4.0"
 sha2 = "0.10.9"
 # using Dashset
-dashmap = "5.5.3"
+dashmap = "6.1"
 tempfile = "3.19.1"
 metrics = { version = "0.24", features = [] }
 config = { version = "0.14.0", default-features = false, features = ["toml"] }

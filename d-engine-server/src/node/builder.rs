@@ -10,7 +10,7 @@
 //!   state machines (no implicit defaults).
 //! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`,
 //!   `state_machine()`, `transport()`).
-//! - **Lifecycle Management**:
+//! - **Simple Startup: One method to start the node: `start_server().await?`**:
 //!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`],
 //!     replication, election).
 //!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
@@ -228,16 +228,47 @@ where
     ///
     /// # Panics
     /// Panics if essential components cannot be initialized
-    pub fn build(mut self) -> Self {
+    pub async fn build(mut self) -> Result<Self> {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
-        // let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
         // Handle state machine initialization
-        let state_machine = self.state_machine.take().expect("State machine must be set");
+        let mut state_machine = self.state_machine.take().expect("State machine must be set");
+
+        // Inject lease configuration into state machine
+        // Framework-level feature: developers don't see lease, it's transparent
+        // Lease config comes from NodeConfig, injected before Arc wrapping
+        {
+            let lease_config = node_config.raft.state_machine.lease.clone();
+
+            // Try to inject lease config into d-engine built-in state machines
+            // User-defined state machines silently skip (no error, no lease)
+            // state_machine is Arc<SM>, so we need Arc::get_mut for mutable access
+            if let Some(sm) = Arc::get_mut(&mut state_machine) {
+                sm.try_inject_lease(lease_config)?;
+            } else {
+                // Arc has multiple references - this indicates a bug in builder usage
+                // State machine should be created fresh and passed directly to builder
+                error!(
+                    "CRITICAL: Cannot inject lease config - Arc<StateMachine> has multiple references. This is a builder API usage error."
+                );
+                return Err(d_engine_core::StorageError::StateMachineError(
+                    "State machine Arc must have single ownership when passed to builder"
+                        .to_string(),
+                )
+                .into());
+            }
+        }
+
+        // Start state machine: synchronous setup (flip flags, prepare structures)
+        state_machine.start()?;
+
+        // Post-start async initialization: load persisted lease data, etc.
+        // Guaranteed to complete before node becomes operational
+        state_machine.post_start_init().await?;
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().expect("Storage engine must be set");
@@ -375,7 +406,7 @@ where
         };
 
         self.node = Some(Arc::new(node));
-        self
+        Ok(self)
     }
 
     /// When a new commit is detected, convert the log into a state machine log.
@@ -440,6 +471,24 @@ where
         } else {
             panic!("failed to start RPC server");
         }
+    }
+
+    /// Unified method to build and start the server.
+    ///
+    /// This method combines the following steps:
+    /// 1. Initialize the state machine (including lease injection if applicable)
+    /// 2. Build the Raft core and node
+    /// 3. Start the gRPC server for cluster communication
+    ///
+    /// # Returns
+    /// An `Arc<Node>` ready for operation
+    ///
+    /// # Errors
+    /// Returns an error if any initialization step fails
+    pub async fn start_server(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
+        let builder = self.build().await?;
+        let builder = builder.start_rpc_server().await;
+        builder.ready()
     }
 
     /// Returns the built node instance after successful construction.

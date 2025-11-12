@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 d-engine = { path = "../../d-engine", features = ["server"] }
+d-engine-proto = { path = "../../d-engine-proto" }
 # d-engine = "0.1.4"
 
 sled = { version = "0.34.7", features = [

@@ -164,7 +164,8 @@ let storage_engine = Arc::new(CustomStorageEngine::new().await?);
 
 NodeBuilder::new(config, shutdown_rx)
     .storage_engine(storage_engine)  // Required component
-    .build();
+    .start_server()
+    .await?;
 
 ```
 

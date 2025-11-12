@@ -226,7 +226,11 @@ impl StateMachine for SledStateMachine {
                     // Business write operation - deserialize and apply
                     match WriteCommand::decode(&data[..]) {
                         Ok(write_cmd) => match write_cmd.operation {
-                            Some(Operation::Insert(Insert { key, value })) => {
+                            Some(Operation::Insert(Insert {
+                                key,
+                                value,
+                                ttl_secs: _,
+                            })) => {
                                 debug!(
                                     "Applying INSERT command at index {}: {:?}",
                                     entry.index, key

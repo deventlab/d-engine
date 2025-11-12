@@ -35,7 +35,6 @@ use tokio::time::interval;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
-use tracing::trace;
 use tracing::warn;
 
 use d_engine_core::Error;
@@ -548,11 +547,6 @@ where
             node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
         );
 
-        trace!(
-            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
-            node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
-        );
-
         //TODO: if switch to UnboundedChannel?
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
         let entries = SkipMap::new();
@@ -656,12 +650,10 @@ where
         this: std::sync::Weak<Self>,
         mut receiver: mpsc::UnboundedReceiver<LogCommand>,
     ) {
-        trace!("Starting command processor");
         while let Some(cmd) = receiver.recv().await {
             let Some(this) = this.upgrade() else { break };
             this.handle_command(cmd).await;
         }
-        trace!("Command processor shutting down");
     }
 
     async fn batch_processor(
@@ -723,7 +715,6 @@ where
                 }
             }
         }
-        trace!("Batch processor shutting down");
     }
 
     async fn handle_command(
@@ -863,8 +854,6 @@ where
             .filter_map(|idx| self.entries.get(idx).map(|e| e.value().clone()))
             .collect();
 
-        trace!("Collected {} entries for persistence", entries.len());
-
         // Persist to storage
         self.log_store.persist_entries(entries).await?;
 
@@ -930,7 +919,6 @@ where
         &self,
         entries: &[Entry],
     ) -> Result<()> {
-        trace!("persisting entries {:?}", entries);
         self.log_store.persist_entries(entries.to_vec()).await?;
 
         // Handle flush policy
@@ -1211,8 +1199,6 @@ where
         if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
             error!("Failed to send shutdown command: {:?}", e);
         }
-
-        trace!("BufferedRaftLog dropped");
     }
 }
 

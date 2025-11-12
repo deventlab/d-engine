@@ -66,10 +66,8 @@
 //!     let node = NodeBuilder::new(None, rx)
 //!         .storage_engine(storage)
 //!         .state_machine(state_machine)
-//!         .build()
-//!         .start_rpc_server()
-//!         .await
-//!         .ready()?;
+//!         .start_server()
+//!         .await?;
 //!
 //!     node.run().await?;
 //!     Ok(())

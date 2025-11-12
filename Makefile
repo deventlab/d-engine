@@ -29,7 +29,7 @@
 CARGO ?= cargo
 
 # Rust logging level for tests
-RUST_LOG_LEVEL ?= d_engine=debug
+RUST_LOG_LEVEL ?= d_engine_server=debug,d_engine_core=debug,d_engine_client=debug,d_engine=debug
 
 # Backtrace level for debugging
 RUST_BACKTRACE ?= 1
@@ -152,19 +152,35 @@ fmt fmt-fix: install-tools check-workspace
 # ============================================================================
 
 ## clippy               Run Clippy linter (fail on warnings with -D flag)
-clippy: check-workspace
+## clippy                Run Clippy linter on all crates
+clippy: check-workspace clippy-excluded
 	@echo "$(BLUE)Running Clippy linter on all crates...$(NC)"
-	@$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings || \
+	@$(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
 		{ echo "$(RED)✗ Clippy warnings found. Run 'make clippy-fix' for suggestions.$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Clippy lint check passed$(NC)"
+
+## clippy-excluded        Run Clippy on excluded projects (examples, benches)
+clippy-excluded:
+	@for example in examples/*/; do \
+		if [ -f "$$example/Cargo.toml" ]; then \
+			(cd "$$example" && $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
+			{ echo "$(RED)✗ Clippy check failed for $$example$(NC)"; exit 1; }; \
+		fi \
+	done
+	@for bench in benches/*/; do \
+		if [ -f "$$bench/Cargo.toml" ]; then \
+			(cd "$$bench" && $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
+			{ echo "$(RED)✗ Clippy check failed for $$bench$(NC)"; exit 1; }; \
+		fi \
+	done
 
 ## clippy-fix           Automatically apply Clippy suggestions (review changes!)
 clippy-fix: install-tools check-workspace
 	@echo "$(BLUE)Applying Clippy suggestions...$(NC)"
-	@$(CARGO) clippy --workspace --all-targets --all-features --fix \
+	@$(CARGO) clippy --workspace --lib --tests --all-features --fix \
 		--allow-no-vcs --allow-dirty --allow-staged
 	@echo "$(YELLOW)Re-checking for remaining issues...$(NC)"
-	@$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings || \
+	@$(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
 		{ echo "$(YELLOW)Note: Some warnings require manual review and fixes$(NC)"; }
 	@echo "$(GREEN)✓ Clippy fixes applied$(NC)"
 	@echo "$(MAGENTA)IMPORTANT: Review changes before committing!$(NC)"
@@ -183,7 +199,7 @@ check: fmt-check clippy
 ## quick-check          Fast validation (cargo check + fmt-check only)
 quick-check: check-workspace
 	@echo "$(BLUE)Running quick validation...$(NC)"
-	@$(CARGO) check --workspace --all-targets --all-features
+	@$(CARGO) check --workspace --lib --tests --all-features
 	@$(CARGO) fmt --all -- --check || exit 1
 	@echo "$(GREEN)✓ Quick validation passed$(NC)"
 
@@ -194,7 +210,7 @@ quick-check: check-workspace
 ## build                Build all workspace crates in debug mode
 build: check-workspace
 	@echo "$(BLUE)Building workspace (debug mode)...$(NC)"
-	@$(CARGO) build --workspace --all-targets --all-features
+	@$(CARGO) build --workspace --lib --tests --all-features
 	@echo "$(GREEN)✓ Debug build completed$(NC)"
 
 ## build-release        Build all workspace crates in release mode (optimized)
@@ -208,20 +224,22 @@ build-release: check check-workspace
 # TESTING
 # ============================================================================
 
-## test                 Run all tests (lib + bins + examples + integration)
+## test                 Run all tests (lib + bins + examples + integration, excluding benches)
 test: install-tools check-workspace
 	@echo "$(BLUE)Running tests on all targets...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --all-targets --no-fail-fast -- --test-threads=1 --nocapture
+		$(CARGO) test --workspace --lib --bins --tests --examples --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 ## test-detailed        Run tests with detailed failure output for each crate
 test-detailed: install-tools check-workspace
+	@echo "$(BLUE)Validating excluded projects (examples, benches)...$(NC)"
+	@$(MAKE) check-examples check-benches
 	@echo "$(BLUE)Running tests with detailed output per crate...$(NC)"
 	@for member in $(WORKSPACE_MEMBERS); do \
 		echo "$(CYAN)Testing crate: $$member$(NC)"; \
 		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $$member --all-targets --no-fail-fast -- --test-threads=1 --nocapture || \
+		$(CARGO) test -p $$member --lib --tests --no-fail-fast -- --test-threads=1 --nocapture || \
 		{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
 		echo "$(GREEN)✓ Tests passed for crate: $$member$(NC)"; \
 		echo ""; \
@@ -237,14 +255,14 @@ test-detailed: install-tools check-workspace
 test-unit: install-tools check-workspace
 	@echo "$(BLUE)Running unit tests (lib only)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --lib --no-fail-fast -- --nocapture
+		$(CARGO) test --workspace --lib --no-fail-fast
 	@echo "$(GREEN)✓ Unit tests passed$(NC)"
 
 ## test-integration     Run integration tests only (--test flag)
 test-integration: install-tools check-workspace
 	@echo "$(BLUE)Running integration tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --tests --no-fail-fast -- --nocapture
+		$(CARGO) test --workspace --tests --no-fail-fast
 	@echo "$(GREEN)✓ Integration tests passed$(NC)"
 
 ## test-doc             Run documentation tests only
@@ -268,18 +286,18 @@ ifndef CRATE
 endif
 	@echo "$(BLUE)Running tests for crate: $(CRATE)$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $(CRATE) --all-targets --no-fail-fast -- --test-threads=1 --nocapture --show-output
+		$(CARGO) test -p $(CRATE) --lib --tests --no-fail-fast -- --test-threads=1 --nocapture --show-output
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
-## test-all             Run all tests: unit + integration + doc + benchmarks
-test-all: test-detailed test-doc bench
+## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
+test-all: clippy test-detailed test-doc bench
 	@echo "$(GREEN)✓ All test suites passed$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace
 	@echo "$(BLUE)Running tests (verbose, single-threaded)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --all-targets --no-fail-fast -- --nocapture --test-threads=1 --show-output
+	    $(CARGO) test --workspace --lib --tests --no-fail-fast --test-threads=1 --show-output
 	@echo "$(GREEN)✓ Verbose test run completed$(NC)"
 
 # ============================================================================
@@ -289,9 +307,17 @@ test-verbose: install-tools check-workspace
 ## bench                Run performance benchmarks (if configured)
 bench: check-workspace
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
-	@$(CARGO) bench --workspace --all-features --no-fail-fast -- --nocapture || \
-		{ echo "$(YELLOW)Note: No benchmarks configured or not supported in this workspace$(NC)"; }
+	@$(CARGO) bench --workspace --all-features --no-fail-fast || \
+		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Benchmark run completed$(NC)"
+	@echo "$(CYAN)→ View detailed results: target/criterion/report/index.html$(NC)"
+
+## bench-compile        Check that benchmarks compile without running them
+bench-compile: check-workspace
+	@echo "$(BLUE)Checking benchmark compilation...$(NC)"
+	@$(CARGO) bench --no-run --workspace || \
+		{ echo "$(RED)✗ Benchmark compilation failed$(NC)"; exit 1; }
+	@echo "$(GREEN)✓ Benchmarks compile successfully$(NC)"
 
 # ============================================================================
 # DOCUMENTATION

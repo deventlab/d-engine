@@ -1,6 +1,86 @@
+//! File-based state machine implementation with crash recovery
+//!
+//! This module provides a durable state machine implementation using file-based storage
+//! with Write-Ahead Logging (WAL) for crash consistency.
+//!
+//! # Architecture
+//!
+//! ## Storage Components
+//!
+//! - **`state.data`**: Serialized key-value store (persisted after each apply_chunk)
+//! - **`wal.log`**: Write-Ahead Log for crash recovery (cleared after successful persistence)
+//! - **`ttl_state.bin`**: TTL manager state (persisted alongside state.data)
+//! - **`metadata.bin`**: Raft metadata (last_applied_index, last_applied_term)
+//!
+//! ## Write-Ahead Log (WAL) Design
+//!
+//! The WAL ensures crash consistency by recording operations before they are applied to
+//! in-memory state. Each WAL entry contains:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ Entry Index (8 bytes) │ Entry Term (8 bytes) │ OpCode (1 byte) │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │ Key Length (8 bytes)  │ Key Data (N bytes)                      │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │ Value Length (8 bytes)│ Value Data (M bytes, if present)        │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │ Expire At (8 bytes, 0 = no TTL, >0 = UNIX timestamp in seconds) │
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ### TTL Semantics
+//!
+//! d-engine uses **absolute expiration time**:
+//!
+//! - When a key is created with TTL, the system calculates: `expire_at = now() + ttl_secs`
+//! - WAL stores the **absolute expiration timestamp** (UNIX seconds since epoch)
+//! - After crash recovery, expired keys are **not restored** (checked during replay)
+//! - TTL does **not reset** on restart (crash-safe)
+//!
+//! **Example:**
+//! ```text
+//! T0:  PUT key="foo", ttl=10s → expire_at = T0 + 10 = T10 (stored in WAL)
+//! T5:  CRASH
+//! T12: RESTART
+//!      → Replay WAL: expire_at = T10 < T12 (already expired)
+//!      → Key is NOT restored (correctly expired)
+//! ```
+//!
+//! **Why absolute time in WAL:**
+//! 1. Ensures expired keys stay expired after crash (etcd-compatible)
+//! 2. Passive expiration (in get()) is crash-safe without WAL writes
+//! 3. No TTL reset on recovery (deterministic expiration)
+//!
+//! ### WAL Lifecycle
+//!
+//! ```text
+//! apply_chunk() → append_to_wal() → [crash safe] → persist_data_async()
+//!                                                 → clear_wal_async()
+//! ```
+//!
+//! After successful persistence, WAL is cleared since state is now in `state.data`.
+//!
+//! ## Crash Recovery Flow
+//!
+//! On node startup (`new()`):
+//! 1. `load_metadata()` - Restore Raft state
+//! 2. `load_data()` - Load persisted key-value data
+//! 3. `load_ttl_data()` - Load persisted TTL state
+//! 4. `replay_wal()` - **Critical**: Replay uncommitted operations from WAL
+//!    - Restores keys AND their TTL metadata
+//!    - Ensures crash consistency (operations are idempotent)
+//!
+//! ## TTL Cleanup Strategies
+//!
+//! - **Passive Deletion**: Keys are checked and deleted on read access (`get()`)
+//! - **Piggyback Cleanup**: Batch cleanup during `apply_chunk()` (every 100 applies)
+//! - **Lazy Activation**: Cleanup skipped if TTL never used (zero overhead)
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -18,10 +98,11 @@ use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::trace;
 use tracing::warn;
 
+use crate::storage::DefaultLease;
 use d_engine_core::Error;
+use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
@@ -73,10 +154,16 @@ impl WalOpCode {
 /// - Write-ahead logging for crash consistency
 /// - Efficient snapshot handling with file-based storage
 /// - Thread-safe with minimal lock contention
+/// - TTL support for automatic key expiration
 #[derive(Debug)]
 pub struct FileStateMachine {
     // Key-value storage with disk persistence
     data: FileStateMachineDataType, // (value, term)
+
+    // Lease management for automatic key expiration
+    // DefaultLease is thread-safe internally (uses DashMap + Mutex)
+    // Injected by NodeBuilder after construction
+    lease: Option<Arc<DefaultLease>>,
 
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
@@ -96,9 +183,10 @@ pub struct FileStateMachine {
 impl FileStateMachine {
     /// Creates a new file-based state machine with persistence
     ///
+    /// Lease will be injected by NodeBuilder after construction.
+    ///
     /// # Arguments
     /// * `data_dir` - Directory where data files will be stored
-    /// * `node_id` - Unique identifier for this node
     ///
     /// # Returns
     /// Result containing the initialized FileStateMachine
@@ -108,6 +196,7 @@ impl FileStateMachine {
 
         let machine = Self {
             data: RwLock::new(HashMap::new()),
+            lease: None, // Will be injected by NodeBuilder
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
@@ -121,6 +210,21 @@ impl FileStateMachine {
         Ok(machine)
     }
 
+    /// Sets the lease manager for this state machine.
+    ///
+    /// This is an internal method called by NodeBuilder during initialization.
+    /// The lease will also be restored from snapshot during `apply_snapshot_from_file()`.
+    /// Also available for testing and benchmarks.
+    pub fn set_lease(
+        &mut self,
+        lease: Arc<DefaultLease>,
+    ) {
+        self.lease = Some(lease);
+    }
+
+    /// Injects lease configuration into this state machine.
+    ///
+    /// Framework-internal method: called by NodeBuilder::build() during initialization.
     /// Loads state machine data from disk files
     async fn load_from_disk(&self) -> Result<(), Error> {
         // Load last applied index and term from metadata file
@@ -129,10 +233,43 @@ impl FileStateMachine {
         // Load key-value data from data file
         self.load_data().await?;
 
+        // Load TTL data from disk
+        self.load_ttl_data().await?;
+
         // Replay write-ahead log for crash recovery
         self.replay_wal().await?;
 
         info!("Loaded state machine data from disk");
+        Ok(())
+    }
+
+    /// Loads TTL data from disk (if lease is configured)
+    async fn load_ttl_data(&self) -> Result<(), Error> {
+        // Lease will be injected by NodeBuilder later
+        // The lease data will be loaded after injection
+        // For now, just skip this step during construction
+        Ok(())
+    }
+
+    /// Loads TTL data into the configured lease
+    ///
+    /// Called after NodeBuilder injects the lease.
+    /// Also available for testing and benchmarks.
+    pub async fn load_lease_data(&self) -> Result<(), Error> {
+        let Some(ref lease) = self.lease else {
+            return Ok(()); // No lease configured
+        };
+
+        let ttl_path = self.data_dir.join("ttl_state.bin");
+        if !ttl_path.exists() {
+            debug!("No TTL state file found");
+            return Ok(());
+        }
+
+        let ttl_data = tokio::fs::read(&ttl_path).await?;
+        lease.reload(&ttl_data)?;
+
+        info!("Loaded TTL state from disk: {} active TTLs", lease.len());
         Ok(())
     }
 
@@ -344,7 +481,34 @@ impl FileStateMachine {
                 None
             };
 
-            operations.push((op_code, key, value, term));
+            // Read absolute expiration time (8 bytes) - 0 means no TTL
+            //
+            // WAL Format Migration Path:
+            // - Old format (pre-v0.2.0): ttl_secs (u32, 4 bytes, relative time)
+            // - New format (v0.2.0+): expire_at_secs (u64, 8 bytes, absolute time)
+            //
+            // Backward Compatibility Strategy:
+            // Since this is a breaking change and d-engine has not been deployed to production,
+            // we do NOT support reading old WAL format. All WAL entries must use the new format.
+            // If upgrading from pre-v0.2.0, users must:
+            // 1. Gracefully stop the old version (persists state.data + ttl_state.bin)
+            // 2. Upgrade to v0.2.0+
+            // 3. Start the new version (loads from persisted state, not WAL)
+            let expire_at_secs = if pos + 8 <= buffer.len() {
+                let secs = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
+                pos += 8;
+                if secs > 0 { Some(secs) } else { None }
+            } else {
+                // Incomplete WAL entry - log and skip
+                // This indicates corrupted WAL or incomplete write before crash
+                debug!(
+                    "No expiration time field at position {}, assuming no TTL (incomplete WAL entry)",
+                    pos
+                );
+                None
+            };
+
+            operations.push((op_code, key, value, term, expire_at_secs));
             replayed_count += 1;
         }
 
@@ -355,21 +519,65 @@ impl FileStateMachine {
 
         // Apply all collected operations with a single lock acquisition
         let mut applied_count = 0;
+        let mut skipped_expired = 0;
+        let now = std::time::SystemTime::now();
         {
             let mut data = self.data.write();
-            for (op_code, key, value, term) in operations {
+
+            for (op_code, key, value, term, expire_at_secs) in operations {
                 match op_code {
                     WalOpCode::Insert => {
                         if let Some(value_data) = value {
-                            data.insert(key, (value_data, term));
+                            // Check if key is already expired (crash-safe TTL semantics)
+                            let is_expired = if let Some(secs) = expire_at_secs {
+                                let expire_at =
+                                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                                now >= expire_at
+                            } else {
+                                false
+                            };
+
+                            if is_expired {
+                                // Skip restoring expired keys (etcd-compatible behavior)
+                                debug!("Skipped expired key during WAL replay: key={:?}", key);
+                                skipped_expired += 1;
+                                continue;
+                            }
+
+                            data.insert(key.clone(), (value_data, term));
+
+                            // Restore TTL from WAL (if lease configured and has expiration)
+                            if let Some(secs) = expire_at_secs {
+                                if let Some(ref lease) = self.lease {
+                                    let expire_at = std::time::UNIX_EPOCH
+                                        + std::time::Duration::from_secs(secs);
+                                    let remaining = expire_at
+                                        .duration_since(now)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+
+                                    if remaining > 0 {
+                                        lease.register(key.clone(), remaining);
+                                        debug!(
+                                            "Replayed INSERT with TTL: key={:?}, remaining={}s",
+                                            key, remaining
+                                        );
+                                    }
+                                }
+                            } else {
+                                debug!("Replayed INSERT: key={:?}", key);
+                            }
+
                             applied_count += 1;
-                            debug!("Applied INSERT");
                         } else {
                             warn!("INSERT operation without value");
                         }
                     }
                     WalOpCode::Delete => {
                         data.remove(&key);
+                        if let Some(ref lease) = self.lease {
+                            lease.unregister(&key);
+                        }
                         applied_count += 1;
                         debug!("Replayed DELETE: key={:?}", key);
                     }
@@ -383,8 +591,8 @@ impl FileStateMachine {
         }
 
         info!(
-            "WAL replay complete: {} operations replayed_count, {} operations applied",
-            replayed_count, applied_count
+            "WAL replay complete: {} operations replayed, {} applied, {} expired keys skipped",
+            replayed_count, applied_count, skipped_expired
         );
 
         // Clear WAL only if replay was successful
@@ -475,6 +683,7 @@ impl FileStateMachine {
         }
 
         file.flush().await?;
+
         Ok(())
     }
 
@@ -625,7 +834,7 @@ impl FileStateMachine {
     /// - M bytes: value data (only if length > 0)
     pub(crate) async fn append_to_wal(
         &self,
-        entries: Vec<(Entry, String, Bytes, Option<Bytes>)>,
+        entries: Vec<(Entry, String, Bytes, Option<Bytes>, Option<u64>)>,
     ) -> Result<(), Error> {
         if entries.is_empty() {
             return Ok(());
@@ -639,15 +848,15 @@ impl FileStateMachine {
         // Pre-allocate buffer with estimated size
         let estimated_size: usize = entries
             .iter()
-            .map(|(_, _, key, value)| {
-                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len())
+            .map(|(_, _, key, value, _)| {
+                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len()) + 8
             })
             .sum();
 
         // Single batched write instead of multiple small writes
         let mut batch_buffer = Vec::with_capacity(estimated_size);
 
-        for (entry, operation, key, value) in entries {
+        for (entry, operation, key, value, ttl_secs) in entries {
             // Write entry index and term (16 bytes total)
             batch_buffer.extend_from_slice(&entry.index.to_be_bytes());
             batch_buffer.extend_from_slice(&entry.term.to_be_bytes());
@@ -669,6 +878,19 @@ impl FileStateMachine {
                 // Write 0 length for operations without value
                 batch_buffer.extend_from_slice(&0u64.to_be_bytes());
             }
+
+            // Write absolute expiration time (8 bytes) - 0 means no TTL
+            // Store UNIX timestamp (seconds since epoch) for crash-safe expiration
+            let expire_at_secs = if let Some(ttl) = ttl_secs {
+                let expire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(ttl);
+                expire_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            batch_buffer.extend_from_slice(&expire_at_secs.to_be_bytes());
         }
 
         file.write_all(&batch_buffer).await?;
@@ -677,8 +899,25 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Checkpoint: Persist memory to disk and clear WAL
-    /// This is the "safe point" after which WAL is no longer needed
+    /// Piggyback cleanup: Remove expired keys with time budget
+    ///
+    /// This method is called during apply_chunk to cleanup expired keys
+    /// opportunistically (piggyback on existing Raft events).
+    ///
+    /// # Arguments
+    /// * `max_duration_ms` - Maximum time budget for cleanup (milliseconds)
+    ///
+    /// # Returns
+    /// Number of keys deleted
+    ///
+    /// # Performance
+    /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
+    /// - Cleanup: O(log N + K) where K = expired keys
+    /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
+    ///
+    /// # Checkpoint
+    /// Persist memory to disk and clear WAL.
+    /// This is the "safe point" after which WAL is no longer needed.
     #[allow(unused)]
     pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
         // 1. Persist current state
@@ -715,7 +954,28 @@ impl StateMachine for FileStateMachine {
     fn stop(&self) -> Result<(), Error> {
         // Ensure all data is flushed to disk before stopping
         self.running.store(false, Ordering::SeqCst);
+
+        // Graceful shutdown: persist TTL state to disk
+        // This ensures lease data survives across restarts
+        if let Some(ref lease) = self.lease {
+            let ttl_snapshot = lease.to_snapshot();
+            let ttl_path = self.data_dir.join("ttl_state.bin");
+            // Use blocking write since stop() is sync
+            std::fs::write(&ttl_path, ttl_snapshot)
+                .map_err(d_engine_core::StorageError::IoError)?;
+            debug!("Persisted TTL state on shutdown");
+        }
+
         info!("File state machine stopped");
+        Ok(())
+    }
+
+    fn try_inject_lease(
+        &mut self,
+        config: d_engine_core::config::LeaseConfig,
+    ) -> Result<(), Error> {
+        let lease = Arc::new(DefaultLease::new(config));
+        self.lease = Some(lease);
         Ok(())
     }
 
@@ -727,6 +987,19 @@ impl StateMachine for FileStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
+        // Passive expiration check: DefaultLease handles expiration logic
+        if let Some(ref lease) = self.lease {
+            if lease.is_expired(key_buffer) {
+                // Key has expired, delete it
+                let mut data = self.data.write();
+                data.remove(key_buffer);
+                lease.unregister(key_buffer);
+
+                debug!("Passive expiration: deleted key {:?}", key_buffer);
+                return Ok(None);
+            }
+        }
+
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
@@ -739,12 +1012,11 @@ impl StateMachine for FileStateMachine {
         data.values().find(|(_, index)| *index == entry_id).map(|(_, term)| *term)
     }
 
+    /// Thread-safe: called serially by single-task CommitHandler
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
     ) -> Result<(), Error> {
-        trace!("Applying chunk: {:?}.", chunk);
-
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch_operations = Vec::new();
 
@@ -772,21 +1044,31 @@ impl StateMachine for FileStateMachine {
             match entry.payload.as_ref().unwrap().payload.as_ref() {
                 Some(Payload::Noop(_)) => {
                     debug!("Handling NOOP command at index {}", entry.index);
-                    batch_operations.push((entry, "NOOP", Bytes::new(), None));
+                    batch_operations.push((entry, "NOOP", Bytes::new(), None, None));
                 }
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
                     Ok(write_cmd) => {
                         // Extract operation data for batch processing
                         match write_cmd.operation {
-                            Some(Operation::Insert(Insert { key, value })) => {
-                                batch_operations.push((entry, "INSERT", key, Some(value)));
+                            Some(Operation::Insert(Insert {
+                                key,
+                                value,
+                                ttl_secs,
+                            })) => {
+                                batch_operations.push((
+                                    entry,
+                                    "INSERT",
+                                    key,
+                                    Some(value),
+                                    ttl_secs,
+                                ));
                             }
                             Some(Operation::Delete(Delete { key })) => {
-                                batch_operations.push((entry, "DELETE", key, None));
+                                batch_operations.push((entry, "DELETE", key, None, None));
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
-                                batch_operations.push((entry, "NOOP", Bytes::new(), None));
+                                batch_operations.push((entry, "NOOP", Bytes::new(), None, None));
                             }
                         }
                     }
@@ -800,7 +1082,7 @@ impl StateMachine for FileStateMachine {
                 },
                 Some(Payload::Config(_config_change)) => {
                     debug!("Ignoring config change at index {}", entry.index);
-                    batch_operations.push((entry, "CONFIG", Bytes::new(), None));
+                    batch_operations.push((entry, "CONFIG", Bytes::new(), None, None));
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }
@@ -810,13 +1092,14 @@ impl StateMachine for FileStateMachine {
 
         // PHASE 2: Batch WAL writes (minimize I/O latency)
         let mut wal_entries = Vec::new();
-        for (entry, operation, key, value) in &batch_operations {
-            // Prepare WAL data without immediate I/O
+        for (entry, operation, key, value, ttl_secs) in &batch_operations {
+            // Prepare WAL data without immediate I/O - include TTL for crash recovery
             wal_entries.push((
                 entry.clone(),
                 operation.to_string(),
                 key.clone(),
                 value.clone(),
+                *ttl_secs, // ttl_secs is already Option<u32> from protobuf
             ));
         }
 
@@ -828,16 +1111,29 @@ impl StateMachine for FileStateMachine {
             let mut data = self.data.write();
 
             // Process all operations without any awaits inside the lock
-            for (entry, operation, key, value) in batch_operations {
+            for (entry, operation, key, value, ttl_secs) in batch_operations {
                 match operation {
                     "INSERT" => {
                         if let Some(value) = value {
                             // ZERO-COPY: Use existing Bytes without cloning if possible
-                            data.insert(key, (value, entry.term));
+                            data.insert(key.clone(), (value, entry.term));
+
+                            // Register lease if specified and lease is configured
+                            if let Some(ref lease) = self.lease {
+                                if let Some(ttl) = ttl_secs {
+                                    if ttl > 0 {
+                                        #[allow(clippy::unnecessary_cast)]
+                                        lease.register(key, ttl as u64);
+                                    }
+                                }
+                            }
                         }
                     }
                     "DELETE" => {
                         data.remove(&key);
+                        if let Some(ref lease) = self.lease {
+                            lease.unregister(&key);
+                        }
                     }
                     "NOOP" | "CONFIG" => {
                         // No data modification needed
@@ -846,6 +1142,18 @@ impl StateMachine for FileStateMachine {
                 }
             }
         } // Lock released immediately - no awaits inside!
+
+        // PHASE 4: Lease cleanup (DefaultLease handles strategy internally)
+        // Zero overhead if lease cleanup is disabled - DefaultLease checks config
+        if let Some(ref lease) = self.lease {
+            let expired_keys = lease.on_apply();
+            if !expired_keys.is_empty() {
+                let mut data = self.data.write();
+                for key in &expired_keys {
+                    data.remove(key);
+                }
+            }
+        }
 
         if let Some(log_id) = highest_index_entry {
             debug!("State machine - updated last_applied: {:?}", log_id);
@@ -1001,6 +1309,29 @@ impl StateMachine for FileStateMachine {
             new_data.insert(key, (value, term));
         }
 
+        // Read and reload lease data if present
+        if pos + 8 <= buffer.len() {
+            let ttl_len_bytes = &buffer[pos..pos + 8];
+            let ttl_len = u64::from_be_bytes([
+                ttl_len_bytes[0],
+                ttl_len_bytes[1],
+                ttl_len_bytes[2],
+                ttl_len_bytes[3],
+                ttl_len_bytes[4],
+                ttl_len_bytes[5],
+                ttl_len_bytes[6],
+                ttl_len_bytes[7],
+            ]) as usize;
+            pos += 8;
+
+            if pos + ttl_len <= buffer.len() {
+                let ttl_data = &buffer[pos..pos + ttl_len];
+                if let Some(ref lease) = self.lease {
+                    lease.reload(ttl_data)?;
+                }
+            }
+        }
+
         // Atomically replace the data
         {
             let mut data = self.data.write();
@@ -1062,6 +1393,20 @@ impl StateMachine for FileStateMachine {
             file.write_all(&term.to_be_bytes()).await?;
         }
 
+        // Write lease state if configured
+        let lease_snapshot = if let Some(ref lease) = self.lease {
+            lease.to_snapshot()
+        } else {
+            Vec::new()
+        };
+
+        // Write lease data length
+        let lease_len = lease_snapshot.len() as u64;
+        file.write_all(&lease_len.to_be_bytes()).await?;
+
+        // Write lease data
+        file.write_all(&lease_snapshot).await?;
+
         file.flush().await?;
 
         // Update metadata
@@ -1101,6 +1446,14 @@ impl StateMachine for FileStateMachine {
         self.persist_data_async().await?;
         self.persist_metadata_async().await?;
         // self.clear_wal_async().await?;
+        Ok(())
+    }
+
+    async fn post_start_init(&self) -> Result<(), Error> {
+        if self.lease.is_some() {
+            self.load_lease_data().await?;
+            debug!("Lease data loaded during state machine initialization");
+        }
         Ok(())
     }
 

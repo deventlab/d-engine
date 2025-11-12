@@ -47,10 +47,8 @@ async fn main() {
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
         .state_machine(state_machine)
-        .build()
-        .start_rpc_server()
+        .start_server()
         .await
-        .ready()
         .expect("start node failed.");
 
 

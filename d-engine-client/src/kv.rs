@@ -80,6 +80,58 @@ impl KvClient {
         }
     }
 
+    /// Stores a value with TTL (time-to-live) and strong consistency
+    ///
+    /// Key will automatically expire and be deleted after ttl_secs seconds.
+    ///
+    /// # Arguments
+    /// * `key` - The key to store
+    /// * `value` - The value to store
+    /// * `ttl_secs` - Time-to-live in seconds
+    ///
+    /// # Errors
+    /// - [`crate::ClientApiError::Network`] on network failures
+    /// - [`crate::ClientApiError::Protocol`] for protocol errors
+    /// - [`crate::ClientApiError::Storage`] for server-side storage errors
+    pub async fn put_with_ttl(
+        &self,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+        ttl_secs: u64,
+    ) -> std::result::Result<(), ClientApiError> {
+        let _timer = ScopedTimer::new("client::put_with_ttl");
+
+        let client_inner = self.client_inner.load();
+
+        // Build request with TTL
+        let mut commands = Vec::new();
+        let client_command_insert = WriteCommand::insert_with_ttl(
+            Bytes::copy_from_slice(key.as_ref()),
+            Bytes::copy_from_slice(value.as_ref()),
+            ttl_secs,
+        );
+        commands.push(client_command_insert);
+
+        let request = ClientWriteRequest {
+            client_id: client_inner.client_id,
+            commands,
+        };
+
+        let mut client = self.make_leader_client().await?;
+        // Send write request
+        match client.handle_client_write(request).await {
+            Ok(response) => {
+                debug!("[:KvClient:put_with_ttl] response: {:?}", response);
+                let client_response = response.get_ref();
+                client_response.validate_error()
+            }
+            Err(status) => {
+                error!("[:KvClient:put_with_ttl] status: {:?}", status);
+                Err(status.into())
+            }
+        }
+    }
+
     /// Deletes a key with strong consistency guarantees
     ///
     /// Permanently removes the specified key and its associated value from the store.

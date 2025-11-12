@@ -111,7 +111,7 @@ async fn handle_read(
 
     let result = client
         .kv()
-        .get_with_policy(safe_kv(key), Some(policy.into()))
+        .get_with_policy(safe_kv(key), Some(policy))
         .await
         .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {e:?}"))?;
 

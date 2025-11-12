@@ -1,0 +1,89 @@
+name: Performance Benchmarks
+
+# Run benchmarks on a schedule and for important changes
+on:
+  # Run weekly on Sunday at 2 AM UTC
+  schedule:
+    - cron: "0 2 * * 0"
+
+  # Allow manual triggering for on-demand performance testing
+  workflow_dispatch:
+
+  # Run on pushes to main branch that affect performance-critical code
+  push:
+    branches:
+      - main
+    paths:
+      - "d-engine-server/src/storage/**"
+      - "d-engine-server/benches/**"
+      - "d-engine-core/src/**"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+jobs:
+  benchmark:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for performance comparison
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Cache key includes benchmark to avoid interference with test cache
+          key: benchmark-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run benchmarks
+        run: |
+          echo "========================================="
+          echo "Running d-engine Performance Benchmarks"
+          echo "========================================="
+          echo ""
+          echo "Performance Targets:"
+          echo "  • Without TTL: < 10ns overhead"
+          echo "  • With TTL passive check: < 50ns overhead"
+          echo "  • Piggyback cleanup: < 1ms"
+          echo ""
+
+          # Run benchmarks and save output
+          cargo bench --package d-engine-server 2>&1 | tee benchmark_output.txt
+
+          echo ""
+          echo "✅ Benchmarks completed successfully"
+
+      - name: Upload detailed results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            target/criterion/
+            benchmark_output.txt
+          retention-days: 30
+
+      - name: Performance summary
+        run: |
+          echo "========================================="
+          echo "Performance Benchmark Summary"
+          echo "========================================="
+          echo ""
+          echo "📊 Benchmark results uploaded as artifacts"
+          echo ""
+          echo "To view detailed results:"
+          echo "  1. Download the artifact"
+          echo "  2. Open target/criterion/report/index.html in your browser"
+          echo ""
+          echo "✅ Performance monitoring complete"

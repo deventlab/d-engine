@@ -357,6 +357,9 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_save_hard_state().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
+    // Lease injection support (framework-internal feature)
+    mock.expect_try_inject_lease().returning(|_| Ok(()));
+
     mock
 }
 

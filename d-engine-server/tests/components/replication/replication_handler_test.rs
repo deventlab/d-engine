@@ -806,12 +806,14 @@ fn test_client_command_to_entry_payloads_case1() {
     let commands = vec![
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
+                ttl_secs: None,
                 key: Bytes::from(b"key1".to_vec()),
                 value: Bytes::from(b"value1".to_vec()),
             })),
         },
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
+                ttl_secs: None,
                 key: Bytes::from(b"key2".to_vec()),
                 value: Bytes::from(b"value2".to_vec()),
             })),
@@ -829,7 +831,7 @@ fn test_client_command_to_entry_payloads_case1() {
         let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
-            Some(Operation::Insert(Insert { key, value }))
+            Some(Operation::Insert(Insert { key, value, ttl_secs: _ }))
             if key == b"key1".as_ref() && value == b"value1".as_ref()
         ));
     } else {
@@ -841,7 +843,7 @@ fn test_client_command_to_entry_payloads_case1() {
         let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
-            Some(Operation::Insert(Insert { key, value }))
+            Some(Operation::Insert(Insert { key, value, ttl_secs: _ }))
             if key == b"key2".as_ref() && value == b"value2".as_ref()
         ));
     } else {

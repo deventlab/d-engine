@@ -56,6 +56,116 @@ async fn test_put_success() {
 
 #[tokio::test]
 #[traced_test]
+async fn test_put_with_ttl_success() {
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_client_write_mock_server(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        ClientResponse::write_success(),
+    )
+    .await
+    .unwrap();
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+
+    let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+        .await
+        .expect("Should create connection pool");
+
+    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+        pool,
+        client_id: 123,
+        config,
+        endpoints,
+    })));
+
+    let key = "ttl_key".to_string().into_bytes();
+    let value = "ttl_value".to_string().into_bytes();
+    let ttl_secs = 3600; // 1 hour
+
+    let result = client.put_with_ttl(key, value, ttl_secs).await;
+    println!("Result: {result:?}");
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_put_with_ttl_failure() {
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_client_write_mock_server(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        ClientResponse::client_error(ErrorCode::ConnectionTimeout),
+    )
+    .await
+    .unwrap();
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+
+    let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+        .await
+        .expect("Should create connection pool");
+
+    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+        pool,
+        client_id: 123,
+        config,
+        endpoints,
+    })));
+
+    let key = "ttl_key".to_string().into_bytes();
+    let value = "ttl_value".to_string().into_bytes();
+    let ttl_secs = 3600;
+
+    let result = client.put_with_ttl(key, value, ttl_secs).await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), ErrorCode::ConnectionTimeout);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_put_with_zero_ttl() {
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_client_write_mock_server(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        ClientResponse::write_success(),
+    )
+    .await
+    .unwrap();
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+
+    let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+        .await
+        .expect("Should create connection pool");
+
+    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+        pool,
+        client_id: 123,
+        config,
+        endpoints,
+    })));
+
+    let key = "no_ttl_key".to_string().into_bytes();
+    let value = "no_ttl_value".to_string().into_bytes();
+    let ttl_secs = 0; // Zero TTL should still succeed but key won't expire
+
+    let result = client.put_with_ttl(key, value, ttl_secs).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+#[traced_test]
 async fn test_put_failure() {
     let (_tx, rx) = oneshot::channel::<()>();
     let (_channel, port) = MockNode::simulate_client_write_mock_server(

@@ -60,10 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = NodeBuilder::new(None, graceful_rx)
         .storage_engine(storage_engine)
         .state_machine(state_machine)
-        .build()
-        .start_rpc_server()
+        .start_server()
         .await
-        .ready()
         .expect("Failed to start node");
 
     // Run node (blocks until shutdown)
