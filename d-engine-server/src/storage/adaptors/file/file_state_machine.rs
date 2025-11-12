@@ -25,27 +25,32 @@
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │ Value Length (8 bytes)│ Value Data (M bytes, if present)        │
 //! ├─────────────────────────────────────────────────────────────────┤
-//! │ TTL (4 bytes, 0 = no TTL)                                       │
+//! │ Expire At (8 bytes, 0 = no TTL, >0 = UNIX timestamp in seconds) │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ### Why TTL is Included in WAL
+//! ### TTL Semantics
 //!
-//! TTL metadata MUST be included in WAL for crash recovery correctness:
+//! d-engine uses **absolute expiration time**:
 //!
-//! **Scenario without TTL in WAL:**
-//! 1. Client inserts key="foo", value="bar", ttl=3600s
-//! 2. Operation written to WAL (without TTL field)
-//! 3. Node crashes before persist_data_async() completes
-//! 4. On restart, replay_wal() restores key="foo" from WAL
-//! 5. **BUG**: Key is restored but TTL manager has no expiration record
-//! 6. **Result**: Key becomes permanent (should expire in 3600s)
+//! - When a key is created with TTL, the system calculates: `expire_at = now() + ttl_secs`
+//! - WAL stores the **absolute expiration timestamp** (UNIX seconds since epoch)
+//! - After crash recovery, expired keys are **not restored** (checked during replay)
+//! - TTL does **not reset** on restart (crash-safe)
 //!
-//! **With TTL in WAL:**
-//! 1. WAL includes TTL field (4 bytes, 0 for no TTL)
-//! 2. On crash recovery, replay_wal() reads TTL from WAL
-//! 3. Calls `lease.register(key, ttl)` to restore expiration
-//! 4. **Result**: TTL semantics preserved across crashes
+//! **Example:**
+//! ```text
+//! T0:  PUT key="foo", ttl=10s → expire_at = T0 + 10 = T10 (stored in WAL)
+//! T5:  CRASH
+//! T12: RESTART
+//!      → Replay WAL: expire_at = T10 < T12 (already expired)
+//!      → Key is NOT restored (correctly expired)
+//! ```
+//!
+//! **Why absolute time in WAL:**
+//! 1. Ensures expired keys stay expired after crash (etcd-compatible)
+//! 2. Passive expiration (in get()) is crash-safe without WAL writes
+//! 3. No TTL reset on recovery (deterministic expiration)
 //!
 //! ### WAL Lifecycle
 //!
@@ -477,21 +482,34 @@ impl FileStateMachine {
                 None
             };
 
-            // Read TTL (4 bytes) - 0 means no TTL
-            let ttl_secs = if pos + 4 <= buffer.len() {
-                let ttl = u32::from_be_bytes(buffer[pos..pos + 4].try_into().unwrap());
-                pos += 4;
-                if ttl > 0 { Some(ttl) } else { None }
+            // Read absolute expiration time (8 bytes) - 0 means no TTL
+            //
+            // WAL Format Migration Path:
+            // - Old format (pre-v0.2.0): ttl_secs (u32, 4 bytes, relative time)
+            // - New format (v0.2.0+): expire_at_secs (u64, 8 bytes, absolute time)
+            //
+            // Backward Compatibility Strategy:
+            // Since this is a breaking change and d-engine has not been deployed to production,
+            // we do NOT support reading old WAL format. All WAL entries must use the new format.
+            // If upgrading from pre-v0.2.0, users must:
+            // 1. Gracefully stop the old version (persists state.data + ttl_state.bin)
+            // 2. Upgrade to v0.2.0+
+            // 3. Start the new version (loads from persisted state, not WAL)
+            let expire_at_secs = if pos + 8 <= buffer.len() {
+                let secs = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
+                pos += 8;
+                if secs > 0 { Some(secs) } else { None }
             } else {
-                // Backward compatibility: if no TTL field, assume no TTL
+                // Incomplete WAL entry - log and skip
+                // This indicates corrupted WAL or incomplete write before crash
                 debug!(
-                    "No TTL field at position {}, assuming no TTL (backward compatibility)",
+                    "No expiration time field at position {}, assuming no TTL (incomplete WAL entry)",
                     pos
                 );
                 None
             };
 
-            operations.push((op_code, key, value, term, ttl_secs));
+            operations.push((op_code, key, value, term, expire_at_secs));
             replayed_count += 1;
         }
 
@@ -502,20 +520,50 @@ impl FileStateMachine {
 
         // Apply all collected operations with a single lock acquisition
         let mut applied_count = 0;
+        let mut skipped_expired = 0;
+        let now = std::time::SystemTime::now();
         {
             let mut data = self.data.write();
 
-            for (op_code, key, value, term, ttl_secs) in operations {
+            for (op_code, key, value, term, expire_at_secs) in operations {
                 match op_code {
                     WalOpCode::Insert => {
                         if let Some(value_data) = value {
+                            // Check if key is already expired (crash-safe TTL semantics)
+                            let is_expired = if let Some(secs) = expire_at_secs {
+                                let expire_at =
+                                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                                now >= expire_at
+                            } else {
+                                false
+                            };
+
+                            if is_expired {
+                                // Skip restoring expired keys (etcd-compatible behavior)
+                                debug!("Skipped expired key during WAL replay: key={:?}", key);
+                                skipped_expired += 1;
+                                continue;
+                            }
+
                             data.insert(key.clone(), (value_data, term));
 
-                            // Restore TTL from WAL (if lease configured)
-                            if let Some(ttl) = ttl_secs {
+                            // Restore TTL from WAL (if lease configured and has expiration)
+                            if let Some(secs) = expire_at_secs {
                                 if let Some(ref lease) = self.lease {
-                                    lease.register(key.clone(), ttl as u64);
-                                    debug!("Replayed INSERT with TTL: key={:?}, ttl={}s", key, ttl);
+                                    let expire_at = std::time::UNIX_EPOCH
+                                        + std::time::Duration::from_secs(secs);
+                                    let remaining = expire_at
+                                        .duration_since(now)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+
+                                    if remaining > 0 {
+                                        lease.register(key.clone(), remaining);
+                                        debug!(
+                                            "Replayed INSERT with TTL: key={:?}, remaining={}s",
+                                            key, remaining
+                                        );
+                                    }
                                 }
                             } else {
                                 debug!("Replayed INSERT: key={:?}", key);
@@ -544,8 +592,8 @@ impl FileStateMachine {
         }
 
         info!(
-            "WAL replay complete: {} operations replayed_count, {} operations applied",
-            replayed_count, applied_count
+            "WAL replay complete: {} operations replayed, {} applied, {} expired keys skipped",
+            replayed_count, applied_count, skipped_expired
         );
 
         // Clear WAL only if replay was successful
@@ -802,7 +850,7 @@ impl FileStateMachine {
         let estimated_size: usize = entries
             .iter()
             .map(|(_, _, key, value, _)| {
-                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len()) + 4
+                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len()) + 8
             })
             .sum();
 
@@ -832,10 +880,18 @@ impl FileStateMachine {
                 batch_buffer.extend_from_slice(&0u64.to_be_bytes());
             }
 
-            // Write TTL (4 bytes) - 0 means no TTL
-            // Convert u64 to u32 for space efficiency (4 bytes is enough for TTL in seconds)
-            let ttl_value = ttl_secs.unwrap_or(0).min(u32::MAX as u64) as u32;
-            batch_buffer.extend_from_slice(&ttl_value.to_be_bytes());
+            // Write absolute expiration time (8 bytes) - 0 means no TTL
+            // Store UNIX timestamp (seconds since epoch) for crash-safe expiration
+            let expire_at_secs = if let Some(ttl) = ttl_secs {
+                let expire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(ttl);
+                expire_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            batch_buffer.extend_from_slice(&expire_at_secs.to_be_bytes());
         }
 
         file.write_all(&batch_buffer).await?;

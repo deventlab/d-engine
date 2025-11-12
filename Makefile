@@ -29,7 +29,7 @@
 CARGO ?= cargo
 
 # Rust logging level for tests
-RUST_LOG_LEVEL ?= debug
+RUST_LOG_LEVEL ?= d_engine_server=debug,d_engine_core=debug,d_engine_client=debug,d_engine=debug
 
 # Backtrace level for debugging
 RUST_BACKTRACE ?= 1

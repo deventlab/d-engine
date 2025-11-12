@@ -554,9 +554,21 @@ impl LeaseConfig {
         }
 
         // Validate piggyback_frequency
+        //
+        // Range rationale (10-10000):
+        // - Lower bound (10): Prevents excessive cleanup overhead. Cleanup every <10 applies
+        //   would waste CPU on frequent empty scans and impact Raft apply latency.
+        // - Upper bound (10000): Ensures timely cleanup. At high write rates (1K/sec),
+        //   waiting >10K applies means ~10 seconds between cleanups, risking memory bloat
+        //   from accumulated expired keys.
+        //
+        // Design trade-off:
+        // - Too low: High cleanup overhead, lower throughput
+        // - Too high: Delayed cleanup, higher memory usage
+        // - Typical: 100 (cleanup every 100 applies, ~100ms at 1K writes/sec)
         if !(10..=10000).contains(&self.piggyback_frequency) {
             return Err(Error::Config(ConfigError::Message(format!(
-                "piggyback_frequency must be between 10 and 10000, got {}",
+                "piggyback_frequency must be between 10 and 10000, got {} (see validation comments for rationale)",
                 self.piggyback_frequency
             ))));
         }

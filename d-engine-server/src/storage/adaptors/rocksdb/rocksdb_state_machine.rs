@@ -67,42 +67,8 @@ impl RocksDBStateMachine {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db_path = path.as_ref().to_path_buf();
 
-        // Configure high-performance RocksDB options
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        // Memory and write optimization
-        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
-        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
-        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
-
-        // Compression optimization
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
-
-        // WAL-related optimizations
-        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
-        opts.set_manual_wal_flush(true); // manually control WAL flush
-
-        opts.set_use_fsync(false);
-
-        // Performance Tuning
-        opts.set_max_background_jobs(4); // Number of background jobs
-        opts.set_max_open_files(5000); // Maximum number of open files
-        opts.set_use_direct_io_for_flush_and_compaction(true); // Direct I/O
-        opts.set_use_direct_reads(true); // Direct reads
-
-        // Leveled Compaction Configuration
-        opts.set_level_compaction_dynamic_level_bytes(true);
-        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB base file size
-        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB base level size
-
-        // Block cache configuration (shared)
-        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB block cache
-        opts.set_row_cache(&cache);
-
+        // Configure RocksDB options using shared configuration
+        let opts = Self::configure_db_options();
         let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
 
         let db =
@@ -136,12 +102,26 @@ impl RocksDBStateMachine {
         self.lease = Some(lease);
     }
 
-    /// Injects lease configuration into this state machine.
+    // Injects lease configuration into this state machine.
+    //
+    // Framework-internal method: called by NodeBuilder::build() during initialization.
+    // Opens RocksDB with the standard configuration
+    // ========== Private helper methods ==========
+
+    /// Configure high-performance RocksDB options.
     ///
-    /// Framework-internal method: called by NodeBuilder::build() during initialization.
-    /// Opens RocksDB with the standard configuration
-    fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, Error> {
-        // Same options as new()
+    /// This shared configuration is used by both `new()` and `open_db()` to ensure
+    /// consistency between initial DB creation and snapshot restoration.
+    ///
+    /// # Configuration Details
+    ///
+    /// - **Memory**: 128MB write buffer, 4 max buffers, merge at 2
+    /// - **Compression**: LZ4 (fast), Zstd for bottommost (space-efficient)
+    /// - **WAL**: 1MB sync interval, manual flush, no fsync
+    /// - **Performance**: 4 background jobs, 5000 max open files, direct I/O
+    /// - **Compaction**: Dynamic level bytes, 64MB target file size, 256MB base level
+    /// - **Cache**: 128MB LRU block cache
+    fn configure_db_options() -> Options {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
@@ -149,15 +129,15 @@ impl RocksDBStateMachine {
         // Memory and write optimization
         opts.set_max_write_buffer_number(4);
         opts.set_min_write_buffer_number_to_merge(2);
-        opts.set_write_buffer_size(128 * 1024 * 1024);
+        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB
 
         // Compression optimization
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        opts.set_compression_options(-14, 0, 0, 0);
+        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
 
         // WAL-related optimizations
-        opts.set_wal_bytes_per_sync(1024 * 1024);
+        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
         opts.set_manual_wal_flush(true);
         opts.set_use_fsync(false);
 
@@ -169,13 +149,18 @@ impl RocksDBStateMachine {
 
         // Leveled Compaction Configuration
         opts.set_level_compaction_dynamic_level_bytes(true);
-        opts.set_target_file_size_base(64 * 1024 * 1024);
-        opts.set_max_bytes_for_level_base(256 * 1024 * 1024);
+        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB
+        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB
 
         // Block cache configuration
-        let cache = Cache::new_lru_cache(128 * 1024 * 1024);
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB
         opts.set_row_cache(&cache);
 
+        opts
+    }
+
+    fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, Error> {
+        let opts = Self::configure_db_options();
         let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
         DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()).into())
     }
@@ -709,7 +694,13 @@ impl StateMachine for RocksDBStateMachine {
             if ttl_path.exists() {
                 let ttl_data = tokio::fs::read(&ttl_path).await?;
                 lease.reload(&ttl_data)?;
-                info!("Lease state restored from snapshot");
+
+                // Persist TTL state to metadata CF to ensure consistency after restart
+                // Without this, a subsequent restart (non-snapshot) would lose TTL state
+                // because load_lease_data() reads from metadata CF, not ttl_state.bin
+                self.persist_ttl_metadata()?;
+
+                info!("Lease state restored from snapshot and persisted to metadata CF");
             } else {
                 warn!("No lease state found in snapshot");
             }

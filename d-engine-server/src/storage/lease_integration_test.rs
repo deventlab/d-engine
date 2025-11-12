@@ -413,6 +413,100 @@ mod file_state_machine_tests {
             assert_eq!(value, Some(Bytes::from("value")));
         }
     }
+
+    /// Test crash-safe TTL behavior: WAL replay skips expired keys
+    ///
+    /// This test verifies that when replaying WAL after a crash, keys with absolute
+    /// expiration times in the past are NOT restored to the state machine.
+    #[tokio::test]
+    async fn test_crash_safe_ttl_wal_replay_skips_expired() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+        let mut lease_config = d_engine_core::config::LeaseConfig::default();
+        lease_config.cleanup_strategy = "piggyback".to_string();
+
+        // Phase 1: Write keys with TTL to WAL (without persisting to state.data)
+        {
+            let sm = create_file_state_machine_with_lease(
+                state_machine_path.clone(),
+                lease_config.clone(),
+            )
+            .await;
+
+            // Insert key with 1 second TTL (will expire quickly)
+            let entry1 = create_insert_entry(1, 1, b"expired_key", b"value1", Some(1));
+            // Insert key with long TTL (won't expire during test)
+            let entry2 = create_insert_entry(2, 1, b"valid_key", b"value2", Some(3600));
+            // Insert key with no TTL
+            let entry3 = create_insert_entry(3, 1, b"permanent_key", b"value3", None);
+
+            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+
+            // Verify all keys exist immediately after write
+            assert_eq!(sm.get(b"expired_key").unwrap(), Some(Bytes::from("value1")));
+            assert_eq!(sm.get(b"valid_key").unwrap(), Some(Bytes::from("value2")));
+            assert_eq!(
+                sm.get(b"permanent_key").unwrap(),
+                Some(Bytes::from("value3"))
+            );
+
+            // Wait for expired_key TTL to expire
+            sleep(Duration::from_secs(2)).await;
+
+            // Verify expired_key is now expired (passive deletion)
+            assert_eq!(
+                sm.get(b"expired_key").unwrap(),
+                None,
+                "Key should be expired via passive deletion"
+            );
+
+            // Now manually delete state.data to force WAL replay on next startup
+            // This simulates a crash where state.data was not synced to disk
+            let data_path = state_machine_path.join("state.data");
+            if data_path.exists() {
+                std::fs::remove_file(&data_path).unwrap();
+            }
+
+            // Also clear TTL state to force clean replay
+            let ttl_path = state_machine_path.join("ttl_state.bin");
+            if ttl_path.exists() {
+                std::fs::remove_file(&ttl_path).unwrap();
+            }
+
+            // Drop state machine (WAL remains with absolute expiration times)
+            drop(sm);
+        }
+
+        // Phase 2: Restart and replay WAL
+        {
+            let sm = create_file_state_machine_with_lease(state_machine_path.clone(), lease_config)
+                .await;
+
+            // WAL replay should skip expired_key (crash-safe behavior)
+            // The absolute expiration time in WAL is in the past, so it should not be restored
+            assert_eq!(
+                sm.get(b"expired_key").unwrap(),
+                None,
+                "Expired key should NOT be restored from WAL"
+            );
+
+            // Valid key should be restored with remaining TTL
+            assert_eq!(
+                sm.get(b"valid_key").unwrap(),
+                Some(Bytes::from("value2")),
+                "Valid key should be restored from WAL"
+            );
+
+            // Permanent key should be restored
+            assert_eq!(
+                sm.get(b"permanent_key").unwrap(),
+                Some(Bytes::from("value3")),
+                "Permanent key should be restored from WAL"
+            );
+
+            sm.stop().unwrap();
+        }
+    }
 }
 
 #[cfg(all(test, feature = "rocksdb"))]

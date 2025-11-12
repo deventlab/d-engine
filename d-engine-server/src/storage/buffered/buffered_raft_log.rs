@@ -548,11 +548,6 @@ where
             node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
         );
 
-        trace!(
-            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
-            node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
-        );
-
         //TODO: if switch to UnboundedChannel?
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
         let entries = SkipMap::new();
@@ -863,8 +858,6 @@ where
             .filter_map(|idx| self.entries.get(idx).map(|e| e.value().clone()))
             .collect();
 
-        trace!("Collected {} entries for persistence", entries.len());
-
         // Persist to storage
         self.log_store.persist_entries(entries).await?;
 
@@ -930,7 +923,6 @@ where
         &self,
         entries: &[Entry],
     ) -> Result<()> {
-        trace!("persisting entries {:?}", entries);
         self.log_store.persist_entries(entries.to_vec()).await?;
 
         // Handle flush policy

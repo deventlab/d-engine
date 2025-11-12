@@ -11,8 +11,15 @@ All notable changes to this project will be documented in this file.
 - **TTL/Lease Support**: Implemented time-to-live (TTL) functionality with configurable cleanup strategies (piggyback, lazy, scheduled) for automatic key expiration
 - **Unified NodeBuilder API**: Simplified node startup with new `start_server()` method that combines `build()`, `start_rpc_server()`, and `ready()` into a single async call
 - **Improved State Machine Initialization**: Enhanced state machine lifecycle with `try_inject_lease()` and `post_start_init()` hooks for transparent lease configuration
+- **etcd-Compatible TTL Semantics**: TTL now uses absolute expiration time (compatible with etcd lease semantics) instead of relative TTL, ensuring correct behavior across restarts
 
 ### 🔄 Breaking Changes
+
+- **WAL Format Change (File-based State Machine)**: ⚠️ **CRITICAL BREAKING CHANGE**
+  - WAL entries now store absolute expiration time (`expire_at_secs: u64`) instead of relative TTL (`ttl_secs: u32`)
+  - This enables crash-safe TTL semantics and etcd-compatible lease behavior
+  - **Migration Required**: See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for upgrade instructions
+  - Existing WAL files from pre-v0.2.0 are **not compatible** and must be migrated
 
 - **NodeBuilder API**: `build().start_rpc_server().await.ready()` is now replaced with `.start_server().await`
   - See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for detailed migration instructions
@@ -27,15 +34,36 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Fixes
 
+- Fixed clippy warning: empty line after doc comments in RocksDB state machine
+- Fixed duplicate trace logging in BufferedRaftLog initialization
+- Fixed log level filtering: RUST_LOG now correctly limits to DEBUG level (no more TRACE spam in tests)
 - Fixed Zed editor clippy warnings in benchmark code
 - Fixed unused imports in test utilities
-- Fixed log level filtering configuration (RUST_LOG_LEVEL now applies to all crates)
+- Fixed crash-safety bug: snapshot restore now persists TTL metadata to RocksDB CF
+- Fixed WAL replay: expired entries are now correctly skipped during recovery
+
+### ⚡ Performance
+
+- **Benchmark Optimization**: Reduced TTL benchmark execution time by ~10x
+  - `worst_case_all_expired`: 213s → 20s (10.6x faster)
+  - `mixed_ttl_workload`: 200s → 20s (10x faster)
+  - `piggyback_high_frequency`: 200s → 20s (10x faster)
+  - Used `iter_batched` to separate setup from measurement
+  - Reduced sample size to 10 for tests with sleep operations
 
 ### ✨ Quality
 
 - All benchmarks pass clippy without warnings
 - TTL benchmarks validate cleanup performance targets
 - State machine benchmarks validate scaling characteristics
+- Added tests for crash-safe WAL replay behavior
+- Added tests for TTL persistence across snapshot restore
+
+### 🔧 Internal Improvements
+
+- Refactored RocksDB options configuration into `configure_db_options()` helper (DRY)
+- Removed high-frequency trace logs from hot paths to reduce noise
+- Improved test output clarity by filtering log levels correctly
 
 ---
 

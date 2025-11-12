@@ -160,6 +160,35 @@ impl DefaultLease {
 }
 
 impl Lease for DefaultLease {
+    /// Register a key with TTL (Time-To-Live).
+    ///
+    /// # TTL Semantics
+    ///
+    /// - **Absolute expiration time**: The expiration time is calculated as
+    ///   `expire_at = SystemTime::now() + Duration::from_secs(ttl_secs)` and stored internally.
+    /// - **Crash-safe**: The absolute expiration time survives node restarts. After crash recovery,
+    ///   expired keys remain expired (no TTL reset).
+    /// - **Persistent**: The expiration time is persisted to disk during snapshot generation
+    ///   and graceful shutdown.
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// T0:  register(key="foo", ttl=10) → expire_at = T0 + 10 = T10
+    /// T5:  CRASH
+    /// T12: RESTART
+    ///      → WAL replay: expire_at = T10 < T12 (already expired)
+    ///      → Key is NOT restored (correctly expired)
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to register expiration for
+    /// * `ttl_secs` - Time-to-live in seconds from now
+    ///
+    /// # Performance
+    ///
+    /// O(log N) - Acquires mutex and updates BTreeMap
     fn register(
         &self,
         key: Bytes,
@@ -180,6 +209,7 @@ impl Lease for DefaultLease {
         }
 
         // Calculate absolute expiration time
+        // This is stored in WAL and persisted to disk
         let expire_at = SystemTime::now() + Duration::from_secs(ttl_secs);
 
         // Insert into both indexes
