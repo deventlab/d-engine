@@ -25,3 +25,5 @@ pub use lease::DefaultLease;
 
 #[cfg(test)]
 mod lease_integration_test;
+#[cfg(test)]
+mod lease_unit_test;

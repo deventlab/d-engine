@@ -7,8 +7,8 @@
 //! - Deadline calculations
 
 use std::time::Duration;
-use tokio::time::sleep;
 use tokio::time::Instant;
+use tokio::time::sleep;
 
 use super::*;
 
@@ -29,29 +29,22 @@ async fn test_election_timer_init_within_range() {
 
     let now = Instant::now();
     let next_deadline = timer.next_deadline();
-    
+
     // Deadline should be in the future
-    assert!(
-        next_deadline > now,
-        "Next deadline should be in the future"
-    );
+    assert!(next_deadline > now, "Next deadline should be in the future");
 
     // Deadline should be within reasonable bounds (min-max millis from now)
     let elapsed = next_deadline - now;
     let min_duration = Duration::from_millis(min);
     let max_duration = Duration::from_millis(max);
-    
+
     assert!(
         elapsed >= min_duration,
-        "Elapsed time {:?} should be at least {:?}",
-        elapsed,
-        min_duration
+        "Elapsed time {elapsed:?} should be at least {min_duration:?}",
     );
     assert!(
         elapsed <= max_duration,
-        "Elapsed time {:?} should be at most {:?}",
-        elapsed,
-        max_duration
+        "Elapsed time {elapsed:?} should be at most {max_duration:?}",
     );
 }
 
@@ -64,17 +57,15 @@ async fn test_election_timer_init_within_range() {
 async fn test_election_timer_shows_randomness() {
     let (min, max) = (100u64, 200u64);
     let range = (min, max);
-    
-    let timers: Vec<_> = (0..5)
-        .map(|_| ElectionTimer::new(range))
-        .collect();
-    
+
+    let timers: Vec<_> = (0..5).map(|_| ElectionTimer::new(range)).collect();
+
     let deadlines: Vec<_> = timers.iter().map(|t| t.next_deadline()).collect();
-    
+
     // Check that not all deadlines are the same (randomness)
     let first = deadlines[0];
     let all_same = deadlines.iter().all(|&d| d == first);
-    
+
     // With random timing, it's extremely unlikely all are identical
     // This is a statistical test, but practically should always pass
     assert!(
@@ -92,7 +83,7 @@ async fn test_election_timer_shows_randomness() {
 #[tokio::test]
 async fn test_election_timer_not_expired_initially() {
     let timer = ElectionTimer::new((100u64, 200u64));
-    
+
     assert!(
         !timer.is_expired(),
         "Timer should not be expired immediately after creation"
@@ -108,10 +99,10 @@ async fn test_election_timer_not_expired_initially() {
 #[tokio::test]
 async fn test_election_timer_expired_after_timeout() {
     let timer = ElectionTimer::new((10u64, 20u64));
-    
+
     // Sleep longer than maximum possible timeout
     sleep(Duration::from_millis(50)).await;
-    
+
     assert!(
         timer.is_expired(),
         "Timer should be expired after timeout period"
@@ -130,19 +121,17 @@ async fn test_election_timer_expired_after_timeout() {
 async fn test_election_timer_reset() {
     let mut timer = ElectionTimer::new((100u64, 200u64));
     let old_deadline = timer.next_deadline();
-    
+
     // Small sleep to ensure some time passes
     sleep(Duration::from_millis(10)).await;
-    
+
     timer.reset();
     let new_deadline = timer.next_deadline();
-    
+
     // New deadline should be later than old one
     assert!(
         new_deadline > old_deadline,
-        "New deadline {:?} should be later than old deadline {:?}",
-        new_deadline,
-        old_deadline
+        "New deadline {new_deadline:?} should be later than old deadline {old_deadline:?}",
     );
 }
 
@@ -156,21 +145,17 @@ async fn test_election_timer_random_duration_bounds() {
     let (min, max) = (50u64, 150u64);
     let min_duration = Duration::from_millis(min);
     let max_duration = Duration::from_millis(max);
-    
+
     for _ in 0..100 {
         let duration = ElectionTimer::random_duration(min, max);
-        
+
         assert!(
             duration >= min_duration,
-            "Duration {:?} should be >= {:?}",
-            duration,
-            min_duration
+            "Duration {duration:?} should be >= {min_duration:?}",
         );
         assert!(
             duration < max_duration,
-            "Duration {:?} should be < {:?}",
-            duration,
-            max_duration
+            "Duration {duration:?} should be < {max_duration:?}",
         );
     }
 }
@@ -184,25 +169,23 @@ async fn test_election_timer_random_duration_bounds() {
 async fn test_election_timer_random_duration_distribution() {
     let (min, max) = (100u64, 200u64);
     let mut durations = Vec::new();
-    
+
     for _ in 0..100 {
         let duration = ElectionTimer::random_duration(min, max);
         durations.push(duration.as_millis() as u64);
     }
-    
+
     durations.sort();
-    
+
     // Get quartiles to check distribution
     let q1 = durations[24]; // 25th percentile
     let q3 = durations[74]; // 75th percentile
-    
+
     // With good randomness, q3 should be significantly > q1
     // This would fail if duration was always near min or always near max
     assert!(
         q3 > q1 + 10,
-        "Quartiles suggest good distribution: Q1={}, Q3={}",
-        q1,
-        q3
+        "Quartiles suggest good distribution: Q1={q1}, Q3={q3}",
     );
 }
 
@@ -219,18 +202,18 @@ async fn test_election_timer_random_duration_distribution() {
 async fn test_replication_timer_init() {
     let replication_timeout = 100u64;
     let batch_interval = 50u64;
-    
+
     let timer = ReplicationTimer::new(replication_timeout, batch_interval);
-    
+
     let now = Instant::now();
-    
+
     // Check replication deadline
     let replication_elapsed = timer.replication_deadline() - now;
     assert!(
         replication_elapsed >= Duration::from_millis(replication_timeout - 5),
         "Replication deadline should be close to timeout value"
     );
-    
+
     // Check batch deadline
     let batch_elapsed = timer.batch_deadline() - now;
     assert!(
@@ -248,17 +231,17 @@ async fn test_replication_timer_init() {
 #[tokio::test]
 async fn test_replication_timer_next_deadline_earlier() {
     let timer = ReplicationTimer::new(100u64, 50u64);
-    
+
     let replication = timer.replication_deadline();
     let batch = timer.batch_deadline();
     let next = timer.next_deadline();
-    
+
     // Batch is shorter, so next_deadline should equal batch
     assert_eq!(
         next, batch,
         "next_deadline should be the minimum (batch deadline)"
     );
-    
+
     assert!(
         next < replication,
         "Batch deadline should be earlier than replication deadline"
@@ -276,12 +259,12 @@ async fn test_replication_timer_next_deadline_earlier() {
 async fn test_replication_timer_reset_replication() {
     let mut timer = ReplicationTimer::new(100u64, 50u64);
     let old_deadline = timer.replication_deadline();
-    
+
     sleep(Duration::from_millis(10)).await;
-    
+
     timer.reset_replication();
     let new_deadline = timer.replication_deadline();
-    
+
     assert!(
         new_deadline > old_deadline,
         "New replication deadline should be later than old one"
@@ -299,12 +282,12 @@ async fn test_replication_timer_reset_replication() {
 async fn test_replication_timer_reset_batch() {
     let mut timer = ReplicationTimer::new(100u64, 50u64);
     let old_deadline = timer.batch_deadline();
-    
+
     sleep(Duration::from_millis(10)).await;
-    
+
     timer.reset_batch();
     let new_deadline = timer.batch_deadline();
-    
+
     assert!(
         new_deadline > old_deadline,
         "New batch deadline should be later than old one"
@@ -320,18 +303,15 @@ async fn test_replication_timer_reset_batch() {
 #[tokio::test]
 async fn test_replication_timer_is_expired() {
     let timer = ReplicationTimer::new(5u64, 5u64);
-    
+
     assert!(
         !timer.is_expired(),
         "Timer should not be expired immediately"
     );
-    
+
     sleep(Duration::from_millis(20)).await;
-    
-    assert!(
-        timer.is_expired(),
-        "Timer should be expired after timeout"
-    );
+
+    assert!(timer.is_expired(), "Timer should be expired after timeout");
 }
 
 /// Test: ReplicationTimer with equal timeout and interval
@@ -342,11 +322,11 @@ async fn test_replication_timer_is_expired() {
 #[tokio::test]
 async fn test_replication_timer_equal_timeouts() {
     let timer = ReplicationTimer::new(100u64, 100u64);
-    
+
     let replication = timer.replication_deadline();
     let batch = timer.batch_deadline();
     let next = timer.next_deadline();
-    
+
     // When equal, min will return one of them (implementation-dependent)
     assert_eq!(next, replication.min(batch));
 }
@@ -362,11 +342,11 @@ async fn test_replication_timer_equal_timeouts() {
 async fn test_replication_timer_reset_replication_independent() {
     let mut timer = ReplicationTimer::new(100u64, 50u64);
     let old_batch = timer.batch_deadline();
-    
+
     timer.reset_replication();
-    
+
     let new_batch = timer.batch_deadline();
-    
+
     // Batch deadline should not change when we only reset replication
     assert_eq!(
         old_batch, new_batch,
@@ -385,11 +365,11 @@ async fn test_replication_timer_reset_replication_independent() {
 async fn test_replication_timer_reset_batch_independent() {
     let mut timer = ReplicationTimer::new(100u64, 50u64);
     let old_replication = timer.replication_deadline();
-    
+
     timer.reset_batch();
-    
+
     let new_replication = timer.replication_deadline();
-    
+
     // Replication deadline should not change when we only reset batch
     assert_eq!(
         old_replication, new_replication,
