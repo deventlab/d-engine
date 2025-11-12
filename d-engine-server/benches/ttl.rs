@@ -106,7 +106,7 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
 
         // Register keys with very short TTL
         for i in 0..*expired_count {
-            let key = format!("key_ttl_{}", i);
+            let key = format!("key_ttl_{i}");
             lease.register(bytes::Bytes::from(key), 1); // 1 second TTL
         }
 
@@ -145,7 +145,7 @@ fn bench_ttl_registration(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             // Directly measure registration overhead
-            let key = format!("key_{}", counter);
+            let key = format!("key_{counter}");
             lease.register(bytes::Bytes::from(key), 3600);
             counter += 1;
             black_box(());
