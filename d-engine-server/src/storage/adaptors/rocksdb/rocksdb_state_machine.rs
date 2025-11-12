@@ -420,6 +420,14 @@ impl StateMachine for RocksDBStateMachine {
 
     fn stop(&self) -> Result<(), Error> {
         self.is_serving.store(false, Ordering::SeqCst);
+
+        // Graceful shutdown: persist TTL state to disk
+        // This ensures lease data survives across restarts
+        if let Err(e) = self.persist_ttl_metadata() {
+            error!("Failed to persist TTL metadata on shutdown: {:?}", e);
+            return Err(e);
+        }
+
         info!("RocksDB state machine stopped");
         Ok(())
     }
@@ -585,9 +593,6 @@ impl StateMachine for RocksDBStateMachine {
         if let Some(log_id) = highest_index_entry {
             self.update_last_applied(log_id);
         }
-
-        // Persist TTL state after applying changes
-        self.persist_ttl_metadata()?;
 
         Ok(())
     }

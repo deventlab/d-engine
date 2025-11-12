@@ -250,8 +250,16 @@ where
             if let Some(sm) = Arc::get_mut(&mut state_machine) {
                 sm.try_inject_lease(lease_config)?;
             } else {
-                // Arc has multiple references - cannot inject (shouldn't happen at this point)
-                debug!("Cannot inject lease: state machine Arc has multiple references");
+                // Arc has multiple references - this indicates a bug in builder usage
+                // State machine should be created fresh and passed directly to builder
+                error!(
+                    "CRITICAL: Cannot inject lease config - Arc<StateMachine> has multiple references. This is a builder API usage error."
+                );
+                return Err(d_engine_core::StorageError::StateMachineError(
+                    "State machine Arc must have single ownership when passed to builder"
+                        .to_string(),
+                )
+                .into());
             }
         }
 

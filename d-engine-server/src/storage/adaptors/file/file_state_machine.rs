@@ -51,7 +51,6 @@
 //!
 //! ```text
 //! apply_chunk() → append_to_wal() → [crash safe] → persist_data_async()
-//!                                                 → persist_ttl_data()
 //!                                                 → clear_wal_async()
 //! ```
 //!
@@ -638,21 +637,6 @@ impl FileStateMachine {
 
         file.flush().await?;
 
-        // Persist TTL data alongside state data
-        self.persist_ttl_data().await?;
-
-        Ok(())
-    }
-
-    /// Persists lease state to disk (if configured)
-    async fn persist_ttl_data(&self) -> Result<(), Error> {
-        if let Some(ref lease) = self.lease {
-            let ttl_snapshot = lease.to_snapshot();
-            let ttl_path = self.data_dir.join("ttl_state.bin");
-            tokio::fs::write(&ttl_path, ttl_snapshot).await?;
-        }
-
-        debug!("Persisted TTL state to disk");
         Ok(())
     }
 
@@ -915,6 +899,18 @@ impl StateMachine for FileStateMachine {
     fn stop(&self) -> Result<(), Error> {
         // Ensure all data is flushed to disk before stopping
         self.running.store(false, Ordering::SeqCst);
+
+        // Graceful shutdown: persist TTL state to disk
+        // This ensures lease data survives across restarts
+        if let Some(ref lease) = self.lease {
+            let ttl_snapshot = lease.to_snapshot();
+            let ttl_path = self.data_dir.join("ttl_state.bin");
+            // Use blocking write since stop() is sync
+            std::fs::write(&ttl_path, ttl_snapshot)
+                .map_err(d_engine_core::StorageError::IoError)?;
+            debug!("Persisted TTL state on shutdown");
+        }
+
         info!("File state machine stopped");
         Ok(())
     }

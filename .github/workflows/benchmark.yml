@@ -4,7 +4,7 @@ name: Performance Benchmarks
 on:
   # Run weekly on Sunday at 2 AM UTC
   schedule:
-    - cron: '0 2 * * 0'
+    - cron: "0 2 * * 0"
 
   # Allow manual triggering for on-demand performance testing
   workflow_dispatch:
@@ -14,9 +14,9 @@ on:
     branches:
       - main
     paths:
-      - 'd-engine-server/src/storage/**'
-      - 'd-engine-server/benches/**'
-      - 'd-engine-core/src/**'
+      - "d-engine-server/src/storage/**"
+      - "d-engine-server/benches/**"
+      - "d-engine-core/src/**"
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,12 +31,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for performance comparison
+          fetch-depth: 0 # Full history for performance comparison
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.88.0
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
         run: |
@@ -62,26 +60,10 @@ jobs:
           echo ""
 
           # Run benchmarks and save output
-          cargo bench --package d-engine-server -- --output-format bencher | tee benchmark_output.txt
+          cargo bench --package d-engine-server 2>&1 | tee benchmark_output.txt
 
           echo ""
           echo "✅ Benchmarks completed successfully"
-
-      - name: Store benchmark results
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: D-Engine Rust Benchmarks
-          tool: 'cargo'
-          output-file-path: benchmark_output.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          # Alert if performance degrades by more than 10%
-          alert-threshold: '110%'
-          comment-on-alert: true
-          fail-on-alert: false
-          # Store results in gh-pages branch
-          gh-pages-branch: gh-pages
-          benchmark-data-dir-path: dev/bench
 
       - name: Upload detailed results as artifact
         uses: actions/upload-artifact@v4
@@ -98,10 +80,9 @@ jobs:
           echo "Performance Benchmark Summary"
           echo "========================================="
           echo ""
-          echo "📊 Detailed results have been uploaded as artifacts"
-          echo "📈 Historical trends available at: https://$(echo ${{ github.repository }} | sed 's/\//.github.io\//').io/dev/bench/"
+          echo "📊 Benchmark results uploaded as artifacts"
           echo ""
-          echo "To view detailed HTML reports locally:"
+          echo "To view detailed results:"
           echo "  1. Download the artifact"
           echo "  2. Open target/criterion/report/index.html in your browser"
           echo ""

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use d_engine_core::StateMachine;
+use d_engine_core::{Lease, StateMachine};
 use d_engine_proto::client::{
     WriteCommand,
     write_command::{Insert, Operation},
@@ -90,36 +90,37 @@ fn create_noop_entry(index: u64) -> Entry {
 
 /// Benchmark: Piggyback cleanup with varying numbers of expired keys
 /// Target: < 1ms for typical workload (100 expired keys)
+/// This directly benchmarks lease.on_apply() to isolate cleanup overhead
 fn bench_piggyback_cleanup(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    use d_engine_server::storage::DefaultLease;
+
     let mut group = c.benchmark_group("piggyback_cleanup");
 
     // Test with different numbers of expired keys
     for expired_count in [10, 50, 100, 500].iter() {
-        // Setup state machine once before benchmark for this parameter
-        let (sm, _temp_dir) = runtime.block_on(async {
-            let (sm, temp_dir) = create_test_state_machine().await;
+        let lease_config = d_engine_core::config::LeaseConfig {
+            cleanup_strategy: "piggyback".to_string(),
+            ..Default::default()
+        };
+        let lease = DefaultLease::new(lease_config);
 
-            // Insert entries with very short TTL
-            let entries = create_entries_with_ttl(*expired_count, 1, 1); // 1 second TTL
-            sm.apply_chunk(entries).await.unwrap();
+        // Register keys with very short TTL
+        for i in 0..*expired_count {
+            let key = format!("key_ttl_{}", i);
+            lease.register(bytes::Bytes::from(key), 1); // 1 second TTL
+        }
 
-            // Wait for expiration
-            tokio::time::sleep(Duration::from_secs(2)).await;
-
-            (sm, temp_dir)
-        });
+        // Wait for expiration
+        std::thread::sleep(Duration::from_secs(2));
 
         group.bench_with_input(
             BenchmarkId::from_parameter(expired_count),
             expired_count,
             |b, _| {
-                b.to_async(&runtime).iter(|| async {
-                    // Measure piggyback cleanup by applying a no-op entry
-                    // This should trigger cleanup of expired entries
-                    let noop = create_noop_entry(10000);
-                    sm.apply_chunk(vec![noop]).await.unwrap();
-                    black_box(());
+                b.iter(|| {
+                    // Directly measure cleanup logic without apply_chunk overhead
+                    let expired_keys = lease.on_apply();
+                    black_box(expired_keys);
                 });
             },
         );
@@ -130,17 +131,23 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
 
 /// Benchmark: TTL registration overhead
 /// Measures the cost of registering a TTL entry in the TTL manager
+/// Target: < 100ns per registration
 fn bench_ttl_registration(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    use d_engine_server::storage::DefaultLease;
+
+    let lease_config = d_engine_core::config::LeaseConfig {
+        cleanup_strategy: "piggyback".to_string(),
+        ..Default::default()
+    };
+    let lease = DefaultLease::new(lease_config);
 
     c.bench_function("ttl_registration", |b| {
-        b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
-
-            // Measure the cost of applying entries with TTL
-            // (which includes TTL registration)
-            let entries = create_entries_with_ttl(1, 1, 3600);
-            sm.apply_chunk(entries).await.unwrap();
+        let mut counter = 0u64;
+        b.iter(|| {
+            // Directly measure registration overhead
+            let key = format!("key_{}", counter);
+            lease.register(bytes::Bytes::from(key), 3600);
+            counter += 1;
             black_box(());
         });
     });

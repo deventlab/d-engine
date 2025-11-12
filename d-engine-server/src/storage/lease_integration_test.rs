@@ -255,7 +255,9 @@ mod file_state_machine_tests {
             );
             assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
 
-            // State machine drops here, persisting TTL data
+            // Gracefully stop state machine to persist TTL data
+            sm.stop().unwrap();
+            // State machine drops here
         }
 
         // Phase 2: Restart - create new state machine from same directory
