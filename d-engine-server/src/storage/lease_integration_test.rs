@@ -507,6 +507,165 @@ mod file_state_machine_tests {
             sm.stop().unwrap();
         }
     }
+
+    /// Test: WAL replay handles incomplete entries gracefully
+    ///
+    /// Verifies that if WAL file is corrupted or has incomplete entries (e.g., missing
+    /// expiration field), the system doesn't crash and treats the entry as permanent (no TTL).
+    #[tokio::test]
+    async fn test_wal_replay_handles_incomplete_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+
+        // Manually create a WAL file with incomplete entry (missing expire_at field)
+        // Format: [op_code(1), term(8), key_len(8), key, value_len(8), value, (missing expire_at)]
+        let wal_path = state_machine_path.join("wal.log");
+        let mut wal_data = Vec::new();
+
+        // Complete entry first
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&8u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"complete"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value1"); // value
+        wal_data.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0 (no TTL)
+
+        // Incomplete entry (missing expire_at field)
+        wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&10u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"incomplete"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value2"); // value
+        // Missing expire_at field (should be 8 bytes)
+
+        std::fs::write(&wal_path, wal_data).unwrap();
+
+        // Create new state machine instance to trigger WAL replay
+        let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
+
+        // Should have loaded the complete entry
+        let result = sm.get(b"complete").unwrap();
+        assert_eq!(result, Some(Bytes::from("value1")));
+
+        // Incomplete entry should be loaded as permanent (no TTL) rather than being skipped
+        let result = sm.get(b"incomplete").unwrap();
+        assert_eq!(result, Some(Bytes::from("value2")));
+    }
+
+    /// Test: WAL replay with only expired entries results in empty state
+    #[tokio::test]
+    async fn test_wal_replay_all_expired_empty_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+
+        // Create entries that are all expired (use very old timestamp)
+        let now = std::time::SystemTime::now();
+        let expired_time = now - std::time::Duration::from_secs(100);
+        let expire_at_secs = expired_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        // Manually create WAL with old expire_at times
+        let wal_path = state_machine_path.join("wal.log");
+        let mut wal_data = Vec::new();
+
+        // Entry 1 - expired
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&4u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"key1"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value1"); // value
+        wal_data.extend_from_slice(&expire_at_secs.to_be_bytes()); // expired timestamp
+
+        // Entry 2 - expired
+        wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&4u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"key2"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value2"); // value
+        wal_data.extend_from_slice(&expire_at_secs.to_be_bytes()); // expired timestamp
+
+        std::fs::write(&wal_path, wal_data).unwrap();
+
+        // Create new state machine to trigger replay
+        let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
+
+        // Both keys should be skipped (expired)
+        assert_eq!(sm.get(b"key1").unwrap(), None);
+        assert_eq!(sm.get(b"key2").unwrap(), None);
+    }
+
+    /// Test: WAL replay with mixed expired and valid entries
+    #[tokio::test]
+    async fn test_wal_replay_mixed_expired_and_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+
+        let now = std::time::SystemTime::now();
+        let expired_time = now - std::time::Duration::from_secs(100);
+        let future_time = now + std::time::Duration::from_secs(3600);
+
+        let expire_at_expired =
+            expired_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let expire_at_future = future_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        // Manually create WAL with mixed entries
+        let wal_path = state_machine_path.join("wal.log");
+        let mut wal_data = Vec::new();
+
+        // Entry 1 - expired
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&11u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"expired_key"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value1"); // value
+        wal_data.extend_from_slice(&expire_at_expired.to_be_bytes()); // expire_at
+
+        // Entry 2 - valid with future TTL
+        wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&9u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"valid_key"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value2"); // value
+        wal_data.extend_from_slice(&expire_at_future.to_be_bytes()); // expire_at
+
+        // Entry 3 - permanent (no TTL)
+        wal_data.extend_from_slice(&3u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&13u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"permanent_key"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value3"); // value
+        wal_data.extend_from_slice(&0u64.to_be_bytes()); // no TTL
+
+        std::fs::write(&wal_path, wal_data).unwrap();
+
+        // Create state machine to trigger replay
+        let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
+
+        // Expired key should not be loaded
+        assert_eq!(sm.get(b"expired_key").unwrap(), None);
+
+        // Valid key with future TTL should be loaded
+        assert_eq!(sm.get(b"valid_key").unwrap(), Some(Bytes::from("value2")));
+
+        // Permanent key should be loaded
+        assert_eq!(
+            sm.get(b"permanent_key").unwrap(),
+            Some(Bytes::from("value3"))
+        );
+    }
 }
 
 #[cfg(all(test, feature = "rocksdb"))]
