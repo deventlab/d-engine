@@ -165,4 +165,30 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Resets the state machine to its initial state.
     /// Async operation as it may involve cleaning up files and data.
     async fn reset(&self) -> Result<(), Error>;
+
+    /// Post-start async initialization hook.
+    ///
+    /// Called after `start()` and after the state machine is wrapped in Arc.
+    /// Use this for async operations like loading persisted lease data.
+    ///
+    /// # Default Implementation
+    /// No-op, suitable for simple state machines or user-defined implementations
+    /// that don't require async initialization.
+    ///
+    /// # Called By
+    /// Framework calls this in NodeBuilder::build() after start() completes.
+    /// Guaranteed to complete before the node becomes operational.
+    ///
+    /// # Example (d-engine built-in state machines)
+    /// ```ignore
+    /// async fn post_start_init(&self) -> Result<(), Error> {
+    ///     if let Some(ref lease) = self.lease {
+    ///         self.load_lease_data().await?;
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    async fn post_start_init(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }

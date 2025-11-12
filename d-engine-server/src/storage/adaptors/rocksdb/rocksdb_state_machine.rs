@@ -136,6 +136,19 @@ impl RocksDBStateMachine {
         self.lease = Some(lease);
     }
 
+    /// Injects lease configuration into this state machine.
+    ///
+    /// Framework-internal method: called by NodeBuilder::build() during initialization.
+    /// Creates a DefaultLease from the provided configuration and stores it.
+    pub(crate) fn inject_lease_config(
+        &mut self,
+        config: d_engine_core::config::LeaseConfig,
+    ) -> Result<(), Error> {
+        let lease = Arc::new(DefaultLease::new(config));
+        self.lease = Some(lease);
+        Ok(())
+    }
+
     /// Opens RocksDB with the standard configuration
     fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, Error> {
         // Same options as new()
@@ -769,6 +782,14 @@ impl StateMachine for RocksDBStateMachine {
 
     async fn flush_async(&self) -> Result<(), Error> {
         self.flush()
+    }
+
+    async fn post_start_init(&self) -> Result<(), Error> {
+        if let Some(ref lease) = self.lease {
+            self.load_lease_data().await?;
+            debug!("Lease data loaded during state machine initialization");
+        }
+        Ok(())
     }
 
     #[instrument(skip(self))]

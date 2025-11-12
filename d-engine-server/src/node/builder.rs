@@ -46,7 +46,6 @@ use tokio::sync::watch;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::warn;
 
 use super::RaftTypeConfig;
 use crate::Node;
@@ -54,7 +53,6 @@ use crate::membership::RaftMembership;
 use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::storage::BufferedRaftLog;
-use crate::storage::DefaultLease;
 use crate::storage::FileStateMachine;
 #[cfg(feature = "rocksdb")]
 use crate::storage::RocksDBStateMachine;
@@ -234,10 +232,9 @@ where
     ///
     /// # Panics
     /// Panics if essential components cannot be initialized
-    pub fn build(mut self) -> Self {
+    pub async fn build(mut self) -> Result<Self> {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
-        // let db_root_dir = format!("{}/{}", node_config.cluster.db_root_dir.display(), node_id);
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
@@ -245,45 +242,29 @@ where
         // Handle state machine initialization
         let mut state_machine = self.state_machine.take().expect("State machine must be set");
 
-        // Inject lease into state machine
-        // Note: Even if cleanup_strategy is "disabled", we inject the lease object
-        // The DefaultLease internally handles the disabled case with zero overhead
+        // Inject lease configuration into state machine
+        // Framework-level feature: developers don't see lease, it's transparent
+        // Lease config comes from NodeConfig, injected before Arc wrapping
         {
-            let lease_config = &node_config.raft.state_machine.lease;
-            let lease = Arc::new(DefaultLease::new(lease_config.clone()));
+            let lease_config = node_config.raft.state_machine.lease.clone();
 
-            // Try to inject lease into concrete state machine types
-            // We need mutable access, so try Arc::get_mut first
+            // Try to inject lease config into d-engine built-in state machines
+            // User-defined state machines silently skip (no error, no lease)
+            // state_machine is Arc<SM>, so we need Arc::get_mut for mutable access
             if let Some(sm) = Arc::get_mut(&mut state_machine) {
-                let sm_any = sm as &mut dyn Any;
-
-                #[cfg(feature = "rocksdb")]
-                if let Some(rocksdb_sm) = sm_any.downcast_mut::<RocksDBStateMachine>() {
-                    rocksdb_sm.set_lease(lease.clone());
-                    // RocksDBStateMachine needs to load persisted lease data after injection
-                    if let Err(e) =
-                        tokio::runtime::Handle::current().block_on(rocksdb_sm.load_lease_data())
-                    {
-                        error!("Failed to load lease data for RocksDBStateMachine: {:?}", e);
-                    }
-                    debug!("Lease injected into RocksDBStateMachine and data loaded");
-                    // Continue to check FileStateMachine
-                }
-
-                if let Some(file_sm) = sm_any.downcast_mut::<FileStateMachine>() {
-                    file_sm.set_lease(lease.clone());
-                    // FileStateMachine needs to load persisted lease data after injection
-                    if let Err(e) =
-                        tokio::runtime::Handle::current().block_on(file_sm.load_lease_data())
-                    {
-                        error!("Failed to load lease data for FileStateMachine: {:?}", e);
-                    }
-                    debug!("Lease injected into FileStateMachine and data loaded");
-                }
+                Self::try_inject_lease_config(sm, lease_config)?;
             } else {
-                warn!("Cannot inject lease: state machine Arc is already shared");
+                // Arc has multiple references - cannot inject (shouldn't happen at this point)
+                debug!("Cannot inject lease: state machine Arc has multiple references");
             }
         }
+
+        // Start state machine: synchronous setup (flip flags, prepare structures)
+        state_machine.start()?;
+
+        // Post-start async initialization: load persisted lease data, etc.
+        // Guaranteed to complete before node becomes operational
+        state_machine.post_start_init().await?;
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().expect("Storage engine must be set");
@@ -421,7 +402,50 @@ where
         };
 
         self.node = Some(Arc::new(node));
-        self
+        Ok(self)
+    }
+
+    /// Framework-internal helper: Try to inject lease config into state machine.
+    ///
+    /// Only handles d-engine built-in SMs (RocksDB, File).
+    /// User-defined SMs silently skip (no error, no lease).
+    /// Uses runtime type checking (dyn Any + downcast) but hidden from developers.
+    ///
+    /// # Arguments
+    /// * `state_machine` - Mutable reference to SM (before Arc wrapping)
+    /// * `config` - Lease configuration from NodeConfig
+    ///
+    /// # Returns
+    /// - Ok(()) - Injection successful or user SM (no-op)
+    /// - Err(Error) - Unexpected framework error
+    fn try_inject_lease_config(
+        state_machine: &mut SM,
+        config: d_engine_core::config::LeaseConfig,
+    ) -> Result<()> {
+        // Use dyn Any for runtime type checking
+        // This is framework-internal implementation detail
+        // Developers never see this, don't need to understand it
+        let sm_any = state_machine as &mut dyn Any;
+
+        // Try RocksDBStateMachine
+        #[cfg(feature = "rocksdb")]
+        if let Some(rocksdb_sm) = sm_any.downcast_mut::<RocksDBStateMachine>() {
+            rocksdb_sm.inject_lease_config(config.clone())?;
+            debug!("Lease config injected into RocksDBStateMachine");
+            return Ok(());
+        }
+
+        // Try FileStateMachine
+        if let Some(file_sm) = sm_any.downcast_mut::<FileStateMachine>() {
+            file_sm.inject_lease_config(config.clone())?;
+            debug!("Lease config injected into FileStateMachine");
+            return Ok(());
+        }
+
+        // User-defined SM: silently skip, no error
+        // Lease is optional for user SMs
+        debug!("User-defined state machine: lease config injection skipped (not applicable)");
+        Ok(())
     }
 
     /// When a new commit is detected, convert the log into a state machine log.

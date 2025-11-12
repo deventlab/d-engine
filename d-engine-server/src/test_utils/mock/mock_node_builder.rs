@@ -522,6 +522,7 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
 
     mock.expect_save_hard_state().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
+    mock.expect_post_start_init().returning(|| Ok(()));
 
     mock
 }

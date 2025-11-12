@@ -108,7 +108,9 @@ async fn test_build_creates_node() {
     )
     .state_machine(Arc::new(mock_state_machine()))
     .storage_engine(Arc::new(MockStorageEngine::new()))
-    .build();
+    .build()
+    .await
+    .expect("build should succeed");
 
     // Verify that the node instance is generated
     assert!(builder.node.is_some());
