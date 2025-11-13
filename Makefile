@@ -173,6 +173,12 @@ clippy-excluded:
 			{ echo "$(RED)✗ Clippy check failed for $$bench$(NC)"; exit 1; }; \
 		fi \
 	done
+	@for crate_dir in */; do \
+		if [ -d "$$crate_dir/benches" ] && [ "$$crate_dir" != "examples/" ] && [ "$$crate_dir" != "benches/" ]; then \
+			(cd "$$crate_dir" && $(CARGO) clippy --benches --all-features -- -D warnings) || \
+			{ echo "$(RED)✗ Clippy check failed for $$crate_dir benches$(NC)"; exit 1; }; \
+		fi \
+	done
 
 ## clippy-fix           Automatically apply Clippy suggestions (review changes!)
 clippy-fix: install-tools check-workspace

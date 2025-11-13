@@ -186,7 +186,6 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
         b.to_async(&runtime).iter_with_setup(
             || {
                 // Setup runs outside the runtime - return empty marker
-                ()
             },
             |_| async {
                 // This async closure runs INSIDE the runtime
@@ -226,7 +225,6 @@ fn bench_piggyback_high_frequency(c: &mut Criterion) {
         b.to_async(&runtime).iter_with_setup(
             || {
                 // Setup runs outside the runtime
-                ()
             },
             |_| async {
                 // Setup: Create state machine with expired entries (not measured)
@@ -292,7 +290,6 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
         b.to_async(&runtime).iter_with_setup(
             || {
                 // Setup runs outside the runtime
-                ()
             },
             |_| async {
                 // Setup: Create state machine with expired entries (not measured)
@@ -329,7 +326,6 @@ fn bench_best_case_no_expired(c: &mut Criterion) {
         b.to_async(&runtime).iter_with_setup(
             || {
                 // Setup runs outside the runtime
-                ()
             },
             |_| async {
                 // Setup: Create state machine with non-expired entries (not measured)
