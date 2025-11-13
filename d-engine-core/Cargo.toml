@@ -40,7 +40,7 @@ metrics = { version = "0.24", features = [] }
 config = { version = "0.14.0", default-features = false, features = ["toml"] }
 tokio-stream = "0.1.16"
 # Packing/unpacking TAR archives
-tokio-tar = "0.3"
+astral-tokio-tar = "0.5"
 rand = "0.8.5"
 lru = "0.15.0"
 memmap2 = "0.9.5"
