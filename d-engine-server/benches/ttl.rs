@@ -183,33 +183,31 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("cleanup_mixed", |b| {
-        b.to_async(&runtime).iter_batched(
+        b.to_async(&runtime).iter_with_setup(
             || {
-                // Setup: Create state machine with mixed expired/active entries (not measured)
-                runtime.block_on(async {
-                    let (sm, temp_dir) = create_test_state_machine().await;
-
-                    // Insert 50 entries with short TTL (will expire)
-                    let expired_entries = create_entries_with_ttl(50, 1, 1);
-                    sm.apply_chunk(expired_entries).await.unwrap();
-
-                    // Insert 50 entries with long TTL (will remain active)
-                    let active_entries = create_entries_with_ttl(50, 51, 3600);
-                    sm.apply_chunk(active_entries).await.unwrap();
-
-                    // Wait for first batch to expire
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-
-                    (sm, temp_dir)
-                })
+                // Setup runs outside the runtime - return empty marker
+                ()
             },
-            |(sm, _temp_dir)| async move {
+            |_| async {
+                // This async closure runs INSIDE the runtime
+                let (sm, _temp_dir) = create_test_state_machine().await;
+
+                // Insert 50 entries with short TTL (will expire)
+                let expired_entries = create_entries_with_ttl(50, 1, 1);
+                sm.apply_chunk(expired_entries).await.unwrap();
+
+                // Insert 50 entries with long TTL (will remain active)
+                let active_entries = create_entries_with_ttl(50, 51, 3600);
+                sm.apply_chunk(active_entries).await.unwrap();
+
+                // Wait for first batch to expire
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
                 // Only measure the cleanup operation
                 let noop = create_noop_entry(10000);
                 sm.apply_chunk(vec![noop]).await.unwrap();
                 black_box(());
             },
-            criterion::BatchSize::LargeInput,
         );
     });
 
@@ -225,23 +223,22 @@ fn bench_piggyback_high_frequency(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("frequent_cleanup", |b| {
-        b.to_async(&runtime).iter_batched(
+        b.to_async(&runtime).iter_with_setup(
             || {
-                // Setup: Create state machine with expired entries (not measured)
-                runtime.block_on(async {
-                    let (sm, temp_dir) = create_test_state_machine().await;
-
-                    // Insert 100 entries with short TTL
-                    let entries = create_entries_with_ttl(100, 1, 1);
-                    sm.apply_chunk(entries).await.unwrap();
-
-                    // Wait for expiration
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-
-                    (sm, temp_dir)
-                })
+                // Setup runs outside the runtime
+                ()
             },
-            |(sm, _temp_dir)| async move {
+            |_| async {
+                // Setup: Create state machine with expired entries (not measured)
+                let (sm, _temp_dir) = create_test_state_machine().await;
+
+                // Insert 100 entries with short TTL
+                let entries = create_entries_with_ttl(100, 1, 1);
+                sm.apply_chunk(entries).await.unwrap();
+
+                // Wait for expiration
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
                 // Only measure the cleanup operations
                 for i in 0..10 {
                     let noop = create_noop_entry(10000 + i);
@@ -249,7 +246,6 @@ fn bench_piggyback_high_frequency(c: &mut Criterion) {
                 }
                 black_box(());
             },
-            criterion::BatchSize::LargeInput,
         );
     });
 
@@ -293,29 +289,27 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("cleanup_all_expired", |b| {
-        b.to_async(&runtime).iter_batched(
+        b.to_async(&runtime).iter_with_setup(
             || {
-                // Setup: Create state machine with expired entries (not measured)
-                runtime.block_on(async {
-                    let (sm, temp_dir) = create_test_state_machine().await;
-
-                    // Insert 1000 entries with very short TTL
-                    let entries = create_entries_with_ttl(1000, 1, 1);
-                    sm.apply_chunk(entries).await.unwrap();
-
-                    // Wait for all to expire
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-
-                    (sm, temp_dir)
-                })
+                // Setup runs outside the runtime
+                ()
             },
-            |(sm, _temp_dir)| async move {
+            |_| async {
+                // Setup: Create state machine with expired entries (not measured)
+                let (sm, _temp_dir) = create_test_state_machine().await;
+
+                // Insert 1000 entries with very short TTL
+                let entries = create_entries_with_ttl(1000, 1, 1);
+                sm.apply_chunk(entries).await.unwrap();
+
+                // Wait for all to expire
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
                 // Only measure the cleanup operation
                 let noop = create_noop_entry(10000);
                 sm.apply_chunk(vec![noop]).await.unwrap();
                 black_box(());
             },
-            criterion::BatchSize::LargeInput,
         );
     });
 
@@ -332,26 +326,24 @@ fn bench_best_case_no_expired(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("cleanup_no_expired", |b| {
-        b.to_async(&runtime).iter_batched(
+        b.to_async(&runtime).iter_with_setup(
             || {
-                // Setup: Create state machine with non-expired entries (not measured)
-                runtime.block_on(async {
-                    let (sm, temp_dir) = create_test_state_machine().await;
-
-                    // Insert 1000 entries with very long TTL
-                    let entries = create_entries_with_ttl(1000, 1, 86400); // 1 day
-                    sm.apply_chunk(entries).await.unwrap();
-
-                    (sm, temp_dir)
-                })
+                // Setup runs outside the runtime
+                ()
             },
-            |(sm, _temp_dir)| async move {
+            |_| async {
+                // Setup: Create state machine with non-expired entries (not measured)
+                let (sm, _temp_dir) = create_test_state_machine().await;
+
+                // Insert 1000 entries with very long TTL
+                let entries = create_entries_with_ttl(1000, 1, 86400); // 1 day
+                sm.apply_chunk(entries).await.unwrap();
+
                 // Only measure the cleanup operation
                 let noop = create_noop_entry(10000);
                 sm.apply_chunk(vec![noop]).await.unwrap();
                 black_box(());
             },
-            criterion::BatchSize::LargeInput,
         );
     });
 
