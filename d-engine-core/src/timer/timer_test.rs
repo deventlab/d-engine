@@ -120,18 +120,20 @@ async fn test_election_timer_expired_after_timeout() {
 #[tokio::test]
 async fn test_election_timer_reset() {
     let mut timer = ElectionTimer::new((100u64, 200u64));
-    let old_deadline = timer.next_deadline();
 
-    // Small sleep to ensure some time passes
-    sleep(Duration::from_millis(10)).await;
+    // Wait until timer is about to expire
+    sleep(Duration::from_millis(150)).await;
 
+    // Reset timer - should get a fresh deadline from now
+    let before_reset = Instant::now();
     timer.reset();
     let new_deadline = timer.next_deadline();
 
-    // New deadline should be later than old one
+    // New deadline should be at least 100ms from now (min timeout)
+    let min_expected = before_reset + Duration::from_millis(100);
     assert!(
-        new_deadline > old_deadline,
-        "New deadline {new_deadline:?} should be later than old deadline {old_deadline:?}",
+        new_deadline >= min_expected,
+        "New deadline {new_deadline:?} should be at least 100ms after reset time {before_reset:?}",
     );
 }
 

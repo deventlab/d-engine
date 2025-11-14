@@ -16,6 +16,7 @@ mod storage;
 mod timer;
 mod type_config;
 mod utils;
+pub mod watch;
 
 pub use config::*;
 pub use errors::*;
@@ -24,6 +25,7 @@ pub use membership::*;
 pub use network::*;
 pub use raft::*;
 pub use storage::*;
+pub use watch::*;
 
 pub use commit_handler::*;
 pub use election::*;

@@ -1,18 +1,23 @@
 //! State Machine Performance Benchmarks
 //!
 //! This benchmark suite measures the core performance characteristics of the state machine,
-//! focusing on the overhead introduced by TTL functionality.
+//! focusing on the overhead introduced by TTL functionality and Watch mechanism.
 //!
 //! Performance Targets:
 //! - Without TTL: < 10ns overhead per operation
 //! - With TTL passive check: < 50ns overhead per read
+//! - Watch overhead on Apply path: < 0.01% (< 10ns per watcher)
+//! - End-to-end Watch notification latency: < 100µs
 //! - Batch operations: Linear scaling
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::StateMachine;
+use d_engine_core::config::WatchConfig;
+use d_engine_core::watch::WatchManager;
 use d_engine_proto::client::{
     WriteCommand,
     write_command::{Insert, Operation},
@@ -29,6 +34,34 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
         .await
         .expect("Failed to create state machine");
     (sm, temp_dir)
+}
+
+/// Helper to create a WatchManager for benchmarking
+fn create_watch_manager(
+    event_queue_size: usize,
+    watcher_buffer_size: usize,
+) -> Arc<WatchManager> {
+    let config = WatchConfig {
+        enabled: true,
+        event_queue_size,
+        watcher_buffer_size,
+        enable_metrics: false,
+    };
+    let manager = WatchManager::new(config);
+    manager.start();
+    Arc::new(manager)
+}
+
+/// Helper to register multiple watchers
+async fn register_watchers(
+    manager: &WatchManager,
+    count: usize,
+    key_prefix: &str,
+) {
+    for i in 0..count {
+        let key = format!("{key_prefix}{i}");
+        let _ = manager.register(key.into()).await;
+    }
 }
 
 /// Helper to create write entries without TTL
@@ -239,6 +272,178 @@ fn bench_batch_apply_with_ttl(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark: Apply operations WITHOUT Watch (baseline)
+/// Target: Establish baseline performance
+fn bench_apply_without_watch(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+    c.bench_function("apply_without_watch", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let (sm, _temp_dir) = create_test_state_machine().await;
+            let entries = create_entries_without_ttl(100, 1);
+
+            // Measure pure apply performance without watch
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
+        });
+    });
+}
+
+/// Benchmark: Apply operations WITH 1 watcher
+/// Target: < 10ns overhead compared to baseline
+fn bench_apply_with_1_watcher(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+    c.bench_function("apply_with_1_watcher", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let (sm, _temp_dir) = create_test_state_machine().await;
+            let watch_manager = create_watch_manager(1000, 10);
+
+            // Register 1 watcher
+            register_watchers(&watch_manager, 1, "key_").await;
+
+            let entries = create_entries_without_ttl(100, 1);
+
+            // Simulate notify_watchers call for each entry
+            for entry in &entries {
+                if let Some(payload) = &entry.payload {
+                    if let Some(Payload::Command(cmd_bytes)) = &payload.payload {
+                        if let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref()) {
+                            if let Some(op) = write_cmd.operation {
+                                match op {
+                                    Operation::Insert(insert) => {
+                                        watch_manager
+                                            .notify_put(insert.key.clone(), insert.value.clone());
+                                    }
+                                    Operation::Delete(delete) => {
+                                        watch_manager.notify_delete(delete.key.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
+        });
+    });
+}
+
+/// Benchmark: Apply operations WITH 10 watchers
+/// Target: < 100ns overhead compared to baseline
+fn bench_apply_with_10_watchers(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+    c.bench_function("apply_with_10_watchers", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let (sm, _temp_dir) = create_test_state_machine().await;
+            let watch_manager = create_watch_manager(1000, 10);
+
+            // Register 10 watchers
+            register_watchers(&watch_manager, 10, "key_").await;
+
+            let entries = create_entries_without_ttl(100, 1);
+
+            // Simulate notify_watchers call for each entry
+            for entry in &entries {
+                if let Some(payload) = &entry.payload {
+                    if let Some(Payload::Command(cmd_bytes)) = &payload.payload {
+                        if let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref()) {
+                            if let Some(op) = write_cmd.operation {
+                                match op {
+                                    Operation::Insert(insert) => {
+                                        watch_manager
+                                            .notify_put(insert.key.clone(), insert.value.clone());
+                                    }
+                                    Operation::Delete(delete) => {
+                                        watch_manager.notify_delete(delete.key.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
+        });
+    });
+}
+
+/// Benchmark: Apply operations WITH 100 watchers
+/// Target: < 1µs overhead compared to baseline
+fn bench_apply_with_100_watchers(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+    c.bench_function("apply_with_100_watchers", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let (sm, _temp_dir) = create_test_state_machine().await;
+            let watch_manager = create_watch_manager(1000, 10);
+
+            // Register 100 watchers
+            register_watchers(&watch_manager, 100, "key_").await;
+
+            let entries = create_entries_without_ttl(100, 1);
+
+            // Simulate notify_watchers call for each entry
+            for entry in &entries {
+                if let Some(payload) = &entry.payload {
+                    if let Some(Payload::Command(cmd_bytes)) = &payload.payload {
+                        if let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref()) {
+                            if let Some(op) = write_cmd.operation {
+                                match op {
+                                    Operation::Insert(insert) => {
+                                        watch_manager
+                                            .notify_put(insert.key.clone(), insert.value.clone());
+                                    }
+                                    Operation::Delete(delete) => {
+                                        watch_manager.notify_delete(delete.key.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            sm.apply_chunk(entries).await.unwrap();
+            black_box(());
+        });
+    });
+}
+
+/// Benchmark: End-to-end Watch notification latency
+/// Target: < 100µs from notify to receiver
+fn bench_watch_e2e_latency(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+    c.bench_function("watch_e2e_latency", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let watch_manager = create_watch_manager(1000, 10);
+
+            let key = Bytes::from("test_key");
+            let value = Bytes::from("test_value");
+
+            // Register a watcher
+            let handle = watch_manager.register(key.clone()).await;
+            let (_id, _key, mut receiver, _guard) = handle.into_receiver();
+
+            // Measure time from notify to receive
+            let start = tokio::time::Instant::now();
+            watch_manager.notify_put(key.clone(), value.clone());
+
+            // Wait for event to arrive
+            if let Some(_event) = receiver.recv().await {
+                let latency = start.elapsed();
+                black_box(latency);
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_apply_without_ttl,
@@ -248,6 +453,11 @@ criterion_group!(
     bench_get_expired_ttl,
     bench_batch_apply,
     bench_batch_apply_with_ttl,
+    bench_apply_without_watch,
+    bench_apply_with_1_watcher,
+    bench_apply_with_10_watchers,
+    bench_apply_with_100_watchers,
+    bench_watch_e2e_latency,
 );
 
 criterion_main!(benches);

@@ -41,6 +41,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
+use crate::network::grpc::WatchDispatcherHandle;
 use d_engine_core::Membership;
 use d_engine_core::Raft;
 use d_engine_core::RaftEvent;
@@ -48,6 +49,7 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::Result;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
+use d_engine_core::watch::WatchManager;
 
 /// Raft consensus node
 ///
@@ -79,6 +81,14 @@ where
 
     /// Raft node config
     pub node_config: Arc<RaftNodeConfig>,
+
+    /// Optional watch manager for monitoring key changes
+    /// When None, watch functionality is disabled
+    pub(crate) watch_manager: Option<Arc<WatchManager>>,
+
+    /// Optional watch dispatcher handle for registering new watch streams
+    /// When None, watch functionality is disabled
+    pub(crate) watch_dispatcher_handle: Option<WatchDispatcherHandle>,
 }
 
 impl<T> Debug for Node<T>
@@ -188,6 +198,8 @@ where
             event_tx,
             ready: AtomicBool::new(false),
             node_config,
+            watch_manager: None,
+            watch_dispatcher_handle: None,
         }
     }
 }
