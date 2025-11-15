@@ -1,6 +1,8 @@
 syntax = "proto3";
 package d_engine.client;
 
+option go_package = "github.com/deventlab/d-engine/proto/client";
+
 import "proto/error.proto";
 
 // Write operation-specific command

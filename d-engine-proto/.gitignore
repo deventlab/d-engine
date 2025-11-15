@@ -1,0 +1,24 @@
+# Generated proto files
+generated/
+*.pb.go
+*.pb.gw.go
+*_grpc.pb.go
+
+# protoc compiler artifacts
+*.o
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+target/
+dist/

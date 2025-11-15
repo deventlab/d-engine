@@ -1,6 +1,8 @@
 syntax = "proto3";
 package d_engine.common;
 
+option go_package = "github.com/deventlab/d-engine/proto/common";
+
 // Basic definitions shared across modules
 message LogId {
   uint64 term = 1;
