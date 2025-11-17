@@ -14,6 +14,7 @@ use crate::client::ReadConsistencyPolicy;
 use crate::client::ReadResults;
 use crate::client::WriteCommand;
 use crate::error::ErrorCode;
+use crate::error::ErrorMetadata;
 
 impl ClientReadRequest {
     /// Checks if the consistency_policy field is present in the request
@@ -140,6 +141,33 @@ impl ClientResponse {
             error: error_code as i32,
             success_result: None,
             metadata: None,
+        }
+    }
+
+    /// Build NOT_LEADER error response with leader metadata
+    ///
+    /// # Parameters
+    /// - `leader_id`: Optional leader node ID
+    /// - `leader_address`: Optional leader address
+    pub fn not_leader(
+        leader_id: Option<String>,
+        leader_address: Option<String>,
+    ) -> Self {
+        let metadata = if leader_id.is_some() || leader_address.is_some() {
+            Some(ErrorMetadata {
+                retry_after_ms: None,
+                leader_id,
+                leader_address,
+                debug_message: None,
+            })
+        } else {
+            None
+        };
+
+        Self {
+            error: ErrorCode::NotLeader as i32,
+            success_result: None,
+            metadata,
         }
     }
 

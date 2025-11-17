@@ -26,6 +26,7 @@ use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
+use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
@@ -308,6 +309,39 @@ pub trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>;
+
+    /// Create NOT_LEADER response with leader metadata for client redirection
+    ///
+    /// This method queries the cluster membership to get the current leader's
+    /// ID and address, then returns a ClientResponse with ErrorMetadata populated.
+    /// If no leader information is available, returns a basic NOT_LEADER error.
+    ///
+    /// Default implementation can be overridden by specific role states if needed.
+    ///
+    /// # Returns
+    /// ClientResponse with NOT_LEADER error code and optional leader metadata
+    async fn create_not_leader_response(
+        &self,
+        ctx: &RaftContext<Self::T>,
+    ) -> ClientResponse {
+        let leader_id = ctx.membership().current_leader_id().await;
+
+        if let Some(lid) = leader_id {
+            // Get leader address from membership
+            let members = ctx.membership().members().await;
+            let leader_node = members.iter().find(|n| n.id == lid);
+
+            if let Some(leader) = leader_node {
+                return ClientResponse::not_leader(
+                    Some(lid.to_string()),
+                    Some(leader.address.clone()),
+                );
+            }
+        }
+
+        // No leader info available, return basic NOT_LEADER error
+        ClientResponse::not_leader(None, None)
+    }
 
     /// When a Follower receives an AppendEntries request, it performs the following logic (as
     /// described in Section 5.1 of the Raft paper):

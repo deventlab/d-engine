@@ -34,10 +34,9 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Learner;
-use d_engine_proto::error::ErrorCode;
+
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::JoinRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
@@ -267,15 +266,13 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 .await?;
             }
             RaftEvent::ClientPropose(_client_propose_request, sender) => {
-                //TODO: direct to leader
-                // self.redirect_to_leader(client_propose_request).await;
-                sender.send(Ok(ClientResponse::client_error(ErrorCode::NotLeader))).map_err(
-                    |e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    },
-                )?;
+                // Return NOT_LEADER with leader metadata for client redirection
+                let response = self.create_not_leader_response(ctx).await;
+                sender.send(Ok(response)).map_err(|e| {
+                    let error_str = format!("{e:?}");
+                    error!("Failed to send: {}", error_str);
+                    NetworkError::SingalSendFailed(error_str)
+                })?;
             }
 
             RaftEvent::ClientReadRequest(_client_read_request, sender) => {
