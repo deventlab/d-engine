@@ -1,6 +1,8 @@
 syntax = "proto3";
 package d_engine.server.replication;
 
+option go_package = "github.com/deventlab/d-engine/proto/server/replication";
+
 import "proto/common.proto";
 
 message AppendEntriesRequest {

@@ -50,6 +50,7 @@ use super::RaftTypeConfig;
 use crate::Node;
 use crate::membership::RaftMembership;
 use crate::network::grpc;
+use crate::network::grpc::WatchDispatcher;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::storage::BufferedRaftLog;
 use d_engine_core::ClusterConfig;
@@ -74,6 +75,7 @@ use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
+use d_engine_core::WatchManager;
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::SMHOF;
 use d_engine_core::alias::SNP;
@@ -293,6 +295,24 @@ where
             node_config.raft.snapshot.snapshot_cool_down_since_last_check,
         ));
 
+        let shutdown_signal = self.shutdown_signal.clone();
+
+        // Initialize watch manager and dispatcher if enabled in config
+        let (watch_manager, watch_dispatcher_handle) = if node_config.raft.watch.enabled {
+            let watch_mgr = WatchManager::new(node_config.raft.watch.clone());
+            watch_mgr.start();
+            let watch_mgr_arc = Arc::new(watch_mgr);
+
+            // Create and spawn watch dispatcher
+            let (dispatcher, handle) =
+                WatchDispatcher::new(watch_mgr_arc.clone(), shutdown_signal.clone());
+            Self::spawn_watch_dispatcher(dispatcher);
+
+            (Some(watch_mgr_arc), Some(handle))
+        } else {
+            (None, None)
+        };
+
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             Arc::new(DefaultStateMachineHandler::new(
                 node_id,
@@ -301,6 +321,7 @@ where
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,
+                watch_manager.clone(),
             ))
         });
         let membership = Arc::new(self.membership.take().unwrap_or_else(|| {
@@ -317,7 +338,6 @@ where
         let (event_tx, event_rx) = mpsc::channel(10240);
         let event_tx_clone = event_tx.clone(); // used in commit handler
 
-        let shutdown_signal = self.shutdown_signal.clone();
         let node_config_arc = Arc::new(node_config);
 
         // Construct my role
@@ -393,7 +413,10 @@ where
             node_config_arc.clone(),
             new_commit_event_rx,
         );
-        self.enable_state_machine_commit_listener(commit_handler);
+        // Spawn commit listener via Builder method
+        // This ensures all tokio::spawn calls are visible in one place (Builder impl)
+        // Following the "one page visible" Builder pattern principle
+        Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
         let node = Node::<RaftTypeConfig<SE, SM>> {
@@ -403,16 +426,21 @@ where
             event_tx: event_tx.clone(),
             ready: AtomicBool::new(false),
             node_config: node_config_arc,
+            watch_manager,
+            watch_dispatcher_handle,
         };
 
         self.node = Some(Arc::new(node));
         Ok(self)
     }
 
-    /// When a new commit is detected, convert the log into a state machine log.
-    fn enable_state_machine_commit_listener(
-        &self,
-        mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>,
+    /// Spawn state machine commit listener as background task.
+    ///
+    /// This method is called during node build() to start the commit handler thread.
+    /// All spawn_* methods are centralized in NodeBuilder so developers can see
+    /// all resource consumption (threads/tasks) in one place.
+    fn spawn_state_machine_commit_listener(
+        mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>
     ) {
         tokio::spawn(async move {
             match commit_handler.run().await {
@@ -420,10 +448,31 @@ where
                     info!("commit_handler exit program");
                 }
                 Err(e) => {
-                    error!("commit_handler exit program with unpexected error: {:?}", e);
+                    error!("commit_handler exit program with unexpected error: {:?}", e);
                     println!("commit_handler exit program");
                 }
             }
+        });
+    }
+
+    /// Spawn watch dispatcher as background task.
+    ///
+    /// The dispatcher manages all watch streams for the lifetime of the node.
+    /// It spawns a separate task for each active watch client, providing:
+    /// - **Isolation**: One slow client doesn't affect others
+    /// - **Resource control**: Dispatcher can limit max concurrent watches
+    /// - **Observability**: Centralized metrics and monitoring
+    ///
+    /// Expected resource usage:
+    /// - Dispatcher itself: ~2KB (1 tokio task)
+    /// - Per watch client: ~2KB (1 tokio task per client)
+    /// - Auto cleanup when client disconnects
+    ///
+    /// # Arguments
+    /// * `dispatcher` - The watch dispatcher instance
+    fn spawn_watch_dispatcher(dispatcher: WatchDispatcher) {
+        tokio::spawn(async move {
+            dispatcher.run().await;
         });
     }
 

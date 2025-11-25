@@ -48,6 +48,8 @@ crc32fast = "1.4.2"
 # used in stream
 http-body = "1.0"
 http-body-util = "0.1.3"
+# Lock-free multi-producer multi-consumer channels for Watch event queue
+crossbeam-channel = "0.5"
 crossbeam-skiplist = "0.1"
 crossbeam = "0.8"
 mockall = { version = "0.12.1", optional = true }

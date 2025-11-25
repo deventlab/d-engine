@@ -394,6 +394,8 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
         });
     membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+    // Mock methods used by create_not_leader_response()
+    membership.expect_current_leader_id().returning(|| None);
     membership
 }
 

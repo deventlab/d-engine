@@ -1,6 +1,8 @@
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::WatchRequest;
+use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -11,6 +13,8 @@ use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementService;
+use futures::Stream;
+use std::pin::Pin;
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
@@ -99,6 +103,8 @@ impl ClusterManagementService for MockRpcService {
 
 #[tonic::async_trait]
 impl RaftClientService for MockRpcService {
+    type WatchStream = Pin<Box<dyn Stream<Item = Result<WatchResponse, tonic::Status>> + Send>>;
+
     async fn handle_client_write(
         &self,
         _request: tonic::Request<ClientWriteRequest>,
@@ -123,5 +129,15 @@ impl RaftClientService for MockRpcService {
                 "No mock handle_client_read response set",
             )),
         }
+    }
+
+    async fn watch(
+        &self,
+        _request: tonic::Request<WatchRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
+        // Mock implementation - return empty stream
+        Err(tonic::Status::unimplemented(
+            "Watch not implemented in mock",
+        ))
     }
 }

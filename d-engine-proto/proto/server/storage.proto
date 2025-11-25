@@ -1,6 +1,8 @@
 syntax = "proto3";
 package d_engine.server.storage;
 
+option go_package = "github.com/deventlab/d-engine/proto/server/storage";
+
 import "proto/common.proto";
 
 message SnapshotChunk {

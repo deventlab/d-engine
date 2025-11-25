@@ -235,6 +235,7 @@ pub fn setup_raft_components(
         state_machine.clone(),
         node_config.raft.snapshot.clone(),
         snapshot_policy,
+        None, // No watch manager for tests
     );
 
     let node_config_clone = node_config.clone();

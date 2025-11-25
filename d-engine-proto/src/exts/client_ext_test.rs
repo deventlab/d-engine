@@ -197,6 +197,43 @@ fn test_client_response_client_error() {
 }
 
 #[test]
+fn test_client_response_not_leader_with_metadata() {
+    let response = ClientResponse::not_leader(
+        Some("node-1".to_string()),
+        Some("127.0.0.1:9081".to_string()),
+    );
+
+    assert_eq!(response.error, ErrorCode::NotLeader as i32);
+    assert_eq!(response.success_result, None);
+    assert!(response.metadata.is_some());
+
+    let metadata = response.metadata.unwrap();
+    assert_eq!(metadata.leader_id, Some("node-1".to_string()));
+    assert_eq!(metadata.leader_address, Some("127.0.0.1:9081".to_string()));
+}
+
+#[test]
+fn test_client_response_not_leader_without_metadata() {
+    let response = ClientResponse::not_leader(None, None);
+
+    assert_eq!(response.error, ErrorCode::NotLeader as i32);
+    assert_eq!(response.success_result, None);
+    assert_eq!(response.metadata, None);
+}
+
+#[test]
+fn test_client_response_not_leader_partial_metadata() {
+    let response = ClientResponse::not_leader(Some("node-2".to_string()), None);
+
+    assert_eq!(response.error, ErrorCode::NotLeader as i32);
+    assert!(response.metadata.is_some());
+
+    let metadata = response.metadata.unwrap();
+    assert_eq!(metadata.leader_id, Some("node-2".to_string()));
+    assert_eq!(metadata.leader_address, None);
+}
+
+#[test]
 fn test_client_response_is_term_outdated() {
     let response = ClientResponse::client_error(ErrorCode::TermOutdated);
     assert!(response.is_term_outdated());

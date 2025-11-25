@@ -5,8 +5,10 @@
 use std::future::Future;
 use std::time::Duration;
 
+use super::WatchRegistration;
 use tokio::select;
 use tokio::time::timeout;
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::Response;
@@ -14,6 +16,7 @@ use tonic::Status;
 use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 use tracing::warn;
 
 use crate::Node;
@@ -25,6 +28,8 @@ use d_engine_core::TypeConfig;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::WatchRequest;
+
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -303,6 +308,10 @@ impl<T> RaftClientService for Node<T>
 where
     T: TypeConfig,
 {
+    type WatchStream = tokio_stream::wrappers::ReceiverStream<
+        Result<d_engine_proto::client::WatchResponse, Status>,
+    >;
+
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic
     /// - Entry point for client proposals (Section 7)
@@ -373,6 +382,75 @@ where
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
+    }
+
+    /// Watch for changes on a specific key
+    ///
+    /// Returns a stream of WatchResponse events whenever the watched key changes.
+    /// The stream will continue until the client disconnects or the server shuts down.
+    ///
+    /// # Arguments
+    /// * `request` - Contains the key to watch
+    ///
+    /// # Returns
+    /// A stream of WatchResponse messages containing PUT/DELETE events
+    ///
+    /// # Errors
+    /// Returns Status::UNAVAILABLE if Watch is disabled in configuration
+    async fn watch(
+        &self,
+        request: tonic::Request<WatchRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
+        let watch_request = request.into_inner();
+        let key = watch_request.key;
+
+        // Check if watch dispatcher is enabled
+        let dispatcher_handle = match &self.watch_dispatcher_handle {
+            Some(handle) => handle,
+            None => {
+                return Err(Status::unavailable(
+                    "Watch feature is disabled in server configuration",
+                ));
+            }
+        };
+
+        let watch_manager = self
+            .watch_manager
+            .as_ref()
+            .expect("Watch manager must exist if dispatcher handle exists");
+
+        info!(
+            node_id = self.node_id,
+            key = ?key,
+            "Registering watch for key"
+        );
+
+        // Register watcher and get handle
+        let watcher_handle = watch_manager.register(key.clone()).await;
+
+        // Extract receiver while keeping cleanup guard
+        let (watcher_id, watched_key, event_receiver, guard) = watcher_handle.into_receiver();
+
+        // Create output channel for gRPC stream
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+        // Send registration request to dispatcher
+        // The dispatcher will spawn a task to handle this watch stream
+        // All spawns are controlled through the dispatcher (spawned in NodeBuilder::build())
+        let registration = WatchRegistration {
+            key: watched_key,
+            response_sender: tx,
+            guard,
+            event_receiver,
+            watcher_id,
+        };
+
+        dispatcher_handle
+            .register(registration)
+            .await
+            .map_err(|_| Status::internal("Failed to register watch with dispatcher"))?;
+
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
 }
 

@@ -1,6 +1,8 @@
 syntax = "proto3";
 package d_engine.server.election;
 
+option go_package = "github.com/deventlab/d-engine/proto/server/election";
+
 message VoteRequest {
   uint64 term = 1;
   uint32 candidateId = 2;

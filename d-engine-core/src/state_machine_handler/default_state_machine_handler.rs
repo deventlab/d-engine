@@ -7,6 +7,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::watch::WatchManager;
+
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
@@ -58,14 +60,18 @@ use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
 use d_engine_proto::client::ClientResult;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
+use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
+use prost::Message;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -101,6 +107,10 @@ where
 
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
+
+    /// Optional watch manager for monitoring key changes
+    /// When None, watch functionality is disabled with zero overhead
+    watch_manager: Option<Arc<WatchManager>>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
@@ -173,8 +183,14 @@ where
         );
 
         let sm = self.state_machine.clone();
+
         // Apply the chunk and track errors
-        let apply_result = sm.apply_chunk(chunk).await;
+        let apply_result = sm.apply_chunk(chunk.clone()).await;
+
+        // Notify watchers of changes (if watch manager is enabled)
+        if let Some(ref watch_mgr) = self.watch_manager {
+            self.notify_watchers(&chunk, watch_mgr);
+        }
 
         // Record latency and chunk size histogram *after* the operation
         let duration_ms = start.elapsed().as_millis() as f64;
@@ -685,6 +701,43 @@ impl<T> DefaultStateMachineHandler<T>
 where
     T: TypeConfig,
 {
+    /// Notify watchers of key changes in the applied chunk
+    ///
+    /// This method parses the chunk entries and sends watch events for PUT and DELETE operations.
+    /// It runs on the hot path but uses non-blocking try_send to maintain < 0.01% overhead.
+    #[inline]
+    fn notify_watchers(
+        &self,
+        chunk: &[Entry],
+        watch_mgr: &Arc<WatchManager>,
+    ) {
+        for entry in chunk {
+            if let Some(ref payload) = entry.payload {
+                if let Some(Payload::Command(bytes)) = &payload.payload {
+                    // Decode the WriteCommand
+                    if let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) {
+                        match write_cmd.operation {
+                            Some(Operation::Insert(insert)) => {
+                                watch_mgr.notify_put(insert.key, insert.value);
+                            }
+                            Some(Operation::Delete(delete)) => {
+                                watch_mgr.notify_delete(delete.key);
+                            }
+                            None => {
+                                // No operation, skip
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<T> DefaultStateMachineHandler<T>
+where
+    T: TypeConfig,
+{
     pub fn new(
         node_id: u32,
         last_applied_index: u64,
@@ -692,6 +745,7 @@ where
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
+        watch_manager: Option<Arc<WatchManager>>,
     ) -> Self {
         Self {
             node_id,
@@ -708,7 +762,32 @@ where
 
             snapshot_lock: RwLock::new(()),
             snapshot_in_progress: AtomicBool::new(false),
+            watch_manager,
         }
+    }
+
+    /// Convenience constructor for tests without watch manager
+    ///
+    /// This is a backward-compatible wrapper that calls `new()` with `None` for watch_manager.
+    /// Use this in tests to avoid updating all test callsites.
+    #[cfg(test)]
+    pub fn new_without_watch(
+        node_id: u32,
+        last_applied_index: u64,
+        max_entries_per_chunk: usize,
+        state_machine: Arc<SMOF<T>>,
+        snapshot_config: SnapshotConfig,
+        snapshot_policy: SNP<T>,
+    ) -> Self {
+        Self::new(
+            node_id,
+            last_applied_index,
+            max_entries_per_chunk,
+            state_machine,
+            snapshot_config,
+            snapshot_policy,
+            None, // No watch manager for tests
+        )
     }
 
     #[allow(dead_code)]

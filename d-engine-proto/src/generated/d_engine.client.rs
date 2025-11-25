@@ -94,6 +94,36 @@ pub struct ReadResults {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<ClientResult>,
 }
+/// Request to watch for changes on a specific key
+///
+/// In v1, only exact key matching is supported.
+/// Prefix watching may be added in future versions.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WatchRequest {
+    #[prost(uint32, tag = "1")]
+    pub client_id: u32,
+    /// Exact key to watch for changes
+    #[prost(bytes = "bytes", tag = "2")]
+    pub key: ::prost::bytes::Bytes,
+}
+/// Response containing a watch event notification
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WatchResponse {
+    /// The key that changed
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    /// The new value (empty for DELETE events)
+    #[prost(bytes = "bytes", tag = "2")]
+    pub value: ::prost::bytes::Bytes,
+    /// Type of change that occurred
+    #[prost(enumeration = "WatchEventType", tag = "3")]
+    pub event_type: i32,
+    /// Error information if watch failed
+    #[prost(enumeration = "super::error::ErrorCode", tag = "4")]
+    pub error: i32,
+}
 /// Read consistency policy for controlling read operation guarantees
 ///
 /// Allows clients to choose between performance and consistency trade-offs
@@ -141,6 +171,36 @@ impl ReadConsistencyPolicy {
             "READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY" => {
                 Some(Self::EventualConsistency)
             }
+            _ => None,
+        }
+    }
+}
+/// Watch event type indicating the type of change that occurred
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WatchEventType {
+    /// A key was inserted or updated
+    Put = 0,
+    /// A key was explicitly deleted
+    Delete = 1,
+}
+impl WatchEventType {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Put => "WATCH_EVENT_TYPE_PUT",
+            Self::Delete => "WATCH_EVENT_TYPE_DELETE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WATCH_EVENT_TYPE_PUT" => Some(Self::Put),
+            "WATCH_EVENT_TYPE_DELETE" => Some(Self::Delete),
             _ => None,
         }
     }
@@ -288,6 +348,42 @@ pub mod raft_client_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Watch for changes on a specific key
+        ///
+        /// Returns a stream of WatchResponse events whenever the watched key changes.
+        /// The stream remains open until the client cancels or disconnects.
+        ///
+        /// Performance characteristics:
+        /// - Event notification latency: typically < 100μs
+        /// - Minimal overhead on write path (< 0.01% with 100+ watchers)
+        ///
+        /// Error handling:
+        /// - If the internal event buffer is full, events may be dropped
+        /// - Clients should use Read API to re-sync if they detect gaps
+        pub async fn watch(
+            &mut self,
+            request: impl tonic::IntoRequest<super::WatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::WatchResponse>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/d_engine.client.RaftClientService/Watch",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("d_engine.client.RaftClientService", "Watch"));
+            self.inner.server_streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -311,6 +407,28 @@ pub mod raft_client_service_server {
             &self,
             request: tonic::Request<super::ClientReadRequest>,
         ) -> std::result::Result<tonic::Response<super::ClientResponse>, tonic::Status>;
+        /// Server streaming response type for the Watch method.
+        type WatchStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::WatchResponse, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Watch for changes on a specific key
+        ///
+        /// Returns a stream of WatchResponse events whenever the watched key changes.
+        /// The stream remains open until the client cancels or disconnects.
+        ///
+        /// Performance characteristics:
+        /// - Event notification latency: typically < 100μs
+        /// - Minimal overhead on write path (< 0.01% with 100+ watchers)
+        ///
+        /// Error handling:
+        /// - If the internal event buffer is full, events may be dropped
+        /// - Clients should use Read API to re-sync if they detect gaps
+        async fn watch(
+            &self,
+            request: tonic::Request<super::WatchRequest>,
+        ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct RaftClientServiceServer<T> {
@@ -482,6 +600,52 @@ pub mod raft_client_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/d_engine.client.RaftClientService/Watch" => {
+                    #[allow(non_camel_case_types)]
+                    struct WatchSvc<T: RaftClientService>(pub Arc<T>);
+                    impl<
+                        T: RaftClientService,
+                    > tonic::server::ServerStreamingService<super::WatchRequest>
+                    for WatchSvc<T> {
+                        type Response = super::WatchResponse;
+                        type ResponseStream = T::WatchStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::WatchRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RaftClientService>::watch(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = WatchSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

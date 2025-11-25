@@ -303,6 +303,8 @@ impl MockBuilder {
             event_tx,
             ready: AtomicBool::new(false),
             node_config,
+            watch_manager: None,
+            watch_dispatcher_handle: None,
         }
     }
 
@@ -324,20 +326,24 @@ impl MockBuilder {
             node_config.raft.election.election_timeout_min,
             "build_node_with_rpc_server"
         );
+        let node_config_arc = Arc::new(node_config);
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
             ready: AtomicBool::new(false),
-            node_config: Arc::new(node_config.clone()),
+            node_config: node_config_arc.clone(),
+            watch_manager: None,
+            watch_dispatcher_handle: None,
         });
         let node_clone = node.clone();
-        let listen_address = node_config.cluster.listen_address;
-        let node_config = node_config.clone();
+        let listen_address = node_config_arc.cluster.listen_address;
+        let node_config = node_config_arc.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
+                grpc::start_rpc_server(node_clone, listen_address, (*node_config).clone(), shutdown)
+                    .await
             {
                 eprintln!("RPC server stops. {e:?}");
                 error!("RPC server stops. {e:?}");
