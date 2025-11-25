@@ -17,7 +17,7 @@ use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::StateMachine;
 use d_engine_core::config::WatchConfig;
-use d_engine_core::watch::WatchManager;
+use d_engine_core::watch::{WatchManager, WatcherHandle};
 use d_engine_proto::client::{
     WriteCommand,
     write_command::{Insert, Operation},
@@ -53,15 +53,20 @@ fn create_watch_manager(
 }
 
 /// Helper to register multiple watchers
+///
+/// Returns the watcher handles to keep watchers alive during benchmarks.
+/// Handles must be kept in scope or watchers will be immediately unregistered.
 async fn register_watchers(
     manager: &WatchManager,
     count: usize,
     key_prefix: &str,
-) {
+) -> Vec<WatcherHandle> {
+    let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let key = format!("{key_prefix}{i}");
-        let _ = manager.register(key.into()).await;
+        handles.push(manager.register(key.into()).await);
     }
+    handles
 }
 
 /// Helper to create write entries without TTL
@@ -299,8 +304,8 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
             let (sm, _temp_dir) = create_test_state_machine().await;
             let watch_manager = create_watch_manager(1000, 10);
 
-            // Register 1 watcher
-            register_watchers(&watch_manager, 1, "key_").await;
+            // Register 1 watcher (keep handle alive to prevent unregistration)
+            let _watchers = register_watchers(&watch_manager, 1, "key_").await;
 
             let entries = create_entries_without_ttl(100, 1);
 
@@ -341,8 +346,8 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
             let (sm, _temp_dir) = create_test_state_machine().await;
             let watch_manager = create_watch_manager(1000, 10);
 
-            // Register 10 watchers
-            register_watchers(&watch_manager, 10, "key_").await;
+            // Register 10 watchers (keep handles alive to prevent unregistration)
+            let _watchers = register_watchers(&watch_manager, 10, "key_").await;
 
             let entries = create_entries_without_ttl(100, 1);
 
@@ -383,8 +388,8 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
             let (sm, _temp_dir) = create_test_state_machine().await;
             let watch_manager = create_watch_manager(1000, 10);
 
-            // Register 100 watchers
-            register_watchers(&watch_manager, 100, "key_").await;
+            // Register 100 watchers (keep handles alive to prevent unregistration)
+            let _watchers = register_watchers(&watch_manager, 100, "key_").await;
 
             let entries = create_entries_without_ttl(100, 1);
 

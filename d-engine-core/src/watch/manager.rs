@@ -30,13 +30,15 @@
 //! - This trade-off prioritizes write performance over guaranteed delivery
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread::JoinHandle;
 
 use bytes::Bytes;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::config::WatchConfig;
 
@@ -60,56 +62,55 @@ pub struct WatchEvent {
     pub event_type: WatchEventType,
 }
 
+/// Cleanup state for a watcher
+///
+/// This struct holds the metadata required to unregister a watcher
+/// from the manager when it's no longer needed.
+struct WatcherCleanup {
+    id: u64,
+    key: Bytes,
+    manager: Arc<WatchManagerInner>,
+}
+
 /// Handle for a registered watcher
 ///
 /// When dropped, the watcher is automatically unregistered from the WatchManager.
 pub struct WatcherHandle {
-    /// Unique identifier for this watcher
-    id: u64,
-    /// The key being watched
-    key: Bytes,
+    /// Cleanup state (None if moved to guard via into_receiver)
+    cleanup: Option<WatcherCleanup>,
     /// Channel receiver for watch events (Option to allow move out)
     receiver: Option<mpsc::Receiver<WatchEvent>>,
-    /// Reference to manager for cleanup on drop
-    manager: Arc<WatchManagerInner>,
 }
 
 impl WatcherHandle {
     /// Get the unique identifier for this watcher
     pub fn id(&self) -> u64 {
-        self.id
+        self.cleanup.as_ref().expect("cleanup state moved").id
     }
 
     /// Get the key being watched
     pub fn key(&self) -> &Bytes {
-        &self.key
+        &self.cleanup.as_ref().expect("cleanup state moved").key
     }
 
     /// Consume the handle and return the event receiver
     ///
-    /// This is useful when you need to pass the receiver to another component
-    /// (e.g., WatchStreamHandler) while keeping the cleanup logic via Drop.
-    ///
-    /// Note: After calling this, the WatcherHandle cannot receive events anymore,
-    /// but cleanup will still happen when the guard is dropped.
+    /// This transfers ownership of the cleanup responsibility to the returned guard.
+    /// The guard will unregister the watcher when dropped.
     ///
     /// # Panics
     ///
-    /// Panics if the receiver has already been taken.
+    /// Panics if the receiver or cleanup state has already been taken.
     pub fn into_receiver(mut self) -> (u64, Bytes, mpsc::Receiver<WatchEvent>, WatcherHandleGuard) {
-        let id = self.id;
-        let key = self.key.clone();
+        let cleanup = self.cleanup.take().expect("cleanup already taken");
         let receiver = self.receiver.take().expect("receiver already taken");
 
-        let guard = WatcherHandleGuard {
-            id,
-            key: key.clone(),
-            manager: self.manager.clone(),
-        };
+        let id = cleanup.id;
+        let key = cleanup.key.clone();
 
-        // Prevent Drop from being called on self, since guard will handle cleanup
-        std::mem::forget(self);
+        let guard = WatcherHandleGuard { cleanup };
 
+        // No need for mem::forget - Drop will see cleanup is None and do nothing
         (id, key, receiver, guard)
     }
 
@@ -126,26 +127,15 @@ impl WatcherHandle {
 /// This is returned from `WatcherHandle::into_receiver()` to ensure
 /// cleanup happens even after the receiver has been moved out.
 pub struct WatcherHandleGuard {
-    id: u64,
-    key: Bytes,
-    manager: Arc<WatchManagerInner>,
+    cleanup: WatcherCleanup,
 }
 
 impl Drop for WatcherHandleGuard {
     fn drop(&mut self) {
-        // Guard cleanup: remove watcher from registry
-        if let Some(mut watchers) = self.manager.watchers.get_mut(&self.key) {
-            watchers.retain(|w| w.id != self.id);
-
-            if watchers.is_empty() {
-                drop(watchers);
-                self.manager.watchers.remove(&self.key);
-            }
-        }
-
+        unregister_watcher(&self.cleanup);
         trace!(
-            watcher_id = self.id,
-            key = ?self.key,
+            watcher_id = self.cleanup.id,
+            key = ?self.cleanup.key,
             "Watcher unregistered via guard"
         );
     }
@@ -153,22 +143,27 @@ impl Drop for WatcherHandleGuard {
 
 impl Drop for WatcherHandle {
     fn drop(&mut self) {
-        // Automatic cleanup when client disconnects
-        if let Some(mut watchers) = self.manager.watchers.get_mut(&self.key) {
-            watchers.retain(|w| w.id != self.id);
-
-            if watchers.is_empty() {
-                drop(watchers);
-                self.manager.watchers.remove(&self.key);
-            }
+        if let Some(cleanup) = self.cleanup.take() {
+            unregister_watcher(&cleanup);
+            trace!(
+                watcher_id = cleanup.id,
+                key = ?cleanup.key,
+                "Watcher unregistered"
+            );
         }
-
-        trace!(
-            watcher_id = self.id,
-            key = ?self.key,
-            "Watcher unregistered"
-        );
     }
+}
+
+/// Unregister a watcher from the manager using atomic operation
+///
+/// Uses DashMap's `remove_if_mut` to atomically check and remove empty watcher lists,
+/// preventing race conditions where a new watcher could be added between the check
+/// and the remove operation.
+fn unregister_watcher(cleanup: &WatcherCleanup) {
+    cleanup.manager.watchers.remove_if_mut(&cleanup.key, |_key, watchers| {
+        watchers.retain(|w| w.id != cleanup.id);
+        watchers.is_empty()
+    });
 }
 
 /// Internal watcher state
@@ -181,7 +176,6 @@ struct Watcher {
 }
 
 /// Internal state of WatchManager
-#[derive(Debug)]
 struct WatchManagerInner {
     /// Watchers grouped by key (lock-free concurrent HashMap)
     watchers: DashMap<Bytes, Vec<Watcher>>,
@@ -189,11 +183,27 @@ struct WatchManagerInner {
     /// Next watcher ID (monotonically increasing)
     next_id: AtomicU64,
 
-    /// Whether the dispatcher thread is running
-    running: AtomicBool,
+    /// Dispatcher thread handle (None when not running)
+    thread_handle: Mutex<Option<JoinHandle<()>>>,
+
+    /// Shutdown signal sender (None when not running)
+    shutdown_tx: Mutex<Option<Sender<()>>>,
 
     /// Configuration
     config: WatchConfig,
+}
+
+impl std::fmt::Debug for WatchManagerInner {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("WatchManagerInner")
+            .field("watchers", &self.watchers)
+            .field("next_id", &self.next_id)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 /// High-performance watch manager with lock-free event dispatch
@@ -254,7 +264,8 @@ impl WatchManager {
         let inner = Arc::new(WatchManagerInner {
             watchers: DashMap::new(),
             next_id: AtomicU64::new(1),
-            running: AtomicBool::new(false),
+            thread_handle: Mutex::new(None),
+            shutdown_tx: Mutex::new(None),
             config,
         });
 
@@ -267,27 +278,46 @@ impl WatchManager {
 
     /// Start the background event dispatcher thread
     ///
-    /// This spawns a dedicated thread that reads from the event queue and
-    /// dispatches events to registered watchers.
+    /// Spawns a dedicated thread that reads from the event queue and dispatches
+    /// events to registered watchers. The thread can be cleanly stopped via `stop()`.
+    ///
+    /// Calling `start()` when a dispatcher is already running is a no-op.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is idempotent and safe to call concurrently from multiple threads.
     pub fn start(&self) {
-        if self.inner.running.swap(true, Ordering::SeqCst) {
-            // Already running
+        let mut handle_guard = self.inner.thread_handle.lock().unwrap();
+
+        // Already running
+        if handle_guard.is_some() {
             return;
         }
 
+        let (shutdown_tx, shutdown_rx) = bounded(1);
         let inner = self.inner.clone();
         let receiver = Arc::clone(&self.event_receiver);
 
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             debug!("Watch dispatcher thread started");
 
-            while inner.running.load(Ordering::Acquire) {
-                match receiver.recv() {
-                    Ok(event) => {
-                        Self::dispatch_event(&inner, event);
+            loop {
+                crossbeam_channel::select! {
+                    recv(receiver) -> result => {
+                        match result {
+                            Ok(event) => {
+                                Self::dispatch_event(&inner, event);
+                            }
+                            Err(_) => {
+                                // Event channel closed, exit thread
+                                warn!("Watch event channel closed unexpectedly");
+                                break;
+                            }
+                        }
                     }
-                    Err(_) => {
-                        // Channel closed, exit thread
+                    recv(shutdown_rx) -> _ => {
+                        // Shutdown signal received
+                        debug!("Watch dispatcher received shutdown signal");
                         break;
                     }
                 }
@@ -295,11 +325,31 @@ impl WatchManager {
 
             debug!("Watch dispatcher thread stopped");
         });
+
+        *handle_guard = Some(handle);
+        *self.inner.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
     }
 
     /// Stop the background dispatcher thread
+    ///
+    /// Sends a shutdown signal to the dispatcher thread and waits for it to exit.
+    /// This ensures the thread is cleanly terminated before returning.
+    ///
+    /// Calling `stop()` when no dispatcher is running is a no-op.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is safe to call concurrently from multiple threads.
     pub fn stop(&self) {
-        self.inner.running.store(false, Ordering::Release);
+        // Take the shutdown sender to signal thread exit
+        if let Some(tx) = self.inner.shutdown_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+
+        // Take and join the thread handle
+        if let Some(handle) = self.inner.thread_handle.lock().unwrap().take() {
+            let _ = handle.join();
+        }
     }
 
     /// Register a new watcher for a specific key
@@ -336,10 +386,12 @@ impl WatchManager {
         );
 
         WatcherHandle {
-            id,
-            key,
+            cleanup: Some(WatcherCleanup {
+                id,
+                key,
+                manager: self.inner.clone(),
+            }),
             receiver: Some(receiver),
-            manager: self.inner.clone(),
         }
     }
 
