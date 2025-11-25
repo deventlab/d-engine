@@ -48,16 +48,25 @@ where
     ) -> Result<()> {
         debug!("broadcast_vote_requests...");
 
+        // Single-node cluster: no peers to vote, automatically win election
+        if membership.is_single_node_cluster().await {
+            debug!(
+                "Single-node cluster detected (node_id={}): automatically winning election",
+                self.my_id
+            );
+            return Ok(());
+        }
+
         let members = membership.voters().await;
         if members.is_empty() {
-            error!("my(id={}) peers is empty.", self.my_id);
+            error!("No voting members found for node {}", self.my_id);
             return Err(ElectionError::NoVotingMemberFound {
                 candidate_id: self.my_id,
             }
             .into());
-        } else {
-            debug!("going to send_vote_requests to: {:?}", &members);
         }
+
+        debug!("Sending vote requests to peers: {:?}", &members);
 
         let LogId {
             index: last_log_index,

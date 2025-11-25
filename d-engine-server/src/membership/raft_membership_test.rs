@@ -1291,3 +1291,244 @@ mod pre_warm_connections_tests {
         assert!(logs_contain("No replication peers found"));
     }
 }
+
+// ================================================================================================
+// Tests for Single-Node Cluster Support (Issue #179)
+// ================================================================================================
+
+#[cfg(test)]
+mod single_node_tests {
+    use super::*;
+
+    /// Helper: Create single-node membership
+    fn create_single_node_membership()
+    -> RaftMembership<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
+        let initial_cluster = vec![NodeMeta {
+            id: 1,
+            address: "127.0.0.1:9081".to_string(),
+            role: Follower.into(),
+            status: NodeStatus::Active.into(),
+        }];
+        RaftMembership::new(1, initial_cluster, RaftNodeConfig::default())
+    }
+
+    /// Helper: Create 3-node membership
+    fn create_three_node_membership()
+    -> RaftMembership<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
+        let initial_cluster = vec![
+            NodeMeta {
+                id: 1,
+                address: "127.0.0.1:9081".to_string(),
+                role: Leader.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 2,
+                address: "127.0.0.1:9082".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "127.0.0.1:9083".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+        ];
+        RaftMembership::new(1, initial_cluster, RaftNodeConfig::default())
+    }
+
+    /// Helper: Create 5-node membership
+    fn create_five_node_membership()
+    -> RaftMembership<RaftTypeConfig<MockStorageEngine, MockStateMachine>> {
+        let initial_cluster = vec![
+            NodeMeta {
+                id: 1,
+                address: "127.0.0.1:9081".to_string(),
+                role: Leader.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 2,
+                address: "127.0.0.1:9082".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "127.0.0.1:9083".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 4,
+                address: "127.0.0.1:9084".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 5,
+                address: "127.0.0.1:9085".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+        ];
+        RaftMembership::new(1, initial_cluster, RaftNodeConfig::default())
+    }
+
+    #[tokio::test]
+    async fn test_initial_cluster_size_single_node() {
+        let membership = create_single_node_membership();
+
+        let size = membership.initial_cluster_size().await;
+
+        assert_eq!(size, 1, "Single-node cluster should report size 1");
+    }
+
+    #[tokio::test]
+    async fn test_initial_cluster_size_three_nodes() {
+        let membership = create_three_node_membership();
+
+        let size = membership.initial_cluster_size().await;
+
+        assert_eq!(size, 3, "Three-node cluster should report size 3");
+    }
+
+    #[tokio::test]
+    async fn test_initial_cluster_size_five_nodes() {
+        let membership = create_five_node_membership();
+
+        let size = membership.initial_cluster_size().await;
+
+        assert_eq!(size, 5, "Five-node cluster should report size 5");
+    }
+
+    #[tokio::test]
+    async fn test_is_single_node_cluster_true() {
+        let membership = create_single_node_membership();
+
+        let is_single = membership.is_single_node_cluster().await;
+
+        assert!(is_single, "Single-node cluster should return true");
+    }
+
+    #[tokio::test]
+    async fn test_is_single_node_cluster_false_three_nodes() {
+        let membership = create_three_node_membership();
+
+        let is_single = membership.is_single_node_cluster().await;
+
+        assert!(!is_single, "Three-node cluster should return false");
+    }
+
+    #[tokio::test]
+    async fn test_is_single_node_cluster_false_five_nodes() {
+        let membership = create_five_node_membership();
+
+        let is_single = membership.is_single_node_cluster().await;
+
+        assert!(!is_single, "Five-node cluster should return false");
+    }
+
+    #[tokio::test]
+    async fn test_initial_cluster_size_immutable_after_add_learner() {
+        let membership = create_three_node_membership();
+
+        // Initial size should be 3
+        assert_eq!(membership.initial_cluster_size().await, 3);
+
+        // Add a learner (simulate cluster expansion)
+        membership
+            .add_learner(4, "127.0.0.1:9084".to_string())
+            .await
+            .expect("Should succeed");
+
+        // Initial cluster size should still be 3 (immutable)
+        assert_eq!(
+            membership.initial_cluster_size().await,
+            3,
+            "initial_cluster_size should remain unchanged after adding learner"
+        );
+
+        // Verify the learner was actually added
+        assert!(membership.contains_node(4).await, "Node 4 should exist");
+    }
+
+    #[tokio::test]
+    async fn test_initial_cluster_size_immutable_after_remove_node() {
+        let membership = create_three_node_membership();
+
+        // Initial size should be 3
+        assert_eq!(membership.initial_cluster_size().await, 3);
+
+        // Remove node 3 (simulate node failure)
+        membership.force_remove_node(3).await.expect("Should succeed");
+
+        // Initial cluster size should still be 3 (immutable)
+        assert_eq!(
+            membership.initial_cluster_size().await,
+            3,
+            "initial_cluster_size should remain unchanged after removing node"
+        );
+
+        // Verify node was actually removed
+        assert!(
+            !membership.contains_node(3).await,
+            "Node 3 should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_voters_empty_in_single_node_but_cluster_size_correct() {
+        let membership = create_single_node_membership();
+
+        // voters() should return empty (excludes self)
+        let voters = membership.voters().await;
+        assert!(
+            voters.is_empty(),
+            "voters() should be empty for single-node (excludes self)"
+        );
+
+        // But initial_cluster_size() should still be 1
+        assert_eq!(
+            membership.initial_cluster_size().await,
+            1,
+            "initial_cluster_size should be 1 even when voters() is empty"
+        );
+
+        // is_single_node_cluster() should be true
+        assert!(
+            membership.is_single_node_cluster().await,
+            "is_single_node_cluster should be true"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_network_partition_does_not_affect_cluster_size() {
+        let membership = create_three_node_membership();
+
+        // Simulate network partition by removing all other nodes
+        membership.force_remove_node(2).await.expect("Should succeed");
+        membership.force_remove_node(3).await.expect("Should succeed");
+
+        // voters() should be empty now (simulating partition)
+        let voters = membership.voters().await;
+        assert!(
+            voters.is_empty(),
+            "voters() should be empty after partition"
+        );
+
+        // But initial_cluster_size should still be 3
+        assert_eq!(
+            membership.initial_cluster_size().await,
+            3,
+            "initial_cluster_size should remain 3 even in network partition"
+        );
+
+        // is_single_node_cluster() should still return false
+        assert!(
+            !membership.is_single_node_cluster().await,
+            "is_single_node_cluster should return false (was 3-node cluster)"
+        );
+    }
+}

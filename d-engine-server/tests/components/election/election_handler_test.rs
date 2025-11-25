@@ -179,6 +179,8 @@ async fn test_broadcast_vote_requests_case3() {
 
     let term = 1;
     let mut membership = MockMembership::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_initial_cluster_size().returning(|| 2);
     membership.expect_voters().returning(move || {
         vec![NodeMeta {
             id: 2,
