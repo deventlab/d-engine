@@ -1,6 +1,6 @@
 # Makefile for DEngine cluster operations
 
-.PHONY: build start-cluster clean clean-log-db help \
+.PHONY: build start-cluster start-single-node clean clean-log-db help \
         start-node1 start-node2 start-node3 join-node4 join-node5 \
         perf-node1 perf-node2 perf-node3 perf-cluster \
         tokio-console-node1 tokio-console-node2 tokio-console-node3 tokio-console-cluster
@@ -21,6 +21,16 @@ build:
 # ===============================
 # Cluster Management (Normal Mode)
 # ===============================
+start-single-node:
+	@echo "Starting Single Node (standalone mode)..."
+	CONFIG_PATH=config/node \
+	DB_PATH="./db/single" \
+	LOG_DIR="./logs/single" \
+	METRICS_PORT=8081 \
+	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_BACKTRACE=1 \
+	./target/release/demo
+
 start-node1:
 	@echo "Starting Node 1..."
 	CONFIG_PATH=config/n1 \
@@ -173,6 +183,7 @@ clean-log-db:
 help:
 	@echo "DEngine Cluster Management Commands:"
 	@echo "  build                           - Build release binary"
+	@echo "  start-single-node               - Start single node in standalone mode"
 	@echo "  start-node1..3                  - Start individual cluster nodes"
 	@echo "  join-node4..5                   - Join learner nodes to cluster"
 	@echo "  start-cluster                   - Start all 3 nodes in parallel"

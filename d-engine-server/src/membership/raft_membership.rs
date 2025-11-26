@@ -59,6 +59,8 @@ where
     node_id: u32,
     membership: MembershipGuard,
     config: RaftNodeConfig,
+    /// Initial cluster size from configuration (immutable after startup)
+    initial_cluster_size: usize,
     pub(super) health_monitor: RaftHealthMonitor,
     pub(super) connection_cache: ConnectionCache,
     _phantom: PhantomData<T>,
@@ -114,6 +116,10 @@ where
                     .collect()
             })
             .await
+    }
+
+    async fn initial_cluster_size(&self) -> usize {
+        self.initial_cluster_size
     }
 
     async fn nodes_with_status(
@@ -776,10 +782,12 @@ where
     ) -> Self {
         let zombie_threshold = config.raft.membership.zombie.threshold;
         let connection_cache = ConnectionCache::new(config.network.clone());
+        let initial_cluster_size = initial_nodes.len();
         Self {
             node_id,
             membership: MembershipGuard::new(initial_nodes, 0),
             config,
+            initial_cluster_size,
             _phantom: PhantomData,
             health_monitor: RaftHealthMonitor::new(zombie_threshold),
             connection_cache,

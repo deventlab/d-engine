@@ -1501,6 +1501,18 @@ impl<T: TypeConfig> LeaderState<T> {
 
         if !ready_learners.is_empty() {
             debug!("Ready learners: {:?}", ready_learners);
+
+            // Print promotion messages for each ready learner (Plan B)
+            for learner_id in &ready_learners {
+                let match_index = learner_progress.get(learner_id).and_then(|mi| *mi).unwrap_or(0);
+                crate::utils::cluster_printer::print_leader_promoting_learner(
+                    self.node_id(),
+                    *learner_id,
+                    match_index,
+                    leader_commit_index,
+                );
+            }
+
             // Add to pending queue
             let promotions = ready_learners
                 .into_iter()
@@ -1867,6 +1879,15 @@ impl<T: TypeConfig> LeaderState<T> {
             "Node {} ({}) successfully added as learner",
             node_id, address
         );
+
+        // Print leader accepting new node message (Plan B)
+        crate::utils::cluster_printer::print_leader_accepting_new_node(
+            self.node_id(),
+            node_id,
+            address,
+            d_engine_proto::common::NodeRole::Learner as i32,
+        );
+
         Ok(())
     }
 

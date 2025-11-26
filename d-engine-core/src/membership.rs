@@ -49,6 +49,40 @@ where
     /// All non-self nodes in Active state
     async fn voters(&self) -> Vec<NodeMeta>;
 
+    /// Get the initial cluster size from configuration
+    ///
+    /// This value is determined at node startup from the `initial_cluster` configuration
+    /// and remains constant throughout the node's lifetime. It represents the designed
+    /// cluster size, not the current runtime membership state.
+    ///
+    /// Used for:
+    /// - Quorum calculations
+    /// - Cluster topology decisions
+    ///
+    /// # Safety
+    /// This method is safe to use for cluster topology decisions as it's based on
+    /// immutable configuration rather than runtime state that could be affected by
+    /// network partitions or bugs.
+    async fn initial_cluster_size(&self) -> usize;
+
+    /// Check if this is a single-node cluster
+    ///
+    /// Returns `true` if the initial cluster size is 1, indicating this node
+    /// was configured to run in standalone mode without any peers.
+    ///
+    /// This is a convenience method equivalent to `initial_cluster_size() == 1`.
+    ///
+    /// # Use Cases
+    /// - Skip Raft election in single-node mode (no peers to vote)
+    /// - Skip log replication in single-node mode (no peers to replicate to)
+    /// - Optimize performance by avoiding unnecessary network operations
+    ///
+    /// # Safety
+    /// Safe for all cluster topology decisions as it's based on immutable configuration.
+    async fn is_single_node_cluster(&self) -> bool {
+        self.initial_cluster_size().await == 1
+    }
+
     /// All pending active nodes in Active state
     #[allow(unused)]
     async fn nodes_with_status(

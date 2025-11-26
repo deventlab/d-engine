@@ -396,6 +396,9 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     // Mock methods used by create_not_leader_response()
     membership.expect_current_leader_id().returning(|| None);
+    // Mock single-node cluster detection (default to multi-node with no peers)
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_initial_cluster_size().returning(|| 3);
     membership
 }
 

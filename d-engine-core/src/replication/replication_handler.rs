@@ -73,6 +73,20 @@ where
         // Phase 1: Pre-Checks
         // ----------------------
         let membership = ctx.membership();
+
+        // Single-node cluster: no replication needed, quorum automatically achieved
+        if membership.is_single_node_cluster().await {
+            debug!(
+                "Single-node cluster (leader={}): no replication needed, quorum automatically achieved",
+                self.my_id
+            );
+            return Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(),
+                learner_progress: HashMap::new(),
+            });
+        }
+
         let replication_targets = membership.replication_peers().await;
         if replication_targets.is_empty() {
             warn!("no peer found for leader({})", self.my_id);

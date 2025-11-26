@@ -14,6 +14,7 @@ exclude = [
   "examples/rocksdb-cluster",
   "examples/sled-cluster",
   "examples/three-nodes-cluster",
+  "examples/single-node-expansion",
   "benches/d-engine-bench",
 ]
 

@@ -126,6 +126,10 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             self.node_id(),
             self.current_term(),
         );
+
+        // Print promotion message (Plan B)
+        crate::utils::cluster_printer::print_learner_promoted_to_voter(self.node_id());
+
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
     fn become_learner(&self) -> Result<RaftRole<T>> {
@@ -484,6 +488,12 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
         // 4. mark leader_id
         membership.mark_leader_id(leader_id).await?;
+
+        // Print join success message (Plan B)
+        crate::utils::cluster_printer::print_learner_join_success(
+            self.shared_state.node_id,
+            leader_id,
+        );
 
         Ok(())
     }

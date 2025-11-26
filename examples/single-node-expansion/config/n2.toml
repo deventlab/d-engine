@@ -1,0 +1,89 @@
+# Node 2 Configuration - Joining Node (Dynamic Expansion)
+# This node joins an existing single-node cluster as a Learner
+
+[cluster]
+node_id = 2
+listen_address = "0.0.0.0:9082"
+
+# List ALL nodes in the cluster (existing + self)
+# Node 1: existing leader (role=2, status=2)
+# Node 2: joining as learner (role=3, status=0)
+initial_cluster = [
+    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Existing leader
+    { id = 2, address = "0.0.0.0:9082", role = 3, status = 0 },  # Self: Learner, Joining
+]
+
+# initial_cluster_size is IMMUTABLE - must match node 1's config
+initial_cluster_size = 1
+
+db_root_dir = "./db"
+log_dir = "./logs"
+
+
+[raft]
+general_raft_timeout_duration_in_ms = 100
+
+[raft.commit_handler]
+batch_size_threshold = 500
+process_interval_ms = 10
+max_entries_per_chunk = 100
+
+[raft.election]
+election_timeout_min = 1000
+election_timeout_max = 2000
+
+[raft.read_consistency]
+default_policy = "LeaseRead"
+lease_duration_ms = 500
+
+[raft.replication]
+rpc_append_entries_in_batch_threshold = 5000
+rpc_append_entries_batch_process_delay_in_ms = 0
+
+[raft.persistence]
+strategy = "MemFirst"
+flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
+max_buffered_entries = 10000
+flush_workers = 4
+channel_capacity = 1000
+
+[raft.snapshot]
+enable = false
+max_log_entries_before_snapshot = 10000
+snapshot_cool_down_since_last_check = { secs = 60 }
+snapshots_dir = "./snapshots/"
+retained_log_entries = 3
+
+# == Network Control Plane ==
+[network.control]
+concurrency_limit = 50
+max_concurrent_streams = 1024
+connection_window_size = 4_194_304
+initial_stream_window_size = 2_097_152
+enable_connect_protocol = true
+
+tcp_keepalive_in_secs = 60
+http2_keep_alive_interval_in_secs = 15
+http2_keep_alive_timeout_in_secs = 10
+max_frame_size = 16_777_215
+
+http2_max_pending_accept_reset_streams = 1000
+http2_max_send_buffer_size = 8_388_608
+
+# == Network Data Plane ==
+[network.data]
+connect_timeout_in_ms = 100
+request_timeout_in_ms = 300
+concurrency_limit = 100
+max_concurrent_streams = 4096
+connection_window_size = 8_388_608
+initial_stream_window_size = 4_194_304
+
+tcp_keepalive_in_secs = 60
+http2_keep_alive_interval_in_secs = 15
+http2_keep_alive_timeout_in_secs = 10
+max_frame_size = 16_777_215
+
+http2_adaptive_window = true
+http2_max_pending_accept_reset_streams = 2000
+http2_max_send_buffer_size = 16_777_216

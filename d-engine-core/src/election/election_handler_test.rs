@@ -576,3 +576,156 @@ async fn test_handle_vote_request_large_term_numbers() {
     // Assert
     assert_eq!(state_update.term_update, Some(large_term));
 }
+
+// ================================================================================================
+// Tests for Single-Node Cluster Support (Issue #179)
+// ================================================================================================
+
+#[cfg(test)]
+mod single_node_election_tests {
+    use super::*;
+    use crate::ElectionError;
+    use crate::Error;
+    use crate::MockMembership;
+    use crate::MockTransport;
+    use crate::RaftNodeConfig;
+    use crate::VoteResult;
+    use d_engine_proto::server::cluster::NodeMeta;
+    use d_engine_proto::server::election::VoteResponse;
+    use std::collections::HashSet;
+
+    #[tokio::test]
+    async fn test_single_node_auto_wins_election() {
+        // Arrange
+        let handler = ElectionHandler::<MockTypeConfig>::new(1);
+        let mut mock_membership = MockMembership::new();
+
+        // Mock: is_single_node_cluster() returns true for single-node
+        mock_membership.expect_is_single_node_cluster().times(1).returning(|| true);
+
+        // voters() should NOT be called (early return before this check)
+        mock_membership.expect_voters().times(0);
+
+        let membership = Arc::new(mock_membership);
+        let raft_log = Arc::new(create_mock_raft_log(None));
+        let mock_transport = MockTransport::new();
+        let transport = Arc::new(mock_transport);
+        let settings = Arc::new(RaftNodeConfig::default());
+
+        // Act
+        let result = handler
+            .broadcast_vote_requests(1, membership, &raft_log, &transport, &settings)
+            .await;
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "Single-node should automatically win election"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_three_node_cluster_goes_through_normal_election() {
+        // Arrange
+        let handler = ElectionHandler::<MockTypeConfig>::new(1);
+        let mut mock_membership = MockMembership::new();
+
+        // Mock: is_single_node_cluster() returns false for multi-node
+        mock_membership.expect_is_single_node_cluster().times(1).returning(|| false);
+
+        // Mock: voters() returns 2 peers
+        mock_membership.expect_voters().times(1).returning(|| {
+            vec![
+                NodeMeta {
+                    id: 2,
+                    address: "127.0.0.1:9082".to_string(),
+                    role: 0,
+                    status: 2,
+                },
+                NodeMeta {
+                    id: 3,
+                    address: "127.0.0.1:9083".to_string(),
+                    role: 0,
+                    status: 2,
+                },
+            ]
+        });
+
+        let membership = Arc::new(mock_membership);
+        let raft_log = Arc::new(create_mock_raft_log(None));
+
+        let mut mock_transport = MockTransport::new();
+        // Mock transport to return majority votes
+        mock_transport.expect_send_vote_requests().times(1).returning(
+            |_req, _retry, _membership| {
+                Ok(VoteResult {
+                    peer_ids: HashSet::from([2, 3]),
+                    responses: vec![
+                        Ok(VoteResponse {
+                            term: 1,
+                            vote_granted: true,
+                            last_log_index: 0,
+                            last_log_term: 0,
+                        }),
+                        Ok(VoteResponse {
+                            term: 1,
+                            vote_granted: true,
+                            last_log_index: 0,
+                            last_log_term: 0,
+                        }),
+                    ],
+                })
+            },
+        );
+
+        let transport = Arc::new(mock_transport);
+        let settings = Arc::new(RaftNodeConfig::default());
+
+        // Act
+        let result = handler
+            .broadcast_vote_requests(1, membership, &raft_log, &transport, &settings)
+            .await;
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "Three-node cluster should complete normal election"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_network_partition_with_empty_voters_still_reports_error() {
+        // Arrange
+        let handler = ElectionHandler::<MockTypeConfig>::new(1);
+        let mut mock_membership = MockMembership::new();
+
+        // Mock: is_single_node_cluster() returns false for multi-node (network partition scenario)
+        mock_membership.expect_is_single_node_cluster().times(1).returning(|| false);
+
+        // Mock: voters() returns empty (network partition)
+        mock_membership.expect_voters().times(1).returning(Vec::new);
+
+        let membership = Arc::new(mock_membership);
+        let raft_log = Arc::new(create_mock_raft_log(None));
+        let mock_transport = MockTransport::new();
+        let transport = Arc::new(mock_transport);
+        let settings = Arc::new(RaftNodeConfig::default());
+
+        // Act
+        let result = handler
+            .broadcast_vote_requests(1, membership, &raft_log, &transport, &settings)
+            .await;
+
+        // Assert
+        assert!(result.is_err(), "Network partition should return error");
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                Error::Consensus(crate::ConsensusError::Election(
+                    ElectionError::NoVotingMemberFound { .. }
+                ))
+            ),
+            "Should return NoVotingMemberFound error"
+        );
+    }
+}
