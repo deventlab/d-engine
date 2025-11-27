@@ -476,6 +476,7 @@ dependencies = [
 name = "d-engine"
 version = "0.2.0"
 dependencies = [
+ "d-engine-core",
  "d-engine-server",
 ]
 

@@ -102,7 +102,7 @@ impl MockNode {
                     version: 1,
                     nodes: vec![NodeMeta {
                         id: 1,
-                        role: NodeRole::Leader.into(),
+                        role: NodeRole::Leader as i32,
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
@@ -131,7 +131,7 @@ impl MockNode {
                     version: 1,
                     nodes: vec![NodeMeta {
                         id: 1,
-                        role: NodeRole::Leader.into(),
+                        role: NodeRole::Leader as i32,
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
@@ -162,7 +162,7 @@ impl MockNode {
                     version: 1,
                     nodes: vec![NodeMeta {
                         id: 1,
-                        role: NodeRole::Leader.into(),
+                        role: NodeRole::Leader as i32,
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
@@ -193,7 +193,7 @@ impl MockNode {
                     version: 1,
                     nodes: vec![NodeMeta {
                         id: 1,
-                        role: NodeRole::Leader.into(),
+                        role: NodeRole::Leader as i32,
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],

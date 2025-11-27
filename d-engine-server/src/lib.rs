@@ -66,7 +66,7 @@ pub mod node;
 pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
-pub use node::{Node, NodeBuilder};
+pub use node::{LocalKvClient, Node, NodeBuilder};
 
 // Re-export storage implementations
 pub use storage::{

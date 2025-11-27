@@ -47,7 +47,7 @@ async fn test_list_members_success() {
 
     let members = client.list_members().await.expect("Should get members");
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0].role, NodeRole::Leader.into());
+    assert_eq!(members[0].role, NodeRole::Leader as i32);
 }
 
 #[tokio::test]
@@ -61,7 +61,7 @@ async fn test_join_cluster_success() {
                 version: 1,
                 nodes: vec![NodeMeta {
                     id: 1,
-                    role: NodeRole::Leader.into(),
+                    role: NodeRole::Leader as i32,
                     address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
@@ -91,7 +91,7 @@ async fn test_join_cluster_success() {
 
     let request = NodeMeta {
         id: 2,
-        role: NodeRole::Follower.into(),
+        role: NodeRole::Follower as i32,
         address: "127.0.0.1:50052".to_string(),
         status: NodeStatus::Active.into(),
     };
@@ -130,7 +130,7 @@ async fn test_join_cluster_failure() {
 
     let request = NodeMeta {
         id: 2,
-        role: NodeRole::Leader.into(),
+        role: NodeRole::Leader as i32,
         address: "127.0.0.1:50052".to_string(),
         status: NodeStatus::Active.into(),
     };
@@ -138,11 +138,11 @@ async fn test_join_cluster_failure() {
     // Simulate leader rejection
     let mut leader_node = NodeMeta {
         id: 1,
-        role: NodeRole::Leader.into(),
+        role: NodeRole::Leader as i32,
         address: "127.0.0.1:50051".to_string(),
         status: NodeStatus::Active.into(),
     };
-    leader_node.role = NodeRole::Leader.into();
+    leader_node.role = NodeRole::Leader as i32;
 
     let result = client.join_cluster(request).await;
     assert!(result.is_err());

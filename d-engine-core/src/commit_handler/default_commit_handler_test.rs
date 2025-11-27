@@ -315,7 +315,7 @@ fn setup(
     };
     DefaultCommitHandler::<MockTypeConfig>::new(
         1,
-        Leader.into(),
+        Leader as i32,
         1,
         deps,
         Arc::new(config),
@@ -434,7 +434,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -448,7 +448,7 @@ mod run_test {
 
         // Send commits to trigger processing
         for i in 1..=4 {
-            harness.send_commit(i, Leader.into()).await;
+            harness.send_commit(i, Leader as i32).await;
         }
 
         // Verify snapshot triggered
@@ -471,7 +471,7 @@ mod run_test {
         );
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -483,8 +483,8 @@ mod run_test {
         );
 
         harness.run_handler().await;
-        harness.send_commit(1, Leader.into()).await;
-        harness.send_commit(2, Follower.into()).await;
+        harness.send_commit(1, Leader as i32).await;
+        harness.send_commit(2, Follower as i32).await;
 
         // Should not process second command
         time::sleep(Duration::from_millis(50)).await;
@@ -504,7 +504,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -516,7 +516,7 @@ mod run_test {
         );
 
         harness.run_handler().await;
-        harness.send_commit(1, Leader.into()).await;
+        harness.send_commit(1, Leader as i32).await;
         time::sleep(Duration::from_millis(50)).await;
         harness.shutdown_tx.send(()).unwrap();
         harness.handle.unwrap().await.unwrap();
@@ -533,7 +533,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -547,7 +547,7 @@ mod run_test {
 
         // Send all commits at once
         for i in 1..=1000 {
-            harness.send_commit(i, Leader.into()).await;
+            harness.send_commit(i, Leader as i32).await;
         }
 
         println!("Sent all commits");
@@ -583,7 +583,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -597,7 +597,7 @@ mod run_test {
 
         // Send commits to trigger processing
         for i in 1..=2 {
-            harness.send_commit(i, Leader.into()).await;
+            harness.send_commit(i, Leader as i32).await;
         }
         tokio::time::advance(Duration::from_millis(3)).await;
         // Clean shutdown
@@ -636,7 +636,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -649,7 +649,7 @@ mod run_test {
         harness.run_handler().await;
 
         for i in 1..=batch_thresold {
-            harness.send_commit(i, Leader.into()).await;
+            harness.send_commit(i, Leader as i32).await;
         }
         tokio::time::advance(Duration::from_millis(2)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -689,7 +689,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -702,7 +702,7 @@ mod run_test {
         harness.run_handler().await;
 
         for i in 1..=(batch_thresold - 10) {
-            harness.send_commit(i, Leader.into()).await;
+            harness.send_commit(i, Leader as i32).await;
         }
         tokio::time::advance(Duration::from_millis(2)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -742,7 +742,7 @@ mod run_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -755,7 +755,7 @@ mod run_test {
         harness.run_handler().await;
 
         for i in 1..=batch_thresold {
-            harness.send_commit(i, Leader.into()).await;
+            harness.send_commit(i, Leader as i32).await;
         }
         tokio::time::advance(Duration::from_millis(2)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -848,7 +848,7 @@ mod process_batch_test {
     async fn processes_empty_batch_successfully() {
         let last_applied = 0;
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             vec![],
             last_applied as u64,
@@ -875,7 +875,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -907,7 +907,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -947,7 +947,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -978,7 +978,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1006,7 +1006,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1032,7 +1032,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1054,7 +1054,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1089,7 +1089,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1115,7 +1115,7 @@ mod process_batch_test {
         let entries = build_entries(r, 1);
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1149,7 +1149,7 @@ mod process_batch_test {
         let order_capture = process_order.clone();
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,
@@ -1198,7 +1198,7 @@ mod process_batch_test {
 
         let last_applied = entries.len();
         let mut harness = setup_harness(
-            Leader.into(),
+            Leader as i32,
             1,
             entries,
             last_applied as u64,

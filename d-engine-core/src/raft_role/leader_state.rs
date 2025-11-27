@@ -1202,7 +1202,7 @@ impl<T: TypeConfig> LeaderState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
-            role: Leader.into(),
+            role: Leader as i32,
         }
     }
 
@@ -1350,7 +1350,7 @@ impl<T: TypeConfig> LeaderState<T> {
                         new_commit_index
                     );
                     self.update_commit_index_with_signal(
-                        Leader.into(),
+                        Leader as i32,
                         self.current_term(),
                         new_commit_index,
                         role_tx,

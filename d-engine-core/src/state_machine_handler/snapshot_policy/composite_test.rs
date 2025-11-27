@@ -12,7 +12,7 @@ use d_engine_proto::common::NodeRole::Leader;
 /// Creates a leader context for testing
 fn leader_ctx(last_applied_index: u64) -> SnapshotContext {
     SnapshotContext {
-        role: Leader.into(),
+        role: Leader as i32,
         last_included: LogId { term: 1, index: 0 },
         last_applied: LogId {
             term: 1,
@@ -25,7 +25,7 @@ fn leader_ctx(last_applied_index: u64) -> SnapshotContext {
 /// Creates a follower context for testing
 fn follower_ctx(last_applied_index: u64) -> SnapshotContext {
     SnapshotContext {
-        role: Follower.into(),
+        role: Follower as i32,
         last_included: LogId { term: 1, index: 0 },
         last_applied: LogId {
             term: 1,

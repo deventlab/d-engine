@@ -604,7 +604,7 @@ impl<T: TypeConfig> CandidateState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
-            role: Candidate.into(),
+            role: Candidate as i32,
         }
     }
 

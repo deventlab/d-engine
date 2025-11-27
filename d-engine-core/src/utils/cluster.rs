@@ -26,20 +26,20 @@ pub fn error(
 
 #[inline]
 pub fn is_follower(role_i32: i32) -> bool {
-    role_i32 == Follower.into()
+    role_i32 == (Follower as i32)
 }
 
 #[inline]
 pub fn is_candidate(role_i32: i32) -> bool {
-    role_i32 == Candidate.into()
+    role_i32 == (Candidate as i32)
 }
 
 #[inline]
 pub fn is_leader(role_i32: i32) -> bool {
-    role_i32 == Leader.into()
+    role_i32 == (Leader as i32)
 }
 
 #[inline]
 pub fn is_learner(role_i32: i32) -> bool {
-    role_i32 == Learner.into()
+    role_i32 == (Learner as i32)
 }

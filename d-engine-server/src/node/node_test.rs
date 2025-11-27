@@ -111,13 +111,13 @@ async fn run_success_without_joining() {
                     NodeMeta {
                         id: 100,
                         address: "127.0.0.1:8080".to_string(),
-                        role: Follower.into(),
+                        role: Follower as i32,
                         status: NodeStatus::Active as i32,
                     },
                     NodeMeta {
                         id: 200,
                         address: "127.0.0.1:8081".to_string(),
-                        role: Follower.into(),
+                        role: Follower as i32,
                         status: NodeStatus::Active as i32,
                     },
                 ];
@@ -197,13 +197,13 @@ async fn run_success_with_joining() {
             NodeMeta {
                 id: node_id,
                 address: "127.0.0.1:8080".to_string(),
-                role: Learner.into(),
+                role: Learner as i32,
                 status: NodeStatus::Joining as i32,
             },
             NodeMeta {
                 id: 200,
                 address: "127.0.0.1:8081".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active as i32,
             },
         ];
@@ -284,13 +284,13 @@ async fn run_fails_on_health_check() {
                     NodeMeta {
                         id: 100,
                         address: "127.0.0.1:8080".to_string(),
-                        role: Follower.into(),
+                        role: Follower as i32,
                         status: NodeStatus::Active as i32,
                     },
                     NodeMeta {
                         id: 200,
                         address: "127.0.0.1:8081".to_string(),
-                        role: Follower.into(),
+                        role: Follower as i32,
                         status: NodeStatus::Active as i32,
                     },
                 ];

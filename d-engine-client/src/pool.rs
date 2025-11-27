@@ -182,7 +182,7 @@ impl ConnectionPool {
         for node in nodes {
             let addr = address_str(&node.address);
             debug!("parse_cluster_metadata, addr: {:?}", &addr);
-            if node.role == NodeRole::Leader.into() {
+            if node.role == NodeRole::Leader as i32 {
                 leader_addr = Some(addr);
             } else {
                 followers.push(addr);
