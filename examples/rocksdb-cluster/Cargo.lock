@@ -486,6 +486,7 @@ dependencies = [
  "astral-tokio-tar",
  "async-compression",
  "async-stream",
+ "async-trait",
  "bincode 1.3.3",
  "bytes",
  "config",
@@ -532,6 +533,7 @@ name = "d-engine-server"
 version = "0.2.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "bincode 1.3.3",
  "bytes",
  "config",

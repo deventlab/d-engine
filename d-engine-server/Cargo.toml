@@ -28,6 +28,7 @@ tonic = { workspace = true }
 bytes =  { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+async-trait = "0.1"
 tempfile = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }

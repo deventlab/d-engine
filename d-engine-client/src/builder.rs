@@ -9,7 +9,7 @@ use super::ClientConfig;
 use super::ClientInner;
 use super::ClusterClient;
 use super::ConnectionPool;
-use super::KvClient;
+use super::GrpcKvClient;
 
 /// Configurable builder for [`Client`] instances
 ///
@@ -112,7 +112,7 @@ impl ClientBuilder {
         }));
 
         Ok(Client {
-            kv: KvClient::new(inner.clone()),
+            kv: GrpcKvClient::new(inner.clone()),
             cluster: ClusterClient::new(inner.clone()),
             inner,
         })

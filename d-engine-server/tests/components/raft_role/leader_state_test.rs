@@ -3243,6 +3243,7 @@ mod batch_promote_learners_test {
         raft_context.handlers.replication_handler = replication_handler;
 
         let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
         raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -3966,6 +3967,7 @@ mod handle_client_read_request {
         );
 
         let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
         // Configure server to allow client override
@@ -4017,6 +4019,7 @@ mod handle_client_read_request {
         );
 
         let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -4069,6 +4072,7 @@ mod handle_client_read_request {
         );
 
         let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
         let (_graceful_tx, graceful_rx) = watch::channel(());

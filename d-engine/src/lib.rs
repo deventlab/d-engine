@@ -103,7 +103,7 @@ pub use d_engine_client::{
     ClientConfig,
     // Specialized clients
     ClusterClient,
-    KvClient,
+    GrpcKvClient,
 };
 
 #[cfg(feature = "client")]

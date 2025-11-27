@@ -29,6 +29,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 prost = { workspace = true }
+async-trait = "0.1"
 bincode = "1.3"
 thiserror = "1.0"
 nanoid = "0.4.0"

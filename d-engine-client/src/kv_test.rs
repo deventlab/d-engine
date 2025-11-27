@@ -10,7 +10,7 @@ use crate::ClientConfig;
 use crate::ClientInner;
 use crate::ClusterClient;
 use crate::ConnectionPool;
-use crate::KvClient;
+use crate::GrpcKvClient;
 use crate::mock_rpc_service::MockNode;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
@@ -39,7 +39,7 @@ async fn test_put_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -75,7 +75,7 @@ async fn test_put_with_ttl_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -112,7 +112,7 @@ async fn test_put_with_ttl_failure() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -149,7 +149,7 @@ async fn test_put_with_zero_ttl() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -185,7 +185,7 @@ async fn test_put_failure() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -229,7 +229,7 @@ async fn test_get_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -265,7 +265,7 @@ async fn test_get_not_found() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -299,7 +299,7 @@ async fn test_delete_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -333,7 +333,7 @@ async fn test_delete_failure() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -390,7 +390,7 @@ async fn test_get_multi_success_linear() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -462,7 +462,7 @@ async fn test_get_multi_success_non_linear() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -510,7 +510,7 @@ async fn test_get_multi_failure() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -551,7 +551,7 @@ async fn test_get_multi_empty_keys() {
         .await
         .expect("Should create connection pool");
     // Test with empty keys vector
-    let result = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let result = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config: ClientConfig::default(),
@@ -590,7 +590,7 @@ async fn test_get_linearizable_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -628,7 +628,7 @@ async fn test_get_lease_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -666,7 +666,7 @@ async fn test_get_eventual_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -719,7 +719,7 @@ async fn test_get_multi_success() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -777,7 +777,7 @@ async fn test_get_multi_with_mixed_results() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -817,7 +817,7 @@ async fn test_get_consistency_methods_failure() {
         .await
         .expect("Should create connection pool");
 
-    let client = KvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+    let client = GrpcKvClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
         pool,
         client_id: 123,
         config,
@@ -880,7 +880,7 @@ async fn test_client_refresh_with_new_endpoints() {
     }));
 
     let mut client = Client {
-        kv: KvClient::new(client_inner.clone()),
+        kv: GrpcKvClient::new(client_inner.clone()),
         cluster: ClusterClient::new(client_inner.clone()),
         inner: client_inner,
     };
@@ -950,7 +950,7 @@ async fn test_client_refresh_with_none_endpoints() {
     }));
 
     let mut client = Client {
-        kv: KvClient::new(client_inner.clone()),
+        kv: GrpcKvClient::new(client_inner.clone()),
         cluster: ClusterClient::new(client_inner.clone()),
         inner: client_inner,
     };
@@ -1017,7 +1017,7 @@ async fn test_client_refresh_with_multiple_endpoints() {
     }));
 
     let mut client = Client {
-        kv: KvClient::new(client_inner.clone()),
+        kv: GrpcKvClient::new(client_inner.clone()),
         cluster: ClusterClient::new(client_inner.clone()),
         inner: client_inner,
     };
@@ -1078,7 +1078,7 @@ async fn test_client_refresh_failure_invalid_endpoints() {
     }));
 
     let mut client = Client {
-        kv: KvClient::new(client_inner.clone()),
+        kv: GrpcKvClient::new(client_inner.clone()),
         cluster: ClusterClient::new(client_inner.clone()),
         inner: client_inner,
     };
@@ -1136,7 +1136,7 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
     }));
 
     let mut client = Client {
-        kv: KvClient::new(client_inner.clone()),
+        kv: GrpcKvClient::new(client_inner.clone()),
         cluster: ClusterClient::new(client_inner.clone()),
         inner: client_inner,
     };

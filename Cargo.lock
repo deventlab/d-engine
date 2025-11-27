@@ -535,7 +535,9 @@ name = "d-engine-client"
 version = "0.2.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "bytes",
+ "d-engine-core",
  "d-engine-proto",
  "futures",
  "mockall",
@@ -556,6 +558,7 @@ dependencies = [
  "astral-tokio-tar",
  "async-compression",
  "async-stream",
+ "async-trait",
  "bincode",
  "bytes",
  "config",
@@ -621,6 +624,7 @@ dependencies = [
  "arc-swap",
  "astral-tokio-tar",
  "async-compression",
+ "async-trait",
  "bincode",
  "bytes",
  "config",

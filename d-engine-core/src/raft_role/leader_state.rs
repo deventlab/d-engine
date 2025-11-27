@@ -1330,9 +1330,20 @@ impl<T: TypeConfig> LeaderState<T> {
                 };
 
                 // 3. Update commit index
-                if let Some(new_commit_index) =
+                // Single-node cluster (peer_updates empty): commit index = last log index
+                // Multi-node cluster: calculate commit index based on majority quorum
+                let new_commit_index = if peer_updates.is_empty() {
+                    let last_log_index = ctx.raft_log().last_entry_id();
+                    if last_log_index > self.commit_index() {
+                        Some(last_log_index)
+                    } else {
+                        None
+                    }
+                } else {
                     self.calculate_new_commit_index(ctx.raft_log(), &peer_updates)
-                {
+                };
+
+                if let Some(new_commit_index) = new_commit_index {
                     debug!(
                         "[Leader-{}] New commit been acknowledged: {}",
                         self.node_id(),
