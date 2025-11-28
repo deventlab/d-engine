@@ -207,9 +207,10 @@ where
         }
     }
 
-    /// Creates a local KV client for zero-overhead embedded access.
+    /// Returns this node's unique identifier.
     ///
-    /// Returns the node ID.
+    /// Useful for logging, metrics, and integrations that need to identify
+    /// which Raft node is handling operations.
     pub fn node_id(&self) -> u32 {
         self.node_id
     }

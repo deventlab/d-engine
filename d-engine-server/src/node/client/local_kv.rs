@@ -341,8 +341,13 @@ impl KvClient for LocalKvClient {
             Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
                 read_results,
             )) => {
-                // Map results by position: if result exists, return value (even if empty)
-                Ok(read_results.results.into_iter().map(|r| Some(r.value)).collect())
+                // Reconstruct result vector in requested key order.
+                // Server only returns results for keys that exist, so we must
+                // map by key to preserve positional correspondence with input.
+                let results_by_key: std::collections::HashMap<_, _> =
+                    read_results.results.into_iter().map(|r| (r.key, r.value)).collect();
+
+                Ok(keys.iter().map(|k| results_by_key.get(k).cloned()).collect())
             }
             _ => Ok(vec![None; keys.len()]),
         }

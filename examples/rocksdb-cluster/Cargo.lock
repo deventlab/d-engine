@@ -476,8 +476,26 @@ dependencies = [
 name = "d-engine"
 version = "0.2.0"
 dependencies = [
- "d-engine-core",
  "d-engine-server",
+]
+
+[[package]]
+name = "d-engine-client"
+version = "0.2.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "d-engine-core",
+ "d-engine-proto",
+ "futures",
+ "rand 0.8.5",
+ "serde",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-health",
+ "tracing",
 ]
 
 [[package]]
@@ -541,6 +559,7 @@ dependencies = [
  "crc32fast",
  "crossbeam",
  "crossbeam-skiplist",
+ "d-engine-client",
  "d-engine-core",
  "d-engine-proto",
  "dashmap",
