@@ -7,13 +7,16 @@
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/deventlab/d-engine)
 
-**d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that maximizes single CPU core performance while minimizing resource overhead. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
+**d-engine** is a lightweight distributed coordination engine written in Rust, designed for embedding into applications that need strong consistency—the consensus layer for building reliable distributed systems. Start with a single node and scale to a cluster when you need high availability. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that minimizes resource overhead while maintaining high performance. It provides a production-ready implementation of the Raft consensus algorithm,
+with pluggable storage backends, built-in observability, and tokio runtime support.
 
 ---
 
 ## Features
 
+- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime).
 - **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
+- **Tunable Persistence**: DiskFirst for maximum durability or MemFirst for lower latency.
 - **Flexible Read Consistency**: Three-tier read model (Linearizable/Lease-Based/Eventual) balancing consistency and performance.
 - **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, Raw File).
 - **Observability**: Built-in metrics, structured logging, and distributed tracing.
@@ -88,7 +91,7 @@ d-engine provides flexible storage abstraction layers. Implement your own storag
 - **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
 - **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
 
-Note: For production use, a minimum of 3 nodes is required to ensure fault tolerance.
+Note: Single-node deployment is supported for development and low-traffic production. For high availability, you can dynamically expand to a 3-node cluster with zero downtime.
 
 ---
 
