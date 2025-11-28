@@ -60,12 +60,27 @@
 /// Contains [`Node`] and [`NodeBuilder`] for server setup.
 pub mod node;
 
+/// Embedded mode - application-friendly API
+///
+/// Contains [`EmbeddedEngine`] for simplified embedded usage.
+pub mod embedded;
+
+/// Leader election information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaderInfo {
+    /// ID of the current leader node
+    pub leader_id: u32,
+    /// Current Raft term
+    pub term: u64,
+}
+
 /// Storage layer implementations
 ///
 /// Provides file-based and RocksDB storage backends.
 pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
+pub use embedded::EmbeddedEngine;
 pub use node::{LocalKvClient, Node, NodeBuilder};
 
 // Re-export storage implementations

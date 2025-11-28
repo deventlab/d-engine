@@ -335,3 +335,169 @@ async fn run_fails_on_health_check() {
     );
     assert!(!logs_contain("Node is running"), "Node should be running");
 }
+
+
+//! Unit tests for Node leader election notification
+
+#[cfg(test)]
+mod leader_elected_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::watch;
+
+    use crate::LeaderInfo;
+    use crate::node::Node;
+    use d_engine_core::test_utils::mock_raft_for_test;
+
+    #[tokio::test]
+    async fn test_leader_elected_notifier_subscription() {
+        // Create a Node instance
+        let raft = mock_raft_for_test(1).await;
+        let node = Node::from_raft(raft);
+
+        // Subscribe to leader election notifications
+        let mut rx = node.leader_elected_notifier();
+
+        // Initial state should be None (no leader yet)
+        assert_eq!(*rx.borrow(), None);
+    }
+
+    #[tokio::test]
+    async fn test_leader_elected_notifier_receives_updates() {
+        // Create a Node instance
+        let raft = mock_raft_for_test(1).await;
+        let node = Arc::new(Node::from_raft(raft));
+
+        // Subscribe to leader election notifications
+        let mut rx = node.leader_elected_notifier();
+
+        // Simulate leader election by sending to the channel
+        let leader_info = LeaderInfo {
+            leader_id: 1,
+            term: 5,
+        };
+        node.leader_elected_tx
+            .send(Some(leader_info.clone()))
+            .expect("Should send leader info");
+
+        // Wait for update
+        rx.changed().await.expect("Should receive change notification");
+
+        // Verify received data
+        let received = rx.borrow().clone();
+        assert_eq!(received, Some(leader_info));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_subscribers() {
+        // Create a Node instance
+        let raft = mock_raft_for_test(1).await;
+        let node = Arc::new(Node::from_raft(raft));
+
+        // Create multiple subscribers
+        let mut rx1 = node.leader_elected_notifier();
+        let mut rx2 = node.leader_elected_notifier();
+
+        // Send leader info
+        let leader_info = LeaderInfo {
+            leader_id: 2,
+            term: 10,
+        };
+        node.leader_elected_tx.send(Some(leader_info.clone())).expect("Should send");
+
+        // Both should receive
+        rx1.changed().await.expect("Subscriber 1 should receive");
+        rx2.changed().await.expect("Subscriber 2 should receive");
+
+        assert_eq!(*rx1.borrow(), Some(leader_info.clone()));
+        assert_eq!(*rx2.borrow(), Some(leader_info));
+    }
+
+    #[tokio::test]
+    async fn test_leader_change_sequence() {
+        // Create a Node instance
+        let raft = mock_raft_for_test(1).await;
+        let node = Arc::new(Node::from_raft(raft));
+
+        let mut rx = node.leader_elected_notifier();
+
+        // Leader 1 elected
+        let leader1 = LeaderInfo {
+            leader_id: 1,
+            term: 5,
+        };
+        node.leader_elected_tx.send(Some(leader1.clone())).unwrap();
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow(), Some(leader1));
+
+        // Leader changes to None (during election)
+        node.leader_elected_tx.send(None).unwrap();
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow(), None);
+
+        // Leader 2 elected
+        let leader2 = LeaderInfo {
+            leader_id: 2,
+            term: 6,
+        };
+        node.leader_elected_tx.send(Some(leader2.clone())).unwrap();
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow(), Some(leader2));
+    }
+
+    #[tokio::test]
+    async fn test_ready_notifier_independent() {
+        // Create a Node instance
+        let raft = mock_raft_for_test(1).await;
+        let node = Arc::new(Node::from_raft(raft));
+
+        let mut ready_rx = node.ready_notifier();
+        let mut leader_rx = node.leader_elected_notifier();
+
+        // Initially both should be false/None
+        assert_eq!(*ready_rx.borrow(), false);
+        assert_eq!(*leader_rx.borrow(), None);
+
+        // Set ready
+        node.set_ready(true);
+        ready_rx.changed().await.expect("Should receive ready change");
+        assert_eq!(*ready_rx.borrow(), true);
+
+        // Leader should still be None
+        assert_eq!(*leader_rx.borrow(), None);
+
+        // Now set leader
+        let leader_info = LeaderInfo {
+            leader_id: 1,
+            term: 1,
+        };
+        node.leader_elected_tx.send(Some(leader_info.clone())).unwrap();
+        leader_rx.changed().await.expect("Should receive leader change");
+        assert_eq!(*leader_rx.borrow(), Some(leader_info));
+
+        // Ready should still be true
+        assert_eq!(*ready_rx.borrow(), true);
+    }
+
+    #[tokio::test]
+    async fn test_initial_receiver_keeps_channel_alive() {
+        // Create a Node instance
+        let raft = mock_raft_for_test(1).await;
+        let node = Arc::new(Node::from_raft(raft));
+
+        // The node holds _leader_elected_rx, so new subscribers should work
+        let mut rx = node.leader_elected_notifier();
+
+        // Send should succeed
+        let leader_info = LeaderInfo {
+            leader_id: 1,
+            term: 1,
+        };
+        node.leader_elected_tx
+            .send(Some(leader_info.clone()))
+            .expect("Channel should be alive");
+
+        rx.changed().await.expect("Should receive");
+        assert_eq!(*rx.borrow(), Some(leader_info));
+    }
+}

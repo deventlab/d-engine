@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Runtime data
+/data/
+/logs/
+
+# OS
+.DS_Store
+*.swp
+*.swo
+*~

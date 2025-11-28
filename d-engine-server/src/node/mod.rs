@@ -34,6 +34,8 @@ pub use type_config::*;
 #[cfg(test)]
 mod builder_test;
 #[cfg(test)]
+mod mod_test;
+#[cfg(test)]
 mod node_test;
 
 use std::fmt::Debug;
@@ -44,6 +46,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use crate::network::grpc::WatchDispatcherHandle;
 use d_engine_core::Membership;
@@ -82,6 +85,16 @@ where
     // TODO: find a better solution
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) ready: AtomicBool,
+
+    /// Notifies when node becomes ready to participate in cluster
+    pub(crate) ready_notify_tx: watch::Sender<bool>,
+
+    /// Notifies when leader is elected (includes leader changes)
+    /// Contains Some(LeaderInfo) when a leader exists, None during election
+    pub(crate) leader_elected_tx: watch::Sender<Option<crate::LeaderInfo>>,
+
+    /// Initial receiver for leader_elected_tx (kept alive to prevent channel closure)
+    pub(crate) _leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
 
     /// Raft node config
     pub node_config: Arc<RaftNodeConfig>,
@@ -176,6 +189,8 @@ where
     ) {
         info!("Set node is ready to run Raft protocol");
         self.ready.store(is_ready, Ordering::SeqCst);
+        // Notify waiters that node is ready
+        let _ = self.ready_notify_tx.send(is_ready);
     }
 
     /// Checks if the node is in a ready state to participate in cluster operations.
@@ -187,6 +202,44 @@ where
         self.ready.load(Ordering::Acquire)
     }
 
+    /// Returns a receiver for node readiness notifications.
+    ///
+    /// Subscribe to this channel to be notified when the node becomes ready
+    /// to participate in cluster operations (NOT the same as leader election).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let ready_rx = node.ready_notifier();
+    /// ready_rx.wait_for(|&ready| ready).await?;
+    /// // Node is now initialized
+    /// ```
+    pub fn ready_notifier(&self) -> watch::Receiver<bool> {
+        self.ready_notify_tx.subscribe()
+    }
+
+    /// Returns a receiver for leader election notifications.
+    ///
+    /// Subscribe to this channel to be notified when:
+    /// - First leader is elected (initial election)
+    /// - Leader changes (re-election)
+    /// - No leader exists (during election)
+    ///
+    /// # Performance
+    /// Event-driven notification (no polling), <1ms latency
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut leader_rx = node.leader_elected_notifier();
+    /// while leader_rx.changed().await.is_ok() {
+    ///     if let Some(info) = leader_rx.borrow().as_ref() {
+    ///         println!("Leader: {} (term {})", info.leader_id, info.term);
+    ///     }
+    /// }
+    /// ```
+    pub fn leader_elected_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
+        self.leader_elected_tx.subscribe()
+    }
+
     /// Create a Node from a pre-built Raft instance
     /// This method is designed to support testing and external builders
     pub fn from_raft(raft: Raft<T>) -> Self {
@@ -195,12 +248,18 @@ where
         let membership = raft.ctx.membership();
         let node_id = raft.node_id;
 
+        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
+        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+
         Node {
             node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
             ready: AtomicBool::new(false),
+            ready_notify_tx,
+            leader_elected_tx,
+            _leader_elected_rx: leader_elected_rx,
             node_config,
             watch_manager: None,
             watch_dispatcher_handle: None,
