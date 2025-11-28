@@ -198,5 +198,5 @@ pub mod prelude {
     };
 
     #[cfg(feature = "full")]
-    pub use d_engine_core::KvClient;
+    pub use d_engine_client::KvClient;
 }
