@@ -124,7 +124,7 @@ pub mod cluster_types {
 
 #[cfg(any(feature = "client", feature = "server"))]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "client", feature = "server"))))]
-pub use d_engine_core::KvClient;
+pub use d_engine_client::KvClient;
 
 // ==================== Server API ====================
 

@@ -15,7 +15,8 @@ use super::ClientInner;
 use crate::ClientApiError;
 use crate::ClientResponseExt;
 use crate::scoped_timer::ScopedTimer;
-use d_engine_core::{KvClient as CoreKvClient, KvClientError, KvResult};
+#[allow(unused_imports)]
+use crate::{KvClient as CoreKvClient, KvClientError, KvResult};
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;
@@ -344,27 +345,6 @@ impl GrpcKvClient {
 }
 
 // ==================== Core KvClient Trait Implementation ====================
-
-// Convert ClientApiError to KvClientError
-impl From<ClientApiError> for KvClientError {
-    fn from(err: ClientApiError) -> Self {
-        match err {
-            ClientApiError::Network { message, .. } => KvClientError::NetworkError(message),
-            ClientApiError::Protocol { message, .. } => KvClientError::ServerError(message),
-            ClientApiError::Storage { message, .. } => KvClientError::ServerError(message),
-            ClientApiError::Business { code, message, .. } => {
-                // Check if it's a timeout or not-leader error
-                use d_engine_proto::error::ErrorCode;
-                match code {
-                    ErrorCode::ConnectionTimeout => KvClientError::Timeout,
-                    ErrorCode::NotLeader => KvClientError::ServerError(message),
-                    _ => KvClientError::ServerError(message),
-                }
-            }
-            ClientApiError::General { message, .. } => KvClientError::ServerError(message),
-        }
-    }
-}
 
 // Implement d_engine_core::KvClient trait for GrpcKvClient
 #[async_trait::async_trait]

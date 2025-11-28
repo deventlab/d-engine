@@ -527,7 +527,6 @@ name = "d-engine"
 version = "0.2.0"
 dependencies = [
  "d-engine-client",
- "d-engine-core",
  "d-engine-server",
 ]
 
@@ -633,6 +632,7 @@ dependencies = [
  "criterion",
  "crossbeam",
  "crossbeam-skiplist",
+ "d-engine-client",
  "d-engine-core",
  "d-engine-proto",
  "d-engine-server",

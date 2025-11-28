@@ -22,6 +22,7 @@ rocksdb = ["dep:rocksdb"]
 [dependencies]
 d-engine-proto = { workspace = true }
 d-engine-core = { workspace = true }
+d-engine-client = { workspace = true }
 
 tokio = { workspace = true }
 tonic = { workspace = true }

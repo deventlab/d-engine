@@ -27,44 +27,8 @@
 
 use bytes::Bytes;
 
-/// Result type for KV client operations
-pub type KvResult<T> = std::result::Result<T, KvClientError>;
-
-/// Error types for KV client operations
-#[derive(Debug, Clone)]
-pub enum KvClientError {
-    /// Channel closed (node shutdown or connection lost)
-    ChannelClosed,
-
-    /// Operation timeout
-    Timeout,
-
-    /// Server returned error (e.g., not leader, storage error)
-    ServerError(String),
-
-    /// Network error (only for remote clients)
-    NetworkError(String),
-
-    /// Invalid argument
-    InvalidArgument(String),
-}
-
-impl std::fmt::Display for KvClientError {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        match self {
-            KvClientError::ChannelClosed => write!(f, "Channel closed"),
-            KvClientError::Timeout => write!(f, "Operation timeout"),
-            KvClientError::ServerError(msg) => write!(f, "Server error: {msg}"),
-            KvClientError::NetworkError(msg) => write!(f, "Network error: {msg}"),
-            KvClientError::InvalidArgument(msg) => write!(f, "Invalid argument: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for KvClientError {}
+#[allow(unused_imports)]
+use crate::kv_error::{KvClientError, KvResult};
 
 /// Unified key-value store interface.
 ///

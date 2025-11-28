@@ -47,6 +47,8 @@ mod cluster;
 mod config;
 mod error;
 mod grpc_kv_client;
+pub mod kv_client;
+pub mod kv_error;
 mod pool;
 mod proto;
 mod scoped_timer;
@@ -57,6 +59,8 @@ pub use cluster::*;
 pub use config::*;
 pub use error::*;
 pub use grpc_kv_client::*;
+pub use kv_client::*;
+pub use kv_error::*;
 pub use pool::*;
 pub use utils::*;
 

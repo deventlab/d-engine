@@ -21,7 +21,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use d_engine_core::{KvClient, KvClientError, KvResult, MaybeCloneOneshot, RaftEvent, RaftOneshot};
+use d_engine_client::{KvClient, KvClientError, KvResult};
+use d_engine_core::{MaybeCloneOneshot, RaftEvent, RaftOneshot};
 use d_engine_proto::client::{
     ClientReadRequest, ClientWriteRequest, ReadConsistencyPolicy, WriteCommand,
 };

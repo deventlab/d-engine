@@ -28,6 +28,5 @@ full = ["client", "server"]
 rocksdb = ["server", "d-engine-server/rocksdb"]
 
 [dependencies]
-d-engine-core = { workspace = true }
 d-engine-client = { workspace = true, optional = true }
 d-engine-server = { workspace = true, optional = true }
