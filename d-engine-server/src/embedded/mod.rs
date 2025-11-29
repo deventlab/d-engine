@@ -30,7 +30,6 @@
 #[cfg(test)]
 mod mod_test;
 
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -88,7 +87,7 @@ impl EmbeddedEngine {
     /// let engine = EmbeddedEngine::with_rocksdb("./my-data").await?;
     /// ```
     #[cfg(feature = "rocksdb")]
-    pub async fn with_rocksdb<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
+    pub async fn with_rocksdb<P: AsRef<std::path::Path>>(data_dir: P) -> Result<Self> {
         let data_dir = data_dir.as_ref();
 
         // Use /tmp/d-engine if empty path provided
@@ -101,7 +100,7 @@ impl EmbeddedEngine {
         // Auto-create all necessary directories
         tokio::fs::create_dir_all(&base_dir)
             .await
-            .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {}", e)))?;
+            .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
         let storage_path = base_dir.join("storage");
         let sm_path = base_dir.join("state_machine");
@@ -310,7 +309,7 @@ impl EmbeddedEngine {
                 }
                 Err(e) => {
                     error!("Node task panicked: {:?}", e);
-                    Err(crate::Error::Fatal(format!("Node task panicked: {}", e)))
+                    Err(crate::Error::Fatal(format!("Node task panicked: {e}")))
                 }
             }
         } else {

@@ -5,10 +5,9 @@ mod embedded_engine_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::LeaderInfo;
     use crate::embedded::EmbeddedEngine;
-    use crate::storage::file::FileStateMachine;
-    use crate::storage::file::FileStorageEngine;
+    use crate::storage::FileStateMachine;
+    use crate::storage::FileStorageEngine;
 
     async fn create_test_storage_and_sm() -> (Arc<FileStorageEngine>, Arc<FileStateMachine>) {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");

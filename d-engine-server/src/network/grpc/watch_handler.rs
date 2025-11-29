@@ -211,7 +211,7 @@ mod tests {
 
         assert_eq!(response.key, event.key);
         assert_eq!(response.value, event.value);
-        assert_eq!(response.event_type, ProtoWatchEventType::Put.into());
+        assert_eq!(response.event_type, ProtoWatchEventType::Put as i32);
         assert_eq!(response.error, 0);
     }
 
