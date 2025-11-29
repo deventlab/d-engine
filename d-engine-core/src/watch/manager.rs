@@ -1,8 +1,7 @@
 //! Watch Manager for monitoring key changes
 //!
 //! This module provides a lock-free, high-performance watch mechanism for tracking
-//! changes to specific keys in the state machine. It is designed to replace etcd's
-//! Watch functionality with minimal overhead on the write path.
+//! changes to specific keys in the state machine with minimal overhead on the write path.
 //!
 //! # Architecture
 //!

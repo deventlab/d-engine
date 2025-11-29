@@ -43,7 +43,7 @@ use crate::{RocksDBStateMachine, RocksDBStorageEngine};
 
 /// Embedded d-engine with automatic lifecycle management.
 ///
-/// Provides an etcd-like API for embedded usage:
+/// Provides a high-level KV API for embedded usage:
 /// - `start()` - Build and spawn node in background
 /// - `ready()` - Wait for election success
 /// - `client()` - Get local KV client
