@@ -144,12 +144,14 @@ impl EmbeddedEngine {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
-        // Build node
+        // Build node and start RPC server (required for cluster communication)
         let node = NodeBuilder::new(config_path, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .build()
             .await?
+            .start_rpc_server()
+            .await
             .ready()?;
 
         // Get ready notifier before moving node
