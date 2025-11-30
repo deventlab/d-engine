@@ -9,7 +9,7 @@ d-engine = { path = "../../d-engine", features = ["server", "rocksdb"] }
 # d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
 
 metrics-exporter-prometheus = "0.17.2"
-tokio = { version = "1.4", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"

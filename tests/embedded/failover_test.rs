@@ -80,13 +80,14 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     info!("Initial data written successfully");
 
-    // Subscribe to leader changes on node 2
+    // Subscribe to leader changes on remaining node
     let mut leader_rx = engines[1].leader_notifier();
 
-    // Kill node 1 (likely the initial leader)
-    info!("Killing node 1");
-    let killed_engine = engines.remove(0);
-    let killed_config = configs.remove(0);
+    // Kill the actual leader node
+    let leader_idx = (initial_leader.leader_id - 1) as usize;
+    info!("Killing leader node {}", initial_leader.leader_id);
+    let killed_engine = engines.remove(leader_idx);
+    let killed_config = configs.remove(leader_idx);
     killed_engine.stop().await?;
 
     // Wait for re-election event
@@ -100,8 +101,8 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     let new_leader_info = new_leader.unwrap();
     assert_ne!(
-        new_leader_info.leader_id, 1,
-        "New leader should not be node 1"
+        new_leader_info.leader_id, initial_leader.leader_id,
+        "New leader should not be the killed node"
     );
     info!(
         "New leader elected: {} (term {})",

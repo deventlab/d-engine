@@ -15,7 +15,7 @@ sled = { version = "0.34.7", features = [
 prost = { version = "0.13", default-features = false }
 metrics-exporter-prometheus = "0.17"
 metrics = { version = "0.24", features = [] }
-tokio = { version = "1.4", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"

@@ -224,4 +224,123 @@ mod embedded_engine_tests {
         let stop_result = engine.stop().await;
         assert!(stop_result.is_ok(), "Stop should succeed");
     }
+
+    #[tokio::test]
+    async fn test_wait_leader_race_condition_already_elected() {
+        let (storage, sm) = create_test_storage_and_sm().await;
+
+        let engine =
+            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+
+        engine.ready().await;
+
+        // First call - wait for leader election
+        let first_result = engine.wait_leader(Duration::from_secs(5)).await;
+        assert!(first_result.is_ok(), "First wait_leader should succeed");
+        let first_info = first_result.unwrap();
+
+        // Second call - leader already elected, should return immediately
+        let second_start = std::time::Instant::now();
+        let second_result = engine.wait_leader(Duration::from_secs(5)).await;
+        let second_duration = second_start.elapsed();
+
+        assert!(second_result.is_ok(), "Second wait_leader should succeed");
+        let second_info = second_result.unwrap();
+
+        // Should return almost instantly (< 100ms)
+        assert!(
+            second_duration < Duration::from_millis(100),
+            "wait_leader should return immediately when leader already elected, took {second_duration:?}"
+        );
+
+        // Should return same leader info
+        assert_eq!(first_info.leader_id, second_info.leader_id);
+        assert_eq!(first_info.term, second_info.term);
+
+        engine.stop().await.expect("Failed to stop engine");
+    }
+
+    #[tokio::test]
+    async fn test_wait_leader_multiple_calls_concurrent() {
+        let (storage, sm) = create_test_storage_and_sm().await;
+
+        let engine = Arc::new(
+            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine"),
+        );
+
+        engine.ready().await;
+
+        // Wait for initial leader election
+        engine
+            .wait_leader(Duration::from_secs(5))
+            .await
+            .expect("Initial leader election should succeed");
+
+        // Spawn multiple concurrent wait_leader calls
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let engine_clone = engine.clone();
+            let handle = tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                let result = engine_clone.wait_leader(Duration::from_secs(5)).await;
+                let duration = start.elapsed();
+                (result, duration)
+            });
+            handles.push(handle);
+        }
+
+        // All should complete successfully and quickly
+        for handle in handles {
+            let (result, duration) = handle.await.expect("Task should not panic");
+            assert!(result.is_ok(), "wait_leader should succeed");
+            assert!(
+                duration < Duration::from_millis(100),
+                "Should return immediately, took {duration:?}"
+            );
+        }
+
+        Arc::try_unwrap(engine)
+            .ok()
+            .expect("Arc should have single owner")
+            .stop()
+            .await
+            .expect("Failed to stop engine");
+    }
+
+    #[tokio::test]
+    async fn test_wait_leader_check_current_value_first() {
+        let (storage, sm) = create_test_storage_and_sm().await;
+
+        let engine =
+            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+
+        engine.ready().await;
+
+        // Subscribe to leader changes before waiting
+        let leader_rx = engine.leader_notifier();
+
+        // Wait for leader election
+        engine
+            .wait_leader(Duration::from_secs(5))
+            .await
+            .expect("Leader should be elected");
+
+        // Verify current value is set
+        let current_leader = leader_rx.borrow().clone();
+        assert!(current_leader.is_some(), "Current leader should be set");
+
+        // Now call wait_leader again - it should check current value first
+        // and return immediately without waiting for changed() event
+        let start = std::time::Instant::now();
+        let result = engine.wait_leader(Duration::from_secs(5)).await;
+        let duration = start.elapsed();
+
+        assert!(result.is_ok(), "Should succeed");
+        assert!(
+            duration < Duration::from_millis(50),
+            "Should check current value first and return immediately, took {duration:?}"
+        );
+
+        engine.stop().await.expect("Failed to stop engine");
+    }
 }

@@ -27,7 +27,7 @@
 
 use bytes::Bytes;
 
-#[allow(unused_imports)]
+#[allow(unused_imports)] // KvClientError used in doc comments
 use crate::kv_error::{KvClientError, KvResult};
 
 /// Unified key-value store interface.

@@ -225,6 +225,15 @@ impl EmbeddedEngine {
         let mut rx = self.leader_elected_rx.clone();
 
         tokio::time::timeout(timeout, async {
+            // Check current value first (leader may already be elected)
+            if let Some(info) = rx.borrow().as_ref() {
+                info!(
+                    "Leader already elected: {} (term {})",
+                    info.leader_id, info.term
+                );
+                return Ok(info.clone());
+            }
+
             loop {
                 // Wait for leader election event (event-driven, no polling)
                 let _ = rx.changed().await;

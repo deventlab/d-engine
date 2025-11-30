@@ -58,7 +58,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     info!("Initial data written. Killing node 1 (likely leader)");
 
     // Kill node 1 (typically the leader in 3-node bootstrap)
-    ctx.graceful_txs[0].send(()).await.map_err(|_| ClientApiError::ChannelClosed)?;
+    ctx.graceful_txs[0].send(()).map_err(|_| ClientApiError::ChannelClosed)?;
     ctx.node_handles[0]
         .await
         .map_err(|e| ClientApiError::ServerError(format!("Node shutdown failed: {e}")))??;
@@ -160,7 +160,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
 
     // Kill node 1 and node 2 (lose majority)
     for i in 0..2 {
-        ctx.graceful_txs[i].send(()).await.map_err(|_| ClientApiError::ChannelClosed)?;
+        ctx.graceful_txs[i].send(()).map_err(|_| ClientApiError::ChannelClosed)?;
         ctx.node_handles[i]
             .await
             .map_err(|e| ClientApiError::ServerError(format!("Node shutdown failed: {e}")))??;
@@ -187,7 +187,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     info!("Minority failure test passed. Cluster correctly refused writes");
 
     // Cleanup remaining node
-    ctx.graceful_txs[2].send(()).await.map_err(|_| ClientApiError::ChannelClosed)?;
+    ctx.graceful_txs[2].send(()).map_err(|_| ClientApiError::ChannelClosed)?;
     ctx.node_handles[2]
         .await
         .map_err(|e| ClientApiError::ServerError(format!("Node shutdown failed: {e}")))??;
