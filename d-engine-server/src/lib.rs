@@ -81,7 +81,7 @@ pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
 pub use embedded::EmbeddedEngine;
-pub use node::{LocalKvClient, Node, NodeBuilder};
+pub use node::{LocalClientError, LocalKvClient, Node, NodeBuilder};
 
 // Re-export storage implementations
 pub use storage::{

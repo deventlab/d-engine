@@ -196,8 +196,8 @@ pub mod prelude {
 
     #[cfg(feature = "server")]
     pub use d_engine_server::{
-        EmbeddedEngine, FileStateMachine, FileStorageEngine, LeaderInfo, LocalKvClient, Node,
-        NodeBuilder, StateMachine, StorageEngine,
+        EmbeddedEngine, FileStateMachine, FileStorageEngine, LeaderInfo, LocalClientError,
+        LocalKvClient, Node, NodeBuilder, StateMachine, StorageEngine,
     };
 
     #[cfg(feature = "full")]

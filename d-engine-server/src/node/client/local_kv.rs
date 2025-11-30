@@ -35,6 +35,13 @@ pub enum LocalClientError {
     ChannelClosed,
     /// Operation exceeded timeout duration
     Timeout(Duration),
+    /// Not the leader - request should be forwarded
+    NotLeader {
+        /// Leader's node ID (if known)
+        leader_id: Option<String>,
+        /// Leader's address (if known)
+        leader_address: Option<String>,
+    },
     /// Server-side error occurred
     ServerError(String),
 }
@@ -49,6 +56,19 @@ impl fmt::Display for LocalClientError {
                 write!(f, "Channel closed, node may be shutting down")
             }
             LocalClientError::Timeout(d) => write!(f, "Operation timeout after {d:?}"),
+            LocalClientError::NotLeader {
+                leader_id,
+                leader_address,
+            } => {
+                write!(f, "Not leader")?;
+                if let Some(id) = leader_id {
+                    write!(f, " (leader_id: {id})")?;
+                }
+                if let Some(addr) = leader_address {
+                    write!(f, " (leader_address: {addr})")?;
+                }
+                Ok(())
+            }
             LocalClientError::ServerError(s) => write!(f, "Server error: {s}"),
         }
     }
@@ -64,6 +84,19 @@ impl From<LocalClientError> for KvClientError {
         match err {
             LocalClientError::ChannelClosed => KvClientError::ChannelClosed,
             LocalClientError::Timeout(_) => KvClientError::Timeout,
+            LocalClientError::NotLeader {
+                leader_id,
+                leader_address,
+            } => {
+                let msg = if let Some(addr) = leader_address {
+                    format!("Not leader, try leader at: {addr}")
+                } else if let Some(id) = leader_id {
+                    format!("Not leader, leader_id: {id}")
+                } else {
+                    "Not leader".to_string()
+                };
+                KvClientError::ServerError(msg)
+            }
             LocalClientError::ServerError(msg) => KvClientError::ServerError(msg),
         }
     }
@@ -90,6 +123,29 @@ impl LocalKvClient {
             event_tx,
             client_id,
             timeout,
+        }
+    }
+
+    /// Map ErrorCode and ErrorMetadata to LocalClientError
+    fn map_error_response(
+        error_code: i32,
+        metadata: Option<d_engine_proto::error::ErrorMetadata>,
+    ) -> LocalClientError {
+        use d_engine_proto::error::ErrorCode;
+
+        match ErrorCode::try_from(error_code) {
+            Ok(ErrorCode::NotLeader) => {
+                let (leader_id, leader_address) = if let Some(meta) = metadata {
+                    (meta.leader_id, meta.leader_address)
+                } else {
+                    (None, None)
+                };
+                LocalClientError::NotLeader {
+                    leader_id,
+                    leader_address,
+                }
+            }
+            _ => LocalClientError::ServerError(format!("Error code: {error_code}")),
         }
     }
 
@@ -126,10 +182,7 @@ impl LocalKvClient {
         })?;
 
         if response.error != ErrorCode::Success as i32 {
-            return Err(LocalClientError::ServerError(format!(
-                "Error code: {}",
-                response.error
-            )));
+            return Err(Self::map_error_response(response.error, response.metadata));
         }
 
         Ok(())
@@ -163,10 +216,7 @@ impl LocalKvClient {
         })?;
 
         if response.error != ErrorCode::Success as i32 {
-            return Err(LocalClientError::ServerError(format!(
-                "Error code: {}",
-                response.error
-            )));
+            return Err(Self::map_error_response(response.error, response.metadata));
         }
 
         match response.success_result {
@@ -210,10 +260,7 @@ impl LocalKvClient {
         })?;
 
         if response.error != ErrorCode::Success as i32 {
-            return Err(LocalClientError::ServerError(format!(
-                "Error code: {}",
-                response.error
-            )));
+            return Err(Self::map_error_response(response.error, response.metadata));
         }
 
         Ok(())
@@ -288,10 +335,8 @@ impl KvClient for LocalKvClient {
         })?;
 
         if response.error != ErrorCode::Success as i32 {
-            return Err(KvClientError::ServerError(format!(
-                "Error code: {}",
-                response.error
-            )));
+            let local_err = LocalKvClient::map_error_response(response.error, response.metadata);
+            return Err(local_err.into());
         }
 
         Ok(())
@@ -331,10 +376,8 @@ impl KvClient for LocalKvClient {
         })?;
 
         if response.error != ErrorCode::Success as i32 {
-            return Err(KvClientError::ServerError(format!(
-                "Error code: {}",
-                response.error
-            )));
+            let local_err = LocalKvClient::map_error_response(response.error, response.metadata);
+            return Err(local_err.into());
         }
 
         match response.success_result {
