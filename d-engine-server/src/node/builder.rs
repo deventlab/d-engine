@@ -277,6 +277,7 @@ where
 
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
+        info!("Node startup, Last applied index: {}", last_applied_index);
         let raft_log = {
             let (log, receiver) = BufferedRaftLog::new(
                 node_id,

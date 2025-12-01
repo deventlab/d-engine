@@ -36,6 +36,7 @@ use d_engine_core::RoleEvent;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::follower_state::FollowerState;
+use d_engine_core::mock_membership as mock_membership_fn;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 
@@ -230,7 +231,7 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
-            self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
+            self.membership.unwrap_or_else(|| Arc::new(mock_membership_fn())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
                 RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")

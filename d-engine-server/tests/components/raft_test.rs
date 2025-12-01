@@ -36,10 +36,18 @@ use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_server::test_utils::mock_raft;
+
+/// Create MockMembership with default is_single_node_cluster expectation set to false
+fn create_mock_membership() -> MockMembership<MockTypeConfig> {
+    let mut membership = MockMembership::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership
+}
 
 /// # Case 1: Tick has higher priority than role event
 #[tokio::test]
@@ -100,6 +108,30 @@ async fn test_role_event_priority_over_event_rx() {
     let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_core;
+
+    // Mock membership with all necessary expectations
+    let mut membership = MockMembership::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+    membership.expect_members().returning(Vec::new);
+    membership.expect_reset_leader().returning(|| Ok(()));
+    membership.expect_update_node_role().returning(|_, _| Ok(()));
+    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    membership.expect_check_cluster_is_ready().returning(|| Ok(()));
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .returning(|| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+        });
+    membership.expect_get_zombie_candidates().returning(Vec::new);
+    membership.expect_pre_warm_connections().returning(|| Ok(()));
+    membership.expect_current_leader_id().returning(|| None);
+    membership.expect_replication_peers().returning(Vec::new);
+    membership.expect_initial_cluster_size().returning(|| 3);
+    raft.ctx.membership = Arc::new(membership);
 
     // 2. Add state listeners
     let raft_tx = raft.event_sender();
@@ -396,7 +428,7 @@ async fn test_election_timeout_case4() {
     let peer2_id = 3;
 
     // 4. Mock Raft Context
-    let mut mock_membership = MockMembership::new();
+    let mut mock_membership = create_mock_membership();
     mock_membership.expect_get_zombie_candidates().returning(Vec::new);
     mock_membership.expect_voters().returning(move || {
         vec![
@@ -829,7 +861,7 @@ async fn test_handle_role_event_state_update_case1_3_2() {
     );
 
     // Prepare Peers
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership
         .expect_get_peers_id_with_condition()
         .returning(|_| vec![2, 3])

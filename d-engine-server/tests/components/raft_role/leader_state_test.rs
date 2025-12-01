@@ -141,6 +141,13 @@ async fn setup_process_raft_request_test_context(
     }
 }
 
+/// Create MockMembership with default is_single_node_cluster expectation set to false
+fn create_mock_membership() -> MockMembership<MockTypeConfig> {
+    let mut membership = MockMembership::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership
+}
+
 /// Verify client response
 pub async fn assert_client_response(
     mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>
@@ -537,7 +544,7 @@ async fn test_handle_raft_event_case1_2() {
 async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
         ClusterMembership {
@@ -571,7 +578,7 @@ async fn test_handle_raft_event_case3_1_reject_stale_term() {
         None,
     );
     // Mock membership to return success
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_get_cluster_conf_version().returning(|| 1);
     context.membership = Arc::new(membership);
@@ -611,7 +618,7 @@ async fn test_handle_raft_event_case3_2_update_step_down() {
         None,
     );
     // Mock membership to return success
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_get_cluster_conf_version().returning(|| 1);
     context.membership = Arc::new(membership);
@@ -1155,7 +1162,7 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Prepare AppendResults
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
@@ -1207,7 +1214,7 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Mock peer configuration
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(|| {
             vec![NodeMeta {
@@ -1349,7 +1356,7 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Mock peer configuration
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
@@ -1423,7 +1430,7 @@ mod snapshot_created_event_tests {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![NodeMeta {
@@ -1494,7 +1501,7 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Mock peer configuration (multiple peers)
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
             vec![
@@ -1647,7 +1654,7 @@ async fn test_handle_raft_event_case10_1_discover_leader_success() {
     );
 
     // Mock membership to return leader metadata
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| {
         Some(NodeMeta {
@@ -1693,7 +1700,7 @@ async fn test_handle_raft_event_case10_2_discover_leader_metadata_not_found() {
     );
 
     // Mock membership to return no metadata
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| None);
     context.membership = Arc::new(membership);
@@ -1727,7 +1734,7 @@ async fn test_handle_raft_event_case10_4_different_leader_terms() {
     );
 
     // Mock membership to return leader metadata
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| {
         Some(NodeMeta {
@@ -1773,7 +1780,7 @@ async fn test_handle_raft_event_case10_5_invalid_node_id() {
     );
 
     // Mock membership to return leader metadata
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_retrieve_node_meta().returning(|_| {
         Some(NodeMeta {
@@ -2131,7 +2138,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
             })
         });
 
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
@@ -2244,7 +2251,7 @@ async fn test_process_batch_case4_partial_timeouts() {
         });
 
     // Prepare AppendResults
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
@@ -2304,7 +2311,7 @@ async fn test_process_batch_case5_all_timeout() {
             })
         });
     // Prepare AppendResults
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
@@ -2369,6 +2376,254 @@ async fn test_process_batch_case6_fatal_error() {
 
     let response = rx1.recv().await.unwrap().unwrap();
     assert!(response.is_propose_failure());
+}
+
+/// Tests for commit index calculation logic in process_batch
+/// Verifies that commit index is correctly calculated based on cluster topology:
+/// - Single-node: commit_index = last_log_index
+/// - Multi-node: commit_index based on quorum (majority of peers)
+///
+/// Bug fix: #186 - Leader incorrectly used single-node logic when peer_updates is empty
+mod process_batch_commit_index_tests {
+    use super::*;
+
+    /// Setup helper for commit index tests with configurable cluster membership
+    async fn setup_commit_index_test_context(
+        path: &str,
+        is_single_node: bool,
+    ) -> ProcessRaftRequestTestContext {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut context = mock_raft_context(path, graceful_rx, None);
+
+        // Mock membership based on cluster topology
+        let mut membership = MockMembership::new();
+        membership.expect_is_single_node_cluster().returning(move || is_single_node);
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
+        membership.expect_voters().returning(Vec::new);
+        membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+        membership.expect_members().returning(Vec::new);
+        membership.expect_reset_leader().returning(|| Ok(()));
+        membership.expect_update_node_role().returning(|_, _| Ok(()));
+        membership.expect_mark_leader_id().returning(|_| Ok(()));
+        membership.expect_check_cluster_is_ready().returning(|| Ok(()));
+        membership
+            .expect_retrieve_cluster_membership_config()
+            .returning(|| ClusterMembership {
+                version: 1,
+                nodes: vec![],
+            });
+        membership.expect_get_zombie_candidates().returning(Vec::new);
+        membership.expect_pre_warm_connections().returning(|| Ok(()));
+        membership.expect_current_leader_id().returning(|| None);
+        membership.expect_replication_peers().returning(Vec::new);
+        membership.expect_initial_cluster_size().returning(|| 3);
+        context.membership = Arc::new(membership);
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+        state.update_commit_index(5).unwrap();
+
+        ProcessRaftRequestTestContext {
+            state,
+            raft_context: context,
+        }
+    }
+
+    /// Test commit index calculation for single-node cluster.
+    /// When cluster has only one node, commit_index should advance to last_log_index immediately.
+    /// This is correct because quorum of 1 = the single node itself.
+    /// Bug detection: Uses different mock values to verify correct code path is executed:
+    /// - If bug exists (peer_updates.is_empty): calls calculate_majority_matched_index() -> returns 8 (wrong)
+    /// - If fixed (next_index.is_empty()): calls last_entry_id() -> returns 7 (correct)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_single_node_cluster_commit_index() {
+        let mut context = setup_commit_index_test_context(
+            "/tmp/test_single_node_cluster_commit_index",
+            true, // single-node
+        )
+        .await;
+
+        context
+            .raft_context
+            .handlers
+            .replication_handler
+            .expect_handle_raft_request_in_batch()
+            .times(1)
+            .returning(|_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    learner_progress: HashMap::new(),
+                    peer_updates: HashMap::new(), // Empty: no peers to replicate to
+                })
+            });
+
+        let mut raft_log = MockRaftLog::new();
+        // Different return values to detect which code path executes:
+        // - Fixed code (is_single_node_cluster): calls last_entry_id() -> 7
+        // - Buggy code (peer_updates.is_empty): calls calculate_majority_matched_index() -> 8
+        raft_log.expect_last_entry_id().returning(|| 7);
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(8));
+        context.raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let (tx1, rx1) = MaybeCloneOneshot::new();
+        let batch = VecDeque::from(vec![mock_request(tx1)]);
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+        let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            context.state.commit_index(),
+            7,
+            "Single-node: commit_index should equal last_log_index"
+        );
+        assert!(matches!(
+            role_rx.try_recv(),
+            Ok(RoleEvent::NotifyNewCommitIndex(_))
+        ));
+
+        let mut rx = rx1;
+        let response = rx.recv().await.unwrap().unwrap();
+        assert!(response.is_write_success());
+    }
+
+    /// Test commit index calculation for multi-node cluster with empty peer_updates (Bug #186).
+    /// This is the critical bug fix: Leader must not use single-node logic just because
+    /// peer_updates is empty. Empty peer_updates means no responses yet, not single-node cluster.
+    ///
+    /// Scenario: 3-node cluster, Leader has initialized next_index for peers (even if no responses yet).
+    /// Bug detection: Uses different mock values to verify correct code path is executed:
+    /// - If bug exists (peer_updates.is_empty): calls last_entry_id() -> returns 9 (wrong)
+    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6 (correct)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
+        let mut context = setup_commit_index_test_context(
+            "/tmp/test_multi_node_empty_peer_updates_commit_index",
+            false, // multi-node
+        )
+        .await;
+
+        context
+            .raft_context
+            .handlers
+            .replication_handler
+            .expect_handle_raft_request_in_batch()
+            .times(1)
+            .returning(|_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    learner_progress: HashMap::new(),
+                    peer_updates: HashMap::new(), // BUG #186: Empty peer_updates should NOT trigger single-node logic
+                })
+            });
+
+        let mut raft_log = MockRaftLog::new();
+        // Different return values to detect which code path executes:
+        // - Buggy code (peer_updates.is_empty): calls last_entry_id() -> 9
+        // - Fixed code (is_single_node_cluster): calls calculate_majority_matched_index() -> 6
+        raft_log.expect_last_entry_id().returning(|| 9);
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
+        context.raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let (tx1, rx1) = MaybeCloneOneshot::new();
+        let batch = VecDeque::from(vec![mock_request(tx1)]);
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+        let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            context.state.commit_index(),
+            6,
+            "Multi-node: commit_index=6 (from calculate_majority_matched_index), not 9 (from last_entry_id)"
+        );
+        assert!(matches!(
+            role_rx.try_recv(),
+            Ok(RoleEvent::NotifyNewCommitIndex(_))
+        ));
+
+        let mut rx = rx1;
+        let response = rx.recv().await.unwrap().unwrap();
+        assert!(response.is_write_success());
+    }
+
+    /// Test commit index calculation for multi-node cluster with peer responses.
+    /// Normal case: Leader receives responses from peers and calculates commit index
+    /// based on quorum (majority of nodes have replicated the log).
+    /// Bug detection: Uses different mock values to verify correct code path is executed:
+    /// - If bug exists (peer_updates.is_empty): calls last_entry_id() -> returns 10 (wrong)
+    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6 (correct)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_multi_node_cluster_with_peer_updates_commit_index() {
+        let mut context = setup_commit_index_test_context(
+            "/tmp/test_multi_node_with_peer_updates_commit_index",
+            false, // multi-node
+        )
+        .await;
+
+        context
+            .raft_context
+            .handlers
+            .replication_handler
+            .expect_handle_raft_request_in_batch()
+            .times(1)
+            .returning(|_, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    learner_progress: HashMap::new(),
+                    peer_updates: HashMap::from([
+                        (
+                            2,
+                            PeerUpdate {
+                                match_index: Some(6),
+                                next_index: 7,
+                                success: true,
+                            },
+                        ),
+                        (
+                            3,
+                            PeerUpdate {
+                                match_index: Some(6),
+                                next_index: 7,
+                                success: true,
+                            },
+                        ),
+                    ]),
+                })
+            });
+
+        let mut raft_log = MockRaftLog::new();
+        // Different return values to detect which code path executes:
+        // - Fixed code (is_single_node_cluster check fails): calls calculate_majority_matched_index() -> 6
+        // - Buggy code (peer_updates.is_empty): calls last_entry_id() -> 10
+        raft_log.expect_last_entry_id().returning(|| 10);
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
+        context.raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let (tx1, rx1) = MaybeCloneOneshot::new();
+        let (tx2, rx2) = MaybeCloneOneshot::new();
+        let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+        let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+
+        assert!(result.is_ok());
+        assert_eq!(context.state.commit_index(), 6);
+        assert!(matches!(
+            role_rx.try_recv(),
+            Ok(RoleEvent::NotifyNewCommitIndex(_))
+        ));
+
+        let mut rx = rx1;
+        let response = rx.recv().await.unwrap().unwrap();
+        assert!(response.is_write_success());
+
+        let mut rx = rx2;
+        let response = rx.recv().await.unwrap().unwrap();
+        assert!(response.is_write_success());
+    }
 }
 
 // Helper functions
@@ -2513,7 +2768,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
         });
 
     // Prepare AppendResults
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![
@@ -2717,7 +2972,7 @@ async fn test_handle_join_cluster_case1_success() {
     let node_id = 100;
     let address = "127.0.0.1:8080".to_string();
 
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_voters().returning(move || {
         vec![NodeMeta {
@@ -2814,7 +3069,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
     let node_id = 100;
 
     // Mock membership to report existing node
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| true);
     let context = RaftContext {
@@ -2856,7 +3111,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let node_id = 100;
 
     // Mock membership
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _| Ok(()));
@@ -2912,7 +3167,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     let node_id = 100;
 
     // Mock membership
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_add_learner().returning(|_, _| Ok(()));
@@ -2969,7 +3224,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     let address = "127.0.0.1:8080".to_string();
 
     // Mock membership
-    let mut membership = MockMembership::new();
+    let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_replication_peers().returning(Vec::new);
@@ -3166,7 +3421,7 @@ mod batch_promote_learners_test {
     use mockall::predicate::*;
 
     use super::*;
-    use d_engine_core::MockMembership;
+
     use d_engine_core::RaftContext;
     use d_engine_core::RoleEvent;
     use d_engine_core::leader_state::LeaderState;
@@ -3199,7 +3454,7 @@ mod batch_promote_learners_test {
             MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
 
         // Mock membership
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(move || {
@@ -3395,7 +3650,7 @@ mod pending_promotion_tests {
                 Self::verify_internal_quorum_failure_context(test_name).await
             };
 
-            let mut membership = MockMembership::new();
+            let mut membership = create_mock_membership();
             membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
@@ -3592,7 +3847,7 @@ mod pending_promotion_tests {
     async fn test_partial_batch_promotion() {
         let mut fixture = TestFixture::new("test_partial_batch_promotion", true).await;
         // Setup: 3 voters, 2 pending promotions -> max batch size=1
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         // mock membership with 3 voters
         membership.expect_voters().returning(|| {
@@ -3770,7 +4025,7 @@ mod stale_learner_tests {
         }
 
         // Configure membership mock
-        let mut membership = MockMembership::new();
+        let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_update_node_status().returning(|_, _| Ok(()));
         (leader, membership)
