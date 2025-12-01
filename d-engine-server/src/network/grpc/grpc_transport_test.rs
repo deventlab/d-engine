@@ -128,7 +128,7 @@ async fn test_send_cluster_update_case2() {
     let mut channels = HashMap::new();
     channels.insert((my_id, ConnectionType::Control), channel.clone());
 
-    let membership = mock_membership(vec![(my_id, Follower.into())], channels);
+    let membership = mock_membership(vec![(my_id, Follower as i32)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     match client.send_cluster_update(request, &node_config.retry, membership).await {
         Ok(res) => {
@@ -169,7 +169,7 @@ async fn test_send_cluster_update_case3() {
     channels.insert((peer1_id, ConnectionType::Control), channel.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
 
@@ -221,7 +221,7 @@ async fn test_send_cluster_update_case4() {
     channels.insert((peer1_id, ConnectionType::Control), channel.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
 
@@ -295,7 +295,7 @@ async fn test_send_append_requests_case2() {
 
     let mut channels = HashMap::new();
     channels.insert((leader_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(vec![(leader_id, Leader.into())], channels);
+    let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
 
     let node_config = node_config("/tmp/test_send_append_requests_case2");
 
@@ -378,7 +378,7 @@ async fn test_send_append_requests_case3_1() {
     let mut channels = HashMap::new();
     channels.insert((peer_2_id, ConnectionType::Data), channel2.clone());
     channels.insert((peer_3_id, ConnectionType::Data), channel3.clone());
-    let membership = mock_membership(vec![(leader_id, Leader.into())], channels);
+    let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
 
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -455,7 +455,7 @@ async fn test_send_append_requests_case3_2() {
     let mut channels = HashMap::new();
     channels.insert((peer_2_id, ConnectionType::Data), channel2.clone());
     channels.insert((peer_3_id, ConnectionType::Data), channel3.clone());
-    let membership = mock_membership(vec![(leader_id, Leader.into())], channels);
+    let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
 
     let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
 
@@ -538,7 +538,7 @@ async fn test_send_vote_requests_case2() {
         .expect("should succeed");
     let mut channels = HashMap::new();
     channels.insert((my_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(vec![(my_id, Follower.into())], channels);
+    let membership = mock_membership(vec![(my_id, Follower as i32)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     match client.send_vote_requests(request, &node_config.retry, membership).await {
         Ok(res) => {
@@ -588,7 +588,7 @@ async fn test_send_vote_requests_case3() {
     channels.insert((peer1_id, ConnectionType::Control), channel.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -640,7 +640,7 @@ async fn test_send_vote_requests_case4_1() {
     channels.insert((peer1_id, ConnectionType::Control), channel.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
 
@@ -694,7 +694,7 @@ async fn test_send_vote_requests_case4_2() {
     channels.insert((peer1_id, ConnectionType::Control), channel.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -743,7 +743,7 @@ async fn test_send_vote_requests_case4_3() {
     channels.insert((peer1_id, ConnectionType::Control), channel.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -797,7 +797,7 @@ async fn test_send_vote_requests_case5() {
     channels.insert((peer1_id, ConnectionType::Control), channel1.clone());
     channels.insert((peer2_id, ConnectionType::Control), channel2.clone());
     let membership = mock_membership(
-        vec![(peer1_id, Follower.into()), (peer2_id, Candidate.into())],
+        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
         channels,
     );
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -871,7 +871,7 @@ async fn test_purge_requests_case2_self_reference() {
 
     let mut channels = HashMap::new();
     channels.insert((my_id, ConnectionType::Data), channel.clone());
-    let membership = mock_membership(vec![(my_id, Follower.into())], channels);
+    let membership = mock_membership(vec![(my_id, Follower as i32)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     let result = client.send_purge_requests(req, &node_config.retry, membership).await;
 
@@ -918,7 +918,7 @@ async fn test_purge_requests_case3_duplicate_peers() {
     let mut channels = HashMap::new();
     channels.insert((2, ConnectionType::Data), channel.clone());
     channels.insert((3, ConnectionType::Data), channel.clone());
-    let membership = mock_membership(vec![(2, Learner.into()), (3, Follower.into())], channels);
+    let membership = mock_membership(vec![(2, Learner as i32), (3, Follower as i32)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     let result = client.send_purge_requests(req, &node_config.retry, membership).await;
 
@@ -981,7 +981,7 @@ async fn test_purge_requests_case4_mixed_responses() {
     let mut channels = HashMap::new();
     channels.insert((2, ConnectionType::Data), success_channel.clone());
     channels.insert((3, ConnectionType::Data), failure_channel.clone());
-    let membership = mock_membership(vec![(2, Follower.into()), (3, Learner.into())], channels);
+    let membership = mock_membership(vec![(2, Follower as i32), (3, Learner as i32)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     let result = client.send_purge_requests(req, &node_config.retry, membership).await;
 
@@ -1033,7 +1033,7 @@ async fn test_purge_requests_case5_full_success() {
     let mut channels = HashMap::new();
     channels.insert((2, ConnectionType::Data), channel.clone());
     channels.insert((3, ConnectionType::Data), channel.clone());
-    let membership = mock_membership(vec![(2, Follower.into()), (3, Learner.into())], channels);
+    let membership = mock_membership(vec![(2, Follower as i32), (3, Learner as i32)], channels);
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
     let result = client.send_purge_requests(req, &node_config.retry, membership).await;
 

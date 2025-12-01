@@ -192,7 +192,7 @@ pub fn setup_raft_components(
     let peers_meta = if let Some(meta) = peers_meta_option {
         meta
     } else {
-        let follower_role = Follower.into();
+        let follower_role = Follower as i32;
         vec![
             NodeMeta {
                 id: 1,

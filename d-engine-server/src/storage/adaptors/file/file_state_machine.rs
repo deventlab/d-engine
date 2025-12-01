@@ -48,7 +48,7 @@
 //! ```
 //!
 //! **Why absolute time in WAL:**
-//! 1. Ensures expired keys stay expired after crash (etcd-compatible)
+//! 1. Ensures expired keys stay expired after crash (durable expiration semantics)
 //! 2. Passive expiration (in get()) is crash-safe without WAL writes
 //! 3. No TTL reset on recovery (deterministic expiration)
 //!
@@ -538,7 +538,7 @@ impl FileStateMachine {
                             };
 
                             if is_expired {
-                                // Skip restoring expired keys (etcd-compatible behavior)
+                                // Skip restoring expired keys (durable expiration semantics)
                                 debug!("Skipped expired key during WAL replay: key={:?}", key);
                                 skipped_expired += 1;
                                 continue;

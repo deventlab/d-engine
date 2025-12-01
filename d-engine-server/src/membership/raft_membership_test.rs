@@ -39,31 +39,31 @@ pub fn create_test_membership()
         NodeMeta {
             id: 1,
             address: "127.0.0.1:10000".to_string(),
-            role: Leader.into(),
+            role: Leader as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 2,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Joining.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Joining.into(),
         },
     ];
@@ -182,31 +182,31 @@ async fn test_replication_peers_case1() {
         NodeMeta {
             id: 1,
             address: "127.0.0.1:10000".to_string(),
-            role: Leader.into(),
+            role: Leader as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 2,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Syncing.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Joining.into(),
         },
     ];
@@ -237,31 +237,31 @@ async fn test_mark_leader_id_case1() {
         NodeMeta {
             id: old_leader_id,
             address: "127.0.0.1:10000".to_string(),
-            role: Leader.into(),
+            role: Leader as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
     ];
@@ -293,31 +293,31 @@ async fn test_mark_leader_id_case2() {
         NodeMeta {
             id: 1,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
     ];
@@ -339,31 +339,31 @@ async fn test_retrieve_cluster_membership_config() {
         NodeMeta {
             id: 1,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
     ];
@@ -375,7 +375,7 @@ async fn test_retrieve_cluster_membership_config() {
 
     let r = membership.retrieve_cluster_membership_config().await;
     assert_eq!(r.nodes.len(), 5);
-    assert!(!r.nodes.iter().any(|n| n.role == Leader.into()));
+    assert!(!r.nodes.iter().any(|n| n.role == Leader as i32));
 }
 
 #[tokio::test]
@@ -420,7 +420,7 @@ async fn test_update_cluster_conf_from_leader_case2() {
         vec![NodeMeta {
             id: 3,
             address: "127.0.0.1:8080".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         }],
         RaftNodeConfig::default(),
@@ -459,7 +459,7 @@ async fn test_update_cluster_conf_from_leader_case3() {
         vec![NodeMeta {
             id: 3,
             address: "127.0.0.1:8080".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         }],
         RaftNodeConfig::default(),
@@ -490,7 +490,7 @@ async fn test_update_cluster_conf_from_leader_case3() {
     assert!(response.success);
     assert_eq!(
         membership.get_role_by_node_id(3).await.unwrap(),
-        Follower.into()
+        Follower as i32
     );
     assert_eq!(membership.get_cluster_conf_version().await, 1);
 }
@@ -504,7 +504,7 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
         vec![NodeMeta {
             id: 3,
             address: "127.0.0.1:8080".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         }],
         RaftNodeConfig::default(),
@@ -614,25 +614,25 @@ async fn test_batch_remove_nodes() {
         NodeMeta {
             id: 2,
             address: "127.0.0.1:10001".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active as i32,
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10002".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active as i32,
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10003".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Syncing as i32,
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10004".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Joining as i32,
         },
     ];
@@ -682,13 +682,13 @@ async fn test_batch_remove_leader_protection() {
         NodeMeta {
             id: 1,
             address: "127.0.0.1:10000".to_string(),
-            role: Leader.into(),
+            role: Leader as i32,
             status: NodeStatus::Active as i32,
         },
         NodeMeta {
             id: 2,
             address: "127.0.0.1:10001".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active as i32,
         },
     ];
@@ -729,19 +729,19 @@ async fn test_apply_batch_remove_config_change() {
             NodeMeta {
                 id: 2,
                 address: "127.0.0.1:10001".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active as i32,
             },
             NodeMeta {
                 id: 3,
                 address: "127.0.0.1:10002".to_string(),
-                role: Learner.into(),
+                role: Learner as i32,
                 status: NodeStatus::Syncing as i32,
             },
             NodeMeta {
                 id: 4,
                 address: "127.0.0.1:10003".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active as i32,
             },
         ],
@@ -776,19 +776,19 @@ async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
         NodeMeta {
             id: 2,
             address: "127.0.0.1:10001".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active as i32,
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10002".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Syncing as i32,
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10003".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active as i32,
         },
     ];
@@ -860,31 +860,31 @@ async fn test_get_peers_id_with_condition() {
         NodeMeta {
             id: 1,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 3,
             address: "127.0.0.1:10000".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
-            role: Learner.into(),
+            role: Learner as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
-            role: Candidate.into(),
+            role: Candidate as i32,
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 6,
             address: "127.0.0.1:10000".to_string(),
-            role: Leader.into(),
+            role: Leader as i32,
             status: NodeStatus::Active.into(),
         },
     ];
@@ -896,7 +896,7 @@ async fn test_get_peers_id_with_condition() {
 
     // Test 1: Filter followers and candidates
     let mut result = membership
-        .get_peers_id_with_condition(|role| role == Follower.into() || role == Candidate.into())
+        .get_peers_id_with_condition(|role| role == Follower as i32 || role == Candidate as i32)
         .await;
     result.sort_unstable();
     let mut expect = vec![1, 3, 5];
@@ -904,7 +904,7 @@ async fn test_get_peers_id_with_condition() {
     assert_eq!(result, expect, "Should return follower and candidate IDs");
 
     // Test 2: Filter leaders only
-    let result = membership.get_peers_id_with_condition(|role| role == Leader.into()).await;
+    let result = membership.get_peers_id_with_condition(|role| role == Leader as i32).await;
     assert_eq!(result, vec![6], "Should return leader ID only");
 
     // Test 3: Empty result case
@@ -954,7 +954,7 @@ mod check_cluster_is_ready_test {
                 .map(|id| NodeMeta {
                     id: *id,
                     address: "127.0.0.1:0".to_string(),
-                    role: Follower.into(),
+                    role: Follower as i32,
                     status: NodeStatus::Active.into(),
                 })
                 .collect(),
@@ -995,7 +995,7 @@ mod check_cluster_is_ready_test {
             vec![NodeMeta {
                 id: 2,
                 address: "127.0.0.1:9999".to_string(), // Invalid port
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             }],
             config,
@@ -1019,7 +1019,7 @@ mod check_cluster_is_ready_test {
             vec![NodeMeta {
                 id: 4,
                 address: format!("127.0.0.1:{port}",),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             }],
             config,
@@ -1048,7 +1048,7 @@ mod check_cluster_is_ready_test {
                 .map(|id| NodeMeta {
                     id: *id,
                     address: "127.0.0.1:0".to_string(),
-                    role: Follower.into(),
+                    role: Follower as i32,
                     status: NodeStatus::Active.into(),
                 })
                 .collect(),
@@ -1093,7 +1093,7 @@ mod add_learner_test {
         assert_eq!(replication_members.len(), 1);
         assert_eq!(replication_members[0].id, 2);
         assert_eq!(replication_members[0].address, "127.0.0.1:1234");
-        assert_eq!(replication_members[0].role, Learner.into());
+        assert_eq!(replication_members[0].role, Learner as i32);
         assert_eq!(replication_members[0].status, NodeStatus::Syncing as i32);
     }
 
@@ -1104,7 +1104,7 @@ mod add_learner_test {
             vec![NodeMeta {
                 id: 1,
                 address: "127.0.0.1:0".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             }],
             RaftNodeConfig::default(),
@@ -1117,7 +1117,7 @@ mod add_learner_test {
         assert_eq!(replication_members.len(), 1);
         assert_eq!(replication_members[0].id, 1);
         assert_eq!(replication_members[0].address, "127.0.0.1:0");
-        assert_eq!(replication_members[0].role, Follower.into());
+        assert_eq!(replication_members[0].role, Follower as i32);
         assert_eq!(replication_members[0].status, NodeStatus::Active as i32);
     }
 }
@@ -1206,7 +1206,7 @@ mod pre_warm_connections_tests {
             cluster.push(NodeMeta {
                 id,
                 address,
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             });
 
@@ -1306,7 +1306,7 @@ mod single_node_tests {
         let initial_cluster = vec![NodeMeta {
             id: 1,
             address: "127.0.0.1:9081".to_string(),
-            role: Follower.into(),
+            role: Follower as i32,
             status: NodeStatus::Active.into(),
         }];
         RaftMembership::new(1, initial_cluster, RaftNodeConfig::default())
@@ -1319,19 +1319,19 @@ mod single_node_tests {
             NodeMeta {
                 id: 1,
                 address: "127.0.0.1:9081".to_string(),
-                role: Leader.into(),
+                role: Leader as i32,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 2,
                 address: "127.0.0.1:9082".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
                 address: "127.0.0.1:9083".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             },
         ];
@@ -1345,31 +1345,31 @@ mod single_node_tests {
             NodeMeta {
                 id: 1,
                 address: "127.0.0.1:9081".to_string(),
-                role: Leader.into(),
+                role: Leader as i32,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 2,
                 address: "127.0.0.1:9082".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 3,
                 address: "127.0.0.1:9083".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 4,
                 address: "127.0.0.1:9084".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             },
             NodeMeta {
                 id: 5,
                 address: "127.0.0.1:9085".to_string(),
-                role: Follower.into(),
+                role: Follower as i32,
                 status: NodeStatus::Active.into(),
             },
         ];

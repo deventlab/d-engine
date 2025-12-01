@@ -20,13 +20,13 @@ async fn test_parse_cluster_metadata_success() {
     let nodes = vec![
         NodeMeta {
             id: 1,
-            role: NodeRole::Leader.into(),
+            role: NodeRole::Leader as i32,
             address: "127.0.0.1:50051".to_string(),
             status: NodeStatus::Active.into(),
         },
         NodeMeta {
             id: 2,
-            role: NodeRole::Follower.into(),
+            role: NodeRole::Follower as i32,
             address: "127.0.0.1:50052".to_string(),
             status: NodeStatus::Active.into(),
         },
@@ -42,7 +42,7 @@ async fn test_parse_cluster_metadata_success() {
 async fn test_parse_cluster_metadata_no_leader() {
     let nodes = vec![NodeMeta {
         id: 1,
-        role: NodeRole::Follower.into(),
+        role: NodeRole::Follower as i32,
         address: "127.0.0.1:50051".to_string(),
         status: NodeStatus::Active.into(),
     }];
@@ -167,7 +167,7 @@ async fn test_refresh_successful_leader_change() {
                 version: 1,
                 nodes: vec![NodeMeta {
                     id: leader_id,
-                    role: NodeRole::Leader.into(),
+                    role: NodeRole::Leader as i32,
                     address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
@@ -201,7 +201,7 @@ async fn test_refresh_successful_leader_change() {
                 version: 1,
                 nodes: vec![NodeMeta {
                     id: new_leader_id,
-                    role: NodeRole::Leader.into(),
+                    role: NodeRole::Leader as i32,
                     address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],

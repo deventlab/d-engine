@@ -508,12 +508,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "d-engine-client"
+version = "0.2.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "d-engine-core",
+ "d-engine-proto",
+ "futures",
+ "rand 0.8.5",
+ "serde",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-health",
+ "tracing",
+]
+
+[[package]]
 name = "d-engine-core"
 version = "0.1.0"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
  "async-stream",
+ "async-trait",
  "bincode",
  "bytes",
  "config",
@@ -560,12 +580,14 @@ name = "d-engine-server"
 version = "0.2.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "bincode",
  "bytes",
  "config",
  "crc32fast",
  "crossbeam",
  "crossbeam-skiplist",
+ "d-engine-client",
  "d-engine-core",
  "d-engine-proto",
  "dashmap",

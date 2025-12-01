@@ -1202,7 +1202,7 @@ impl<T: TypeConfig> LeaderState<T> {
             current_term: self.current_term(),
             voted_for: None,
             commit_index: self.commit_index(),
-            role: Leader.into(),
+            role: Leader as i32,
         }
     }
 
@@ -1330,16 +1330,27 @@ impl<T: TypeConfig> LeaderState<T> {
                 };
 
                 // 3. Update commit index
-                if let Some(new_commit_index) =
+                // Single-node cluster: commit index = last log index (quorum of 1)
+                // Multi-node cluster: calculate commit index based on majority quorum
+                let new_commit_index = if ctx.membership().is_single_node_cluster().await {
+                    let last_log_index = ctx.raft_log().last_entry_id();
+                    if last_log_index > self.commit_index() {
+                        Some(last_log_index)
+                    } else {
+                        None
+                    }
+                } else {
                     self.calculate_new_commit_index(ctx.raft_log(), &peer_updates)
-                {
+                };
+
+                if let Some(new_commit_index) = new_commit_index {
                     debug!(
                         "[Leader-{}] New commit been acknowledged: {}",
                         self.node_id(),
                         new_commit_index
                     );
                     self.update_commit_index_with_signal(
-                        Leader.into(),
+                        Leader as i32,
                         self.current_term(),
                         new_commit_index,
                         role_tx,

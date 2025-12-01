@@ -427,9 +427,8 @@ impl StateMachineConfig {
 
 /// Lease (time-based key expiration) configuration
 ///
-/// Inspired by etcd's lease concept, d-engine provides lease-based expiration
-/// management with multiple cleanup strategies to balance resource efficiency
-/// with timely expiration:
+/// d-engine provides lease-based key expiration management with multiple cleanup
+/// strategies to balance resource efficiency with timely expiration:
 ///
 /// - `disabled`: No automatic cleanup (zero overhead) - **DEFAULT**
 /// - `passive`: Cleanup only on read access

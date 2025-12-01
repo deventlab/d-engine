@@ -859,7 +859,7 @@ mod create_snapshot_tests {
 
         // Verify flag is reset regardless of task outcome
         let ctx = NewCommitData {
-            role: Leader.into(),
+            role: Leader as i32,
             current_term: 1,
             new_commit_index: 100,
         };

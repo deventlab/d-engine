@@ -13,7 +13,7 @@ This guide covers **two major breaking changes** in v0.2.0:
 
 ### What Changed
 
-Starting from **v0.2.0**, the WAL (Write-Ahead Log) format for file-based state machines has changed to support **etcd-compatible TTL semantics**.
+Starting from **v0.2.0**, the WAL (Write-Ahead Log) format for file-based state machines has changed to support **absolute expiration time semantics**.
 
 **Old Format (pre-v0.2.0):**
 
@@ -29,7 +29,7 @@ Entry fields: ..., expire_at_secs: u64 (8 bytes, absolute expiration time in UNI
 ### Why This Change?
 
 - **Crash Safety**: Absolute expiration time ensures TTL correctness across restarts
-- **etcd Compatibility**: Matches etcd's lease semantics (absolute expiry)
+- **Deterministic Semantics**: Matches industry-standard lease semantics (absolute expiry)
 - **No TTL Reset**: TTL no longer resets on node restart
 
 ### Impact
@@ -105,7 +105,7 @@ grep "WAL" /var/log/d-engine.log
 | TTL Storage | Relative (seconds from now) | Absolute (UNIX timestamp) |
 | After Restart | TTL resets 🔄 | TTL preserved ✅ |
 | WAL Replay | All entries loaded | Expired entries skipped ✅ |
-| etcd Compatible | ❌ No | ✅ Yes |
+| Expiration Semantics | Relative TTL | Absolute timestamp ✅ |
 | Crash Safe | ❌ No | ✅ Yes |
 
 ---

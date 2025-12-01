@@ -37,7 +37,7 @@ async fn main() {
         .map(|v| v.parse::<u16>().expect("METRICS_PORT must be a valid port"))
         .unwrap_or(9000); // default 9000 if not set
 
-    if env::var("TOKIO_CONSOLE").is_ok() {
+    let _log_guard = if env::var("TOKIO_CONSOLE").is_ok() {
         let tokio_console_port: u16 = env::var("TOKIO_CONSOLE_PORT")
             .map(|v| v.parse::<u16>().expect("TOKIO_CONSOLE_PORT must be a valid port"))
             .unwrap_or(6669);
@@ -50,10 +50,11 @@ async fn main() {
 
         // Your application code here
         println!("Application started with Tokio Console monitoring");
+        None
     } else {
         // Initialize the log system
-        let _guard = init_observability(log_dir);
-    }
+        Some(init_observability(log_dir).expect("Failed to initialize logging"))
+    };
 
     // Initializing Shutdown Signal
     let (graceful_tx, graceful_rx) = watch::channel(());

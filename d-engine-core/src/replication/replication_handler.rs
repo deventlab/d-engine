@@ -70,31 +70,28 @@ where
         trace!("entry_payloads: {:?}", &entry_payloads);
 
         // ----------------------
-        // Phase 1: Pre-Checks
+        // Phase 1: Pre-Checks and Cluster Topology Detection
         // ----------------------
         let membership = ctx.membership();
+        let is_single_node = membership.is_single_node_cluster().await;
 
-        // Single-node cluster: no replication needed, quorum automatically achieved
-        if membership.is_single_node_cluster().await {
-            debug!(
-                "Single-node cluster (leader={}): no replication needed, quorum automatically achieved",
-                self.my_id
-            );
-            return Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::new(),
-                learner_progress: HashMap::new(),
-            });
-        }
-
-        let replication_targets = membership.replication_peers().await;
-        if replication_targets.is_empty() {
-            warn!("no peer found for leader({})", self.my_id);
-            return Err(ReplicationError::NoPeerFound {
-                leader_id: self.my_id,
+        // Determine replication targets based on cluster topology
+        let replication_targets = if is_single_node {
+            // Single-node cluster: no peers to replicate to, will write logs and return early
+            vec![]
+        } else {
+            // Multi-node cluster: get all replication peers
+            let targets = membership.replication_peers().await;
+            if targets.is_empty() {
+                // Multi-node cluster with no peers configured is an error
+                warn!("No replication peer found for leader {}", self.my_id);
+                return Err(ReplicationError::NoPeerFound {
+                    leader_id: self.my_id,
+                }
+                .into());
             }
-            .into());
-        }
+            targets
+        };
 
         // Separate Voters and Learners
         let (voters, learners): (Vec<_>, Vec<_>) = replication_targets
@@ -148,8 +145,24 @@ where
             .collect();
 
         // ----------------------
-        // Phase 5: Send Requests
+        // Phase 5: Replication
         // ----------------------
+
+        // Single-node cluster: logs already written in Phase 2, return immediately
+        // No replication needed, quorum is automatically achieved (quorum of 1)
+        if is_single_node {
+            debug!(
+                "Single-node cluster (leader={}): logs persisted, quorum automatically achieved",
+                self.my_id
+            );
+            return Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(),
+                learner_progress: HashMap::new(),
+            });
+        }
+
+        // Multi-node cluster: perform replication to peers
         let leader_current_term = state_snapshot.current_term;
         let mut successes = 1; // Include leader itself
         let mut peer_updates = HashMap::new();

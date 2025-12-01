@@ -103,7 +103,7 @@ pub use d_engine_client::{
     ClientConfig,
     // Specialized clients
     ClusterClient,
-    KvClient,
+    GrpcKvClient,
 };
 
 #[cfg(feature = "client")]
@@ -120,11 +120,19 @@ pub mod cluster_types {
     pub use d_engine_client::cluster_types::{NodeMeta, NodeStatus};
 }
 
+// ==================== Core API ====================
+
+#[cfg(feature = "client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
+pub use d_engine_client::KvClient;
+
 // ==================== Server API ====================
 
 #[cfg(feature = "server")]
 #[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub use d_engine_server::{
+    // Embedded mode
+    EmbeddedEngine,
     // Error types
     Error,
     // Storage implementations
@@ -132,6 +140,9 @@ pub use d_engine_server::{
     FileStorageEngine,
     // Data types
     HardState,
+    LeaderInfo,
+    // Embedded KV client (zero-overhead, same process)
+    LocalKvClient,
     // Extension traits for custom implementations
     LogStore,
     MetaStore,
@@ -181,10 +192,14 @@ pub mod storage {
 /// ```
 pub mod prelude {
     #[cfg(feature = "client")]
-    pub use d_engine_client::{Client, ClientBuilder};
+    pub use d_engine_client::{Client, ClientBuilder, GrpcKvClient};
 
     #[cfg(feature = "server")]
     pub use d_engine_server::{
-        FileStateMachine, FileStorageEngine, Node, NodeBuilder, StateMachine, StorageEngine,
+        EmbeddedEngine, FileStateMachine, FileStorageEngine, LeaderInfo, LocalClientError,
+        LocalKvClient, Node, NodeBuilder, StateMachine, StorageEngine,
     };
+
+    #[cfg(feature = "full")]
+    pub use d_engine_client::KvClient;
 }

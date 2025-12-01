@@ -5,7 +5,7 @@
 //!
 //! # Design Philosophy
 //!
-//! Inspired by etcd's lease concept, d-engine provides lease management as a framework-level
+//! d-engine provides lease-based key expiration management as a framework-level
 //! feature that all state machines (including custom implementations) can leverage.
 //!
 //! # Architecture

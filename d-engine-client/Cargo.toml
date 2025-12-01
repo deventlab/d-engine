@@ -17,6 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 d-engine-proto = { workspace = true }
+d-engine-core = { workspace = true }
 
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -28,6 +29,7 @@ rand = { workspace = true }
 arc-swap = "1.7.1"
 futures = { workspace = true }
 tokio-stream = "0.1.16"
+async-trait = "0.1"
 
 [dev-dependencies]
 mockall = "0.12.1"

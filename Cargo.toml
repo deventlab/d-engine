@@ -15,6 +15,7 @@ exclude = [
   "examples/sled-cluster",
   "examples/three-nodes-cluster",
   "examples/single-node-expansion",
+  "examples/quick-start",
   "benches/d-engine-bench",
 ]
 
@@ -26,7 +27,7 @@ d-engine-core = { path = "./d-engine-core" }
 d-engine-client = { path = "./d-engine-client" }
 d-engine-server = { path = "./d-engine-server" }
 
-tokio = { version = "1.4", features = [
+tokio = { version = "1", features = [
     "macros",
     "time",
     "signal",

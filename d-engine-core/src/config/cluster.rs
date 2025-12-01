@@ -129,7 +129,7 @@ fn default_initial_cluster() -> Vec<NodeMeta> {
     vec![NodeMeta {
         id: 1,
         address: "127.0.0.1:8080".to_string(),
-        role: Follower.into(),
+        role: Follower as i32,
         status: NodeStatus::Active.into(),
     }]
 }

@@ -15,6 +15,8 @@ use super::ClientInner;
 use crate::ClientApiError;
 use crate::ClientResponseExt;
 use crate::scoped_timer::ScopedTimer;
+#[allow(unused_imports)]
+use crate::{KvClient as CoreKvClient, KvClientError, KvResult};
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;
@@ -23,16 +25,16 @@ use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::raft_client_service_client::RaftClientServiceClient;
 use d_engine_proto::error::ErrorCode;
 
-/// Key-value store client interface
+/// gRPC-based key-value store client
 ///
-/// Implements CRUD operations with configurable consistency levels.
+/// Implements remote CRUD operations via gRPC protocol.
 /// All write operations use strong consistency.
 #[derive(Clone)]
-pub struct KvClient {
+pub struct GrpcKvClient {
     pub(super) client_inner: Arc<ArcSwap<ClientInner>>,
 }
 
-impl KvClient {
+impl GrpcKvClient {
     pub(crate) fn new(client_inner: Arc<ArcSwap<ClientInner>>) -> Self {
         Self { client_inner }
     }
@@ -339,5 +341,56 @@ impl KvClient {
         }
 
         Ok(client)
+    }
+}
+
+// ==================== Core KvClient Trait Implementation ====================
+
+// Implement d_engine_core::KvClient trait for GrpcKvClient
+#[async_trait::async_trait]
+impl CoreKvClient for GrpcKvClient {
+    async fn put(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+        value: impl AsRef<[u8]> + Send,
+    ) -> KvResult<()> {
+        GrpcKvClient::put(self, key, value).await.map_err(Into::into)
+    }
+
+    async fn put_with_ttl(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+        value: impl AsRef<[u8]> + Send,
+        ttl_secs: u64,
+    ) -> KvResult<()> {
+        GrpcKvClient::put_with_ttl(self, key, value, ttl_secs).await.map_err(Into::into)
+    }
+
+    async fn get(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> KvResult<Option<Bytes>> {
+        match GrpcKvClient::get(self, key).await {
+            Ok(Some(result)) => Ok(Some(result.value)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> KvResult<Vec<Option<Bytes>>> {
+        match GrpcKvClient::get_multi(self, keys.iter().cloned()).await {
+            Ok(results) => Ok(results.into_iter().map(|opt| opt.map(|r| r.value)).collect()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn delete(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> KvResult<()> {
+        GrpcKvClient::delete(self, key).await.map_err(Into::into)
     }
 }

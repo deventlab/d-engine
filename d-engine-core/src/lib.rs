@@ -35,6 +35,9 @@ pub use raft_context::*;
 pub use replication::*;
 pub use state_machine_handler::*;
 
+#[cfg(test)]
+mod raft_test;
+
 #[doc(hidden)]
 pub use raft_role::*;
 

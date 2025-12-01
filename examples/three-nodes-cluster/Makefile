@@ -173,6 +173,7 @@ clean:
 	cargo clean
 	rm -rf logs/*
 	rm -rf db/*
+	rm -rf snapshots/*
 	rm -rf samply_reports/*
 
 clean-log-db:

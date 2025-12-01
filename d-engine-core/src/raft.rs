@@ -47,6 +47,10 @@ where
     // For business logic to apply logs into state machine
     new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
 
+    // Leader change notification
+    // Contains (leader_id, term) when leader elected, sent on role transitions
+    leader_change_listener: Vec<mpsc::UnboundedSender<(Option<u32>, u64)>>,
+
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
 
@@ -127,11 +131,41 @@ where
 
             shutdown_signal: signal_params.shutdown_signal,
 
+            leader_change_listener: Vec::new(),
+
             #[cfg(any(test, feature = "test-utils"))]
             test_role_transition_listener: Vec::new(),
 
             #[cfg(any(test, feature = "test-utils"))]
             test_raft_event_listener: Vec::new(),
+        }
+    }
+
+    /// Register a listener for leader election events.
+    ///
+    /// The listener will receive (leader_id, term) tuples:
+    /// - Some(leader_id) when a leader is elected
+    /// - None when no leader exists (during election)
+    ///
+    /// # Performance
+    /// Event-driven notification (no polling), zero-copy channel send
+    pub fn register_leader_change_listener(
+        &mut self,
+        tx: mpsc::UnboundedSender<(Option<u32>, u64)>,
+    ) {
+        self.leader_change_listener.push(tx);
+    }
+
+    /// Notify all leader change listeners.
+    ///
+    /// Called internally when role transitions occur.
+    fn notify_leader_change(
+        &self,
+        leader_id: Option<u32>,
+        term: u64,
+    ) {
+        for tx in &self.leader_change_listener {
+            let _ = tx.send((leader_id, term));
         }
     }
 
@@ -255,9 +289,13 @@ where
         // All inbound and outbound raft event
 
         match role_event {
-            RoleEvent::BecomeFollower(_leader_id_option) => {
+            RoleEvent::BecomeFollower(leader_id_option) => {
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
+
+                // Notify leader change listeners
+                let current_term = self.role.current_term();
+                self.notify_leader_change(leader_id_option, current_term);
 
                 #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
@@ -268,12 +306,20 @@ where
                 debug!("BecomeCandidate");
                 self.role = self.role.become_candidate()?;
 
+                // No leader during candidate state
+                let current_term = self.role.current_term();
+                self.notify_leader_change(None, current_term);
+
                 #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLeader => {
                 debug!("BecomeLeader");
                 self.role = self.role.become_leader()?;
+
+                // Notify leader change listeners: this node is now leader
+                let current_term = self.role.current_term();
+                self.notify_leader_change(Some(self.node_id), current_term);
 
                 let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true).await;
 
@@ -310,6 +356,10 @@ where
             RoleEvent::BecomeLearner => {
                 debug!("BecomeLearner");
                 self.role = self.role.become_learner()?;
+
+                // Learner has no leader initially
+                let current_term = self.role.current_term();
+                self.notify_leader_change(None, current_term);
 
                 #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();

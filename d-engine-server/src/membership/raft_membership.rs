@@ -288,15 +288,15 @@ where
         leader_id: u32,
     ) -> Result<()> {
         self.reset_leader().await?;
-        self.update_node_role(leader_id, Leader.into()).await
+        self.update_node_role(leader_id, Leader as i32).await
     }
 
     async fn reset_leader(&self) -> Result<()> {
         self.membership
             .blocking_write(|guard| {
                 for node in guard.nodes.values_mut() {
-                    if node.role == Leader.into() {
-                        node.role = Follower.into();
+                    if node.role == Leader as i32 {
+                        node.role = Follower as i32;
                     }
                 }
                 Ok(())
@@ -328,7 +328,7 @@ where
     async fn current_leader_id(&self) -> Option<u32> {
         self.membership
             .blocking_read(|guard| {
-                guard.nodes.values().find(|node| node.role == Leader.into()).map(|node| node.id)
+                guard.nodes.values().find(|node| node.role == Leader as i32).map(|node| node.id)
             })
             .await
     }
@@ -394,8 +394,8 @@ where
                 }
                 Some(Change::Promote(promote)) => {
                     self.update_single_node(promote.node_id, |node| {
-                        if node.role == Learner.into() {
-                            node.role = Follower.into();
+                        if node.role == Learner as i32 {
+                            node.role = Follower as i32;
                             Ok(())
                         } else {
                             Err(MembershipError::InvalidPromotion {
@@ -411,7 +411,7 @@ where
                     self.update_multiple_nodes(&bp.node_ids, |node| {
                         if NodeStatus::is_i32_promotable(node.status) {
                             node.status = bp.new_status;
-                            node.role = Follower.into();
+                            node.role = Follower as i32;
                         }
                         Ok(())
                     })
@@ -499,7 +499,7 @@ where
                     NodeMeta {
                         id: node_id,
                         address,
-                        role: Learner.into(),
+                        role: Learner as i32,
                         status: NodeStatus::Syncing as i32,
                     },
                 );
@@ -679,7 +679,7 @@ where
                             .nodes
                             .get_mut(&promote.node_id)
                             .map(|node| {
-                                node.role = Follower.into();
+                                node.role = Follower as i32;
                                 node.status = NodeStatus::Active as i32;
                                 Ok(())
                             })
@@ -691,7 +691,7 @@ where
                             })
                     })
                     .await
-                // self.update_node_role(promote.node_id, Follower.into()).await?;
+                // self.update_node_role(promote.node_id, Follower as i32).await?;
                 // self.update_node_status(promote.node_id, NodeStatus::Active).await
             }
             Some(Change::BatchPromote(bp)) => {
@@ -702,7 +702,7 @@ where
                                 MembershipError::NoMetadataFoundForNode { node_id: *node_id },
                             )?;
 
-                            node.role = Follower.into();
+                            node.role = Follower as i32;
                             node.status = NodeStatus::try_from(bp.new_status)
                                 .unwrap_or(NodeStatus::Active)
                                 as i32;
@@ -756,7 +756,7 @@ where
         role: i32,
     ) -> Result<()> {
         // New nodes must be learners
-        if role != Learner.into() {
+        if role != Learner as i32 {
             return Err(MembershipError::NotLearner.into());
         }
 

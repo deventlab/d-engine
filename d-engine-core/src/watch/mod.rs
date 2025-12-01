@@ -1,8 +1,7 @@
 //! Watch mechanism for monitoring key changes
 //!
 //! This module provides a high-performance, lock-free watch system that allows
-//! clients to monitor specific keys for changes. It is designed to replace etcd's
-//! Watch functionality with minimal overhead on the write path.
+//! clients to monitor specific keys for changes with minimal overhead on the write path.
 //!
 //! # Architecture Overview
 //!

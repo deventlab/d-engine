@@ -46,7 +46,9 @@ mod builder;
 mod cluster;
 mod config;
 mod error;
-mod kv;
+mod grpc_kv_client;
+pub mod kv_client;
+pub mod kv_error;
 mod pool;
 mod proto;
 mod scoped_timer;
@@ -56,7 +58,9 @@ pub use builder::*;
 pub use cluster::*;
 pub use config::*;
 pub use error::*;
-pub use kv::*;
+pub use grpc_kv_client::*;
+pub use kv_client::*;
+pub use kv_error::*;
 pub use pool::*;
 pub use utils::*;
 
@@ -108,7 +112,7 @@ mod utils_test;
 #[derive(Clone)]
 pub struct Client {
     /// Key-value store client interface
-    kv: KvClient,
+    kv: GrpcKvClient,
 
     /// Cluster management client interface
     cluster: ClusterClient,
@@ -131,7 +135,7 @@ impl Client {
     /// ```rust,ignore
     /// client.kv().put("key", "value").await?;
     /// ```
-    pub fn kv(&self) -> &KvClient {
+    pub fn kv(&self) -> &GrpcKvClient {
         &self.kv
     }
 

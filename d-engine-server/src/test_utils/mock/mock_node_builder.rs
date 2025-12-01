@@ -36,6 +36,7 @@ use d_engine_core::RoleEvent;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::follower_state::FollowerState;
+use d_engine_core::mock_membership as mock_membership_fn;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 
@@ -230,7 +231,7 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
-            self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
+            self.membership.unwrap_or_else(|| Arc::new(mock_membership_fn())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
                 RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
@@ -296,12 +297,18 @@ impl MockBuilder {
         let event_tx = raft.event_sender();
         let node_config = raft.ctx.node_config.clone();
         let membership = raft.ctx.membership.clone();
+        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
+        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
             ready: AtomicBool::new(false),
+            ready_notify_tx,
+            leader_elected_tx,
+            _leader_elected_rx: leader_elected_rx,
             node_config,
             watch_manager: None,
             watch_dispatcher_handle: None,
@@ -327,12 +334,18 @@ impl MockBuilder {
             "build_node_with_rpc_server"
         );
         let node_config_arc = Arc::new(node_config);
+        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
+        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
             ready: AtomicBool::new(false),
+            ready_notify_tx,
+            leader_elected_tx,
+            _leader_elected_rx: leader_elected_rx,
             node_config: node_config_arc.clone(),
             watch_manager: None,
             watch_dispatcher_handle: None,

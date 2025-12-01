@@ -19,7 +19,7 @@ async fn test_should_trigger_after_interval() {
 
     // Create context (leader)
     let ctx = SnapshotContext {
-        role: Leader.into(), // Assuming Leader is defined elsewhere
+        role: Leader as i32, // Assuming Leader is defined elsewhere
         last_included: LogId { term: 1, index: 1 },
         last_applied: LogId { term: 1, index: 10 },
         current_term: 1,
@@ -45,7 +45,7 @@ async fn test_should_not_trigger_before_interval() {
 
     // Create context (leader)
     let ctx = SnapshotContext {
-        role: Leader.into(),
+        role: Leader as i32,
         last_included: LogId { term: 1, index: 1 },
         last_applied: LogId { term: 1, index: 10 },
         current_term: 1,
@@ -67,7 +67,7 @@ async fn test_reset_timer_works() {
     policy.reset_timer();
 
     let ctx = SnapshotContext {
-        role: Leader.into(),
+        role: Leader as i32,
         last_included: LogId { term: 1, index: 1 },
         last_applied: LogId { term: 1, index: 10 },
         current_term: 1,

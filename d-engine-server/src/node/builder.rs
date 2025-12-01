@@ -277,6 +277,7 @@ where
 
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
+        info!("Node startup, Last applied index: {}", last_applied_index);
         let raft_log = {
             let (log, receiver) = BufferedRaftLog::new(
                 node_id,
@@ -396,6 +397,25 @@ where
         // Register commit event listener
         raft_core.register_new_commit_listener(new_commit_event_tx);
 
+        // Create leader election notification channel
+        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+        let leader_elected_tx_clone = leader_elected_tx.clone();
+
+        // Register leader change listener
+        let (leader_change_tx, mut leader_change_rx) = mpsc::unbounded_channel();
+        raft_core.register_leader_change_listener(leader_change_tx);
+
+        // Spawn task to forward leader changes to watch channel
+        tokio::spawn(async move {
+            while let Some((leader_id, term)) = leader_change_rx.recv().await {
+                let leader_info = leader_id.map(|id| crate::LeaderInfo {
+                    leader_id: id,
+                    term,
+                });
+                let _ = leader_elected_tx_clone.send(leader_info);
+            }
+        });
+
         // Start CommitHandler in a single thread
         let deps = CommitHandlerDependencies {
             state_machine_handler,
@@ -419,12 +439,17 @@ where
         Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
+        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
+
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,
             raft_core: Arc::new(Mutex::new(raft_core)),
             membership,
             event_tx: event_tx.clone(),
             ready: AtomicBool::new(false),
+            ready_notify_tx,
+            leader_elected_tx,
+            _leader_elected_rx: leader_elected_rx,
             node_config: node_config_arc,
             watch_manager,
             watch_dispatcher_handle,
