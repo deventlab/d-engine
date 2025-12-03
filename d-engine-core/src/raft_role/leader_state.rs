@@ -2567,6 +2567,13 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         debug!("Successfully served {} pending reads", count);
+
+        // Metrics: Reset queue depth to 0 after serving all pending reads
+        metrics::gauge!(
+            "raft.pending_reads.queue_depth",
+            &[("node_id", self.node_id().to_string())]
+        )
+        .set(0.0);
     }
 
     /// Fail all pending reads with an error message
@@ -2593,6 +2600,13 @@ impl<T: TypeConfig> LeaderState<T> {
         for pending_read in self.pending_reads.drain(..) {
             let _ = pending_read.sender.send(Err(Status::unavailable(error_msg.to_string())));
         }
+
+        // Metrics: Reset queue depth to 0 after failing all pending reads
+        metrics::gauge!(
+            "raft.pending_reads.queue_depth",
+            &[("node_id", self.node_id().to_string())]
+        )
+        .set(0.0);
     }
 
     /// Check and clean up pending reads that have exceeded timeout
@@ -2635,14 +2649,12 @@ impl<T: TypeConfig> LeaderState<T> {
             .increment(timed_out as u64);
         }
 
-        // Metrics: Track current pending queue depth
-        if !self.pending_reads.is_empty() {
-            metrics::gauge!(
-                "raft.pending_reads.queue_depth",
-                &[("node_id", self.node_id().to_string())]
-            )
-            .set(self.pending_reads.len() as f64);
-        }
+        // Metrics: Track current pending queue depth (always update, even if 0)
+        metrics::gauge!(
+            "raft.pending_reads.queue_depth",
+            &[("node_id", self.node_id().to_string())]
+        )
+        .set(self.pending_reads.len() as f64);
     }
 }
 
