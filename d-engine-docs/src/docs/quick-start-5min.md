@@ -331,12 +331,21 @@ kill <PID>
 
 ### Scale to 3-Node Cluster
 
-See [scale-to-cluster.md](./scale-to-cluster.md):
+See [examples/single-node-expansion.md](./examples/single-node-expansion.md):
 
 - How to expand from 1 node to 3 nodes
 - Configuration changes needed
 - Testing cluster failover
 - Zero code changes required
+
+### Production-Grade 3-Node Cluster
+
+See [examples/three-nodes-cluster.md](./examples/three-nodes-cluster.md):
+
+- Start with 3 nodes simultaneously
+- Production-ready configuration
+- Benchmark reference setup
+- Performance profiling
 
 ### Understand Integration Modes
 

@@ -1,26 +1,6 @@
 ## Quick Start Guide
 
-### Single-Node Mode (Standalone)
-
-Perfect for development, testing, or small deployments that don't require high availability.
-
-```bash
-# Build and start single node
-make build
-make start-single-node
-
-# The node will automatically become leader without election
-# Suitable for budget-constrained startups or development environments
-```
-
-**Use Cases:**
-
-- Development and testing environments
-- Small-scale deployments with budget constraints
-- Learning d-engine without cluster complexity
-- Later expandable to 3-node cluster without data loss (roadmap #179)
-
-### Three-Node Cluster Mode (High Availability)
+### Three-Node Cluster Mode
 
 Production-ready setup with automatic failover and data replication.
 
@@ -40,20 +20,6 @@ make clean        # Clean all build artifacts and logs
 ### Manual Startup (Advanced)
 
 For manual control, run these in separate terminal sessions:
-
-#### Single Node (Standalone)
-
-```bash
-CONFIG_PATH=config/node \
-DB_PATH="./db/single" \
-LOG_DIR="./logs/single" \
-METRICS_PORT=8081 \
-RUST_LOG=demo=debug,d_engine=debug \
-RUST_BACKTRACE=1 \
-target/release/demo
-```
-
-#### Three-Node Cluster
 
 **Node 1:**
 
@@ -108,16 +74,15 @@ config/
 
 ### Key Makefile Commands
 
-| **Command**              | **Description**                     |
-| ------------------------ | ----------------------------------- |
-| `make build`             | Build release binary                |
-| `make start-single-node` | Start single node (standalone mode) |
-| `make start-cluster`     | Start 3-node cluster (parallel)     |
-| `make start-nodeN`       | Start individual node (N=1,2,3)     |
-| `make join-nodeN`        | Join learner node (N=4,5)           |
-| `make clean`             | Clean build artifacts & logs        |
-| `make clean-log-db`      | Clean only logs and database files  |
-| `make help`              | Show all available commands         |
+| **Command**          | **Description**                    |
+| -------------------- | ---------------------------------- |
+| `make build`         | Build release binary               |
+| `make start-cluster` | Start 3-node cluster (parallel)    |
+| `make start-nodeN`   | Start individual node (N=1,2,3)    |
+| `make join-nodeN`    | Join learner node (N=4,5)          |
+| `make clean`         | Clean build artifacts & logs       |
+| `make clean-log-db`  | Clean only logs and database files |
+| `make help`          | Show all available commands        |
 
 ### Log Monitoring
 
@@ -126,16 +91,6 @@ tail -f logs/1/demo.log# Watch node 1 logstail -f logs/2/demo.log# Watch node 2 
 ```
 
 ## Important Notes
-
-### Single-Node Mode
-
-1. **No high availability**: Single point of failure
-2. **No data replication**: Data loss if node crashes
-3. **Automatic leader election**: Node becomes leader immediately without election
-4. **Performance**: Lower latency (no replication overhead)
-5. **Use case**: Development, testing, or budget-constrained deployments
-
-### Three-Node Cluster Mode
 
 1. Node communication depends on addresses in config files
 2. Default log levels:
