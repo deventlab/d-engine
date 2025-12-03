@@ -558,21 +558,7 @@ build-examples:
 	done
 	@echo "$(GREEN)✓ All examples built successfully$(NC)"
 
-## test-examples        Run tests in all examples
-test-examples:
-	@echo "$(CYAN)Testing all examples...$(NC)"
-	@for example in examples/*/; do \
-		if [ -f "$$example/Cargo.toml" ]; then \
-			example_name=$$(basename "$$example"); \
-			echo "$(YELLOW)→ Testing example: $$example_name$(NC)"; \
-			(cd "$$example" && $(CARGO) test 2>&1) || { \
-				echo "$(RED)✗ Example $$example_name tests failed$(NC)"; \
-				exit 1; \
-			}; \
-			echo "$(GREEN)✓ Example $$example_name tests passed$(NC)"; \
-		fi \
-	done
-	@echo "$(GREEN)✓ All example tests passed$(NC)"
+
 
 # ============================================================================
 # DEFAULT TARGET

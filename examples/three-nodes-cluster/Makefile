@@ -9,7 +9,7 @@
 # ===============================
 # Global Variables
 # ===============================
-LOG_LEVEL ?= debug
+LOG_LEVEL ?= warn
 
 # ===============================
 # Build Targets
