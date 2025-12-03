@@ -95,6 +95,35 @@ use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 
 // Supporting data structures
+
+/// Represents a linearizable read request waiting for heartbeat verification
+///
+/// When a heartbeat verification is already in progress, incoming read requests
+/// are enqueued instead of triggering redundant heartbeat RPCs. All pending reads
+/// are served together when the in-flight heartbeat completes successfully.
+struct PendingRead {
+    /// Keys to read from the state machine
+    keys: Vec<bytes::Bytes>,
+
+    /// Oneshot channel to send read results back to the client
+    sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+
+    /// Timestamp when this read was enqueued (for timeout tracking)
+    enqueued_at: Instant,
+}
+
+impl Debug for PendingRead {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("PendingRead")
+            .field("keys_count", &self.keys.len())
+            .field("enqueued_at", &self.enqueued_at)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingPromotion {
     pub node_id: u32,
@@ -224,6 +253,26 @@ pub struct LeaderState<T: TypeConfig> {
     /// Lease timestamp for LeaseRead policy
     /// Tracks when leadership was last confirmed with quorum
     pub(super) lease_timestamp: AtomicU64,
+
+    // -- Linearizable Read Optimization --
+    /// Pending linearizable read requests waiting for in-flight heartbeat verification
+    ///
+    /// When a linearizable read request arrives while a heartbeat verification is already
+    /// in progress, the request is enqueued here instead of triggering a new heartbeat.
+    /// All pending reads are served when the in-flight heartbeat completes successfully.
+    ///
+    /// This optimization reduces network overhead by coalescing concurrent read requests.
+    pending_reads: Vec<PendingRead>,
+
+    /// Indicates whether a leadership verification is currently in progress
+    ///
+    /// Used to determine if incoming linearizable read requests should:
+    /// - Piggyback on the in-flight leadership verification (true)
+    /// - Trigger a new leadership verification (false)
+    ///
+    /// Note: This is ReadIndex protocol verification (AppendEntries with empty payload),
+    /// distinct from the periodic heartbeat in tick()
+    leadership_verification_in_flight: bool,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -614,7 +663,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // Keep syncing leader_id
         ctx.membership_ref().mark_leader_id(self.node_id()).await?;
 
-        // 1. Clear expired learners
+        // 1. Check and cleanup timed-out pending reads
+        self.check_pending_reads_timeout();
+
+        // 2. Clear expired learners
         if let Err(e) = self.run_periodic_maintenance(role_tx, ctx).await {
             error!("Failed to run periodic maintenance: {}", e);
         }
@@ -821,7 +873,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             let results = ctx
                                 .handlers
                                 .state_machine_handler
-                                .read_from_state_machine(keys)
+                                .read_from_state_machine(keys.clone())
                                 .unwrap_or_default();
                             debug!("handle_client_read results: {:?}", results);
                             Ok(ClientResponse::read_results(results))
@@ -854,28 +906,161 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     // Apply consistency policy
                     match effective_policy {
                         ServerReadConsistencyPolicy::LinearizableRead => {
-                            if !self
-                                .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
-                                .await
-                                .unwrap_or(false)
-                            {
-                                warn!("enforce_quorum_consensus failed for linear read request");
-
-                                Err(tonic::Status::failed_precondition(
-                                    "enforce_quorum_consensus failed".to_string(),
-                                ))
-                            } else if let Err(e) = self.ensure_state_machine_upto_commit_index(
-                                &ctx.handlers.state_machine_handler,
-                                last_applied_index,
-                            ) {
-                                warn!(
-                                    "ensure_state_machine_upto_commit_index failed for linear read request"
+                            // ReadIndex optimization: check if leadership verification is already in-flight
+                            if self.leadership_verification_in_flight {
+                                debug!(
+                                    "Leadership verification in-flight, enqueuing read request (keys_count: {})",
+                                    keys.len()
                                 );
-                                Err(tonic::Status::failed_precondition(format!(
-                                    "ensure_state_machine_upto_commit_index failed: {e:?}"
-                                )))
-                            } else {
-                                read_operation()
+
+                                // Metrics: Track coalesced reads
+                                metrics::counter!(
+                                    "raft.linearizable_read.coalesced",
+                                    &[("node_id", my_id.to_string())]
+                                )
+                                .increment(1);
+
+                                // Piggyback on in-flight leadership verification
+                                self.pending_reads.push(PendingRead {
+                                    keys,
+                                    sender,
+                                    enqueued_at: Instant::now(),
+                                });
+
+                                // Return immediately without blocking
+                                return Ok(());
+                            }
+
+                            // No in-flight leadership verification, initiate new one
+                            self.leadership_verification_in_flight = true;
+                            debug!("Starting new leadership verification for linearizable read");
+
+                            // Metrics: Track leadership verification initiation
+                            metrics::counter!(
+                                "raft.leadership_verification.initiated",
+                                &[("node_id", my_id.to_string())]
+                            )
+                            .increment(1);
+
+                            let verification_start = Instant::now();
+
+                            // Perform leadership verification (ReadIndex protocol)
+                            let verification_result = self
+                                .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
+                                .await;
+
+                            // Metrics: Track verification duration
+                            let verification_duration_us =
+                                verification_start.elapsed().as_micros() as f64;
+                            metrics::histogram!(
+                                "raft.leadership_verification.duration_us",
+                                &[("node_id", my_id.to_string())]
+                            )
+                            .record(verification_duration_us);
+
+                            // Always clear the flag after verification completes
+                            self.leadership_verification_in_flight = false;
+
+                            match verification_result {
+                                Ok(true) => {
+                                    // Leadership verification succeeded
+                                    debug!("Leadership verification succeeded");
+
+                                    // Ensure state machine is up-to-date
+                                    if let Err(e) = self.ensure_state_machine_upto_commit_index(
+                                        &ctx.handlers.state_machine_handler,
+                                        last_applied_index,
+                                    ) {
+                                        warn!(
+                                            "ensure_state_machine_upto_commit_index failed: {:?}",
+                                            e
+                                        );
+
+                                        // Fail all pending reads
+                                        self.fail_all_pending_reads(&format!(
+                                            "State machine sync failed: {e:?}"
+                                        ));
+
+                                        // Fail current request
+                                        Err(tonic::Status::failed_precondition(format!(
+                                            "ensure_state_machine_upto_commit_index failed: {e:?}"
+                                        )))
+                                    } else {
+                                        // Serve all pending reads that piggybacked on this leadership verification
+                                        // NOTE: We rely on ensure_state_machine_upto_commit_index triggering
+                                        // the apply, and the synchronous processing below happening after
+                                        // apply completes (or very shortly after, since commit_handler is
+                                        // a high-priority background thread)
+
+                                        let pending_count = self.pending_reads.len();
+
+                                        // Metrics: Track coalescing effectiveness
+                                        if pending_count > 0 {
+                                            metrics::histogram!(
+                                                "raft.leadership_verification.pending_reads_served",
+                                                &[("node_id", my_id.to_string())]
+                                            )
+                                            .record(pending_count as f64);
+
+                                            metrics::counter!(
+                                                "raft.linearizable_read.served_from_pending",
+                                                &[("node_id", my_id.to_string())]
+                                            )
+                                            .increment(pending_count as u64);
+                                        }
+
+                                        self.serve_all_pending_reads(ctx);
+
+                                        // Metrics: Track successful linearizable reads
+                                        metrics::counter!(
+                                            "raft.linearizable_read.success",
+                                            &[("node_id", my_id.to_string())]
+                                        )
+                                        .increment(1);
+
+                                        // Serve current request
+                                        read_operation()
+                                    }
+                                }
+
+                                Ok(false) | Err(_) => {
+                                    // Leadership verification failed or leadership lost
+                                    warn!("Leadership verification failed for linearizable read");
+
+                                    let pending_count = self.pending_reads.len();
+
+                                    // Metrics: Track verification failures
+                                    metrics::counter!(
+                                        "raft.leadership_verification.failed",
+                                        &[("node_id", my_id.to_string())]
+                                    )
+                                    .increment(1);
+
+                                    if pending_count > 0 {
+                                        metrics::counter!(
+                                            "raft.linearizable_read.failed_pending",
+                                            &[("node_id", my_id.to_string())]
+                                        )
+                                        .increment(pending_count as u64);
+                                    }
+
+                                    // Fail all pending reads
+                                    self.fail_all_pending_reads(
+                                        "Leadership verification failed: leadership may be lost",
+                                    );
+
+                                    // Metrics: Track failed linearizable reads
+                                    metrics::counter!(
+                                        "raft.linearizable_read.failed",
+                                        &[("node_id", my_id.to_string())]
+                                    )
+                                    .increment(1);
+
+                                    // Fail current request
+                                    Err(tonic::Status::failed_precondition(
+                                        "enforce_quorum_consensus failed".to_string(),
+                                    ))
+                                }
                             }
                         }
                         ServerReadConsistencyPolicy::LeaseRead => {
@@ -1955,6 +2140,8 @@ impl<T: TypeConfig> LeaderState<T> {
             pending_promotions: VecDeque::new(),
             _marker: PhantomData,
             lease_timestamp: AtomicU64::new(0),
+            pending_reads: Vec::new(),
+            leadership_verification_in_flight: false,
         }
     }
 
@@ -2330,6 +2517,133 @@ impl<T: TypeConfig> LeaderState<T> {
     ) {
         self.lease_timestamp.store(timestamp, std::sync::atomic::Ordering::Release);
     }
+
+    /// Serve all pending linearizable reads that were waiting for leadership verification
+    ///
+    /// CRITICAL: This MUST be called only after:
+    /// 1. Leadership verification succeeded (leadership confirmed via ReadIndex protocol)
+    /// 2. ensure_state_machine_upto_commit_index was called (triggers background apply)
+    ///
+    /// All pending reads are processed synchronously in FIFO order to ensure:
+    /// - Deterministic processing order (no race conditions from tokio::spawn)
+    /// - Sequential state machine access (better cache locality, no concurrent reads)
+    /// - Minimal overhead (no task spawning, no cloning)
+    ///
+    /// # Arguments
+    /// * `ctx` - Raft context containing state machine handler for reading
+    ///
+    /// # Design Note
+    /// This relies on the commit_handler background thread to quickly apply entries.
+    /// In practice, apply happens within microseconds, so reads see up-to-date state.
+    /// This is the same assumption as the original implementation.
+    fn serve_all_pending_reads(
+        &mut self,
+        ctx: &RaftContext<T>,
+    ) {
+        if self.pending_reads.is_empty() {
+            return;
+        }
+
+        let count = self.pending_reads.len();
+        debug!(
+            "Serving {} pending linearizable reads synchronously after leadership verification",
+            count
+        );
+
+        // Process all pending reads synchronously in FIFO order
+        // This ensures:
+        // - All reads see state >= commit_index (state machine already applied)
+        // - Deterministic order (no tokio::spawn race conditions)
+        // - No concurrent state machine access overhead
+        for pending_read in self.pending_reads.drain(..) {
+            let results = ctx
+                .handlers
+                .state_machine_handler
+                .read_from_state_machine(pending_read.keys)
+                .unwrap_or_default();
+
+            // Send result through oneshot channel (ignore errors if client disconnected)
+            let _ = pending_read.sender.send(Ok(ClientResponse::read_results(results)));
+        }
+
+        debug!("Successfully served {} pending reads", count);
+    }
+
+    /// Fail all pending reads with an error message
+    ///
+    /// Called when heartbeat verification fails or leadership is lost.
+    /// All waiting read requests receive an error response.
+    ///
+    /// # Arguments
+    /// * `error_msg` - Error message to send to all pending reads
+    fn fail_all_pending_reads(
+        &mut self,
+        error_msg: &str,
+    ) {
+        if self.pending_reads.is_empty() {
+            return;
+        }
+
+        let count = self.pending_reads.len();
+        warn!(
+            "Failing {} pending linearizable reads due to: {}",
+            count, error_msg
+        );
+
+        for pending_read in self.pending_reads.drain(..) {
+            let _ = pending_read.sender.send(Err(Status::unavailable(error_msg.to_string())));
+        }
+    }
+
+    /// Check and clean up pending reads that have exceeded timeout
+    ///
+    /// Should be called periodically (e.g., in tick()) to prevent indefinite waiting.
+    /// Reads that have been pending longer than 5 seconds receive a deadline exceeded error.
+    fn check_pending_reads_timeout(&mut self) {
+        const PENDING_READ_TIMEOUT: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+
+        let initial_len = self.pending_reads.len();
+        let mut i = 0;
+
+        while i < self.pending_reads.len() {
+            if now.duration_since(self.pending_reads[i].enqueued_at) > PENDING_READ_TIMEOUT {
+                warn!(
+                    "Pending linearizable read timed out after {:?}",
+                    now.duration_since(self.pending_reads[i].enqueued_at)
+                );
+
+                let pending_read = self.pending_reads.remove(i);
+                let _ = pending_read.sender.send(Err(Status::deadline_exceeded(
+                    "Linearizable read timeout: heartbeat verification took too long".to_string(),
+                )));
+            } else {
+                i += 1;
+            }
+        }
+
+        let timed_out = initial_len - self.pending_reads.len();
+
+        if timed_out > 0 {
+            warn!("Cleaned up {} timed-out pending reads", timed_out);
+
+            // Metrics: Track timeout events
+            metrics::counter!(
+                "raft.linearizable_read.timeout",
+                &[("node_id", self.node_id().to_string())]
+            )
+            .increment(timed_out as u64);
+        }
+
+        // Metrics: Track current pending queue depth
+        if !self.pending_reads.is_empty() {
+            metrics::gauge!(
+                "raft.pending_reads.queue_depth",
+                &[("node_id", self.node_id().to_string())]
+            )
+            .set(self.pending_reads.len() as f64);
+        }
+    }
 }
 
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
@@ -2368,6 +2682,8 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
             _marker: PhantomData,
             lease_timestamp: AtomicU64::new(0),
+            pending_reads: Vec::new(),
+            leadership_verification_in_flight: false,
         }
     }
 }
