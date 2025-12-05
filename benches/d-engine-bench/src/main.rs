@@ -1,20 +1,20 @@
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
 use clap::Parser;
 use clap::Subcommand;
+use d_engine::protocol::ReadConsistencyPolicy;
 use d_engine::Client;
 use d_engine::ClientApiError;
 use d_engine::ClientBuilder;
-use d_engine::protocol::ReadConsistencyPolicy;
 use hdrhistogram::Histogram;
+use rand::distributions::Alphanumeric;
 use rand::Rng;
 use rand::SeedableRng;
-use rand::distributions::Alphanumeric;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug, Clone)]
@@ -43,6 +43,10 @@ struct Cli {
 
     #[arg(long, default_value = "false")]
     sequential_keys: bool,
+
+    /// Limit key space to cycle through 0..key_space (enables testing with repeated keys)
+    #[arg(long)]
+    key_space: Option<u64>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -117,13 +121,17 @@ fn generate_prefixed_key(
     sequential: bool,
     key_size: usize,
     index: u64,
+    key_space: Option<u64>,
 ) -> String {
+    // Apply key space limit if specified
+    let effective_index = key_space.map_or(index, |space| index % space);
+
     if sequential {
         let max_value = 10u64.pow(key_size as u32) - 1;
-        let value = max_value.saturating_sub(index);
+        let value = max_value.saturating_sub(effective_index);
         format!("{:0width$}", value, width = key_size)
     } else {
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(index);
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(effective_index);
         (0..key_size)
             .map(|_| rng.sample(Alphanumeric))
             .map(char::from)
@@ -232,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 match &cli.command {
                     Commands::Put => {
-                        let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
+                        let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter, cli.key_space);
                         let value = generate_value(cli.value_size);
                         if let Err(e) = client.kv().put(&key, &value).await {
                             eprintln!("Put error: {e:?}");
@@ -240,7 +248,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Commands::Range { consistency } => {
-                        let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter);
+                        let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter, cli.key_space);
 
                         let policy = match consistency.as_str() {
                             "l" | "linearizable" => ReadConsistencyPolicy::LinearizableRead,
@@ -283,10 +291,10 @@ mod tests {
     #[test]
     fn test_sequential_keys() {
         // Test the order keys from high to low
-        assert_eq!(generate_prefixed_key(true, 6, 0), "999999");
-        assert_eq!(generate_prefixed_key(true, 6, 1), "999998");
-        assert_eq!(generate_prefixed_key(true, 3, 0), "999");
-        assert_eq!(generate_prefixed_key(true, 3, 1), "998");
+        assert_eq!(generate_prefixed_key(true, 6, 0, None), "999999");
+        assert_eq!(generate_prefixed_key(true, 6, 1, None), "999998");
+        assert_eq!(generate_prefixed_key(true, 3, 0, None), "999");
+        assert_eq!(generate_prefixed_key(true, 3, 1, None), "998");
     }
 
     #[test]
@@ -300,17 +308,27 @@ mod tests {
     #[test]
     fn test_large_index() {
         // Test large index values ​​(will saturate to minimum value)
-        assert_eq!(generate_prefixed_key(true, 3, 9999), "000"); // Saturate to minimum value
+        assert_eq!(generate_prefixed_key(true, 3, 9999, None), "000"); // Saturate to minimum value
     }
 
     #[test]
     fn test_random_keys() {
         // Test the determinism and randomness of the random key
-        let key1 = generate_prefixed_key(false, 8, 42);
-        let key2 = generate_prefixed_key(false, 8, 42);
+        let key1 = generate_prefixed_key(false, 8, 42, None);
+        let key2 = generate_prefixed_key(false, 8, 42, None);
         assert_eq!(key1, key2);
 
-        let key3 = generate_prefixed_key(false, 8, 43);
+        let key3 = generate_prefixed_key(false, 8, 43, None);
         assert_ne!(key1, key3);
+    }
+
+    #[test]
+    fn test_key_space_limit() {
+        // Test key space cycling
+        assert_eq!(generate_prefixed_key(false, 8, 0, Some(10)), generate_prefixed_key(false, 8, 10, Some(10)));
+        assert_eq!(generate_prefixed_key(false, 8, 5, Some(10)), generate_prefixed_key(false, 8, 15, Some(10)));
+
+        // Sequential keys with key space
+        assert_eq!(generate_prefixed_key(true, 6, 0, Some(100)), generate_prefixed_key(true, 6, 100, Some(100)));
     }
 }
