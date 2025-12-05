@@ -478,4 +478,13 @@ impl WatchManager {
     pub fn watched_key_count(&self) -> usize {
         self.inner.watchers.len()
     }
+
+    /// Check if there are any active watchers
+    ///
+    /// This is an O(1) check used to skip expensive protobuf decoding
+    /// when no watchers are registered. Called from the hot write path.
+    #[inline]
+    pub fn has_watchers(&self) -> bool {
+        !self.inner.watchers.is_empty()
+    }
 }

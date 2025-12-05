@@ -187,9 +187,12 @@ where
         // Apply the chunk and track errors
         let apply_result = sm.apply_chunk(chunk.clone()).await;
 
-        // Notify watchers of changes (if watch manager is enabled)
+        // Notify watchers of changes (if watch manager is enabled AND has active watchers)
+        // PERF: has_watchers() is O(1) and avoids expensive protobuf decoding when no watchers exist
         if let Some(ref watch_mgr) = self.watch_manager {
-            self.notify_watchers(&chunk, watch_mgr);
+            if watch_mgr.has_watchers() {
+                self.notify_watchers(&chunk, watch_mgr);
+            }
         }
 
         // Record latency and chunk size histogram *after* the operation
