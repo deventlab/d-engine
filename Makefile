@@ -35,7 +35,7 @@ RUST_LOG_LEVEL ?= d_engine_server=debug,d_engine_core=debug,d_engine_client=debu
 RUST_BACKTRACE ?= 1
 
 # Workspace member crates
-WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine-docs
+WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine-docs d-engine
 
 # Color codes for formatted output
 RED := \033[0;31m
@@ -234,7 +234,7 @@ build-release: check check-workspace
 test: install-tools check-workspace
 	@echo "$(BLUE)Running tests on all targets...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --lib --bins --tests --examples --no-fail-fast -- --test-threads=1 --nocapture
+		$(CARGO) test --workspace --lib --bins --tests --examples --features d-engine-server/rocksdb --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 ## test-detailed        Run tests with detailed failure output for each crate
@@ -244,9 +244,15 @@ test-detailed: install-tools check-workspace
 	@echo "$(BLUE)Running tests with detailed output per crate...$(NC)"
 	@for member in $(WORKSPACE_MEMBERS); do \
 		echo "$(CYAN)Testing crate: $$member$(NC)"; \
-		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $$member --lib --tests --no-fail-fast -- --test-threads=1 --nocapture || \
-		{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		if [ "$$member" = "d-engine-server" ]; then \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test -p $$member --lib --tests --features rocksdb --no-fail-fast -- --test-threads=1 --nocapture || \
+			{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		else \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test -p $$member --lib --tests --no-fail-fast -- --test-threads=1 --nocapture || \
+			{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		fi; \
 		echo "$(GREEN)✓ Tests passed for crate: $$member$(NC)"; \
 		echo ""; \
 	done

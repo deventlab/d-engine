@@ -1,15 +1,15 @@
 use std::time::Duration;
 
-use d_engine::client::Client;
-use d_engine::client::ClientBuilder;
-use d_engine::convert::safe_kv_bytes;
-use d_engine::convert::safe_vk;
-use d_engine::proto::client::ReadConsistencyPolicy;
-use d_engine::proto::cluster::NodeMeta;
-use d_engine::proto::error::ErrorCode;
-use d_engine::ClientApiError;
-use d_engine::Result;
-use d_engine::LEADER;
+use d_engine_client::Client;
+use d_engine_client::ClientApiError;
+use d_engine_client::ClientBuilder;
+
+use d_engine_core::convert::safe_kv_bytes;
+use d_engine_core::convert::safe_vk;
+use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::error::ErrorCode;
+use d_engine_proto::server::cluster::NodeMeta;
 use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
@@ -72,17 +72,14 @@ impl ClientManager {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
                         }
-                        Err(e)
-                            if e.code().eq(&(ErrorCode::NotLeader as u32))
-                                && retries < MAX_RETRIES =>
-                        {
+                        Err(e) if e.code() == ErrorCode::NotLeader && retries < MAX_RETRIES => {
                             retries += 1;
                             self.refresh_client().await?;
 
                             sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                         }
                         Err(e)
-                            if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
+                            if e.code() == ErrorCode::ConnectionTimeout
                                 && retries < MAX_RETRIES =>
                         {
                             retries += 1;
@@ -100,18 +97,13 @@ impl ClientManager {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
                     }
-                    Err(e)
-                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
-                    {
+                    Err(e) if e.code() == ErrorCode::NotLeader && retries < MAX_RETRIES => {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e)
-                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
-                            && retries < MAX_RETRIES =>
-                    {
+                    Err(e) if e.code() == ErrorCode::ConnectionTimeout && retries < MAX_RETRIES => {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -154,18 +146,13 @@ impl ClientManager {
                             return Err(ErrorCode::KeyNotExist.into());
                         }
                     },
-                    Err(e)
-                        if e.code().eq(&(ErrorCode::NotLeader as u32)) && retries < MAX_RETRIES =>
-                    {
+                    Err(e) if e.code() == ErrorCode::NotLeader && retries < MAX_RETRIES => {
                         retries += 1;
                         self.refresh_client().await?;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
                     }
-                    Err(e)
-                        if e.code().eq(&(ErrorCode::ConnectionTimeout as u32))
-                            && retries < MAX_RETRIES =>
-                    {
+                    Err(e) if e.code() == ErrorCode::ConnectionTimeout && retries < MAX_RETRIES => {
                         retries += 1;
 
                         sleep(Duration::from_millis(RETRY_DELAY_MS * 2u64.pow(retries))).await;
@@ -196,13 +183,16 @@ impl ClientManager {
         }
     }
 
-    pub async fn list_members(&self) -> Result<Vec<NodeMeta>> {
+    pub async fn list_members(&self) -> Result<Vec<NodeMeta>, ClientApiError> {
         self.client.cluster().list_members().await
     }
-    pub async fn list_leader_id(&self) -> Result<u32> {
+    pub async fn list_leader_id(&self) -> Result<u32, ClientApiError> {
         let members = self.list_members().await?;
-        let mut ids: Vec<u32> =
-            members.iter().filter(|meta| meta.role == LEADER).map(|n| n.id).collect();
+        let mut ids: Vec<u32> = members
+            .iter()
+            .filter(|meta| meta.role == NodeRole::Leader as i32)
+            .map(|n| n.id)
+            .collect();
 
         Ok(ids.pop().unwrap_or(0))
     }

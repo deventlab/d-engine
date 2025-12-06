@@ -17,10 +17,12 @@
 
 use std::time::Duration;
 
-use d_engine::ClientApiError;
+use d_engine_client::ClientApiError;
 use tracing::debug;
 
 use crate::client_manager::ClientManager;
+use crate::common::TestContext;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -31,8 +33,6 @@ use crate::common::node_config;
 use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
-use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";

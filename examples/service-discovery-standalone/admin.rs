@@ -66,42 +66,55 @@ async fn main() -> Result<()> {
         .request_timeout(Duration::from_secs(3))
         .build()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to connect: {e:?}"))?;
 
     match cli.command {
-        Commands::Register { name, instance, endpoint } => {
+        Commands::Register {
+            name,
+            instance,
+            endpoint,
+        } => {
             // Key format: services/{service_name}/{instance_id}
-            let key = format!("services/{}/{}", name, instance);
+            let key = format!("services/{name}/{instance}");
 
-            client.kv().put(&key, &endpoint).await
-                .map_err(|e| anyhow::anyhow!("Put failed: {:?}", e))?;
+            client
+                .kv()
+                .put(&key, &endpoint)
+                .await
+                .map_err(|e| anyhow::anyhow!("Put failed: {e:?}"))?;
 
-            println!("✓ Registered: {} -> {}", key, endpoint);
+            println!("✓ Registered: {key} -> {endpoint}");
         }
 
         Commands::Unregister { name, instance } => {
-            let key = format!("services/{}/{}", name, instance);
+            let key = format!("services/{name}/{instance}");
 
-            client.kv().delete(&key).await
-                .map_err(|e| anyhow::anyhow!("Delete failed: {:?}", e))?;
+            client
+                .kv()
+                .delete(&key)
+                .await
+                .map_err(|e| anyhow::anyhow!("Delete failed: {e:?}"))?;
 
-            println!("✓ Unregistered: {}", key);
+            println!("✓ Unregistered: {key}");
         }
 
         Commands::List { name } => {
             // Note: d-engine v1 doesn't support prefix scan
             // In production, maintain an index key (see service-discovery-pattern.md)
-            println!("Listing services for: {}", name);
+            println!("Listing services for: {name}");
             println!("Note: Prefix scan not supported in v1.");
-            println!("Workaround: Maintain an index key like 'services/{}_index'", name);
+            println!("Workaround: Maintain an index key like 'services/{name}_index'");
 
             // Try to read index if exists
-            let index_key = format!("services/{}_index", name);
-            let result = client.kv().get(&index_key).await
-                .map_err(|e| anyhow::anyhow!("Get failed: {:?}", e))?;
+            let index_key = format!("services/{name}_index");
+            let result = client
+                .kv()
+                .get(&index_key)
+                .await
+                .map_err(|e| anyhow::anyhow!("Get failed: {e:?}"))?;
             if let Some(result) = result {
                 let instances = String::from_utf8_lossy(&result.value);
-                println!("Registered instances: {}", instances);
+                println!("Registered instances: {instances}");
             } else {
                 println!("No index found. Register services first.");
             }

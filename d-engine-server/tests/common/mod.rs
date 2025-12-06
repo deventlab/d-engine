@@ -6,34 +6,34 @@ use std::time::Duration;
 use bytes::Bytes;
 use bytes::BytesMut;
 use config::Config;
-use d_engine::alias::SMOF;
-use d_engine::alias::SOF;
-use d_engine::config::BackoffPolicy;
-use d_engine::config::ClusterConfig;
-use d_engine::config::CommitHandlerConfig;
-use d_engine::config::ElectionConfig;
-use d_engine::config::FlushPolicy;
-use d_engine::config::PersistenceConfig;
-use d_engine::config::PersistenceStrategy;
-use d_engine::config::RaftConfig;
-use d_engine::config::RaftNodeConfig;
-use d_engine::config::ReplicationConfig;
-use d_engine::config::SnapshotConfig;
-use d_engine::convert::safe_kv_bytes;
-use d_engine::node::Node;
-use d_engine::node::NodeBuilder;
-use d_engine::node::RaftTypeConfig;
-use d_engine::proto::client::WriteCommand;
-use d_engine::proto::common::Entry;
-use d_engine::proto::common::EntryPayload;
-use d_engine::proto::election::VotedFor;
-use d_engine::storage::FileStateMachine;
-use d_engine::storage::StorageEngine;
-use d_engine::ClientApiError;
-use d_engine::FileStorageEngine;
-use d_engine::HardState;
-use d_engine::LogStore;
-use d_engine::MetaStore;
+use d_engine_client::ClientApiError;
+use d_engine_core::alias::SMOF;
+use d_engine_core::alias::SOF;
+use d_engine_core::config::BackoffPolicy;
+use d_engine_core::config::ClusterConfig;
+use d_engine_core::config::CommitHandlerConfig;
+use d_engine_core::config::ElectionConfig;
+use d_engine_core::config::FlushPolicy;
+use d_engine_core::config::PersistenceConfig;
+use d_engine_core::config::PersistenceStrategy;
+use d_engine_core::config::RaftConfig;
+use d_engine_core::config::RaftNodeConfig;
+use d_engine_core::config::ReplicationConfig;
+use d_engine_core::config::SnapshotConfig;
+use d_engine_core::convert::safe_kv_bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_server::FileStateMachine;
+use d_engine_server::FileStorageEngine;
+use d_engine_server::HardState;
+use d_engine_server::LogStore;
+use d_engine_server::MetaStore;
+use d_engine_server::Node;
+use d_engine_server::NodeBuilder;
+use d_engine_server::StorageEngine;
+use d_engine_server::node::RaftTypeConfig;
 use prost::Message;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
@@ -72,9 +72,7 @@ pub struct TestContext {
 impl TestContext {
     pub async fn shutdown(self) -> Result<(), ClientApiError> {
         for tx in self.graceful_txs {
-            tx.send(()).map_err(|_| {
-                ClientApiError::general_client_error("failed to shutdown".to_string())
-            })?;
+            let _ = tx.send(());
         }
 
         for handle in self.node_handles {
@@ -273,6 +271,11 @@ async fn build_node(
     // Build and start the node
     let node = builder
         .build()
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to build node: {e:?}");
+            std::io::Error::other(format!("Failed to build node: {e}"))
+        })?
         .start_rpc_server()
         .await
         .ready()
@@ -306,7 +309,9 @@ pub fn prepare_storage_engine(
     db_path: &str,
     _last_applied_index: u64,
 ) -> Arc<FileStorageEngine> {
-    Arc::new(FileStorageEngine::new(PathBuf::from(format!("{db_path}/raft_log"))).unwrap())
+    let path = PathBuf::from(format!("{db_path}/raft_log"));
+    println!("Creating FileStorageEngine at path: {path:?}");
+    Arc::new(FileStorageEngine::new(path).expect("Failed to create FileStorageEngine"))
 }
 
 pub async fn prepare_state_machine(
@@ -342,13 +347,15 @@ pub fn init_hard_state(
     current_term: u64,
     voted_for: Option<VotedFor>,
 ) {
-    assert!(storage_engine
-        .meta_store()
-        .save_hard_state(&HardState {
-            current_term,
-            voted_for,
-        })
-        .is_ok());
+    assert!(
+        storage_engine
+            .meta_store()
+            .save_hard_state(&HardState {
+                current_term,
+                voted_for,
+            })
+            .is_ok()
+    );
 }
 
 pub async fn test_put_get(

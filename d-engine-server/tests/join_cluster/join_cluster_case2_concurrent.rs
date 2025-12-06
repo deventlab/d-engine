@@ -9,15 +9,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine::client::ClientApiError;
-use d_engine::convert::safe_kv;
-use d_engine::proto::common::NodeStatus;
-use d_engine::storage::StateMachine;
+use d_engine_client::ClientApiError;
+use d_engine_core::convert::safe_kv;
+use d_engine_proto::common::NodeStatus;
+use d_engine_server::StateMachine;
 use tokio::time::sleep;
 use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common;
+use crate::common::TestContext;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_bootstrap_urls;
@@ -30,8 +32,6 @@ use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
-use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 
 // Constants for test configuration
 const JOIN_CLUSTER_CASE2_DIR: &str = "join_cluster/case2";

@@ -44,13 +44,16 @@ async fn main() -> Result<()> {
         .request_timeout(Duration::from_secs(30))
         .build()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to connect: {e:?}"))?;
 
     // Pattern: Read-then-Watch
     // 1. First, read current value (if any)
     println!("=== Current State ===");
-    let current = client.kv().get_eventual(&cli.key).await
-        .map_err(|e| anyhow::anyhow!("Read failed: {:?}", e))?;
+    let current = client
+        .kv()
+        .get_eventual(&cli.key)
+        .await
+        .map_err(|e| anyhow::anyhow!("Read failed: {e:?}"))?;
     if let Some(result) = current {
         println!("  {} = {}", cli.key, String::from_utf8_lossy(&result.value));
     } else {
@@ -60,8 +63,11 @@ async fn main() -> Result<()> {
     // 2. Start watching for future changes
     println!("\n=== Watching for Changes (Ctrl+C to exit) ===\n");
 
-    let mut stream = client.kv().watch(&cli.key).await
-        .map_err(|e| anyhow::anyhow!("Watch failed: {:?}", e))?;
+    let mut stream = client
+        .kv()
+        .watch(&cli.key)
+        .await
+        .map_err(|e| anyhow::anyhow!("Watch failed: {e:?}"))?;
 
     while let Some(event_result) = stream.next().await {
         match event_result {
@@ -69,7 +75,7 @@ async fn main() -> Result<()> {
                 print_watch_event(&cli.key, &response);
             }
             Err(e) => {
-                eprintln!("Watch error: {:?}", e);
+                eprintln!("Watch error: {e:?}");
                 break;
             }
         }
@@ -79,19 +85,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_watch_event(key: &str, response: &WatchResponse) {
+fn print_watch_event(
+    key: &str,
+    response: &WatchResponse,
+) {
     let event_type = WatchEventType::try_from(response.event_type).ok();
 
     match event_type {
         Some(WatchEventType::Put) => {
             let value = String::from_utf8_lossy(&response.value);
-            println!("[PUT] {} = {}", key, value);
+            println!("[PUT] {key} = {value}");
         }
         Some(WatchEventType::Delete) => {
-            println!("[DELETE] {}", key);
+            println!("[DELETE] {key}");
         }
         None => {
-            println!("[UNKNOWN] {} (event_type={})", key, response.event_type);
+            let event_type = response.event_type;
+            println!("[UNKNOWN] {key} (event_type={event_type})");
         }
     }
 }

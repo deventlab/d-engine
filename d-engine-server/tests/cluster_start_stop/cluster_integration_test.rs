@@ -1,10 +1,13 @@
 use std::time::Duration;
 
-use d_engine::ClientApiError;
+use d_engine_client::ClientApiError;
 use tracing::error;
 use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
+use crate::common::ITERATIONS;
+use crate::common::TestContext;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -13,9 +16,6 @@ use crate::common::node_config;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
-use crate::common::TestContext;
-use crate::common::ITERATIONS;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 
 // Constants for test configuration
 const TEST_CASE1_DIR: &str = "cluster_start_stop/case1";

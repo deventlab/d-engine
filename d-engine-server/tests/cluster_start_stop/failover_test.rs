@@ -1,13 +1,12 @@
 use std::time::Duration;
 
-use d_engine::ClientApiError;
+use d_engine_client::{Client, ClientApiError};
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::client_manager::ClientManager;
 use crate::common::{
-    check_cluster_is_ready, create_bootstrap_urls, create_node_config, get_available_ports,
-    node_config, reset, start_node, TestContext, WAIT_FOR_NODE_READY_IN_SEC,
+    TestContext, WAIT_FOR_NODE_READY_IN_SEC, check_cluster_is_ready, create_bootstrap_urls,
+    create_node_config, get_available_ports, node_config, reset, start_node,
 };
 
 const TEST_DIR: &str = "cluster_start_stop/failover";
@@ -48,20 +47,27 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     }
 
     info!("Cluster ready. Writing initial data");
-    let mut client = ClientManager::new(&create_bootstrap_urls(&ports)).await?;
+    let mut client = Client::builder(create_bootstrap_urls(&ports))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .await?;
 
     // Write test data before failover
-    client.put(b"before-failover".to_vec(), b"initial-value".to_vec()).await?;
-    let val = client.get(b"before-failover".to_vec()).await?.unwrap();
-    assert_eq!(val, b"initial-value".as_slice());
+    client.kv().put("before-failover", "initial-value").await?;
+    let result = client.kv().get_eventual("before-failover").await?;
+    assert_eq!(
+        result.expect("Key should exist after write").value.as_ref(),
+        b"initial-value"
+    );
 
     info!("Initial data written. Killing node 1 (likely leader)");
 
     // Kill node 1 (typically the leader in 3-node bootstrap)
-    ctx.graceful_txs[0].send(()).map_err(|_| ClientApiError::ChannelClosed)?;
-    ctx.node_handles[0]
-        .await
-        .map_err(|e| ClientApiError::ServerError(format!("Node shutdown failed: {e}")))??;
+    // Remove from ctx to allow restart later
+    let node1_tx = ctx.graceful_txs.remove(0);
+    let node1_handle = ctx.node_handles.remove(0);
+    let _ = node1_tx.send(());
+    node1_handle.await??;
 
     info!("Node 1 killed. Waiting for re-election");
 
@@ -69,20 +75,20 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Refresh client to discover new leader
-    client.refresh_client().await?;
+    client.refresh(None).await?;
 
     info!("Re-election complete. Verifying cluster still operational");
 
     // Verify cluster still works with 2 nodes (majority)
-    client.put(b"after-failover".to_vec(), b"still-works".to_vec()).await?;
+    client.kv().put("after-failover", "still-works").await?;
 
     // Verify old data still readable
-    let old_val = client.get(b"before-failover".to_vec()).await?.unwrap();
-    assert_eq!(old_val, b"initial-value".as_slice());
+    let old_val = client.kv().get_eventual("before-failover").await?.unwrap();
+    assert_eq!(old_val.value.as_ref(), b"initial-value");
 
     // Verify new data written successfully
-    let new_val = client.get(b"after-failover".to_vec()).await?.unwrap();
-    assert_eq!(new_val, b"still-works".as_slice());
+    let new_val = client.kv().get_eventual("after-failover").await?.unwrap();
+    assert_eq!(new_val.value.as_ref(), b"still-works");
 
     info!("Failover test passed. Cluster operational with 2/3 nodes");
 
@@ -94,17 +100,17 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         None,
     )
     .await?;
-    ctx.graceful_txs[0] = graceful_tx;
-    ctx.node_handles[0] = node_handle;
+    ctx.graceful_txs.insert(0, graceful_tx);
+    ctx.node_handles.insert(0, node_handle);
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     info!("Node 1 restarted. Verifying data sync");
 
     // Verify node 1 synced data from cluster
-    client.refresh_client().await?;
-    let synced_val = client.get(b"after-failover".to_vec()).await?.unwrap();
-    assert_eq!(synced_val, b"still-works".as_slice());
+    client.refresh(None).await?;
+    let synced_val = client.kv().get_eventual("after-failover").await?.unwrap();
+    assert_eq!(synced_val.value.as_ref(), b"still-works");
 
     info!("Node 1 synced successfully. Test complete");
 
@@ -116,7 +122,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 #[tokio::test]
 #[traced_test]
 async fn test_minority_failure() -> Result<(), ClientApiError> {
-    reset(&format!("{}_minority", TEST_DIR)).await?;
+    reset(&format!("{TEST_DIR}_minority")).await?;
 
     let ports = get_available_ports(3).await;
     let mut ctx = TestContext {
@@ -133,8 +139,8 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
                     (i + 1) as u64,
                     *port,
                     &ports,
-                    &format!("{}_minority", DB_ROOT_DIR),
-                    &format!("{}_minority", LOG_DIR),
+                    &format!("{DB_ROOT_DIR}_minority"),
+                    &format!("{LOG_DIR}_minority"),
                 )
                 .await,
             ),
@@ -151,19 +157,22 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
-    let mut client = ClientManager::new(&create_bootstrap_urls(&ports)).await?;
+    let mut client = Client::builder(create_bootstrap_urls(&ports))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .await?;
 
     // Write initial data
-    client.put(b"test-key".to_vec(), b"test-value".to_vec()).await?;
+    client.kv().put("test-key", "test-value").await?;
 
     info!("Killing 2 nodes to lose majority");
 
     // Kill node 1 and node 2 (lose majority)
-    for i in 0..2 {
-        ctx.graceful_txs[i].send(()).map_err(|_| ClientApiError::ChannelClosed)?;
-        ctx.node_handles[i]
-            .await
-            .map_err(|e| ClientApiError::ServerError(format!("Node shutdown failed: {e}")))??;
+    for _ in 0..2 {
+        let tx = ctx.graceful_txs.remove(0);
+        let handle = ctx.node_handles.remove(0);
+        let _ = tx.send(());
+        handle.await??;
     }
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -171,10 +180,10 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     info!("2 nodes killed. Verifying cluster cannot serve writes");
 
     // Attempt write should fail (no majority)
-    client.refresh_client().await?;
+    client.refresh(None).await?;
     let write_result = tokio::time::timeout(
         Duration::from_secs(5),
-        client.put(b"should-fail".to_vec(), b"no-majority".to_vec()),
+        client.kv().put("should-fail", "no-majority"),
     )
     .await;
 
@@ -187,10 +196,10 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     info!("Minority failure test passed. Cluster correctly refused writes");
 
     // Cleanup remaining node
-    ctx.graceful_txs[2].send(()).map_err(|_| ClientApiError::ChannelClosed)?;
-    ctx.node_handles[2]
-        .await
-        .map_err(|e| ClientApiError::ServerError(format!("Node shutdown failed: {e}")))??;
+    let tx = ctx.graceful_txs.remove(0);
+    let handle = ctx.node_handles.remove(0);
+    let _ = tx.send(());
+    handle.await??;
 
     Ok(())
 }

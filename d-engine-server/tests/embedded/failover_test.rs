@@ -36,8 +36,10 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         let config_str = create_node_config(node_id, ports[i], &ports, DB_ROOT_DIR, LOG_DIR).await;
         let config = node_config(&config_str);
 
-        let storage_path = config.cluster.db_root_dir.join("storage");
-        let sm_path = config.cluster.db_root_dir.join("state_machine");
+        // Each node needs its own storage directory to avoid RocksDB lock conflicts
+        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
 
         tokio::fs::create_dir_all(&storage_path).await?;
         tokio::fs::create_dir_all(&sm_path).await?;
@@ -76,7 +78,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let val = engines[0].client().get(b"before-failover".to_vec()).await?;
-    assert_eq!(val, Some(b"initial-value".to_vec()));
+    assert_eq!(val.as_deref(), Some(b"initial-value".as_ref()));
 
     info!("Initial data written successfully");
 
@@ -118,16 +120,16 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     // Verify old data still readable
     let old_val = engines[0].client().get(b"before-failover".to_vec()).await?;
     assert_eq!(
-        old_val,
-        Some(b"initial-value".to_vec()),
+        old_val.as_deref(),
+        Some(b"initial-value".as_ref()),
         "Old data should be preserved"
     );
 
     // Verify new data written successfully
     let new_val = engines[0].client().get(b"after-failover".to_vec()).await?;
     assert_eq!(
-        new_val,
-        Some(b"still-works".to_vec()),
+        new_val.as_deref(),
+        Some(b"still-works".as_ref()),
         "New data should be written"
     );
 
@@ -137,8 +139,9 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     info!("Restarting node 1");
     {
         let config = node_config(&killed_config.0);
-        let storage_path = config.cluster.db_root_dir.join("storage");
-        let sm_path = config.cluster.db_root_dir.join("state_machine");
+        let node_db_root = config.cluster.db_root_dir.join("node1");
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
 
         let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
         let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
@@ -154,8 +157,8 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         // Verify restarted node synced data from cluster
         let synced_val = restarted_engine.client().get(b"after-failover".to_vec()).await?;
         assert_eq!(
-            synced_val,
-            Some(b"still-works".to_vec()),
+            synced_val.as_deref(),
+            Some(b"still-works".as_ref()),
             "Restarted node should sync cluster data"
         );
 
@@ -246,7 +249,8 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
     info!("Minority failure test passed - cluster correctly refused writes");
 
     // Cleanup
-    engines[0].stop().await?;
+    let remaining_engine = engines.remove(0);
+    remaining_engine.stop().await?;
 
     Ok(())
 }

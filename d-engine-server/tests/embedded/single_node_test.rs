@@ -34,7 +34,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
 
     client.put(b"test-key".to_vec(), b"test-value".to_vec()).await?;
     let value = client.get(b"test-key".to_vec()).await?;
-    assert_eq!(value, Some(b"test-value".to_vec()));
+    assert_eq!(value.as_deref(), Some(b"test-value".as_ref()));
 
     client.delete(b"test-key".to_vec()).await?;
     let deleted = client.get(b"test-key".to_vec()).await?;
@@ -104,8 +104,8 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
         let value = engine.client().get(b"persist-key".to_vec()).await?;
         assert_eq!(
-            value,
-            Some(b"persist-value".to_vec()),
+            value.as_deref(),
+            Some(b"persist-value".as_ref()),
             "Data should persist across restarts"
         );
 

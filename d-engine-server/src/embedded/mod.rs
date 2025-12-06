@@ -153,8 +153,7 @@ impl EmbeddedEngine {
 
         // Load config or use default
         let node_config = if let Some(path) = config_path {
-            d_engine_core::RaftNodeConfig::new()?
-                .with_override_config(path)?
+            d_engine_core::RaftNodeConfig::new()?.with_override_config(path)?
         } else {
             d_engine_core::RaftNodeConfig::new()?
         };
@@ -320,7 +319,10 @@ impl EmbeddedEngine {
     ///
     /// # Returns
     /// * `Result<WatcherHandle>` - Handle for receiving events
-    pub async fn watch(&self, key: impl AsRef<[u8]>) -> Result<WatcherHandle> {
+    pub async fn watch(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<WatcherHandle> {
         let manager = self.watch_manager.as_ref().ok_or_else(|| {
             crate::Error::Fatal("Watch feature disabled (WatchManager not initialized)".to_string())
         })?;

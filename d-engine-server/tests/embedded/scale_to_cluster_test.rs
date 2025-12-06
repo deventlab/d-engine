@@ -44,7 +44,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
         engine.client().put(b"app-version".to_vec(), b"1.0".to_vec()).await?;
 
         let val = engine.client().get(b"dev-key".to_vec()).await?;
-        assert_eq!(val, Some(b"dev-value".to_vec()));
+        assert_eq!(val.as_deref(), Some(b"dev-value".as_ref()));
 
         info!("Single-node data written successfully");
         engine.stop().await?;
@@ -60,8 +60,10 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
         let config_str = create_node_config(node_id, ports[i], &ports, DB_ROOT_DIR, LOG_DIR).await;
         let config = node_config(&config_str);
 
-        let storage_path = config.cluster.db_root_dir.join("storage");
-        let sm_path = config.cluster.db_root_dir.join("state_machine");
+        // Each node needs its own storage directory to avoid RocksDB lock conflicts
+        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
 
         tokio::fs::create_dir_all(&storage_path).await?;
         tokio::fs::create_dir_all(&sm_path).await?;
@@ -98,8 +100,8 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
     // Note: This assumes node 1 retained its data directory
     let old_val = engines[0].client().get(b"dev-key".to_vec()).await?;
     assert_eq!(
-        old_val,
-        Some(b"dev-value".to_vec()),
+        old_val.as_deref(),
+        Some(b"dev-value".as_ref()),
         "Single-node data should be preserved"
     );
 
@@ -116,8 +118,8 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
     for (i, engine) in engines.iter().enumerate() {
         let val = engine.client().get(b"cluster-key".to_vec()).await?;
         assert_eq!(
-            val,
-            Some(b"cluster-value".to_vec()),
+            val.as_deref(),
+            Some(b"cluster-value".as_ref()),
             "Node {} should read cluster data",
             i + 1
         );
@@ -153,8 +155,10 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
         let config_str = create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
         let config = node_config(&config_str);
 
-        let storage_path = config.cluster.db_root_dir.join("storage");
-        let sm_path = config.cluster.db_root_dir.join("state_machine");
+        // Each node needs its own storage directory to avoid RocksDB lock conflicts
+        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
 
         tokio::fs::create_dir_all(&storage_path).await?;
         tokio::fs::create_dir_all(&sm_path).await?;
@@ -196,10 +200,10 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
 
     // Verify both old and new data readable
     let old_val = engines[0].client().get(b"before-fail".to_vec()).await?;
-    assert_eq!(old_val, Some(b"value1".to_vec()));
+    assert_eq!(old_val.as_deref(), Some(b"value1".as_ref()));
 
     let new_val = engines[0].client().get(b"after-fail".to_vec()).await?;
-    assert_eq!(new_val, Some(b"value2".to_vec()));
+    assert_eq!(new_val.as_deref(), Some(b"value2".as_ref()));
 
     info!("Cluster operational with 2/3 nodes");
 

@@ -18,33 +18,54 @@ enable_metrics = false        # Detailed logging (default: false)
 
 ### Client Usage
 
-```text
-use d_engine_client::RaftClient;
+```rust
+use d_engine_client::Client;
+use d_engine_client::protocol::WatchRequest;
+use futures::StreamExt;
 
 // Connect to server
-let mut client = RaftClient::new("http://127.0.0.1:50051").await?;
+let client = Client::builder()
+    .endpoints(vec!["http://127.0.0.1:9081".to_string()])
+    .build()
+    .await?;
 
 // Start watching a key
-let request = WatchRequest {
-    client_id: 1,
-    key: b"my_key".to_vec(),
-};
-
-let mut stream = client.watch(request).await?.into_inner();
+let mut stream = client.watch("my_key").await?;
 
 // Receive events
 while let Some(event) = stream.next().await {
-    let event = event?;
-    match WatchEventType::from_i32(event.event_type) {
-        Some(WatchEventType::Put) => {
-            println!("PUT: {:?} = {:?}", event.key, event.value);
+    match event {
+        Ok(event) => {
+            println!("Event: {:?} Key: {:?} Value: {:?}", 
+                event.event_type, event.key, event.value);
         }
-        Some(WatchEventType::Delete) => {
-            println!("DELETE: {:?}", event.key);
-        }
-        _ => {}
+        Err(e) => eprintln!("Watch error: {:?}", e),
     }
 }
+```
+
+### Embedded Usage
+
+For in-process usage (e.g., `EmbeddedEngine`), you can use the `watch()` method directly:
+
+```rust
+use d_engine::d_engine_server::embedded::EmbeddedEngine;
+
+// Initialize engine with config enabling watch
+let engine = EmbeddedEngine::with_rocksdb("./data", Some("d-engine.toml"))?;
+
+// Start watching
+let mut watcher = engine.watch("my_key").await?;
+
+// Spawn a task to handle events
+tokio::spawn(async move {
+    while let Some(result) = watcher.recv().await {
+        match result {
+            Ok(event) => println!("Event: {:?}", event),
+            Err(e) => eprintln!("Error: {:?}", e),
+        }
+    }
+});
 ```
 
 ## Configuration
