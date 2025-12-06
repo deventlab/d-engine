@@ -21,6 +21,8 @@ use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WatchRequest;
+use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::raft_client_service_client::RaftClientServiceClient;
 use d_engine_proto::error::ErrorCode;
@@ -301,6 +303,56 @@ impl GrpcKvClient {
             }
             Err(status) => {
                 error!("Read request failed: {:?}", status);
+                Err(status.into())
+            }
+        }
+    }
+
+    /// Watch for changes on a specific key
+    ///
+    /// Returns a stream of watch events whenever the specified key is modified (PUT or DELETE).
+    /// The stream will continue until the client drops the receiver or disconnects.
+    ///
+    /// # Arguments
+    /// * `key` - The exact key to watch (prefix/range watch not supported in v1)
+    ///
+    /// # Returns
+    /// * `Ok(Streaming<WatchResponse>)` - Stream of watch events
+    /// * `Err(ClientApiError)` - If watch feature is disabled or connection fails
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = client.kv().watch("my_key").await?;
+    /// while let Some(event) = stream.next().await {
+    ///     match event {
+    ///         Ok(response) => println!("Key changed: {:?}", response),
+    ///         Err(e) => eprintln!("Watch error: {:?}", e),
+    ///     }
+    /// }
+    /// ```
+    pub async fn watch(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> std::result::Result<tonic::Streaming<WatchResponse>, ClientApiError> {
+        let client_inner = self.client_inner.load();
+
+        let request = WatchRequest {
+            client_id: client_inner.client_id,
+            key: Bytes::copy_from_slice(key.as_ref()),
+        };
+
+        // Watch can connect to any node (leader or follower)
+        let mut client = self.make_client().await?;
+
+        match client.watch(request).await {
+            Ok(response) => {
+                debug!("Watch stream established");
+                Ok(response.into_inner())
+            }
+            Err(status) => {
+                error!("Watch request failed: {:?}", status);
                 Err(status.into())
             }
         }

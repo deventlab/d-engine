@@ -1,0 +1,28 @@
+[package]
+name = "service-discovery-standalone"
+version = "0.2.0"
+edition = "2021"
+description = "Demonstrates service discovery pattern using d-engine Watch API"
+
+[[bin]]
+name = "admin"
+path = "admin.rs"
+
+[[bin]]
+name = "watcher"
+path = "watcher.rs"
+
+[dependencies]
+d-engine-client = { path = "../../d-engine-client" }
+
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.36.0", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+env_logger = "0.9.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+
+[profile.dev]
+incremental = true

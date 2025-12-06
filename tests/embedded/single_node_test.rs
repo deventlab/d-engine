@@ -16,7 +16,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     let _ = tokio::fs::remove_dir_all(&data_dir).await;
 
     // Start embedded engine with RocksDB
-    let engine = EmbeddedEngine::with_rocksdb(&data_dir).await?;
+    let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
 
     // Wait for node initialization
     engine.ready().await;
@@ -55,7 +55,7 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = tokio::fs::remove_dir_all(&data_dir).await;
 
-    let engine = EmbeddedEngine::with_rocksdb(&data_dir).await?;
+    let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
     engine.ready().await;
 
     // Subscribe to leader changes
@@ -88,7 +88,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // First session: write data
     {
-        let engine = EmbeddedEngine::with_rocksdb(&data_dir).await?;
+        let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
         engine.ready().await;
         engine.wait_leader(Duration::from_secs(2)).await?;
 
@@ -98,7 +98,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // Second session: verify data still exists
     {
-        let engine = EmbeddedEngine::with_rocksdb(&data_dir).await?;
+        let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
         engine.ready().await;
         engine.wait_leader(Duration::from_secs(2)).await?;
 

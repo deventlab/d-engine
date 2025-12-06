@@ -30,7 +30,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
     // Phase 1: Single-node development environment
     info!("Phase 1: Starting single-node mode");
     {
-        let engine = EmbeddedEngine::with_rocksdb(&node1_data_dir).await?;
+        let engine = EmbeddedEngine::with_rocksdb(&node1_data_dir, None).await?;
         engine.ready().await;
 
         let leader = engine.wait_leader(Duration::from_secs(2)).await?;

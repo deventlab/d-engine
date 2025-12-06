@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine in embedded mode...\n");
 
     // Start embedded engine with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data/single-node").await?;
+    let engine = EmbeddedEngine::with_rocksdb("./data/single-node", None).await?;
 
     // Wait for node initialization
     engine.ready().await;

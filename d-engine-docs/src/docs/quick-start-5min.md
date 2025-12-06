@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine...\n");
 
     // Start embedded engine with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data").await?;
+    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 
     // Wait for node initialization
     engine.ready().await;
@@ -109,7 +109,7 @@ Done!
 ### Behind the Scenes
 
 ```rust
-EmbeddedEngine::with_rocksdb("./data").await?
+EmbeddedEngine::with_rocksdb("./data", None).await?
 ```
 
 This one line:
@@ -172,7 +172,7 @@ No network, no serialization. Just direct function calls to Raft core.
 ### 3. Automatic Lifecycle Management
 
 ```rust
-let engine = EmbeddedEngine::with_rocksdb("./data").await?;
+let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 // ↑ Internally spawns node.run() in background
 
 engine.stop().await?;
@@ -189,7 +189,7 @@ No manual `tokio::spawn()`, no leaked tasks.
 
 ```rust
 // Quick-start (development)
-EmbeddedEngine::with_rocksdb(data_dir: &str) -> Result<Self>
+EmbeddedEngine::with_rocksdb(data_dir: &str, config_path: Option<&str>) -> Result<Self>
 
 // Production (custom storage)
 EmbeddedEngine::start(
@@ -246,14 +246,14 @@ client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 
 ```rust
 // Data stored in /tmp/d-engine/
-let engine = EmbeddedEngine::with_rocksdb("").await?;
+let engine = EmbeddedEngine::with_rocksdb("", None).await?;
 ```
 
 ### Pattern 2: Custom Data Directory
 
 ```rust
 // Data stored in ./my-app-data/
-let engine = EmbeddedEngine::with_rocksdb("./my-app-data").await?;
+let engine = EmbeddedEngine::with_rocksdb("./my-app-data", None).await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes
@@ -308,7 +308,7 @@ match engine.wait_leader(Duration::from_secs(10)).await {
 ls -la ./data
 
 # Or use /tmp (always writable)
-let engine = EmbeddedEngine::with_rocksdb("").await?;
+let engine = EmbeddedEngine::with_rocksdb("", None).await?;
 ```
 
 ### "Address already in use"
