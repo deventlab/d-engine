@@ -64,6 +64,7 @@ async fn test_can_vote_myself_case2() {
     let voted_for = VotedFor {
         voted_for_id: state.node_id(),
         voted_for_term: state.current_term(),
+        committed: false,
     };
     state.update_voted_for(voted_for).expect("should succeed");
     assert!(!state.can_vote_myself());
@@ -100,7 +101,8 @@ async fn test_tick_case1() {
         state.voted_for().unwrap(),
         Some(VotedFor {
             voted_for_id: 1,
-            voted_for_term: 2
+            voted_for_term: 2,
+            committed: false,
         })
     );
 }

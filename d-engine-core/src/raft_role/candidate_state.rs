@@ -592,10 +592,12 @@ impl<T: TypeConfig> CandidateState<T> {
             self.node_id(),
             self.current_term()
         );
-        self.update_voted_for(VotedFor {
+        let _ = self.update_voted_for(VotedFor {
             voted_for_id: self.node_id(),
             voted_for_term: self.current_term(),
-        })
+            committed: false,
+        })?;
+        Ok(())
     }
 
     /// The fun will retrieve current state snapshot

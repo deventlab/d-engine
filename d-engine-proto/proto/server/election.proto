@@ -20,6 +20,7 @@ message VoteResponse {
 message VotedFor {
   uint32 voted_for_id = 1;
   uint64 voted_for_term = 2;
+  bool committed = 3;
 }
 
 service RaftElectionService {

@@ -27,6 +27,7 @@ use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
 use d_engine_proto::common::EntryPayload;
+use d_engine_proto::server::election::VotedFor;
 
 pub struct Raft<T>
 where
@@ -293,6 +294,9 @@ where
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
 
+                // Reset vote when stepping down (new term, no vote yet)
+                self.role.state_mut().reset_voted_for()?;
+
                 // Notify leader change listeners
                 let current_term = self.role.current_term();
                 self.notify_leader_change(leader_id_option, current_term);
@@ -317,8 +321,15 @@ where
                 debug!("BecomeLeader");
                 self.role = self.role.become_leader()?;
 
-                // Notify leader change listeners: this node is now leader
+                // Mark vote as committed (candidate → leader transition)
                 let current_term = self.role.current_term();
+                let _ = self.role.state_mut().update_voted_for(VotedFor {
+                    voted_for_id: self.node_id,
+                    voted_for_term: current_term,
+                    committed: true,
+                })?;
+
+                // Notify leader change listeners: this node is now leader
                 self.notify_leader_change(Some(self.node_id), current_term);
 
                 let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true).await;
@@ -370,6 +381,13 @@ where
                     "[{}] RoleEvent::NotifyNewCommitIndex.", self.node_id,
                 );
                 self.notify_new_commit(new_commit_data);
+            }
+
+            RoleEvent::LeaderDiscovered(leader_id, term) => {
+                debug!("LeaderDiscovered: leader_id={}, term={}", leader_id, term);
+                // Notify watch channel - no state transition
+                // watch::Sender auto-deduplicates identical values
+                self.notify_leader_change(Some(leader_id), term);
             }
 
             RoleEvent::ReprocessEvent(raft_event) => {

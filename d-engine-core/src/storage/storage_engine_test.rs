@@ -312,6 +312,7 @@ fn create_test_hard_state(
     let voted_for = voted_for.map(|(id, term)| VotedFor {
         voted_for_id: id,
         voted_for_term: term,
+        committed: false,
     });
 
     HardState {

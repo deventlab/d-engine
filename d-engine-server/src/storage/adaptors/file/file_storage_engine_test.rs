@@ -184,6 +184,7 @@ fn test_hard_state_persistence() {
         voted_for: Some(VotedFor {
             voted_for_id: 10,
             voted_for_term: 4,
+        committed: false,
         }),
     };
 
@@ -213,6 +214,7 @@ async fn test_reset_preserves_meta() {
         voted_for: Some(VotedFor {
             voted_for_id: 5,
             voted_for_term: 4,
+        committed: false,
         }),
     };
     meta_store.save_hard_state(&hard_state).unwrap();
@@ -240,6 +242,7 @@ async fn test_flush_persists_all_data() {
             voted_for: Some(VotedFor {
                 voted_for_id: 1,
                 voted_for_term: 2,
+        committed: false,
             }),
         })
         .unwrap();
@@ -278,6 +281,7 @@ fn test_drop_impl_flushes() {
         voted_for: Some(VotedFor {
             voted_for_id: 2,
             voted_for_term: 7,
+        committed: false,
         }),
     };
 

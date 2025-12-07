@@ -225,9 +225,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         // 2. If update my voted_for
                         let new_voted_for = state_update.new_voted_for;
                         if let Some(v) = new_voted_for {
-                            if let Err(e) = self.update_voted_for(v) {
-                                error("update_voted_for", &e);
-                                return Err(e);
+                            match self.update_voted_for(v) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error("update_voted_for", &e);
+                                    return Err(e);
+                                }
                             }
                         }
 

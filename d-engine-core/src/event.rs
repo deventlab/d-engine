@@ -45,6 +45,11 @@ pub enum RoleEvent {
 
     NotifyNewCommitIndex(NewCommitData),
 
+    /// Notify when follower/learner confirms leader via committed vote
+    /// Triggered when committed vote changes from false to true
+    /// No state transition - pure notification for watch channel
+    LeaderDiscovered(u32, u64), // (leader_id, term)
+
     ReprocessEvent(Box<RaftEvent>), //Replay the raft event when step down as another role
 }
 

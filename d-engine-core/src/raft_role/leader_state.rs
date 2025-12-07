@@ -273,7 +273,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     fn update_voted_for(
         &mut self,
         voted_for: VotedFor,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.shared_state_mut().update_voted_for(voted_for)
     }
 

@@ -4,6 +4,9 @@ pub mod leader_state;
 pub mod learner_state;
 pub mod role_state;
 
+#[cfg(test)]
+mod raft_role_test;
+
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
@@ -129,12 +132,30 @@ impl SharedState {
         self.hard_state.voted_for = None;
         Ok(())
     }
+    /// Update voted_for and return true if this represents a new leader commitment
+    ///
+    /// Returns true only when:
+    /// - committed transitions from false to true, OR
+    /// - leader/term changes with committed=true
+    ///
+    /// This enables event-driven leader discovery notifications without hot-path overhead.
     pub fn update_voted_for(
         &mut self,
-        voted_for: VotedFor,
-    ) -> Result<()> {
-        self.hard_state.voted_for = Some(voted_for);
-        Ok(())
+        new_vote: VotedFor,
+    ) -> Result<bool> {
+        let is_new_commit = match self.hard_state.voted_for {
+            Some(old) => {
+                // Only care about transitions TO committed=true
+                new_vote.committed
+                    && (old.voted_for_id != new_vote.voted_for_id
+                        || old.voted_for_term != new_vote.voted_for_term
+                        || !old.committed) // committed: false → true
+            }
+            None => new_vote.committed,
+        };
+
+        self.hard_state.voted_for = Some(new_vote);
+        Ok(is_new_commit)
     }
 }
 

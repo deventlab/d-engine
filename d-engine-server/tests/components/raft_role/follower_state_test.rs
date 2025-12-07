@@ -110,6 +110,7 @@ async fn test_new_with_restart() {
     let voted_for = VotedFor {
         voted_for_id: 3,
         voted_for_term: 2,
+        committed: false,
     };
     // Fresh start
     {
@@ -140,6 +141,7 @@ async fn test_new_with_restart() {
             voted_for: Some(VotedFor {
                 voted_for_id: 3,
                 voted_for_term: 2,
+                committed: false,
             }),
         });
         let last_applied_index_option = Some(2);
@@ -258,6 +260,7 @@ async fn test_handle_raft_event_case1_2() {
                 new_voted_for: Some(VotedFor {
                     voted_for_id: 1,
                     voted_for_term: 1,
+                    committed: false,
                 }),
                 term_update: Some(updated_term),
             })
@@ -737,7 +740,12 @@ async fn test_handle_raft_event_case4_1() {
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validation criterias
-    // 2. I should not receive BecomeFollower event
+    // 2. I should receive LeaderDiscovered event (new leader detected)
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::LeaderDiscovered(5, _)
+    ));
+
     // 3. I should send out new commit signal
     assert!(matches!(
         role_rx.try_recv().unwrap(),
@@ -898,7 +906,13 @@ async fn test_handle_raft_event_case4_3() {
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criterias
-    // 2. I should not receive any event
+    // 2. I should receive LeaderDiscovered event even when append fails
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::LeaderDiscovered(5, _)
+    ));
+
+    // No other events should be sent
     assert!(role_rx.try_recv().is_err());
 
     // Validation criterias

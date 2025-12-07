@@ -30,6 +30,8 @@ pub struct VotedFor {
     pub voted_for_id: u32,
     #[prost(uint64, tag = "2")]
     pub voted_for_term: u64,
+    #[prost(bool, tag = "3")]
+    pub committed: bool,
 }
 /// Generated client implementations.
 pub mod raft_election_service_client {
