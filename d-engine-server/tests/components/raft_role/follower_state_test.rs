@@ -738,7 +738,7 @@ async fn test_handle_raft_event_case4_1() {
 
     // Validation criterias
     // 2. I should not receive BecomeFollower event
-    // 4. I should send out new commit signal
+    // 3. I should send out new commit signal
     assert!(matches!(
         role_rx.try_recv().unwrap(),
         RoleEvent::NotifyNewCommitIndex(NewCommitData {
@@ -861,7 +861,7 @@ async fn test_handle_raft_event_case4_3() {
 
     let mut membership = MockMembership::new();
 
-    // Validation criterias
+    // Validation criterias:
     // 1. I should mark new leader id in memberhip
     membership
         .expect_mark_leader_id()
@@ -1786,3 +1786,7 @@ mod handle_client_read_request {
         assert_eq!(response.error, ErrorCode::Success as i32); // Should succeed
     }
 }
+
+// Note: Integration tests for Follower leader discovery notification (ADR-012)
+// are covered by unit tests in d-engine-core/src/raft_test.rs
+// See notify_leader_elected_tests module for comprehensive test coverage

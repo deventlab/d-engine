@@ -17,7 +17,7 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 /// 1. Start 3-node cluster
 /// 2. Kill leader node
 /// 3. Verify re-election and data consistency
-/// 4. Restart killed node and verify rejoin
+/// 4. Verify cluster operational with 2/3 nodes
 #[tokio::test]
 #[traced_test]
 #[cfg(feature = "rocksdb")]
@@ -65,7 +65,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     // Wait for initial leader
     let initial_leader = engines[0]
-        .wait_leader(Duration::from_secs(30))
+        .wait_leader(Duration::from_secs(10))
         .await
         .expect("Failed to elect initial leader");
     info!(
@@ -84,9 +84,9 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     // Wait for replication to all nodes
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Verify data on all nodes
+    // Verify data replicated to all nodes (eventual consistency)
     for engine in &engines {
-        let val = engine.client().get(b"before-failover".to_vec()).await?;
+        let val = engine.client().get_eventual(b"before-failover".to_vec()).await?;
         assert_eq!(val.as_deref(), Some(b"initial-value".as_slice()));
     }
     info!("Initial data written successfully");
@@ -155,16 +155,16 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     // Allow time for state machine application
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Verify old data still readable
-    let old_val = engines[0].client().get(b"before-failover".to_vec()).await?;
+    // Verify old data still readable (from surviving follower)
+    let old_val = engines[0].client().get_eventual(b"before-failover".to_vec()).await?;
     assert_eq!(
         old_val.as_deref(),
         Some(b"initial-value".as_slice()),
         "Old data should be preserved"
     );
 
-    // Verify new data written successfully (read from Leader)
-    let new_val = leader_client.get(b"after-failover".to_vec()).await?;
+    // Verify new data written successfully (read from Leader with strong consistency)
+    let new_val = leader_client.get_linearizable(b"after-failover".to_vec()).await?;
     assert_eq!(
         new_val.as_deref(),
         Some(b"still-works".as_slice()),
@@ -173,43 +173,146 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     info!("Cluster operational with 2/3 nodes");
 
-    // Restart node 1 and verify it rejoins
-    info!("Restarting node 1");
-    let watcher_engine = engines.remove(0);
-    let watcher_id = watcher_engine.node_id();
-    watcher_engine.stop().await?;
+    // Cleanup
+    for engine in engines {
+        engine.stop().await?;
+    }
+
+    Ok(())
+}
+
+/// Test node rejoin after temporary failure
+///
+/// Scenario:
+/// 1. Start 3-node cluster
+/// 2. Kill a follower node
+/// 3. Verify cluster still operational (2/3 quorum)
+/// 4. Restart killed follower
+/// 5. Verify it rejoins and syncs data
+#[tokio::test]
+#[traced_test]
+#[cfg(feature = "rocksdb")]
+async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
+    reset(&format!("{TEST_DIR}_rejoin")).await?;
+
+    let ports = get_available_ports(3).await;
+    let db_root = format!("{DB_ROOT_DIR}_rejoin");
+    let log_dir = format!("{LOG_DIR}_rejoin");
+
+    info!("Starting 3-node cluster for rejoin test");
+
+    let mut engines = Vec::new();
+    let mut configs = Vec::new();
+
+    for i in 0..3 {
+        let node_id = (i + 1) as u64;
+        let config_str = create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
+        let config = node_config(&config_str);
+
+        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
+
+        tokio::fs::create_dir_all(&storage_path).await?;
+        tokio::fs::create_dir_all(&sm_path).await?;
+
+        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
+        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+
+        let config_path = format!("/tmp/d-engine-test-rejoin-node{node_id}.toml");
+        tokio::fs::write(&config_path, &config_str).await?;
+
+        configs.push((config_str, config_path));
+
+        let engine = EmbeddedEngine::start(Some(&configs[i].1), storage, state_machine).await?;
+        engines.push(engine);
+    }
+
+    for engine in &engines {
+        engine.ready().await;
+    }
+
+    info!("Waiting for leader election");
+    let leader_info = engines[0]
+        .wait_leader(Duration::from_secs(10))
+        .await
+        .expect("Failed to elect leader");
+    info!(
+        "Leader elected: {} (term {})",
+        leader_info.leader_id, leader_info.term
+    );
+
+    let leader_idx = (leader_info.leader_id - 1) as usize;
+
+    // Write initial data
+    engines[leader_idx]
+        .client()
+        .put(b"before-kill".to_vec(), b"initial".to_vec())
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Find a follower to kill (not the leader)
+    let follower_idx = if leader_idx == 0 { 1 } else { 0 };
+    let follower_id = (follower_idx + 1) as u64;
+
+    info!("Killing follower node {}", follower_id);
+    let killed_engine = engines.remove(follower_idx);
+    let killed_config = configs.remove(follower_idx);
+    killed_engine.stop().await?;
+
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let config = node_config(&configs[0].0);
-    let node_db_root = config.cluster.db_root_dir.join(format!("node{watcher_id}"));
+    // Cluster should still work with 2/3 nodes
+    let remaining_leader_idx =
+        engines.iter().position(|e| e.node_id() == leader_info.leader_id).unwrap();
+    engines[remaining_leader_idx]
+        .client()
+        .put(b"after-kill".to_vec(), b"still-works".to_vec())
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    info!(
+        "Cluster operational with 2/3 nodes, restarting follower {}",
+        follower_id
+    );
+
+    // Restart the killed follower
+    let config = node_config(&killed_config.0);
+    let node_db_root = config.cluster.db_root_dir.join(format!("node{follower_id}"));
     let storage_path = node_db_root.join("storage");
     let sm_path = node_db_root.join("state_machine");
 
     let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
-    // Reuse existing config for Node 1 (index 0 in remaining configs)
     let restarted_engine =
-        EmbeddedEngine::start(Some(&configs[0].1), storage, state_machine).await?;
-
+        EmbeddedEngine::start(Some(&killed_config.1), storage, state_machine).await?;
     restarted_engine.ready().await;
 
     // Wait for sync
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Verify restarted node synced data from cluster
-    let synced_val = restarted_engine.client().get(b"after-failover".to_vec()).await?;
+    // Verify restarted follower synced all data
+    let val1 = restarted_engine.client().get_eventual(b"before-kill".to_vec()).await?;
     assert_eq!(
-        synced_val.as_deref(),
-        Some(b"still-works".as_slice()),
-        "Restarted node should sync cluster data"
+        val1.as_deref(),
+        Some(b"initial".as_slice()),
+        "Should sync old data"
     );
 
-    info!("Node 1 rejoined and synced successfully");
+    let val2 = restarted_engine.client().get_eventual(b"after-kill".to_vec()).await?;
+    assert_eq!(
+        val2.as_deref(),
+        Some(b"still-works".as_slice()),
+        "Should sync new data written while offline"
+    );
 
-    engines.insert(0, restarted_engine);
+    info!("Follower {} rejoined and synced successfully", follower_id);
 
     // Cleanup
+    engines.push(restarted_engine);
     for engine in engines {
         engine.stop().await?;
     }

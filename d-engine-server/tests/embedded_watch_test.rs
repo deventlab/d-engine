@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
 use d_engine_core::watch::WatchEventType;
 use d_engine_server::embedded::EmbeddedEngine;
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 #[tokio::test]
 async fn test_embedded_watch_integration() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,14 +26,17 @@ enabled = true
 "#,
     )?;
 
-    // Start engine
-    // Note: We need to ensure rocksdb feature is enabled for this to work.
-    // d-engine-server tests should have access to it if enabled in dev-dependencies or features.
-    let engine = EmbeddedEngine::with_rocksdb(
-        db_path.to_str().unwrap(),
-        Some(config_path.to_str().unwrap()),
-    )
-    .await?;
+    // Start engine with RocksDB storage
+    let storage_path = db_path.join("storage");
+    let sm_path = db_path.join("state_machine");
+    tokio::fs::create_dir_all(&storage_path).await?;
+    tokio::fs::create_dir_all(&sm_path).await?;
+
+    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
+    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+
+    let engine =
+        EmbeddedEngine::start(Some(config_path.to_str().unwrap()), storage, state_machine).await?;
 
     // Wait for leader election
     engine.wait_leader(Duration::from_secs(5)).await?;

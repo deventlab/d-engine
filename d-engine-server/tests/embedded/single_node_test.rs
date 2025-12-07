@@ -58,7 +58,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     // Small delay to ensure data is committed
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let value = client.get(b"test-key".to_vec()).await?;
+    let value = client.get_linearizable(b"test-key".to_vec()).await?;
     assert_eq!(
         value.as_deref(),
         Some(b"test-value".as_ref()),
@@ -70,7 +70,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     // Small delay to ensure deletion is committed
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let deleted = client.get(b"test-key".to_vec()).await?;
+    let deleted = client.get_linearizable(b"test-key".to_vec()).await?;
     assert_eq!(deleted, None, "Get after delete should return None");
 
     // Graceful shutdown
@@ -164,7 +164,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
         engine.ready().await;
         engine.wait_leader(Duration::from_secs(5)).await?;
 
-        let value = engine.client().get(b"persist-key".to_vec()).await?;
+        let value = engine.client().get_linearizable(b"persist-key".to_vec()).await?;
         assert_eq!(
             value.as_deref(),
             Some(b"persist-value".as_ref()),

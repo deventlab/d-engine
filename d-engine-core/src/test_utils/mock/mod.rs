@@ -38,7 +38,7 @@
 //!
 //! [mockall]: https://docs.rs/mockall/latest/mockall/
 
-mod mock_raft_builder;
+pub mod mock_raft_builder;
 mod mock_rpc;
 mod mock_rpc_service;
 mod mock_storage_engine;

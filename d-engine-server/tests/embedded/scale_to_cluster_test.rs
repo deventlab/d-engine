@@ -43,7 +43,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
         engine.client().put(b"dev-key".to_vec(), b"dev-value".to_vec()).await?;
         engine.client().put(b"app-version".to_vec(), b"1.0".to_vec()).await?;
 
-        let val = engine.client().get(b"dev-key".to_vec()).await?;
+        let val = engine.client().get_linearizable(b"dev-key".to_vec()).await?;
         assert_eq!(val.as_deref(), Some(b"dev-value".as_ref()));
 
         info!("Single-node data written successfully");
@@ -98,7 +98,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
 
     // Old data should still be readable (from single-node phase)
     // Note: This assumes node 1 retained its data directory
-    let old_val = engines[0].client().get(b"dev-key".to_vec()).await?;
+    let old_val = engines[0].client().get_eventual(b"dev-key".to_vec()).await?;
     assert_eq!(
         old_val.as_deref(),
         Some(b"dev-value".as_ref()),
@@ -116,7 +116,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
 
     // All nodes should be able to read cluster data
     for (i, engine) in engines.iter().enumerate() {
-        let val = engine.client().get(b"cluster-key".to_vec()).await?;
+        let val = engine.client().get_eventual(b"cluster-key".to_vec()).await?;
         assert_eq!(
             val.as_deref(),
             Some(b"cluster-value".as_ref()),
@@ -198,11 +198,11 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
     // Cluster should still accept writes (2/3 majority)
     engines[0].client().put(b"after-fail".to_vec(), b"value2".to_vec()).await?;
 
-    // Verify both old and new data readable
-    let old_val = engines[0].client().get(b"before-fail".to_vec()).await?;
+    // Verify both old and new data readable (eventual consistency)
+    let old_val = engines[0].client().get_eventual(b"before-fail".to_vec()).await?;
     assert_eq!(old_val.as_deref(), Some(b"value1".as_ref()));
 
-    let new_val = engines[0].client().get(b"after-fail".to_vec()).await?;
+    let new_val = engines[0].client().get_eventual(b"after-fail".to_vec()).await?;
     assert_eq!(new_val.as_deref(), Some(b"value2".as_ref()));
 
     info!("Cluster operational with 2/3 nodes");
