@@ -5,8 +5,8 @@ use tracing::info;
 use tracing_test::traced_test;
 
 use crate::common::{
-    TestContext, WAIT_FOR_NODE_READY_IN_SEC, check_cluster_is_ready, create_bootstrap_urls,
-    create_node_config, get_available_ports, node_config, reset, start_node,
+    LATENCY_IN_MS, TestContext, WAIT_FOR_NODE_READY_IN_SEC, check_cluster_is_ready,
+    create_bootstrap_urls, create_node_config, get_available_ports, node_config, reset, start_node,
 };
 
 const TEST_DIR: &str = "cluster_start_stop/failover";
@@ -54,6 +54,8 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     // Write test data before failover
     client.kv().put("before-failover", "initial-value").await?;
+    // Wait for commit to propagate before reading
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
     let result = client.kv().get_eventual("before-failover").await?;
     assert_eq!(
         result.expect("Key should exist after write").value.as_ref(),
@@ -80,7 +82,21 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     info!("Re-election complete. Verifying cluster still operational");
 
     // Verify cluster still works with 2 nodes (majority)
-    client.kv().put("after-failover", "still-works").await?;
+    // Retry put with multiple attempts in case new leader is still stabilizing
+    let mut put_attempts = 0;
+    loop {
+        match client.kv().put("after-failover", "still-works").await {
+            Ok(_) => break,
+            Err(_e) if put_attempts < 3 => {
+                put_attempts += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                client.refresh(None).await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    // Wait for commit to propagate after successful put
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
 
     // Verify old data still readable
     let old_val = client.kv().get_eventual("before-failover").await?.unwrap();

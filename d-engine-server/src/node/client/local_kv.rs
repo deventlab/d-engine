@@ -275,6 +275,12 @@ impl LocalKvClient {
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
+
+    /// Returns the node ID for testing purposes
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn node_id(&self) -> u32 {
+        self.client_id
+    }
 }
 
 impl std::fmt::Debug for LocalKvClient {

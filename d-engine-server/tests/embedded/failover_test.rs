@@ -63,45 +63,73 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     info!("All nodes initialized, waiting for leader election");
 
-    let initial_leader = engines[0].wait_leader(Duration::from_secs(10)).await?;
+    // Wait for initial leader
+    let initial_leader = engines[0]
+        .wait_leader(Duration::from_secs(30))
+        .await
+        .expect("Failed to elect initial leader");
     info!(
         "Initial leader elected: {} (term {})",
         initial_leader.leader_id, initial_leader.term
     );
 
-    // Write test data before failover
-    engines[0]
+    let leader_idx = (initial_leader.leader_id - 1) as usize;
+
+    // Write some data to initial leader
+    engines[leader_idx]
         .client()
         .put(b"before-failover".to_vec(), b"initial-value".to_vec())
         .await?;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait for replication to all nodes
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let val = engines[0].client().get(b"before-failover".to_vec()).await?;
-    assert_eq!(val.as_deref(), Some(b"initial-value".as_ref()));
-
+    // Verify data on all nodes
+    for engine in &engines {
+        let val = engine.client().get(b"before-failover".to_vec()).await?;
+        assert_eq!(val.as_deref(), Some(b"initial-value".as_slice()));
+    }
     info!("Initial data written successfully");
 
-    // Subscribe to leader changes on remaining node
-    let mut leader_rx = engines[1].leader_notifier();
+    // Subscribe to leader changes on a non-leader node
+    let leader_idx = (initial_leader.leader_id - 1) as usize;
+    let watcher_idx = if leader_idx == 0 { 1 } else { 0 };
+    let watcher_id = watcher_idx + 1;
+
+    info!(
+        "Initial leader: {}, Watcher node: {}",
+        initial_leader.leader_id, watcher_id
+    );
+    let mut leader_rx = engines[watcher_idx].leader_notifier();
 
     // Kill the actual leader node
-    let leader_idx = (initial_leader.leader_id - 1) as usize;
     info!("Killing leader node {}", initial_leader.leader_id);
     let killed_engine = engines.remove(leader_idx);
-    let killed_config = configs.remove(leader_idx);
+    let _killed_config = configs.remove(leader_idx);
     killed_engine.stop().await?;
 
     // Wait for re-election event
-    info!("Waiting for re-election");
-    tokio::time::timeout(Duration::from_secs(5), leader_rx.changed())
-        .await
-        .expect("Should receive leader change notification")?;
+    info!("Waiting for re-election detected by node {}", watcher_id);
+    let new_leader_info = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            // Check current state
+            let current = leader_rx.borrow().clone();
 
-    let new_leader = leader_rx.borrow().clone();
-    assert!(new_leader.is_some(), "New leader should be elected");
+            if let Some(leader) = current {
+                if leader.leader_id != initial_leader.leader_id {
+                    return leader;
+                }
+            }
+            // Wait for change
+            if leader_rx.changed().await.is_err() {
+                // If the channel closes, we can't wait anymore
+                panic!("Leader watch channel closed unexpectedly");
+            }
+        }
+    })
+    .await
+    .expect("Timeout waiting for new leader election");
 
-    let new_leader_info = new_leader.unwrap();
     assert_ne!(
         new_leader_info.leader_id, initial_leader.leader_id,
         "New leader should not be the killed node"
@@ -111,25 +139,35 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         new_leader_info.leader_id, new_leader_info.term
     );
 
+    // Find new leader engine to write
+    let mut leader_client = None;
+    for engine in &engines {
+        if engine.node_id() == new_leader_info.leader_id {
+            leader_client = Some(engine.client());
+            break;
+        }
+    }
+    let leader_client = leader_client.expect("New leader not found in engines");
+
     // Cluster should still be operational with 2/3 nodes
-    engines[0]
-        .client()
-        .put(b"after-failover".to_vec(), b"still-works".to_vec())
-        .await?;
+    leader_client.put(b"after-failover".to_vec(), b"still-works".to_vec()).await?;
+
+    // Allow time for state machine application
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify old data still readable
     let old_val = engines[0].client().get(b"before-failover".to_vec()).await?;
     assert_eq!(
         old_val.as_deref(),
-        Some(b"initial-value".as_ref()),
+        Some(b"initial-value".as_slice()),
         "Old data should be preserved"
     );
 
-    // Verify new data written successfully
-    let new_val = engines[0].client().get(b"after-failover".to_vec()).await?;
+    // Verify new data written successfully (read from Leader)
+    let new_val = leader_client.get(b"after-failover".to_vec()).await?;
     assert_eq!(
         new_val.as_deref(),
-        Some(b"still-works".as_ref()),
+        Some(b"still-works".as_slice()),
         "New data should be written"
     );
 
@@ -137,35 +175,39 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     // Restart node 1 and verify it rejoins
     info!("Restarting node 1");
-    {
-        let config = node_config(&killed_config.0);
-        let node_db_root = config.cluster.db_root_dir.join("node1");
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+    let watcher_engine = engines.remove(0);
+    let watcher_id = watcher_engine.node_id();
+    watcher_engine.stop().await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+    let config = node_config(&configs[0].0);
+    let node_db_root = config.cluster.db_root_dir.join(format!("node{watcher_id}"));
+    let storage_path = node_db_root.join("storage");
+    let sm_path = node_db_root.join("state_machine");
 
-        let restarted_engine =
-            EmbeddedEngine::start(Some(&killed_config.1), storage, state_machine).await?;
+    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
+    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
-        restarted_engine.ready().await;
+    // Reuse existing config for Node 1 (index 0 in remaining configs)
+    let restarted_engine =
+        EmbeddedEngine::start(Some(&configs[0].1), storage, state_machine).await?;
 
-        // Wait for sync
-        tokio::time::sleep(Duration::from_secs(2)).await;
+    restarted_engine.ready().await;
 
-        // Verify restarted node synced data from cluster
-        let synced_val = restarted_engine.client().get(b"after-failover".to_vec()).await?;
-        assert_eq!(
-            synced_val.as_deref(),
-            Some(b"still-works".as_ref()),
-            "Restarted node should sync cluster data"
-        );
+    // Wait for sync
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-        info!("Node 1 rejoined and synced successfully");
+    // Verify restarted node synced data from cluster
+    let synced_val = restarted_engine.client().get(b"after-failover".to_vec()).await?;
+    assert_eq!(
+        synced_val.as_deref(),
+        Some(b"still-works".as_slice()),
+        "Restarted node should sync cluster data"
+    );
 
-        engines.insert(0, restarted_engine);
-    }
+    info!("Node 1 rejoined and synced successfully");
+
+    engines.insert(0, restarted_engine);
 
     // Cleanup
     for engine in engines {

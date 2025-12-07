@@ -274,7 +274,7 @@ test-unit: install-tools check-workspace
 test-integration: install-tools check-workspace
 	@echo "$(BLUE)Running integration tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --tests --no-fail-fast
+		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb --no-fail-fast -- --test-threads=1 --nocapture
 	@echo "$(GREEN)✓ Integration tests passed$(NC)"
 
 ## test-doc             Run documentation tests only
@@ -309,7 +309,7 @@ test-all: clippy test-detailed test-doc bench
 test-verbose: install-tools check-workspace
 	@echo "$(BLUE)Running tests (verbose, single-threaded)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	    $(CARGO) test --workspace --lib --tests --no-fail-fast --test-threads=1 --show-output
+	    $(CARGO) test --workspace --lib --tests --features d-engine-server/rocksdb --no-fail-fast --test-threads=1 --show-output
 	@echo "$(GREEN)✓ Verbose test run completed$(NC)"
 
 # ============================================================================

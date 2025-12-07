@@ -10,7 +10,7 @@ use d_engine_client::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
 use d_engine_core::config::BackoffPolicy;
-use d_engine_core::config::ClusterConfig;
+
 use d_engine_core::config::CommitHandlerConfig;
 use d_engine_core::config::ElectionConfig;
 use d_engine_core::config::FlushPolicy;
@@ -116,6 +116,7 @@ pub async fn create_node_config(
 
     format!(
         r#"
+        [cluster]
         node_id = {node_id}
         listen_address = '127.0.0.1:{port}'
         initial_cluster = [
@@ -128,9 +129,10 @@ pub async fn create_node_config(
 }
 
 pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
-    let mut config = RaftNodeConfig::default();
+    let base_config = RaftNodeConfig::default();
 
     let settings = Config::builder()
+        .add_source(Config::try_from(&base_config).unwrap())
         .add_source(config::File::from_str(
             cluster_toml,
             config::FileFormat::Toml,
@@ -138,9 +140,11 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
         .build()
         .unwrap();
 
-    let cluster: ClusterConfig = settings.try_deserialize().unwrap();
+    let loaded_config: RaftNodeConfig = settings.try_deserialize().unwrap();
 
-    println!("Parsed cluster: {cluster:#?}",);
+    let mut config = loaded_config;
+
+    println!("Parsed cluster: {:#?}", config.cluster);
 
     let raft = RaftConfig {
         general_raft_timeout_duration_in_ms: 10000,
@@ -158,7 +162,11 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             max_log_entries_before_snapshot: 1,
             cleanup_retain_count: 2,
             retained_log_entries: 1,
-            snapshots_dir: cluster.db_root_dir.join("snapshots").join(cluster.node_id.to_string()),
+            snapshots_dir: config
+                .cluster
+                .db_root_dir
+                .join("snapshots")
+                .join(config.cluster.node_id.to_string()),
             ..Default::default()
         },
         persistence: PersistenceConfig {
@@ -180,7 +188,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
         ..Default::default()
     };
 
-    config.cluster = cluster;
     config.raft = raft;
     config.retry.append_entries = append_policy;
 

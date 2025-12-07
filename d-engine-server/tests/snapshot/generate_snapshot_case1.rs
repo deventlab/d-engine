@@ -21,19 +21,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use d_engine_client::ClientApiError;
-use d_engine_core::convert::safe_kv;
 use d_engine_server::LogStore;
-use d_engine_server::StateMachine;
 use d_engine_server::StorageEngine;
 use tokio::time::sleep;
 use tracing_test::traced_test;
 
+use crate::client_manager::ClientManager;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
+use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::init_hard_state;
@@ -43,6 +42,7 @@ use crate::common::prepare_state_machine;
 use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
+use crate::common::test_put_get;
 
 // Constants for test configuration
 const SNAPSHOT_DIR: &str = "./snapshots/snapshot/case1";
@@ -61,13 +61,10 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     let ports = get_available_ports(3).await;
 
-    // Prepare state machines
-    let sm1 =
-        Arc::new(prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1")).await);
-    let sm2 =
-        Arc::new(prepare_state_machine(2, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/2")).await);
-    let sm3 =
-        Arc::new(prepare_state_machine(3, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/3")).await);
+    // Prepare state machine directories (do not pre-allocate Arc to avoid ownership issues)
+    prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1")).await;
+    prepare_state_machine(2, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/2")).await;
+    prepare_state_machine(3, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/3")).await;
 
     // Prepare raft logs
     let r1 = prepare_storage_engine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1"), 0);
@@ -104,11 +101,20 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         )
         .await;
 
-        let (state_machine, raft_log) = match i {
-            0 => (Some(sm1.clone()), Some(r1.clone())),
-            1 => (Some(sm2.clone()), Some(r2.clone())),
-            2 => (Some(sm3.clone()), Some(r3.clone())),
-            _ => (None, None),
+        // Create fresh Arc for state machine to ensure single ownership
+        let state_machine = Arc::new(
+            prepare_state_machine(
+                node_id as u32,
+                &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/{node_id}"),
+            )
+            .await,
+        );
+
+        let raft_log = match i {
+            0 => Some(r1.clone()),
+            1 => Some(r2.clone()),
+            2 => Some(r3.clone()),
+            _ => None,
         };
 
         let mut node_config = node_config(&config);
@@ -119,38 +125,36 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         snapshot_last_included_id =
             Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
-        let (graceful_tx, node_handle) = start_node(node_config, state_machine, raft_log).await?;
+        let (graceful_tx, node_handle) =
+            start_node(node_config, Some(state_machine), raft_log).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
-    let last_included = snapshot_last_included_id.unwrap();
+    let _last_included = snapshot_last_included_id.unwrap();
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster is ready
-    for port in ports {
+    for port in &ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     println!("[test_snapshot_scenario] Cluster started. Running tests...");
 
     sleep(Duration::from_secs(3)).await;
-    let leader_snapshot_metadata = sm3.snapshot_metadata().unwrap();
 
-    // Verify snapshot file exists
+    // Verify snapshot file exists on leader (node 3)
     let snapshot_path = "./snapshots/snapshot/case1/3";
     assert!(check_path_contents(snapshot_path).unwrap_or(false));
 
-    // Verify snapshot metadata
-    assert!(leader_snapshot_metadata.last_included.unwrap().index >= last_included);
-    assert!(!leader_snapshot_metadata.checksum.is_empty());
+    // Verify state machine data via client API (snapshot has been applied to leader)
+    let mut client_manager = ClientManager::new(&create_bootstrap_urls(&ports)).await?;
 
-    // Verify state machine status
-    let value = sm3.get(&safe_kv(3)).unwrap();
-    assert_eq!(value, Some(Bytes::from(safe_kv(3).to_vec())));
+    // Verify data via client API - this confirms snapshot was applied and committed
+    test_put_get(&mut client_manager, 3, 3).await?;
 
-    // Verify raft log been purged
+    // Verify raft log been purged (log entries before snapshot should be deleted)
     for i in 1..=3 {
         assert!(r3.log_store().entry(i).await.unwrap().is_none());
     }

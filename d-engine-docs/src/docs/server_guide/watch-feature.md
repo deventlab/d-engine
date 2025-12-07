@@ -18,7 +18,7 @@ enable_metrics = false        # Detailed logging (default: false)
 
 ### Client Usage
 
-```rust
+```rust,ignore
 use d_engine_client::Client;
 use d_engine_client::protocol::WatchRequest;
 use futures::StreamExt;
@@ -36,7 +36,7 @@ let mut stream = client.watch("my_key").await?;
 while let Some(event) = stream.next().await {
     match event {
         Ok(event) => {
-            println!("Event: {:?} Key: {:?} Value: {:?}", 
+            println!("Event: {:?} Key: {:?} Value: {:?}",
                 event.event_type, event.key, event.value);
         }
         Err(e) => eprintln!("Watch error: {:?}", e),
@@ -48,7 +48,7 @@ while let Some(event) = stream.next().await {
 
 For in-process usage (e.g., `EmbeddedEngine`), you can use the `watch()` method directly:
 
-```rust
+```rust,ignore
 use d_engine::d_engine_server::embedded::EmbeddedEngine;
 
 // Initialize engine with config enabling watch
@@ -210,7 +210,7 @@ watch(b"config:feature_flags")
 
 ## Example: Read-Watch Pattern
 
-```text
+```rust,ignore
 // 1. Read current value
 let response = client.read(ReadRequest {
     client_id: 1,
