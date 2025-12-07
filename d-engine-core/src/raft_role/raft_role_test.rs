@@ -14,7 +14,7 @@ fn test_voted_for_backward_compatibility() {
     // Verify default behavior
     assert_eq!(old_vote.voted_for_id, 3);
     assert_eq!(old_vote.voted_for_term, 5);
-    assert_eq!(old_vote.committed, false);
+    assert!(!old_vote.committed);
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn test_voted_for_committed_flag() {
         committed: true,
     };
 
-    assert_eq!(leader_vote.committed, true);
+    assert!(leader_vote.committed);
 
     // Candidate vote (not yet leader)
     let candidate_vote = VotedFor {
@@ -35,7 +35,7 @@ fn test_voted_for_committed_flag() {
         committed: false,
     };
 
-    assert_eq!(candidate_vote.committed, false);
+    assert!(!candidate_vote.committed);
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn test_hard_state_with_voted_for() {
     let vote = hs.voted_for.unwrap();
     assert_eq!(vote.voted_for_id, 3);
     assert_eq!(vote.voted_for_term, 5);
-    assert_eq!(vote.committed, false);
+    assert!(!vote.committed);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn test_candidate_to_leader_committed_vote() {
         committed: true,
     };
 
-    assert_eq!(leader_vote.committed, true);
+    assert!(leader_vote.committed);
     assert_eq!(leader_vote.voted_for_id, 1);
 }
 
@@ -76,19 +76,21 @@ fn test_candidate_to_leader_committed_vote() {
 fn test_step_down_resets_vote() {
     // When node steps down (higher term), voted_for should be reset
     let mut shared = SharedState::new(1, None, None);
-    
+
     // Initially voted for someone
-    shared.update_voted_for(VotedFor {
-        voted_for_id: 2,
-        voted_for_term: 5,
-        committed: true,
-    }).unwrap();
-    
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 2,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
     assert!(shared.voted_for().unwrap().is_some());
-    
+
     // Step down - reset vote
     shared.reset_voted_for().unwrap();
-    
+
     assert!(shared.voted_for().unwrap().is_none());
 }
 
@@ -100,71 +102,77 @@ fn test_committed_vote_represents_leader() {
         voted_for_term: 10,
         committed: true,
     };
-    
+
     // Leader exists when vote is committed
-    assert_eq!(leader_vote.committed, true);
-    
+    assert!(leader_vote.committed);
+
     // Uncommitted vote means no confirmed leader yet
     let candidate_vote = VotedFor {
         voted_for_id: 1,
         voted_for_term: 10,
         committed: false,
     };
-    
-    assert_eq!(candidate_vote.committed, false);
+
+    assert!(!candidate_vote.committed);
 }
 
 #[test]
 fn test_follower_learns_leader_from_append_entries() {
     // Simulate follower receiving AppendEntries from leader
     let mut shared = SharedState::new(2, None, None);
-    
+
     // Before AppendEntries: no leader known
     assert!(shared.voted_for().unwrap().is_none());
-    
+
     // After successful AppendEntries: learn leader
-    shared.update_voted_for(VotedFor {
-        voted_for_id: 3,
-        voted_for_term: 5,
-        committed: true, // Confirmed leader
-    }).unwrap();
-    
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true, // Confirmed leader
+        })
+        .unwrap();
+
     let vote = shared.voted_for().unwrap().unwrap();
     assert_eq!(vote.voted_for_id, 3);
-    assert_eq!(vote.committed, true);
+    assert!(vote.committed);
 }
 
 #[test]
 fn test_vote_lifecycle() {
     let mut shared = SharedState::new(1, None, None);
-    
+
     // 1. Initial state: no vote
     assert!(shared.voted_for().unwrap().is_none());
-    
+
     // 2. Candidate votes for self (uncommitted)
-    shared.update_voted_for(VotedFor {
-        voted_for_id: 1,
-        voted_for_term: 5,
-        committed: false,
-    }).unwrap();
-    
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 1,
+            voted_for_term: 5,
+            committed: false,
+        })
+        .unwrap();
+
     let vote = shared.voted_for().unwrap().unwrap();
-    assert_eq!(vote.committed, false);
-    
+    assert!(!vote.committed);
+
     // 3. Receives quorum, becomes leader (committed)
-    shared.update_voted_for(VotedFor {
-        voted_for_id: 1,
-        voted_for_term: 5,
-        committed: true,
-    }).unwrap();
-    
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 1,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
     let vote = shared.voted_for().unwrap().unwrap();
-    assert_eq!(vote.committed, true);
-    
+    assert!(vote.committed);
+
     // 4. Steps down (higher term discovered)
     shared.update_current_term(6);
     shared.reset_voted_for().unwrap();
-    
+
     assert!(shared.voted_for().unwrap().is_none());
 }
 
@@ -179,10 +187,10 @@ fn test_committed_vote_persistence() {
             committed: true,
         }),
     };
-    
+
     // Verify committed flag is stored
-    assert_eq!(hs.voted_for.unwrap().committed, true);
-    
+    assert!(hs.voted_for.unwrap().committed);
+
     // Test with uncommitted vote
     let hs2 = HardState {
         current_term: 10,
@@ -192,6 +200,6 @@ fn test_committed_vote_persistence() {
             committed: false,
         }),
     };
-    
-    assert_eq!(hs2.voted_for.unwrap().committed, false);
+
+    assert!(!hs2.voted_for.unwrap().committed);
 }

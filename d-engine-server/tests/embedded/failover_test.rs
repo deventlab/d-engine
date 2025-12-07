@@ -340,8 +340,9 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         let config_str = create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
         let config = node_config(&config_str);
 
-        let storage_path = config.cluster.db_root_dir.join("storage");
-        let sm_path = config.cluster.db_root_dir.join("state_machine");
+        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
 
         tokio::fs::create_dir_all(&storage_path).await?;
         tokio::fs::create_dir_all(&sm_path).await?;
@@ -360,42 +361,84 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         engine.ready().await;
     }
 
-    engines[0].wait_leader(Duration::from_secs(10)).await?;
+    info!("Waiting for leader election in 3-node cluster");
+    let leader_info = engines[0].wait_leader(Duration::from_secs(10)).await?;
+    info!(
+        "Leader elected successfully: node {}",
+        leader_info.leader_id
+    );
 
-    // Write initial data
-    engines[0].client().put(b"test-key".to_vec(), b"test-value".to_vec()).await?;
+    // Write initial data to the actual leader
+    info!(
+        "Writing initial test data to leader (node {})",
+        leader_info.leader_id
+    );
+    let leader_idx = (leader_info.leader_id - 1) as usize;
+    engines[leader_idx]
+        .client()
+        .put(b"test-key".to_vec(), b"test-value".to_vec())
+        .await?;
+    info!("Initial data written successfully");
 
-    info!("Killing 2 nodes to lose majority");
+    info!("Killing 2 nodes to lose majority (keeping leader alive but unable to get quorum)");
 
-    // Kill nodes 1 and 2 (lose majority)
-    let engine1 = engines.remove(0);
-    let engine2 = engines.remove(0);
+    // Kill 2 non-leader nodes, leaving the leader isolated without majority
+    // Indices: 0, 1, 2 -> nodes: 1, 2, 3
+    let mut indices_to_kill = vec![0, 1, 2];
+    indices_to_kill.remove(leader_idx); // Remove leader index
+    indices_to_kill.truncate(2); // Take first 2 non-leader indices
 
-    engine1.stop().await?;
-    engine2.stop().await?;
+    info!(
+        "Killing nodes at engine indices: {:?} (leader is at index {})",
+        indices_to_kill, leader_idx
+    );
 
+    // Remove in reverse order to avoid index shifting issues
+    let mut killed_engines = Vec::new();
+    for &idx in indices_to_kill.iter().rev() {
+        let engine = engines.remove(idx);
+        killed_engines.push(engine);
+    }
+
+    // Stop killed engines
+    for engine in killed_engines {
+        let _ = engine.stop().await;
+    }
+
+    info!("Sleeping 2 seconds for cluster to stabilize");
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    info!("2 nodes killed, verifying cluster cannot serve writes");
+    info!("2 nodes killed, verifying leader cannot serve writes without majority");
+    info!("Remaining engine count: {}", engines.len());
 
-    // Remaining single node should reject writes (no majority)
+    // The leader (now alone) should reject writes since it can't reach quorum
+    info!("Attempting write on isolated leader (should fail due to no majority)");
     let write_result = tokio::time::timeout(
         Duration::from_secs(3),
         engines[0].client().put(b"should-fail".to_vec(), b"no-majority".to_vec()),
     )
     .await;
 
+    info!("Write result: {:?}", write_result);
+
     // Expect timeout or error
-    assert!(
-        write_result.is_err() || write_result.unwrap().is_err(),
-        "Write should fail without majority"
-    );
+    match &write_result {
+        Ok(Ok(_)) => {
+            panic!("Write should not succeed without majority!");
+        }
+        Ok(Err(e)) => {
+            info!("Write correctly rejected with error: {:?}", e);
+        }
+        Err(_) => {
+            info!("Write correctly timed out");
+        }
+    }
 
     info!("Minority failure test passed - cluster correctly refused writes");
 
     // Cleanup
     let remaining_engine = engines.remove(0);
-    remaining_engine.stop().await?;
+    let _ = remaining_engine.stop().await;
 
     Ok(())
 }

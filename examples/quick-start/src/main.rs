@@ -50,7 +50,7 @@ async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
 
     // Read it back
     println!("2. Read workflow state");
-    let value = client.get("workflow:status".as_bytes().to_vec()).await?;
+    let value = client.get_eventual("workflow:status".as_bytes().to_vec()).await?;
     if let Some(v) = value {
         println!("   ✓ workflow:status = {}", String::from_utf8_lossy(&v));
     }
@@ -67,7 +67,7 @@ async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
     println!("4. Retrieve task results");
     for i in 1..=3 {
         let key = format!("task:{i}");
-        if let Some(v) = client.get(key.as_bytes().to_vec()).await? {
+        if let Some(v) = client.get_eventual(key.as_bytes().to_vec()).await? {
             println!("   ✓ {key} = {}", String::from_utf8_lossy(&v));
         }
     }
