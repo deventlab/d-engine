@@ -331,6 +331,65 @@ async fn test_mark_leader_id_case2() {
     assert_eq!(membership.current_leader_id().await, None);
 }
 
+/// Test: remove_node allows leader removal (Raft protocol compliance)
+///
+/// Per Raft protocol and industry best practices (etcd/TiKV):
+/// - Leader CAN propose to remove itself
+/// - remove_node() should NOT block leader removal
+/// - Leader will step down after applying the config change
+///
+/// Related: Issue #200
+#[tokio::test]
+#[traced_test]
+async fn test_remove_node_allows_leader_removal() {
+    // Setup 3-node cluster with node 1 as leader
+    let initial_cluster = vec![
+        NodeMeta {
+            id: 1,
+            address: "127.0.0.1:10001".to_string(),
+            role: Leader as i32,
+            status: NodeStatus::Active.into(),
+        },
+        NodeMeta {
+            id: 2,
+            address: "127.0.0.1:10002".to_string(),
+            role: Follower as i32,
+            status: NodeStatus::Active.into(),
+        },
+        NodeMeta {
+            id: 3,
+            address: "127.0.0.1:10003".to_string(),
+            role: Follower as i32,
+            status: NodeStatus::Active.into(),
+        },
+    ];
+
+    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+        1,
+        initial_cluster,
+        RaftNodeConfig::default(),
+    );
+
+    // Verify node 1 is leader
+    assert_eq!(membership.current_leader_id().await, Some(1));
+    assert!(membership.contains_node(1).await);
+
+    // Remove leader node (should succeed per Raft protocol)
+    let result = membership.remove_node(1).await;
+    assert!(
+        result.is_ok(),
+        "remove_node should allow leader removal per Raft protocol"
+    );
+
+    // Verify node 1 is removed from membership
+    assert!(!membership.contains_node(1).await);
+
+    // Verify cluster still has 2 nodes
+    let members = membership.members().await;
+    assert_eq!(members.len(), 2);
+    assert!(members.iter().all(|n| n.id != 1));
+}
+
 #[tokio::test]
 #[traced_test]
 async fn test_retrieve_cluster_membership_config() {

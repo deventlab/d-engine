@@ -599,9 +599,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 }
                 .into());
             }
+
+            RaftEvent::StepDownSelfRemoved => {
+                // Unreachable: handled at Raft level before reaching RoleState
+                unreachable!("StepDownSelfRemoved should be handled in Raft::run()");
+            }
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 

@@ -123,6 +123,10 @@ pub enum RaftEvent {
 
     // Lightweight promotion trigger
     PromoteReadyLearners,
+
+    /// Node removed itself from cluster membership
+    /// Leader must step down immediately after self-removal (etcd/TiKV pattern)
+    StepDownSelfRemoved,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -184,5 +188,10 @@ pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             TestEvent::TriggerSnapshotPush { peer_id: *peer_id }
         }
         RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
+        RaftEvent::StepDownSelfRemoved => {
+            // StepDownSelfRemoved is handled at Raft level, not converted to TestEvent
+            // This is a control flow event, not a user-facing event
+            TestEvent::CreateSnapshotEvent // Placeholder - this event won't be emitted to tests
+        }
     }
 }

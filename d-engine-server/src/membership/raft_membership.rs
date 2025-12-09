@@ -529,9 +529,8 @@ where
         &self,
         node_id: u32,
     ) -> Result<()> {
-        if self.current_leader_id().await == Some(node_id) {
-            return Err(MembershipError::RemoveNodeIsLeader(node_id).into());
-        }
+        // Allow leader self-removal per Raft protocol (etcd/TiKV pattern)
+        // Leader will step down after applying this config change
 
         // Purge cached connections
         self.connection_cache.remove_node(node_id);

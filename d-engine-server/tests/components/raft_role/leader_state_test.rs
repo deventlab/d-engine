@@ -4553,4 +4553,62 @@ mod lease_validity_tests {
         // The lease should be invalid at exactly the threshold
         assert!(!state.is_lease_valid(&context));
     }
+
+    /// Test: LeaderState handles StepDownSelfRemoved event
+    ///
+    /// Per Raft protocol: Leader can remove itself from cluster.
+    /// When Leader receives StepDownSelfRemoved event, it must:
+    /// 1. Send BecomeFollower(None) to role_tx
+    /// 2. Return Ok(())
+    ///
+    /// This aligns with etcd/TiKV best practices for leader self-removal.
+    ///
+    /// Related: Issue #200
+    #[tokio::test]
+    async fn test_leader_handles_step_down_self_removed() {
+        use d_engine_core::RaftEvent;
+        use d_engine_core::RoleEvent;
+
+        // Setup leader state
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx).build_context();
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // Create role_tx channel to capture events
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+        // Send StepDownSelfRemoved event
+        let raft_event = RaftEvent::StepDownSelfRemoved;
+
+        // Handle the event
+        let result = state.handle_raft_event(raft_event, &context, role_tx).await;
+
+        // Verify: handle_raft_event returns Ok
+        assert!(
+            result.is_ok(),
+            "LeaderState should successfully handle StepDownSelfRemoved"
+        );
+
+        // Verify: BecomeFollower(None) was sent to role_tx
+        match role_rx.try_recv() {
+            Ok(RoleEvent::BecomeFollower(leader_id)) => {
+                assert_eq!(
+                    leader_id, None,
+                    "Should step down without specifying new leader"
+                );
+            }
+            Ok(other) => {
+                panic!("Expected BecomeFollower(None), got {other:?}");
+            }
+            Err(e) => {
+                panic!("Expected BecomeFollower event but got error: {e:?}");
+            }
+        }
+
+        // Verify: No additional events were sent
+        assert!(
+            role_rx.try_recv().is_err(),
+            "Should only send one BecomeFollower event"
+        );
+    }
 }

@@ -1189,9 +1189,29 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 info!("Promoting ready learners");
                 self.process_pending_promotions(ctx, &role_tx).await?;
             }
+
+            RaftEvent::StepDownSelfRemoved => {
+                // Only Leader can propose configuration changes and remove itself
+                // Per Raft protocol: Leader steps down immediately after self-removal (etcd/TiKV pattern)
+                warn!(
+                    "[Leader-{}] Removed from cluster membership, stepping down to Follower",
+                    self.node_id()
+                );
+                role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+                    error!(
+                        "[Leader-{}] Failed to send BecomeFollower after self-removal: {:?}",
+                        self.node_id(),
+                        e
+                    );
+                    NetworkError::SingalSendFailed(format!(
+                        "BecomeFollower after self-removal: {e:?}"
+                    ))
+                })?;
+                return Ok(());
+            }
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 

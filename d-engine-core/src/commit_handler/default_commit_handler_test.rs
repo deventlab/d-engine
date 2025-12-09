@@ -492,12 +492,12 @@ mod run_test {
         harness.handle.unwrap().await.unwrap();
     }
 
-    /// 3. Test config change with node removal
+    /// 3. Test config change with node removal (non-self)
     #[tokio::test]
     async fn test_config_remove_node() {
         let entries = build_entries(
             vec![CommandType::Configuration(Change::RemoveNode(RemoveNode {
-                node_id: 1,
+                node_id: 2, // Remove different node (not self)
             }))],
             1,
         );
@@ -522,7 +522,56 @@ mod run_test {
         harness.handle.unwrap().await.unwrap();
     }
 
-    /// 4. Test batch processing under load
+    /// 4. Test self-removal detection logic
+    ///
+    /// Lightweight unit test verifying is_self_removal_config() correctly
+    /// identifies when a node is removing itself from cluster.
+    ///
+    /// Related: Issue #200
+    #[test]
+    fn test_is_self_removal_config() {
+        use d_engine_proto::common::membership_change::Change;
+        use d_engine_proto::common::{AddNode, MembershipChange, RemoveNode};
+
+        // Case 1: Self-removal (my_id matches remove node_id)
+        let self_removal = MembershipChange {
+            change: Some(Change::RemoveNode(RemoveNode { node_id: 1 })),
+        };
+        assert!(
+            DefaultCommitHandler::<MockTypeConfig>::is_self_removal_config(1, &self_removal),
+            "Should detect self-removal when my_id == removed node_id"
+        );
+
+        // Case 2: Removing other node (my_id != remove node_id)
+        let other_removal = MembershipChange {
+            change: Some(Change::RemoveNode(RemoveNode { node_id: 2 })),
+        };
+        assert!(
+            !DefaultCommitHandler::<MockTypeConfig>::is_self_removal_config(1, &other_removal),
+            "Should NOT detect self-removal when removing different node"
+        );
+
+        // Case 3: AddNode (not a removal)
+        let add_node = MembershipChange {
+            change: Some(Change::AddNode(AddNode {
+                node_id: 1,
+                address: "127.0.0.1:8080".to_string(),
+            })),
+        };
+        assert!(
+            !DefaultCommitHandler::<MockTypeConfig>::is_self_removal_config(1, &add_node),
+            "Should NOT detect self-removal for AddNode changes"
+        );
+
+        // Case 4: No change
+        let no_change = MembershipChange { change: None };
+        assert!(
+            !DefaultCommitHandler::<MockTypeConfig>::is_self_removal_config(1, &no_change),
+            "Should NOT detect self-removal when change is None"
+        );
+    }
+
+    /// 5. Test batch processing under load
     #[tokio::test]
     async fn test_high_throughput_processing() {
         let mut entries = Vec::new();
