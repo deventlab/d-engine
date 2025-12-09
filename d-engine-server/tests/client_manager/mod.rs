@@ -7,7 +7,7 @@ use d_engine_client::ClientBuilder;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_core::convert::safe_vk;
 use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::common::NodeRole;
+
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::time::sleep;
@@ -187,13 +187,7 @@ impl ClientManager {
         self.client.cluster().list_members().await
     }
     pub async fn list_leader_id(&self) -> Result<u32, ClientApiError> {
-        let members = self.list_members().await?;
-        let mut ids: Vec<u32> = members
-            .iter()
-            .filter(|meta| meta.role == NodeRole::Leader as i32)
-            .map(|n| n.id)
-            .collect();
-
-        Ok(ids.pop().unwrap_or(0))
+        let leader_id = self.client.cluster().get_leader_id().await?;
+        Ok(leader_id.unwrap_or(0))
     }
 }

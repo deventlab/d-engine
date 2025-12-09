@@ -611,8 +611,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         let now = Instant::now();
-        // Keep syncing leader_id
-        ctx.membership_ref().mark_leader_id(self.node_id()).await?;
+        // Keep syncing leader_id (hot-path: ~5ns atomic store)
+        self.shared_state().set_current_leader(self.node_id());
 
         // 1. Clear expired learners
         if let Err(e) = self.run_periodic_maintenance(role_tx, ctx).await {
@@ -701,7 +701,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx.membership().retrieve_cluster_membership_config().await;
+                let cluster_conf = ctx
+                    .membership()
+                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
+                    .await;
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
@@ -1192,7 +1195,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::StepDownSelfRemoved => {
                 // Only Leader can propose configuration changes and remove itself
-                // Per Raft protocol: Leader steps down immediately after self-removal (etcd/TiKV pattern)
+                // Per Raft protocol: Leader steps down immediately after self-removal
                 warn!(
                     "[Leader-{}] Removed from cluster membership, stepping down to Follower",
                     self.node_id()
@@ -1895,7 +1898,11 @@ impl<T: TypeConfig> LeaderState<T> {
         let response = JoinResponse {
             success: true,
             error: String::new(),
-            config: Some(ctx.membership().retrieve_cluster_membership_config().await),
+            config: Some(
+                ctx.membership()
+                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
+                    .await,
+            ),
             config_version: ctx.membership().get_cluster_conf_version().await,
             snapshot_metadata,
             leader_id: self.node_id(),
@@ -2361,8 +2368,12 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             ..
         } = candidate.node_config.raft.replication;
 
+        // Clone shared_state and set self as leader immediately
+        let shared_state = candidate.shared_state.clone();
+        shared_state.set_current_leader(candidate.node_id());
+
         Self {
-            shared_state: candidate.shared_state.clone(),
+            shared_state,
             timer: Box::new(ReplicationTimer::new(
                 rpc_append_entries_clock_in_ms,
                 rpc_append_entries_batch_process_delay_in_ms,

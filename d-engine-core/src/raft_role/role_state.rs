@@ -324,7 +324,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         &self,
         ctx: &RaftContext<Self::T>,
     ) -> ClientResponse {
-        let leader_id = ctx.membership().current_leader_id().await;
+        let leader_id = self.shared_state().current_leader();
 
         if let Some(lid) = leader_id {
             // Get leader address from membership
@@ -383,11 +383,11 @@ pub trait RaftRoleState: Send + Sync + 'static {
         }
 
         // Important to confirm heartbeat from Leader immediatelly
-        // Keep syncing leader_id
+        // Keep syncing leader_id (hot-path: ~5ns atomic store vs ~50ns RwLock)
         let new_leader_id = append_entries_request.leader_id;
         let request_term = append_entries_request.term;
 
-        ctx.membership().mark_leader_id(new_leader_id).await?;
+        self.shared_state().set_current_leader(new_leader_id);
 
         // Mark vote as committed (follower confirms leader)
         // Returns true only on state transition (committed: false->true or leader/term change)

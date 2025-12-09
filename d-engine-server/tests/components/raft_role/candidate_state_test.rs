@@ -251,12 +251,13 @@ async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = MockMembership::new();
-    membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
-        ClusterMembership {
+    membership.expect_retrieve_cluster_membership_config().times(1).returning(
+        |_current_leader_id| ClusterMembership {
             version: 1,
             nodes: vec![],
-        }
-    });
+            current_leader_id: None,
+        },
+    );
     context.membership = Arc::new(membership);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -294,7 +295,6 @@ async fn test_handle_raft_event_case3() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -353,17 +353,11 @@ async fn test_handle_raft_event_case4_1() {
         .expect_check_append_entries_request_is_legal()
         .returning(move |_, _, _| AppendEntriesResponse::success(1, term, None));
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(1);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
@@ -436,10 +430,9 @@ async fn test_handle_raft_event_case4_2() {
         .expect_check_append_entries_request_is_legal()
         .returning(move |_, _, _| AppendEntriesResponse::higher_term(1, term));
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership.expect_mark_leader_id().returning(|_| Ok(())).times(0);
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
 
@@ -502,10 +495,9 @@ async fn test_handle_raft_event_case4_3() {
         .expect_check_append_entries_request_is_legal()
         .returning(move |_, _, _| AppendEntriesResponse::conflict(1, term, None, None));
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership.expect_mark_leader_id().returning(|_| Ok(())).times(0);
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
 

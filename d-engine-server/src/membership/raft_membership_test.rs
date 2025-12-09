@@ -218,122 +218,9 @@ async fn test_replication_peers_case1() {
     assert_eq!(membership.replication_peers().await.len(), 3);
 }
 
-/// # Case 1: Test old leader id been cleaned up
-///
-/// ## Setup
-/// 1. There is leader configured the membership
-/// 2. Try to mark a new leader
-///
-/// ## Validation criteria
-/// 1. new leader is marked as only Leader in membership
-#[tokio::test]
-#[traced_test]
-async fn test_mark_leader_id_case1() {
-    let old_leader_id = 10;
-    let new_leader_id = 3;
-
-    // Prepare cluster membership
-    let initial_cluster = vec![
-        NodeMeta {
-            id: old_leader_id,
-            address: "127.0.0.1:10000".to_string(),
-            role: Leader as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 3,
-            address: "127.0.0.1:10000".to_string(),
-            role: Follower as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 4,
-            address: "127.0.0.1:10000".to_string(),
-            role: Learner as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 5,
-            address: "127.0.0.1:10000".to_string(),
-            role: Follower as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 6,
-            address: "127.0.0.1:10000".to_string(),
-            role: Learner as i32,
-            status: NodeStatus::Active.into(),
-        },
-    ];
-    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
-        1,
-        initial_cluster,
-        RaftNodeConfig::default(),
-    );
-
-    assert_eq!(membership.current_leader_id().await, Some(old_leader_id));
-    assert!(membership.mark_leader_id(new_leader_id).await.is_ok());
-    assert_eq!(membership.current_leader_id().await, Some(new_leader_id));
-}
-
-/// # Case 2: Try to mark an none exist peer as leader will throw Error
-///
-/// ## Setup
-/// 1. Try to mark a none exist member as leader
-///
-/// ## Validation criteria
-/// 1. mark_leader_id returns Error
-#[tokio::test]
-#[traced_test]
-async fn test_mark_leader_id_case2() {
-    let new_leader_id = 100;
-
-    // Prepare cluster membership
-    let initial_cluster = vec![
-        NodeMeta {
-            id: 1,
-            address: "127.0.0.1:10000".to_string(),
-            role: Follower as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 3,
-            address: "127.0.0.1:10000".to_string(),
-            role: Follower as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 4,
-            address: "127.0.0.1:10000".to_string(),
-            role: Learner as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 5,
-            address: "127.0.0.1:10000".to_string(),
-            role: Follower as i32,
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 6,
-            address: "127.0.0.1:10000".to_string(),
-            role: Learner as i32,
-            status: NodeStatus::Active.into(),
-        },
-    ];
-    let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
-        1,
-        initial_cluster,
-        RaftNodeConfig::default(),
-    );
-
-    assert!(membership.mark_leader_id(new_leader_id).await.is_err());
-    assert_eq!(membership.current_leader_id().await, None);
-}
-
 /// Test: remove_node allows leader removal (Raft protocol compliance)
 ///
-/// Per Raft protocol and industry best practices (etcd/TiKV):
+/// Per Raft protocol and industry best practices:
 /// - Leader CAN propose to remove itself
 /// - remove_node() should NOT block leader removal
 /// - Leader will step down after applying the config change
@@ -370,8 +257,7 @@ async fn test_remove_node_allows_leader_removal() {
         RaftNodeConfig::default(),
     );
 
-    // Verify node 1 is leader
-    assert_eq!(membership.current_leader_id().await, Some(1));
+    // Verify node 1 exists
     assert!(membership.contains_node(1).await);
 
     // Remove leader node (should succeed per Raft protocol)
@@ -432,7 +318,7 @@ async fn test_retrieve_cluster_membership_config() {
         RaftNodeConfig::default(),
     );
 
-    let r = membership.retrieve_cluster_membership_config().await;
+    let r = membership.retrieve_cluster_membership_config(None).await;
     assert_eq!(r.nodes.len(), 5);
     assert!(!r.nodes.iter().any(|n| n.role == Leader as i32));
 }

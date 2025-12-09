@@ -142,7 +142,6 @@ async fn test_handle_raft_event_case3() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -209,17 +208,11 @@ async fn test_handle_raft_event_case4_1() {
         })
     });
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(1);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
@@ -290,17 +283,11 @@ async fn test_handle_raft_event_case4_2() {
     let term = 2;
     let new_leader_term = term - 1;
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(0);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
 
@@ -364,17 +351,11 @@ async fn test_handle_raft_event_case4_3() {
         .expect_handle_append_entries()
         .returning(|_, _, _| Err(Error::Fatal("test".to_string())));
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(1);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
@@ -712,9 +693,7 @@ async fn test_join_cluster_case1_success_known_leader() {
     let node_id = 100;
 
     // Mock membership to return known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| Some(5));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport to succeed
@@ -731,7 +710,10 @@ async fn test_join_cluster_case1_success_known_leader() {
     });
     ctx.transport = Arc::new(transport);
 
-    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    // Set known leader in shared_state (case1 expects known leader)
+    state.shared_state_mut().set_current_leader(5);
+
     let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_ok(), "Join should succeed with known leader");
@@ -746,9 +728,7 @@ async fn test_join_cluster_case2_success_after_discovery() {
     let node_id = 100;
 
     // Mock membership with no known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| None);
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport for discovery and join
@@ -789,9 +769,7 @@ async fn test_join_cluster_case3_discovery_timeout() {
     let node_id = 100;
 
     // Mock membership with no known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| None);
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport to timeout during discovery
@@ -805,6 +783,7 @@ async fn test_join_cluster_case3_discovery_timeout() {
     let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
     let result = state.join_cluster(&ctx).await;
 
+    // Should timeout during discovery
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -821,9 +800,7 @@ async fn test_join_cluster_case4_join_rpc_failure() {
     let node_id = 100;
 
     // Mock membership to return known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| Some(5));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport to fail join RPC
@@ -834,7 +811,10 @@ async fn test_join_cluster_case4_join_rpc_failure() {
 
     ctx.transport = Arc::new(transport);
 
-    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    // Set known leader (case4 expects known leader)
+    state.shared_state_mut().set_current_leader(5);
+
     let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_err());
@@ -853,9 +833,7 @@ async fn test_join_cluster_case5_invalid_join_response() {
     let node_id = 100;
 
     // Mock membership to return known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| Some(5));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport to return failure response
@@ -869,7 +847,10 @@ async fn test_join_cluster_case5_invalid_join_response() {
     });
     ctx.transport = Arc::new(transport);
 
-    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    // Set known leader (case5 expects known leader)
+    state.shared_state_mut().set_current_leader(5);
+
     let result = state.join_cluster(&ctx).await;
 
     debug!(?result);
@@ -891,9 +872,7 @@ async fn test_join_cluster_case6_leader_redirect() {
     let node_id = 100;
 
     // Mock membership to return known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| Some(5));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport to redirect to new leader
@@ -917,7 +896,10 @@ async fn test_join_cluster_case6_leader_redirect() {
     });
     ctx.transport = Arc::new(transport);
 
-    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    let mut state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
+    // Set known leader (case6 tests redirect scenario)
+    state.shared_state_mut().set_current_leader(5);
+
     let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_ok(), "Should handle leader redirect");
@@ -932,9 +914,7 @@ async fn test_join_cluster_case7_large_cluster() {
     let node_id = 100;
 
     // Mock membership with no known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| None);
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = MockMembership::new();
     ctx.membership = Arc::new(membership);
 
     // Mock transport to handle large discovery
@@ -962,49 +942,6 @@ async fn test_join_cluster_case7_large_cluster() {
     let result = state.join_cluster(&ctx).await;
 
     assert!(result.is_ok(), "Should handle large cluster");
-}
-
-/// # Case 8: Join failure - marking leader ID fails
-#[tokio::test]
-#[traced_test]
-async fn test_join_cluster_case8_mark_leader_failure() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut ctx = mock_raft_context("/tmp/test_join_cluster_case8", graceful_rx, None);
-    let node_id = 100;
-
-    // Mock membership to return known leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| Some(5));
-    membership.expect_mark_leader_id().returning(|_| {
-        Err(MembershipError::MarkLeaderIdFailed("test mark leader failure".to_string()).into())
-    });
-    ctx.membership = Arc::new(membership);
-
-    // Mock transport to return success
-    let mut transport = MockTransport::new();
-    transport.expect_join_cluster().returning(|_, _, _, _| {
-        Ok(JoinResponse {
-            success: true,
-            error: "".to_string(),
-            config: None,
-            config_version: 1,
-            snapshot_metadata: None,
-            leader_id: 3,
-        })
-    });
-    ctx.transport = Arc::new(transport);
-
-    let state = LearnerState::<MockTypeConfig>::new(node_id, ctx.node_config.clone());
-    let result = state.join_cluster(&ctx).await;
-
-    // Verify error propagation
-    assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        Error::Consensus(ConsensusError::Membership(
-            MembershipError::MarkLeaderIdFailed(_)
-        ))
-    ));
 }
 
 #[cfg(test)]

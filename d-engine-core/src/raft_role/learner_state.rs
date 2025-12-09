@@ -219,7 +219,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version().await;
 
-                let current_leader_id = ctx.membership().current_leader_id().await;
+                let current_leader_id = self.shared_state().current_leader();
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Learner receive ClusterConfUpdate"
@@ -461,7 +461,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     ) -> Result<()> {
         // 1. Check if there is a Leader address (as specified in the configuration)
         let membership = ctx.membership();
-        let leader_id = match membership.current_leader_id().await {
+        let leader_id = match self.shared_state().current_leader() {
             None => {
                 // 2. Trigger broadcast discovery
                 self.broadcast_discovery(membership.clone(), ctx).await?
@@ -492,8 +492,8 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             return Err(MembershipError::JoinClusterFailed(self.shared_state.node_id).into());
         }
 
-        // 4. mark leader_id
-        membership.mark_leader_id(leader_id).await?;
+        // 4. mark leader_id (hot-path: ~5ns atomic store)
+        self.shared_state().set_current_leader(leader_id);
 
         // Print join success message (Plan B)
         crate::utils::cluster_printer::print_learner_join_success(
@@ -509,8 +509,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         &self,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        let leader_id =
-            ctx.membership().current_leader_id().await.ok_or(MembershipError::NoLeader)?;
+        let leader_id = self.shared_state().current_leader().ok_or(MembershipError::NoLeader)?;
 
         // Create ACK channel (learner sends ACKs to leader)
         let (ack_tx, ack_rx) = mpsc::channel(32);

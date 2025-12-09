@@ -99,6 +99,9 @@ pub struct ClusterMembership {
     pub version: u64,
     #[prost(message, repeated, tag = "2")]
     pub nodes: ::prost::alloc::vec::Vec<NodeMeta>,
+    /// Current leader ID (0 if unknown/no leader) - dynamic runtime info
+    #[prost(uint32, optional, tag = "3")]
+    pub current_leader_id: ::core::option::Option<u32>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

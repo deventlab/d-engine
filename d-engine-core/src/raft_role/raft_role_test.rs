@@ -203,3 +203,127 @@ fn test_committed_vote_persistence() {
 
     assert!(!hs2.voted_for.unwrap().committed);
 }
+
+/// Test atomic leader_id operations (Phase 2: performance optimization)
+#[test]
+fn test_shared_state_current_leader_default() {
+    let shared = SharedState::new(1, None, None);
+
+    // Default: no leader (0 = None)
+    assert_eq!(shared.current_leader(), None);
+}
+
+#[test]
+fn test_shared_state_set_current_leader() {
+    let shared = SharedState::new(1, None, None);
+
+    // Set leader
+    shared.set_current_leader(5);
+    assert_eq!(shared.current_leader(), Some(5));
+
+    // Update leader
+    shared.set_current_leader(3);
+    assert_eq!(shared.current_leader(), Some(3));
+}
+
+#[test]
+fn test_shared_state_clear_current_leader() {
+    let shared = SharedState::new(1, None, None);
+
+    // Set then clear
+    shared.set_current_leader(5);
+    assert_eq!(shared.current_leader(), Some(5));
+
+    shared.clear_current_leader();
+    assert_eq!(shared.current_leader(), None);
+}
+
+#[test]
+fn test_shared_state_leader_zero_means_none() {
+    let shared = SharedState::new(1, None, None);
+
+    // Explicitly set to 0 (same as clear)
+    shared.set_current_leader(0);
+    assert_eq!(shared.current_leader(), None);
+
+    // Set valid leader
+    shared.set_current_leader(2);
+    assert_eq!(shared.current_leader(), Some(2));
+
+    // Clear via set_current_leader(0)
+    shared.set_current_leader(0);
+    assert_eq!(shared.current_leader(), None);
+}
+
+#[test]
+fn test_shared_state_leader_clone() {
+    let shared1 = SharedState::new(1, None, None);
+    shared1.set_current_leader(10);
+
+    // Clone preserves leader_id
+    let shared2 = shared1.clone();
+    assert_eq!(shared2.current_leader(), Some(10));
+
+    // Clones are independent
+    shared2.set_current_leader(20);
+    assert_eq!(shared1.current_leader(), Some(10)); // Original unchanged
+    assert_eq!(shared2.current_leader(), Some(20));
+}
+
+#[test]
+fn test_shared_state_leader_debug() {
+    let shared = SharedState::new(1, None, None);
+    shared.set_current_leader(7);
+
+    // Debug format includes current_leader
+    let debug_str = format!("{shared:?}");
+    assert!(debug_str.contains("current_leader"));
+    assert!(debug_str.contains("7"));
+}
+
+#[test]
+fn test_shared_state_concurrent_updates() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let shared = Arc::new(SharedState::new(1, None, None));
+
+    // Simulate concurrent leader updates
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let shared = Arc::clone(&shared);
+            thread::spawn(move || {
+                shared.set_current_leader(i as u32);
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // Final value is one of the concurrent updates
+    let final_leader = shared.current_leader();
+    assert!(final_leader.is_some());
+    assert!(final_leader.unwrap() < 10);
+}
+
+#[test]
+fn test_shared_state_leader_lifecycle() {
+    let shared = SharedState::new(1, None, None);
+
+    // 1. Start: no leader
+    assert_eq!(shared.current_leader(), None);
+
+    // 2. AppendEntries from node 3
+    shared.set_current_leader(3);
+    assert_eq!(shared.current_leader(), Some(3));
+
+    // 3. Leader step down (higher term)
+    shared.clear_current_leader();
+    assert_eq!(shared.current_leader(), None);
+
+    // 4. New leader elected
+    shared.set_current_leader(5);
+    assert_eq!(shared.current_leader(), Some(5));
+}

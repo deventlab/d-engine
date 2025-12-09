@@ -65,6 +65,7 @@ async fn test_join_cluster_success() {
                     address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
+                current_leader_id: Some(1),
             })
         })),
         Ok(JoinResponse {

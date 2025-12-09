@@ -1,7 +1,6 @@
 use std::time::Duration;
 use std::vec;
 
-use d_engine_proto::common::NodeRole;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -17,22 +16,26 @@ use d_engine_proto::server::cluster::NodeMeta;
 #[tokio::test]
 #[traced_test]
 async fn test_parse_cluster_metadata_success() {
-    let nodes = vec![
-        NodeMeta {
-            id: 1,
-            role: NodeRole::Leader as i32,
-            address: "127.0.0.1:50051".to_string(),
-            status: NodeStatus::Active.into(),
-        },
-        NodeMeta {
-            id: 2,
-            role: NodeRole::Follower as i32,
-            address: "127.0.0.1:50052".to_string(),
-            status: NodeStatus::Active.into(),
-        },
-    ];
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![
+            NodeMeta {
+                id: 1,
+                role: 0, // Voter
+                address: "127.0.0.1:50051".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 2,
+                role: 0, // Voter
+                address: "127.0.0.1:50052".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+        ],
+        current_leader_id: Some(1), // Node 1 is leader
+    };
 
-    let result = ConnectionPool::parse_cluster_metadata(&nodes).unwrap();
+    let result = ConnectionPool::parse_cluster_metadata(&membership).unwrap();
     assert_eq!(result.0, "http://127.0.0.1:50051");
     assert_eq!(result.1, vec!["http://127.0.0.1:50052"]);
 }
@@ -40,14 +43,37 @@ async fn test_parse_cluster_metadata_success() {
 #[tokio::test]
 #[traced_test]
 async fn test_parse_cluster_metadata_no_leader() {
-    let nodes = vec![NodeMeta {
-        id: 1,
-        role: NodeRole::Follower as i32,
-        address: "127.0.0.1:50051".to_string(),
-        status: NodeStatus::Active.into(),
-    }];
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![NodeMeta {
+            id: 1,
+            role: 0, // Voter
+            address: "127.0.0.1:50051".to_string(),
+            status: NodeStatus::Active.into(),
+        }],
+        current_leader_id: None, // No leader
+    };
 
-    let result = ConnectionPool::parse_cluster_metadata(&nodes);
+    let result = ConnectionPool::parse_cluster_metadata(&membership);
+    let e = result.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::NotLeader);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_parse_cluster_metadata_leader_not_in_nodes() {
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![NodeMeta {
+            id: 1,
+            role: 0,
+            address: "127.0.0.1:50051".to_string(),
+            status: NodeStatus::Active.into(),
+        }],
+        current_leader_id: Some(99), // Leader ID not in nodes list
+    };
+
+    let result = ConnectionPool::parse_cluster_metadata(&membership);
     let e = result.unwrap_err();
     assert_eq!(e.code(), ErrorCode::NotLeader);
 }
@@ -147,6 +173,7 @@ async fn test_get_all_channels() {
         config: ClientConfig::default(),
         members: vec![], // this value will not affect the unit test result
         endpoints: vec![addr1, addr2],
+        current_leader_id: Some(1),
     };
 
     let channels = pool.get_all_channels();
@@ -167,10 +194,11 @@ async fn test_refresh_successful_leader_change() {
                 version: 1,
                 nodes: vec![NodeMeta {
                     id: leader_id,
-                    role: NodeRole::Leader as i32,
+                    role: 0, // Voter
                     address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
+                current_leader_id: Some(leader_id),
             })
         })),
     )
@@ -201,10 +229,11 @@ async fn test_refresh_successful_leader_change() {
                 version: 1,
                 nodes: vec![NodeMeta {
                     id: new_leader_id,
-                    role: NodeRole::Leader as i32,
+                    role: 0, // Voter
                     address: format!("127.0.0.1:{port}",),
                     status: NodeStatus::Active.into(),
                 }],
+                current_leader_id: Some(new_leader_id),
             })
         })),
     )
@@ -213,4 +242,149 @@ async fn test_refresh_successful_leader_change() {
     let endpoints = vec![format!("http://localhost:{}", port)];
     pool.refresh(Some(endpoints)).await.expect("success");
     assert!(pool.members[0].id == new_leader_id);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_parse_cluster_metadata_multiple_nodes_with_leader() {
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![
+            NodeMeta {
+                id: 1,
+                role: 0, // Voter
+                address: "127.0.0.1:50051".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 2,
+                role: 0, // Voter
+                address: "127.0.0.1:50052".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 3,
+                role: 0, // Voter
+                address: "127.0.0.1:50053".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+        ],
+        current_leader_id: Some(2), // Node 2 is leader
+    };
+
+    let result = ConnectionPool::parse_cluster_metadata(&membership).unwrap();
+    assert_eq!(result.0, "http://127.0.0.1:50052");
+    assert_eq!(result.1.len(), 2);
+    assert!(result.1.contains(&"http://127.0.0.1:50051".to_string()));
+    assert!(result.1.contains(&"http://127.0.0.1:50053".to_string()));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_parse_cluster_metadata_leader_id_zero() {
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![NodeMeta {
+            id: 1,
+            role: 0,
+            address: "127.0.0.1:50051".to_string(),
+            status: NodeStatus::Active.into(),
+        }],
+        current_leader_id: Some(0), // Invalid leader ID (0 means unknown)
+    };
+
+    let result = ConnectionPool::parse_cluster_metadata(&membership);
+    let e = result.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::NotLeader);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_parse_cluster_metadata_empty_nodes() {
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![],
+        current_leader_id: Some(1),
+    };
+
+    let result = ConnectionPool::parse_cluster_metadata(&membership);
+    let e = result.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::NotLeader);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_load_cluster_metadata_returns_full_membership() {
+    let leader_id = 1;
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(move |port| {
+            Ok(ClusterMembership {
+                version: 42,
+                nodes: vec![
+                    NodeMeta {
+                        id: leader_id,
+                        role: 0,
+                        address: format!("127.0.0.1:{port}"),
+                        status: NodeStatus::Active.into(),
+                    },
+                    NodeMeta {
+                        id: 2,
+                        role: 0,
+                        address: "127.0.0.1:50052".to_string(),
+                        status: NodeStatus::Active.into(),
+                    },
+                ],
+                current_leader_id: Some(leader_id),
+            })
+        })),
+    )
+    .await
+    .unwrap();
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+
+    let membership = ConnectionPool::load_cluster_metadata(&endpoints, &config)
+        .await
+        .expect("Should load metadata");
+
+    assert_eq!(membership.version, 42);
+    assert_eq!(membership.nodes.len(), 2);
+    assert_eq!(membership.current_leader_id, Some(leader_id));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_parse_cluster_metadata_with_learner_nodes() {
+    let membership = ClusterMembership {
+        version: 1,
+        nodes: vec![
+            NodeMeta {
+                id: 1,
+                role: 0, // Voter
+                address: "127.0.0.1:50051".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 2,
+                role: 1, // Learner
+                address: "127.0.0.1:50052".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 3,
+                role: 0, // Voter
+                address: "127.0.0.1:50053".to_string(),
+                status: NodeStatus::Active.into(),
+            },
+        ],
+        current_leader_id: Some(3), // Voter node 3 is leader
+    };
+
+    let result = ConnectionPool::parse_cluster_metadata(&membership).unwrap();
+    assert_eq!(result.0, "http://127.0.0.1:50053");
+    // All non-leader nodes (including learner) go to followers
+    assert_eq!(result.1.len(), 2);
 }

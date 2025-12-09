@@ -49,6 +49,15 @@ impl ClusterClient {
         Ok(client_inner.pool.get_all_members())
     }
 
+    /// Get the current leader ID
+    ///
+    /// Returns the leader node ID if known, or None if no leader is currently elected.
+    pub async fn get_leader_id(&self) -> std::result::Result<Option<u32>, ClientApiError> {
+        let client_inner = self.client_inner.load();
+
+        Ok(client_inner.pool.get_leader_id())
+    }
+
     /// Join a new node to the cluster
     ///
     /// # Parameters

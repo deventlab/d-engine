@@ -245,7 +245,7 @@ where
     /// rejected. (Consistency)
     ///
     /// Per Raft protocol: Leader can remove itself. After applying the removal,
-    /// leader must step down immediately (etcd/TiKV pattern).
+    /// leader must step down immediately.
     async fn apply_config_change(
         &self,
         entry: Entry,
@@ -271,7 +271,7 @@ where
                 // 2. CRITICAL: Barrier point
                 self.membership.notify_config_applied(entry.index).await;
 
-                // 3. Leader self-removal: Step down immediately (etcd/TiKV pattern)
+                // 3. Leader self-removal: Step down immediately per Raft protocol
                 if is_self_removal {
                     warn!(
                         "[{}] Node removed from cluster membership, triggering step down (index {})",

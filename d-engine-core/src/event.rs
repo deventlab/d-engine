@@ -125,7 +125,7 @@ pub enum RaftEvent {
     PromoteReadyLearners,
 
     /// Node removed itself from cluster membership
-    /// Leader must step down immediately after self-removal (etcd/TiKV pattern)
+    /// Leader must step down immediately after self-removal per Raft protocol
     StepDownSelfRemoved,
 }
 

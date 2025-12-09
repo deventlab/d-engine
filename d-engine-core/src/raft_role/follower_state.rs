@@ -270,7 +270,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx.membership().retrieve_cluster_membership_config().await;
+                let cluster_conf = ctx
+                    .membership()
+                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
+                    .await;
                 debug!("Follower receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
@@ -283,7 +286,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version().await;
 
-                let current_leader_id = ctx.membership().current_leader_id().await;
+                let current_leader_id = self.shared_state().current_leader();
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Follower receive ClusterConfUpdate"
@@ -410,7 +413,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
-                let leader_id = ctx.membership().current_leader_id().await;
+                let leader_id = self.shared_state().current_leader();
 
                 // ----------------------
                 // Phase 1: Validate Leader purge log request
