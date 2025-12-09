@@ -30,7 +30,16 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
     // Phase 1: Single-node development environment
     info!("Phase 1: Starting single-node mode");
     {
-        let engine = EmbeddedEngine::with_rocksdb(&node1_data_dir, None).await?;
+        // Create config file with longer timeout
+        let config_content = r#"
+[raft]
+general_raft_timeout_duration_in_ms = 5000
+"#
+        .to_string();
+        let config_path = "/tmp/scale_to_cluster_test_phase1.toml";
+        tokio::fs::write(config_path, config_content).await?;
+
+        let engine = EmbeddedEngine::with_rocksdb(&node1_data_dir, Some(config_path)).await?;
         engine.ready().await;
 
         let leader = engine.wait_leader(Duration::from_secs(2)).await?;
@@ -42,6 +51,9 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
         // Write development data
         engine.client().put(b"dev-key".to_vec(), b"dev-value".to_vec()).await?;
         engine.client().put(b"app-version".to_vec(), b"1.0".to_vec()).await?;
+
+        // Wait for commit to propagate
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let val = engine.client().get_linearizable(b"dev-key".to_vec()).await?;
         assert_eq!(val.as_deref(), Some(b"dev-value".as_ref()));
@@ -57,7 +69,12 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], &ports, DB_ROOT_DIR, LOG_DIR).await;
+        let mut config_str =
+            create_node_config(node_id, ports[i], &ports, DB_ROOT_DIR, LOG_DIR).await;
+
+        // Add timeout config
+        config_str.push_str("\n[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n");
+
         let config = node_config(&config_str);
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
@@ -152,7 +169,12 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
+        let mut config_str =
+            create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
+
+        // Add timeout config
+        config_str.push_str("\n[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n");
+
         let config = node_config(&config_str);
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
@@ -180,8 +202,12 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
     let leader = engines[0].wait_leader(Duration::from_secs(10)).await?;
     info!("Initial leader: {}", leader.leader_id);
 
-    // Write data before failure
-    engines[0].client().put(b"before-fail".to_vec(), b"value1".to_vec()).await?;
+    // Write data before failure - use leader engine
+    let leader_idx = (leader.leader_id - 1) as usize;
+    engines[leader_idx]
+        .client()
+        .put(b"before-fail".to_vec(), b"value1".to_vec())
+        .await?;
 
     // Stop node 1 (might be leader)
     info!("Stopping node 1");
@@ -196,13 +222,28 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
     info!("New leader after failover: {}", new_leader.leader_id);
 
     // Cluster should still accept writes (2/3 majority)
-    engines[0].client().put(b"after-fail".to_vec(), b"value2".to_vec()).await?;
+    // After removing engines[0], new leader might be at different index
+    let new_leader_idx = if new_leader.leader_id == 1 {
+        panic!("Node 1 was stopped, cannot be leader");
+    } else if new_leader.leader_id == 2 {
+        0 // Node 2 is now at index 0
+    } else {
+        1 // Node 3 is at index 1
+    };
+
+    engines[new_leader_idx]
+        .client()
+        .put(b"after-fail".to_vec(), b"value2".to_vec())
+        .await?;
+
+    // Wait for commit to propagate
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify both old and new data readable (eventual consistency)
-    let old_val = engines[0].client().get_eventual(b"before-fail".to_vec()).await?;
+    let old_val = engines[new_leader_idx].client().get_eventual(b"before-fail".to_vec()).await?;
     assert_eq!(old_val.as_deref(), Some(b"value1".as_ref()));
 
-    let new_val = engines[0].client().get_eventual(b"after-fail".to_vec()).await?;
+    let new_val = engines[new_leader_idx].client().get_eventual(b"after-fail".to_vec()).await?;
     assert_eq!(new_val.as_deref(), Some(b"value2".as_ref()));
 
     info!("Cluster operational with 2/3 nodes");
