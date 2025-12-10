@@ -59,7 +59,8 @@ const SNAPSHOT_CASE1_LOG_DIR: &str = "./logs/snapshot/case1";
 async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     reset(SNAPSHOT_CASE1_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
 
     // Prepare state machine directories (do not pre-allocate Arc to avoid ownership issues)
     prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1")).await;
@@ -95,7 +96,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         let config = create_node_config(
             node_id,
             *port,
-            &ports,
+            ports,
             &format!("{}/cs/{}", SNAPSHOT_CASE1_DB_ROOT_DIR, i + 1),
             SNAPSHOT_CASE1_LOG_DIR,
         )
@@ -136,7 +137,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster is ready
-    for port in &ports {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
@@ -149,7 +150,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     assert!(check_path_contents(snapshot_path).unwrap_or(false));
 
     // Verify state machine data via client API (snapshot has been applied to leader)
-    let mut client_manager = ClientManager::new(&create_bootstrap_urls(&ports)).await?;
+    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
 
     // Verify data via client API - this confirms snapshot was applied and committed
     test_put_get(&mut client_manager, 3, 3).await?;

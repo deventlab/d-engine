@@ -46,7 +46,8 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     reset(JOIN_CLUSTER_CASE2_DIR).await?;
 
     // MODIFICATION: Use dynamic port allocation instead of hardcoded ports
-    let mut ports = get_available_ports(5).await;
+    let _port_guard = get_available_ports(5).await;
+    let mut ports = _port_guard.ports.to_vec();
     let new_node_port4 = ports.pop().unwrap(); // Fourth port for first new node
     let new_node_port5 = ports.pop().unwrap(); // Fifth port for second new node
     let initial_ports = ports; // First three ports for initial cluster

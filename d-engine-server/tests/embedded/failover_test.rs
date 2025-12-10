@@ -24,7 +24,8 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     reset(TEST_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
 
     info!("Starting 3-node cluster");
 
@@ -33,7 +34,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], &ports, DB_ROOT_DIR, LOG_DIR).await;
+        let config_str = create_node_config(node_id, ports[i], ports, DB_ROOT_DIR, LOG_DIR).await;
         let config = node_config(&config_str);
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
@@ -195,7 +196,8 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_rejoin")).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
     let db_root = format!("{DB_ROOT_DIR}_rejoin");
     let log_dir = format!("{LOG_DIR}_rejoin");
 
@@ -206,7 +208,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
+        let config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
@@ -327,7 +329,8 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_minority")).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
     let db_root = format!("{DB_ROOT_DIR}_minority");
     let log_dir = format!("{LOG_DIR}_minority");
 
@@ -337,7 +340,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], &ports, &db_root, &log_dir).await;
+        let config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));

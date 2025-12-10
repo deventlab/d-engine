@@ -49,7 +49,8 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     // 1. Prepare node data
     println!("1. Prepare node data");
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
 
     // Prepare state machine and logs
     println!("Prepare state machine and logs");
@@ -79,7 +80,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
             ),
             None, // Let build_node create state machines for each node
             Some(raft_logs[i].clone()),
@@ -94,13 +95,13 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     // Check cluster status
     println!("Check cluster status");
-    for port in ports.clone() {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
     debug!("[test_out_of_sync_peer_scenario] Cluster started. Running tests...");
 
     // 3. Verify leader election
-    let mut client_manager = ClientManager::new(&create_bootstrap_urls(&ports)).await?;
+    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
     assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
 
     // 4. Test client request

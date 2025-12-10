@@ -46,7 +46,8 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     debug!("...test_leader_election_based_on_log_term_and_index...");
     reset(ELECTION_CASE1_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
 
     // Prepare raft logs
     let r1 = prepare_storage_engine(1, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/1"), 0);
@@ -69,7 +70,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
         let config = create_node_config(
             (i + 1) as u64,
             *port,
-            &ports,
+            ports,
             &format!("{}/cs/{}", ELECTION_CASE1_DB_ROOT_DIR, i + 1),
             ELECTION_CASE1_LOG_DIR,
         )
@@ -90,7 +91,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster is ready
-    for port in ports.clone() {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
@@ -99,7 +100,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     );
 
     // Verify Leader is Node 2
-    let bootstrap_urls = create_bootstrap_urls(&ports);
+    let bootstrap_urls = create_bootstrap_urls(ports);
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(15);
 

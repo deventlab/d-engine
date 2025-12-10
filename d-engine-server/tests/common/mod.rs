@@ -502,15 +502,45 @@ pub fn check_path_contents(snapshot_path: &str) -> Result<bool, ClientApiError> 
     Ok(has_contents)
 }
 
-pub async fn get_available_ports(count: usize) -> Vec<u16> {
+/// Guard that holds TCP listeners to prevent port reuse until dropped.
+/// This prevents race conditions in parallel test execution where multiple tests
+/// might acquire the same port between allocation and actual binding.
+pub struct PortGuard {
+    pub ports: Vec<u16>,
+    _listeners: Vec<std::net::TcpListener>,
+}
+
+impl PortGuard {
+    /// Access ports as a slice for compatibility with existing test code
+    pub fn as_slice(&self) -> &[u16] {
+        &self.ports
+    }
+}
+
+impl std::ops::Deref for PortGuard {
+    type Target = [u16];
+
+    fn deref(&self) -> &Self::Target {
+        &self.ports
+    }
+}
+
+/// Allocate available ports and hold them until PortGuard is dropped.
+/// This prevents port conflicts in parallel test execution.
+pub async fn get_available_ports(count: usize) -> PortGuard {
     use std::net::TcpListener;
     let mut ports = Vec::new();
+    let mut listeners = Vec::new();
 
     for _ in 0..count {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         ports.push(port);
-        drop(listener);
+        listeners.push(listener);
     }
-    ports
+
+    PortGuard {
+        ports,
+        _listeners: listeners,
+    }
 }

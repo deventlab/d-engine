@@ -32,7 +32,8 @@ const TEST_CASE2_LOG_DIR: &str = "./logs/cluster_start_stop/case2";
 async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     reset(TEST_CASE1_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
 
     // Start cluster nodes
     let mut ctx = TestContext {
@@ -46,7 +47,7 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
                 &create_node_config(
                     (i + 1) as u64,
                     *port,
-                    &ports,
+                    ports,
                     TEST_CASE1_DB_ROOT_DIR,
                     TEST_CASE1_LOG_DIR,
                 )
@@ -62,14 +63,14 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster is ready
-    for port in ports.clone() {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     println!("[test_cluster_put_and_lread_case1] Cluster started. Running tests...");
 
     // Test basic operations
-    let mut client_manager = ClientManager::new(&create_bootstrap_urls(&ports)).await?;
+    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
     test_put_get(&mut client_manager, 2, 202).await?;
 
     // Clean up
@@ -123,9 +124,10 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
 async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     reset(TEST_CASE2_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
 
-    let bootstrap_urls = create_bootstrap_urls(&ports);
+    let bootstrap_urls = create_bootstrap_urls(ports);
     let bootstrap_urls_without_n1 = create_bootstrap_urls(&ports[1..]);
 
     // Phase T1: Initial cluster setup and first operations
@@ -141,7 +143,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
                 &create_node_config(
                     (i + 1) as u64,
                     *port,
-                    &ports,
+                    ports,
                     TEST_CASE2_DB_ROOT_DIR,
                     TEST_CASE2_LOG_DIR,
                 )
@@ -157,7 +159,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
-    for port in ports.clone() {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
@@ -188,7 +190,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
             &create_node_config(
                 1,
                 ports[0],
-                &ports,
+                ports,
                 TEST_CASE2_DB_ROOT_DIR,
                 TEST_CASE2_LOG_DIR,
             )
@@ -227,7 +229,7 @@ async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
                 &create_node_config(
                     (i + 1) as u64,
                     *port,
-                    &ports,
+                    ports,
                     TEST_CASE2_DB_ROOT_DIR,
                     TEST_CASE2_LOG_DIR,
                 )

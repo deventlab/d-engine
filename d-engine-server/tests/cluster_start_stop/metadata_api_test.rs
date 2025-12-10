@@ -28,7 +28,8 @@ const LOG_DIR: &str = "./logs/cluster_start_stop/metadata_api";
 async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
@@ -39,7 +40,7 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
             ),
             None,
             None,
@@ -52,14 +53,14 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster ready
-    for port in &ports {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     info!("Cluster ready. Checking metadata API");
 
     // Connect client and verify metadata
-    let client = Client::builder(create_bootstrap_urls(&ports))
+    let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
@@ -94,7 +95,8 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
 async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
@@ -105,7 +107,7 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
             ),
             None,
             None,
@@ -118,12 +120,12 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster ready
-    for port in &ports {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     // Connect client
-    let client = Client::builder(create_bootstrap_urls(&ports))
+    let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
@@ -182,7 +184,8 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
 async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let ports = get_available_ports(3).await;
+    let _port_guard = get_available_ports(3).await;
+    let ports = _port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
@@ -193,7 +196,7 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, &ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
             ),
             None,
             None,
@@ -206,12 +209,12 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
     // Verify cluster ready
-    for port in &ports {
+    for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     // Connect client
-    let mut client = Client::builder(create_bootstrap_urls(&ports))
+    let mut client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
