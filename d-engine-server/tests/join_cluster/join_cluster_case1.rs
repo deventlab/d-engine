@@ -40,8 +40,9 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     debug!("Starting cluster join scenario test...");
     reset(JOIN_CLUSTER_CASE1_DIR).await?;
 
-    let _port_guard = get_available_ports(4).await;
-    let mut ports = _port_guard.ports.to_vec();
+    let mut port_guard = get_available_ports(4).await;
+    let mut ports = port_guard.ports.to_vec();
+    port_guard.release_listeners();
     let new_node_port = ports.pop().unwrap(); // Last port for the new node
     let initial_ports = ports.clone(); // First three ports for initial cluster
 

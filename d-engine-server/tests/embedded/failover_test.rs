@@ -24,8 +24,9 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     reset(TEST_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
     info!("Starting 3-node cluster");
 
@@ -196,8 +197,9 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_rejoin")).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let db_root = format!("{DB_ROOT_DIR}_rejoin");
     let log_dir = format!("{LOG_DIR}_rejoin");
 
@@ -329,8 +331,9 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_minority")).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let db_root = format!("{DB_ROOT_DIR}_minority");
     let log_dir = format!("{LOG_DIR}_minority");
 

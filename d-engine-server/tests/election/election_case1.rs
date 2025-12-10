@@ -46,8 +46,9 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     debug!("...test_leader_election_based_on_log_term_and_index...");
     reset(ELECTION_CASE1_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
     // Prepare raft logs
     let r1 = prepare_storage_engine(1, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/1"), 0);

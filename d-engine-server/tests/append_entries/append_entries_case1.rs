@@ -49,8 +49,9 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     // 1. Prepare node data
     println!("1. Prepare node data");
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
     // Prepare state machine and logs
     println!("Prepare state machine and logs");

@@ -59,8 +59,9 @@ const SNAPSHOT_CASE1_LOG_DIR: &str = "./logs/snapshot/case1";
 async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     reset(SNAPSHOT_CASE1_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
     // Prepare state machine directories (do not pre-allocate Arc to avoid ownership issues)
     prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1")).await;

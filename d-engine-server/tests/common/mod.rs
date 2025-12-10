@@ -515,6 +515,12 @@ impl PortGuard {
     pub fn as_slice(&self) -> &[u16] {
         &self.ports
     }
+
+    /// Release TCP listeners to allow servers to bind these ports.
+    /// Must be called before starting nodes that will bind to these ports.
+    pub fn release_listeners(&mut self) {
+        self._listeners.clear();
+    }
 }
 
 impl std::ops::Deref for PortGuard {

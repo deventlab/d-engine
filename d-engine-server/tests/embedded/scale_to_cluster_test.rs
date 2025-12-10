@@ -24,8 +24,9 @@ const LOG_DIR: &str = "./logs/embedded/scale_to_cluster";
 async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>> {
     reset(TEST_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let node1_data_dir = format!("{DB_ROOT_DIR}/node1");
 
     // Phase 1: Single-node development environment
@@ -160,8 +161,9 @@ general_raft_timeout_duration_in_ms = 5000
 async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_failover")).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let db_root = format!("{DB_ROOT_DIR}_failover");
     let log_dir = format!("{LOG_DIR}_failover");
 
@@ -171,8 +173,7 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let mut config_str =
-            create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
+        let mut config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
 
         // Add timeout config
         config_str.push_str("\n[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n");

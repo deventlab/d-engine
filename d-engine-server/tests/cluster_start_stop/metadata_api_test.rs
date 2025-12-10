@@ -28,8 +28,9 @@ const LOG_DIR: &str = "./logs/cluster_start_stop/metadata_api";
 async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
@@ -95,8 +96,9 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
 async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
@@ -184,8 +186,9 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
 async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),

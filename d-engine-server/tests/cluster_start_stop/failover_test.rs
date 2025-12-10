@@ -19,8 +19,10 @@ const LOG_DIR: &str = "./logs/cluster_start_stop/failover";
 async fn test_3_node_failover() -> Result<(), ClientApiError> {
     reset(TEST_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners(); // Release listeners before starting nodes
+    let ports = port_guard.as_slice();
+
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
@@ -141,8 +143,9 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 async fn test_minority_failure() -> Result<(), ClientApiError> {
     reset(&format!("{TEST_DIR}_minority")).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),

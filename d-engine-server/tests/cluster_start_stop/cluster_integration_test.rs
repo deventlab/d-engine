@@ -32,8 +32,9 @@ const TEST_CASE2_LOG_DIR: &str = "./logs/cluster_start_stop/case2";
 async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
     reset(TEST_CASE1_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
     // Start cluster nodes
     let mut ctx = TestContext {
@@ -124,8 +125,9 @@ async fn test_cluster_put_and_lread_case1() -> Result<(), ClientApiError> {
 async fn test_cluster_put_and_lread_case2() -> Result<(), ClientApiError> {
     reset(TEST_CASE2_DIR).await?;
 
-    let _port_guard = get_available_ports(3).await;
-    let ports = _port_guard.as_slice();
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
     let bootstrap_urls = create_bootstrap_urls(ports);
     let bootstrap_urls_without_n1 = create_bootstrap_urls(&ports[1..]);
