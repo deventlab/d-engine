@@ -11,6 +11,7 @@
 mod tests {
     use super::super::*;
     use bytes::Bytes;
+    use std::sync::Arc;
     use tokio::time::{Duration, timeout};
 
     #[tokio::test]
@@ -315,6 +316,130 @@ mod tests {
         assert_eq!(event.key, key);
 
         drop(guard);
+        manager.stop();
+    }
+
+    #[tokio::test]
+    async fn test_watcher_count_accuracy() {
+        let config = WatchConfig::default();
+        let manager = WatchManager::new(config);
+        manager.start();
+
+        // Initially should have no watchers
+        assert!(!manager.has_watchers());
+
+        let key1 = Bytes::from("key1");
+        let key2 = Bytes::from("key2");
+
+        // Register first watcher
+        let handle1 = manager.register(key1.clone()).await;
+        assert!(manager.has_watchers());
+
+        // Register second watcher on same key
+        let handle2 = manager.register(key1.clone()).await;
+        assert!(manager.has_watchers());
+
+        // Register third watcher on different key
+        let handle3 = manager.register(key2.clone()).await;
+        assert!(manager.has_watchers());
+
+        // Drop one watcher - should still have watchers
+        drop(handle1);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(manager.has_watchers());
+
+        // Drop second watcher - should still have watchers
+        drop(handle2);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(manager.has_watchers());
+
+        // Drop last watcher - should have no watchers
+        drop(handle3);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!manager.has_watchers());
+
+        manager.stop();
+    }
+
+    #[tokio::test]
+    async fn test_watcher_count_concurrent_register_unregister() {
+        let config = WatchConfig::default();
+        let manager = Arc::new(WatchManager::new(config));
+        manager.start();
+
+        let key = Bytes::from("test_key");
+
+        // Spawn multiple tasks registering and unregistering concurrently
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let mgr = manager.clone();
+            let k = key.clone();
+            let handle = tokio::spawn(async move {
+                let watcher = mgr.register(k).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                drop(watcher);
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Small delay to ensure cleanup completes
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // After all watchers are dropped, count should be zero
+        assert!(!manager.has_watchers());
+
+        manager.stop();
+    }
+
+    #[tokio::test]
+    async fn test_watcher_count_never_negative() {
+        let config = WatchConfig::default();
+        let manager = WatchManager::new(config);
+        manager.start();
+
+        let key = Bytes::from("test_key");
+
+        // Register and immediately drop multiple times
+        for _ in 0..100 {
+            let handle = manager.register(key.clone()).await;
+            drop(handle);
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Should still report no watchers (not panic or underflow)
+        assert!(!manager.has_watchers());
+
+        manager.stop();
+    }
+
+    #[tokio::test]
+    async fn test_double_drop_watcher_handle() {
+        let config = WatchConfig::default();
+        let manager = WatchManager::new(config);
+        manager.start();
+
+        let key = Bytes::from("test_key");
+        let handle = manager.register(key.clone()).await;
+
+        // Get inner components
+        let (_id, _key, _receiver, guard) = handle.into_receiver();
+
+        // Drop guard (triggers unregister)
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Verify count is zero
+        assert!(!manager.has_watchers());
+
+        // Calling drop again on already-dropped handle should not panic
+        // or cause underflow (handle.cleanup is None after into_receiver)
+
         manager.stop();
     }
 }
