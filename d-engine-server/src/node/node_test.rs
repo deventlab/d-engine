@@ -175,7 +175,7 @@ async fn run_success_with_joining() {
         Ok(vec![
             d_engine_proto::server::cluster::LeaderDiscoveryResponse {
                 leader_id: 3,
-                leader_address: "127.0.0.1:8080".to_string(),
+                leader_address: "127.0.0.1:8082".to_string(),
                 term: 1,
             },
         ])

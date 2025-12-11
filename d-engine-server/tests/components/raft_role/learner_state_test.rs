@@ -332,7 +332,7 @@ async fn test_handle_raft_event_case4_2() {
 ///
 /// ## Validation criterias:
 /// 1. I should mark new leader id in memberhip
-/// 2. I should not receive any event
+/// 2. I should receive LeaderDiscovered event even when append fails
 /// 3. My term shoud be updated
 /// 4. send out AppendEntriesResponse with success=false
 /// 5. `handle_raft_event` fun returns Err(())

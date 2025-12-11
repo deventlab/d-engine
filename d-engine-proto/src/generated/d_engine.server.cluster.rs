@@ -99,7 +99,9 @@ pub struct ClusterMembership {
     pub version: u64,
     #[prost(message, repeated, tag = "2")]
     pub nodes: ::prost::alloc::vec::Vec<NodeMeta>,
-    /// Current leader ID (0 if unknown/no leader) - dynamic runtime info
+    /// Current leader ID - dynamic runtime info
+    /// None (absent): leader unknown or still electing
+    /// Some(id): id is the current leader node ID
     #[prost(uint32, optional, tag = "3")]
     pub current_leader_id: ::core::option::Option<u32>,
 }

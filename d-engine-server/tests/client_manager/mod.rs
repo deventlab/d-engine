@@ -186,8 +186,7 @@ impl ClientManager {
     pub async fn list_members(&self) -> Result<Vec<NodeMeta>, ClientApiError> {
         self.client.cluster().list_members().await
     }
-    pub async fn list_leader_id(&self) -> Result<u32, ClientApiError> {
-        let leader_id = self.client.cluster().get_leader_id().await?;
-        Ok(leader_id.unwrap_or(0))
+    pub async fn list_leader_id(&self) -> Result<Option<u32>, ClientApiError> {
+        self.client.cluster().get_leader_id().await
     }
 }

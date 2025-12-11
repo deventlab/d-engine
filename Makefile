@@ -258,7 +258,7 @@ test-detailed: install-tools check-workspace
 	done
 	@echo "$(BLUE)Running examples tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --examples --no-fail-fast -- --nocapture || \
+		$(CARGO) test --workspace --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture || \
 		{ echo "$(RED)✗ Examples tests failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ All examples tests passed$(NC)"
 	@echo "$(GREEN)✓ All tests passed with detailed output$(NC)"
@@ -287,7 +287,7 @@ test-doc: install-tools check-workspace
 test-examples: install-tools check-workspace
 	@echo "$(BLUE)Running examples tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --examples --no-fail-fast -- --nocapture
+		$(CARGO) test --workspace --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ Examples tests passed$(NC)"
 
 ## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine)

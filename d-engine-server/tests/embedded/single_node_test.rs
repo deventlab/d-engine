@@ -1,13 +1,12 @@
+use d_engine_server::embedded::EmbeddedEngine;
 use std::time::Duration;
 use tracing_test::traced_test;
 
-use d_engine_server::EmbeddedEngine;
-
+#[allow(dead_code)]
 const TEST_DIR: &str = "embedded/single_node";
 
 /// Test single-node EmbeddedEngine basic lifecycle
 #[tokio::test]
-#[traced_test]
 #[cfg(feature = "rocksdb")]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = format!("./db/{TEST_DIR}");

@@ -47,7 +47,9 @@ message MetadataRequest {
 message ClusterMembership {
     uint64 version = 1;
     repeated NodeMeta nodes = 2;
-    // Current leader ID (0 if unknown/no leader) - dynamic runtime info
+    // Current leader ID - dynamic runtime info
+    // None (absent): leader unknown or still electing
+    // Some(id): id is the current leader node ID
     optional uint32 current_leader_id = 3;
 }
 

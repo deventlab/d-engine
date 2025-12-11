@@ -140,8 +140,9 @@ mod leader_discovered_tests {
     }
 
     #[tokio::test]
-    async fn test_leader_discovered_deduplication() {
-        // Test that watch channel auto-deduplicates identical notifications
+    async fn test_leader_discovered_no_deduplication() {
+        // Test that mpsc channel receives all notifications (no auto-deduplication)
+        // Note: If deduplication is needed, consumers should use watch channels
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut raft: Raft<MockTypeConfig> = MockBuilder::new(graceful_rx).build_raft();
 
@@ -156,7 +157,7 @@ mod leader_discovered_tests {
             .await
             .expect("Should handle second (duplicate)");
 
-        // Should receive notifications (dedup happens in watch channel on receiver side)
+        // Should receive both notifications (mpsc does not deduplicate)
         let (l1, t1) = leader_rx.try_recv().expect("Should receive first");
         assert_eq!(l1, Some(2));
         assert_eq!(t1, 5);

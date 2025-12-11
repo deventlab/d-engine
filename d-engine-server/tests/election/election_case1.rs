@@ -118,7 +118,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     };
 
     let leader_id = client_manager.list_leader_id().await.unwrap();
-    assert_eq!(leader_id, 2);
+    assert_eq!(leader_id, Some(2));
 
     // Clean up
     ctx.shutdown().await

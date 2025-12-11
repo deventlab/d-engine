@@ -1,9 +1,11 @@
+use d_engine_server::embedded::EmbeddedEngine;
+#[cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 use tracing_test::traced_test;
-
-use d_engine_server::{EmbeddedEngine, RocksDBStateMachine, RocksDBStorageEngine};
 
 use crate::common::{create_node_config, get_available_ports, node_config, reset};
 
@@ -20,6 +22,7 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 /// 4. Verify cluster operational with 2/3 nodes
 #[tokio::test]
 #[traced_test]
+#[serial]
 #[cfg(feature = "rocksdb")]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     reset(TEST_DIR).await?;
@@ -193,6 +196,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 /// 5. Verify it rejoins and syncs data
 #[tokio::test]
 #[traced_test]
+#[serial]
 #[cfg(feature = "rocksdb")]
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_rejoin")).await?;

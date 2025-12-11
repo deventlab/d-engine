@@ -20,12 +20,10 @@ enable_metrics = false        # Detailed logging (default: false)
 
 ```rust,ignore
 use d_engine_client::Client;
-use d_engine_client::protocol::WatchRequest;
 use futures::StreamExt;
 
 // Connect to server
-let client = Client::builder()
-    .endpoints(vec!["http://127.0.0.1:9081".to_string()])
+let client = Client::builder(vec!["http://127.0.0.1:9081".to_string()])
     .build()
     .await?;
 
@@ -52,18 +50,16 @@ For in-process usage (e.g., `EmbeddedEngine`), you can use the `watch()` method 
 use d_engine::d_engine_server::embedded::EmbeddedEngine;
 
 // Initialize engine with config enabling watch
-let engine = EmbeddedEngine::with_rocksdb("./data", Some("d-engine.toml"))?;
+let engine = EmbeddedEngine::with_rocksdb("./data", Some("d-engine.toml")).await?;
 
 // Start watching
-let mut watcher = engine.watch("my_key").await?;
+let watcher = engine.watch("my_key").await?;
+let (_, _, mut receiver, _guard) = watcher.into_receiver();
 
 // Spawn a task to handle events
 tokio::spawn(async move {
-    while let Some(result) = watcher.recv().await {
-        match result {
-            Ok(event) => println!("Event: {:?}", event),
-            Err(e) => eprintln!("Error: {:?}", e),
-        }
+    while let Some(event) = receiver.recv().await {
+        println!("Event: {:?}", event);
     }
 });
 ```

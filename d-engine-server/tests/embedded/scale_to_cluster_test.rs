@@ -1,9 +1,11 @@
+#[cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+
+use d_engine_server::EmbeddedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 use tracing_test::traced_test;
-
-use d_engine_server::{EmbeddedEngine, RocksDBStateMachine, RocksDBStorageEngine};
 
 use crate::common::{create_node_config, get_available_ports, node_config, reset};
 

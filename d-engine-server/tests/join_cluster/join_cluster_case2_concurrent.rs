@@ -296,7 +296,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     assert_eq!(node1_sm.len(), 11);
 
     // Verify leader is still node 3
-    assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
+    assert_eq!(client_manager.list_leader_id().await.unwrap(), Some(3));
 
     // Verify all 5 members are active
     let members = client_manager.list_members().await.unwrap();

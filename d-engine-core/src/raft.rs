@@ -385,8 +385,8 @@ where
 
             RoleEvent::LeaderDiscovered(leader_id, term) => {
                 debug!("LeaderDiscovered: leader_id={}, term={}", leader_id, term);
-                // Notify watch channel - no state transition
-                // watch::Sender auto-deduplicates identical values
+                // Notify leader change listeners - no state transition
+                // Note: mpsc channels do not deduplicate; consumers handle dedup if needed
                 self.notify_leader_change(Some(leader_id), term);
             }
 

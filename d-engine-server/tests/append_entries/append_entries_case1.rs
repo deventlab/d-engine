@@ -103,7 +103,7 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     // 3. Verify leader election
     let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
-    assert_eq!(client_manager.list_leader_id().await.unwrap(), 3);
+    assert_eq!(client_manager.list_leader_id().await.unwrap(), Some(3));
 
     // 4. Test client request
     test_put_get(&mut client_manager, 11, 100).await?;
