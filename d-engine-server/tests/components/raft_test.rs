@@ -116,19 +116,18 @@ async fn test_role_event_priority_over_event_rx() {
     membership.expect_voters().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership.expect_members().returning(Vec::new);
-    membership.expect_reset_leader().returning(|| Ok(()));
-    membership.expect_update_node_role().returning(|_, _| Ok(()));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+
     membership.expect_check_cluster_is_ready().returning(|| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership {
+        .returning(|_current_leader_id| ClusterMembership {
             version: 1,
             nodes: vec![],
+            current_leader_id: None,
         });
     membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_pre_warm_connections().returning(|| Ok(()));
-    membership.expect_current_leader_id().returning(|| None);
+
     membership.expect_replication_peers().returning(Vec::new);
     membership.expect_initial_cluster_size().returning(|| 3);
     raft.ctx.membership = Arc::new(membership);
@@ -446,7 +445,7 @@ async fn test_election_timeout_case4() {
             },
         ]
     });
-    mock_membership.expect_mark_leader_id().returning(|_| Ok(()));
+
     mock_membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     raft.ctx.set_membership(Arc::new(mock_membership));
 

@@ -109,7 +109,7 @@ async fn test_local_client_get() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Then GET it back
-    let result = client.get(key).await.expect("GET failed");
+    let result = client.get_eventual(key).await.expect("GET failed");
 
     assert!(result.is_some(), "Value should exist");
     assert_eq!(result.unwrap(), Bytes::from_static(value), "Value mismatch");
@@ -125,7 +125,7 @@ async fn test_local_client_get_not_found() {
 
     let key = b"non_existent_key";
 
-    let result = client.get(key).await.expect("GET should not error");
+    let result = client.get_eventual(key).await.expect("GET should not error");
     assert!(result.is_none(), "Non-existent key should return None");
 
     println!("✅ LocalKvClient GET not found handled correctly");
@@ -144,13 +144,13 @@ async fn test_local_client_delete() {
     client.put(key, value).await.expect("PUT failed");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let get_result = client.get(key).await.expect("First GET failed");
+    let get_result = client.get_eventual(key).await.expect("First GET failed");
     assert!(get_result.is_some(), "Value should exist before delete");
 
     client.delete(key).await.expect("DELETE failed");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let get_result = client.get(key).await.expect("Second GET failed");
+    let get_result = client.get_eventual(key).await.expect("Second GET failed");
     assert!(get_result.is_none(), "Value should not exist after delete");
 
     println!("✅ LocalKvClient DELETE operation succeeded");
@@ -175,7 +175,7 @@ async fn test_local_client_sequential_ops() {
     for i in 0..5 {
         let key = format!("key_{i}");
         let expected_value = format!("value_{i}");
-        let result = client.get(key.as_bytes()).await.expect("GET failed");
+        let result = client.get_eventual(key.as_bytes()).await.expect("GET failed");
         assert_eq!(
             result.unwrap(),
             Bytes::from(expected_value),
@@ -194,7 +194,7 @@ async fn test_local_client_sequential_ops() {
     // Verify all deleted
     for i in 0..5 {
         let key = format!("key_{i}");
-        let result = client.get(key.as_bytes()).await.expect("GET failed");
+        let result = client.get_eventual(key.as_bytes()).await.expect("GET failed");
         assert!(result.is_none(), "key_{i} should be deleted");
     }
 
@@ -259,7 +259,7 @@ async fn test_local_client_large_value() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let result = client.get(key).await.expect("Large value GET failed");
+    let result = client.get_eventual(key).await.expect("Large value GET failed");
 
     assert!(result.is_some(), "Large value should exist");
     assert_eq!(
@@ -287,7 +287,7 @@ async fn test_local_client_empty_key_value() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let get_result = client.get(b"key_with_empty_value").await.expect("GET failed");
+    let get_result = client.get_eventual(b"key_with_empty_value").await.expect("GET failed");
     assert_eq!(
         get_result.unwrap(),
         Bytes::new(),
@@ -311,14 +311,14 @@ async fn test_local_client_update() {
     client.put(key, value1).await.expect("Initial PUT failed");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let result = client.get(key).await.expect("First GET failed");
+    let result = client.get_eventual(key).await.expect("First GET failed");
     assert_eq!(result.unwrap(), Bytes::from_static(value1));
 
     // Update PUT
     client.put(key, value2).await.expect("Update PUT failed");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let result = client.get(key).await.expect("Second GET failed");
+    let result = client.get_eventual(key).await.expect("Second GET failed");
     assert_eq!(
         result.unwrap(),
         Bytes::from_static(value2),
@@ -360,8 +360,8 @@ async fn test_local_client_clone() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let result1 = client1.get(b"key2").await.expect("Client1 GET failed");
-    let result2 = client2.get(b"key1").await.expect("Client2 GET failed");
+    let result1 = client1.get_eventual(b"key2").await.expect("Client1 GET failed");
+    let result2 = client2.get_eventual(b"key1").await.expect("Client2 GET failed");
 
     assert!(
         result1.is_some() && result2.is_some(),

@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 use bytes::Bytes;
@@ -159,10 +159,26 @@ impl Drop for WatcherHandle {
 /// preventing race conditions where a new watcher could be added between the check
 /// and the remove operation.
 fn unregister_watcher(cleanup: &WatcherCleanup) {
+    // Track if we actually removed a watcher
+    let mut removed = false;
+
     cleanup.manager.watchers.remove_if_mut(&cleanup.key, |_key, watchers| {
+        let before_len = watchers.len();
         watchers.retain(|w| w.id != cleanup.id);
+        let after_len = watchers.len();
+
+        // Only set removed if we actually removed a watcher
+        if before_len > after_len {
+            removed = true;
+        }
+
         watchers.is_empty()
     });
+
+    // Only decrement count if we actually removed a watcher
+    if removed {
+        cleanup.manager.watcher_count.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Internal watcher state
@@ -178,6 +194,9 @@ struct Watcher {
 struct WatchManagerInner {
     /// Watchers grouped by key (lock-free concurrent HashMap)
     watchers: DashMap<Bytes, Vec<Watcher>>,
+
+    /// Total number of active watchers (for O(1) has_watchers check)
+    watcher_count: AtomicUsize,
 
     /// Next watcher ID (monotonically increasing)
     next_id: AtomicU64,
@@ -199,6 +218,7 @@ impl std::fmt::Debug for WatchManagerInner {
     ) -> std::fmt::Result {
         f.debug_struct("WatchManagerInner")
             .field("watchers", &self.watchers)
+            .field("watcher_count", &self.watcher_count)
             .field("next_id", &self.next_id)
             .field("config", &self.config)
             .finish_non_exhaustive()
@@ -262,6 +282,7 @@ impl WatchManager {
 
         let inner = Arc::new(WatchManagerInner {
             watchers: DashMap::new(),
+            watcher_count: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             thread_handle: Mutex::new(None),
             shutdown_tx: Mutex::new(None),
@@ -377,6 +398,9 @@ impl WatchManager {
         // Insert into DashMap (lock-free)
         self.inner.watchers.entry(key.clone()).or_default().push(watcher);
 
+        // Increment watcher count (for O(1) has_watchers check)
+        self.inner.watcher_count.fetch_add(1, Ordering::Relaxed);
+
         trace!(
             watcher_id = id,
             key = ?key,
@@ -483,8 +507,10 @@ impl WatchManager {
     ///
     /// This is an O(1) check used to skip expensive protobuf decoding
     /// when no watchers are registered. Called from the hot write path.
+    ///
+    /// Performance: O(1) with single atomic load (no locks)
     #[inline]
     pub fn has_watchers(&self) -> bool {
-        !self.inner.watchers.is_empty()
+        self.inner.watcher_count.load(Ordering::Relaxed) > 0
     }
 }

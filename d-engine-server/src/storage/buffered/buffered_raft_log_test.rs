@@ -2977,6 +2977,7 @@ mod save_load_hard_state_tests {
             voted_for: Some(VotedFor {
                 voted_for_id: 10,
                 voted_for_term: 7,
+                committed: false,
             }),
         };
 
@@ -3002,6 +3003,7 @@ mod save_load_hard_state_tests {
             Some(VotedFor {
                 voted_for_id: 10,
                 voted_for_term: 7,
+                committed: false,
             })
         );
 
@@ -3028,6 +3030,7 @@ mod save_load_hard_state_tests {
             Some(VotedFor {
                 voted_for_id: 10,
                 voted_for_term: 7,
+                committed: false,
             })
         );
     }
@@ -3060,6 +3063,7 @@ mod save_load_hard_state_tests {
                 voted_for: Some(VotedFor {
                     voted_for_id: 3,
                     voted_for_term: 8,
+                    committed: false,
                 }),
             };
             raft_log.save_hard_state(&hard_state).expect("save should succeed");
@@ -3096,6 +3100,7 @@ mod save_load_hard_state_tests {
                 Some(VotedFor {
                     voted_for_id: 3,
                     voted_for_term: 8,
+                    committed: false,
                 })
             );
 
@@ -3134,6 +3139,7 @@ mod save_load_hard_state_tests {
             voted_for: Some(VotedFor {
                 voted_for_id: 5,
                 voted_for_term: 7,
+                committed: false,
             }),
         };
         context.raft_log.save_hard_state(&hs).expect("save should succeed");
@@ -3149,6 +3155,7 @@ mod save_load_hard_state_tests {
             Some(VotedFor {
                 voted_for_id: 5,
                 voted_for_term: 7,
+                committed: false,
             })
         );
 

@@ -117,6 +117,7 @@ async fn test_send_cluster_update_case2() {
     let response = ClusterMembership {
         version: 1,
         nodes: vec![],
+        current_leader_id: None,
     };
     let (channel, _port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
         rx,

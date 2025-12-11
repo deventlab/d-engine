@@ -26,7 +26,7 @@ async fn test_wal_replay_after_crash() {
                 payload: Some(Payload::Command(
                     WriteCommand {
                         operation: Some(Operation::Insert(Insert {
-                            ttl_secs: None,
+                            ttl_secs: 0,
                             key: Bytes::from("key1"),
                             value: Bytes::from("value1"),
                         })),
@@ -43,7 +43,7 @@ async fn test_wal_replay_after_crash() {
                 payload: Some(Payload::Command(
                     WriteCommand {
                         operation: Some(Operation::Insert(Insert {
-                            ttl_secs: None,
+                            ttl_secs: 0,
                             key: Bytes::from("key2"),
                             value: Bytes::from("value2"),
                         })),
@@ -74,7 +74,7 @@ async fn test_wal_replay_after_crash() {
         "INSERT".to_string(),
         Bytes::from("key3"),
         Some(Bytes::from("value3")),
-        None, // No TTL
+        0, // No TTL
     )];
     sm.append_to_wal(crash_entries).await.unwrap();
 

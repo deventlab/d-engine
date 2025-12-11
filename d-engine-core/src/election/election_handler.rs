@@ -251,6 +251,7 @@ where
             new_voted_for = Some(VotedFor {
                 voted_for_id: request.candidate_id,
                 voted_for_term: request.term,
+                committed: false,
             });
             trace!(
                 "node-{} -> node-{} successfully!",

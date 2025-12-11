@@ -4,6 +4,9 @@ pub mod leader_state;
 pub mod learner_state;
 pub mod role_state;
 
+#[cfg(test)]
+mod raft_role_test;
+
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 use leader_state::LeaderState;
@@ -15,6 +18,8 @@ use serde::Serialize;
 use serde::Serializer;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
@@ -54,7 +59,6 @@ pub struct HardState {
     pub voted_for: Option<VotedFor>,
 }
 
-#[derive(Clone, Debug)]
 pub struct SharedState {
     pub node_id: u32,
 
@@ -65,6 +69,35 @@ pub struct SharedState {
     /// index of highest log entry known to be committed (initialized to 0,
     /// increases monotonically)
     pub commit_index: u64,
+
+    /// In-memory leader ID for hot-path reads (0 = no leader)
+    /// Performance optimization: avoid RwLock on AppendEntries path
+    current_leader_id: AtomicU32,
+}
+
+impl Clone for SharedState {
+    fn clone(&self) -> Self {
+        Self {
+            node_id: self.node_id,
+            hard_state: self.hard_state,
+            commit_index: self.commit_index,
+            current_leader_id: AtomicU32::new(self.current_leader_id.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl std::fmt::Debug for SharedState {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("SharedState")
+            .field("node_id", &self.node_id)
+            .field("hard_state", &self.hard_state)
+            .field("commit_index", &self.commit_index)
+            .field("current_leader_id", &self.current_leader())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -105,7 +138,31 @@ impl SharedState {
             node_id,
             hard_state,
             commit_index: last_applied_index_option.unwrap_or(0),
+            current_leader_id: AtomicU32::new(0),
         }
+    }
+
+    /// Get current leader ID (0 = no leader)
+    /// Hot-path optimized: ~5ns atomic load vs ~50ns RwLock read
+    pub fn current_leader(&self) -> Option<u32> {
+        match self.current_leader_id.load(Ordering::Relaxed) {
+            0 => None,
+            id => Some(id),
+        }
+    }
+
+    /// Set current leader ID (0 to clear)
+    /// Hot-path optimized: ~5ns atomic store vs ~50ns RwLock write
+    pub fn set_current_leader(
+        &self,
+        leader_id: u32,
+    ) {
+        self.current_leader_id.store(leader_id, Ordering::Relaxed);
+    }
+
+    /// Clear current leader (same as set_current_leader(0))
+    pub fn clear_current_leader(&self) {
+        self.current_leader_id.store(0, Ordering::Relaxed);
     }
     pub fn current_term(&self) -> u64 {
         self.hard_state.current_term
@@ -129,12 +186,30 @@ impl SharedState {
         self.hard_state.voted_for = None;
         Ok(())
     }
+    /// Update voted_for and return true if this represents a new leader commitment
+    ///
+    /// Returns true only when:
+    /// - committed transitions from false to true, OR
+    /// - leader/term changes with committed=true
+    ///
+    /// This enables event-driven leader discovery notifications without hot-path overhead.
     pub fn update_voted_for(
         &mut self,
-        voted_for: VotedFor,
-    ) -> Result<()> {
-        self.hard_state.voted_for = Some(voted_for);
-        Ok(())
+        new_vote: VotedFor,
+    ) -> Result<bool> {
+        let is_new_commit = match self.hard_state.voted_for {
+            Some(old) => {
+                // Only care about transitions TO committed=true
+                new_vote.committed
+                    && (old.voted_for_id != new_vote.voted_for_id
+                        || old.voted_for_term != new_vote.voted_for_term
+                        || !old.committed) // committed: false → true
+            }
+            None => new_vote.committed,
+        };
+
+        self.hard_state.voted_for = Some(new_vote);
+        Ok(is_new_commit)
     }
 }
 

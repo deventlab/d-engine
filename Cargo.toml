@@ -16,6 +16,8 @@ exclude = [
   "examples/three-nodes-cluster",
   "examples/single-node-expansion",
   "examples/quick-start",
+  "examples/service-discovery-standalone",
+  "examples/service-discovery-embedded",
   "benches/d-engine-bench",
 ]
 

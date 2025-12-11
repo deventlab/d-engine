@@ -546,12 +546,13 @@ async fn test_handle_raft_event_case2() {
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
-    membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
-        ClusterMembership {
+    membership.expect_retrieve_cluster_membership_config().times(1).returning(
+        |_current_leader_id| ClusterMembership {
             version: 1,
             nodes: vec![],
-        }
-    });
+            current_leader_id: None,
+        },
+    );
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2402,19 +2403,16 @@ mod process_batch_commit_index_tests {
         membership.expect_voters().returning(Vec::new);
         membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
         membership.expect_members().returning(Vec::new);
-        membership.expect_reset_leader().returning(|| Ok(()));
-        membership.expect_update_node_role().returning(|_, _| Ok(()));
-        membership.expect_mark_leader_id().returning(|_| Ok(()));
         membership.expect_check_cluster_is_ready().returning(|| Ok(()));
         membership
             .expect_retrieve_cluster_membership_config()
-            .returning(|| ClusterMembership {
+            .returning(|_current_leader_id| ClusterMembership {
                 version: 1,
                 nodes: vec![],
+                current_leader_id: None,
             });
         membership.expect_get_zombie_candidates().returning(Vec::new);
         membership.expect_pre_warm_connections().returning(|| Ok(()));
-        membership.expect_current_leader_id().returning(|| None);
         membership.expect_replication_peers().returning(Vec::new);
         membership.expect_initial_cluster_size().returning(|| 3);
         context.membership = Arc::new(membership);
@@ -2987,7 +2985,7 @@ async fn test_handle_join_cluster_case1_success() {
     membership.expect_add_learner().returning(|_, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(ClusterMembership::default);
+        .returning(|_current_leader_id| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
     membership
@@ -3231,7 +3229,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     membership.expect_add_learner().returning(|_, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(ClusterMembership::default);
+        .returning(|_current_leader_id| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_update_node_status().returning(|_, _| Ok(()));
 
@@ -4552,5 +4550,63 @@ mod lease_validity_tests {
 
         // The lease should be invalid at exactly the threshold
         assert!(!state.is_lease_valid(&context));
+    }
+
+    /// Test: LeaderState handles StepDownSelfRemoved event
+    ///
+    /// Per Raft protocol: Leader can remove itself from cluster.
+    /// When Leader receives StepDownSelfRemoved event, it must:
+    /// 1. Send BecomeFollower(None) to role_tx
+    /// 2. Return Ok(())
+    ///
+    /// This aligns with Raft protocol for leader self-removal.
+    ///
+    /// Related: Issue #200
+    #[tokio::test]
+    async fn test_leader_handles_step_down_self_removed() {
+        use d_engine_core::RaftEvent;
+        use d_engine_core::RoleEvent;
+
+        // Setup leader state
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = MockBuilder::new(graceful_rx).build_context();
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // Create role_tx channel to capture events
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+        // Send StepDownSelfRemoved event
+        let raft_event = RaftEvent::StepDownSelfRemoved;
+
+        // Handle the event
+        let result = state.handle_raft_event(raft_event, &context, role_tx).await;
+
+        // Verify: handle_raft_event returns Ok
+        assert!(
+            result.is_ok(),
+            "LeaderState should successfully handle StepDownSelfRemoved"
+        );
+
+        // Verify: BecomeFollower(None) was sent to role_tx
+        match role_rx.try_recv() {
+            Ok(RoleEvent::BecomeFollower(leader_id)) => {
+                assert_eq!(
+                    leader_id, None,
+                    "Should step down without specifying new leader"
+                );
+            }
+            Ok(other) => {
+                panic!("Expected BecomeFollower(None), got {other:?}");
+            }
+            Err(e) => {
+                panic!("Expected BecomeFollower event but got error: {e:?}");
+            }
+        }
+
+        // Verify: No additional events were sent
+        assert!(
+            role_rx.try_recv().is_err(),
+            "Should only send one BecomeFollower event"
+        );
     }
 }

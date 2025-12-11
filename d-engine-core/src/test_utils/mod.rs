@@ -2,7 +2,7 @@
 //! tests and integrations tests
 mod common;
 mod entry_builder;
-mod mock;
+pub mod mock;
 mod snapshot;
 
 #[cfg(test)]

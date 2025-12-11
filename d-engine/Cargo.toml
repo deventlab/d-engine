@@ -30,3 +30,6 @@ rocksdb = ["server", "d-engine-server/rocksdb"]
 [dependencies]
 d-engine-client = { workspace = true, optional = true }
 d-engine-server = { workspace = true, optional = true }
+
+# No dev-dependencies needed - d-engine is a pure re-export wrapper
+# All tests are in d-engine-server/tests/

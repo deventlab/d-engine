@@ -45,6 +45,11 @@ pub enum RoleEvent {
 
     NotifyNewCommitIndex(NewCommitData),
 
+    /// Notify when follower/learner confirms leader via committed vote
+    /// Triggered when committed vote changes from false to true
+    /// No state transition - pure notification for watch channel
+    LeaderDiscovered(u32, u64), // (leader_id, term)
+
     ReprocessEvent(Box<RaftEvent>), //Replay the raft event when step down as another role
 }
 
@@ -118,6 +123,10 @@ pub enum RaftEvent {
 
     // Lightweight promotion trigger
     PromoteReadyLearners,
+
+    /// Node removed itself from cluster membership
+    /// Leader must step down immediately after self-removal per Raft protocol
+    StepDownSelfRemoved,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -179,5 +188,10 @@ pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             TestEvent::TriggerSnapshotPush { peer_id: *peer_id }
         }
         RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
+        RaftEvent::StepDownSelfRemoved => {
+            // StepDownSelfRemoved is handled at Raft level, not converted to TestEvent
+            // This is a control flow event, not a user-facing event
+            TestEvent::CreateSnapshotEvent // Placeholder - this event won't be emitted to tests
+        }
     }
 }

@@ -193,8 +193,9 @@ async fn test_handle_rpc_services_successfully() {
     test_handle_rpc_services_successfully",
     );
     let mut membership = MockMembership::<MockTypeConfig>::new();
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+
     membership.expect_voters().returning(Vec::new);
+    membership.expect_members().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
         .expect_update_cluster_conf_from_leader()
@@ -202,11 +203,12 @@ async fn test_handle_rpc_services_successfully() {
     membership.expect_get_cluster_conf_version().returning(|| 1);
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership {
+        .returning(|_current_leader_id| ClusterMembership {
             version: 1,
             nodes: vec![],
+            current_leader_id: None,
         });
-    membership.expect_current_leader_id().returning(|| None);
+
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
         Ok(AppendResponseWithUpdates {

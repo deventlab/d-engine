@@ -405,7 +405,8 @@ async fn test_check_vote_request_is_legal_case_1_1() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
     let current_term = 2;
@@ -416,7 +417,8 @@ async fn test_check_vote_request_is_legal_case_1_1() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 }
@@ -457,7 +459,8 @@ async fn test_check_vote_request_is_legal_case_1_2() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 
@@ -469,7 +472,8 @@ async fn test_check_vote_request_is_legal_case_1_2() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 }
@@ -547,7 +551,8 @@ async fn test_check_vote_request_is_legal_case_1_4() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 }
@@ -591,7 +596,8 @@ async fn test_check_vote_request_is_legal_case_2_1() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 }
@@ -635,7 +641,8 @@ async fn test_check_vote_request_is_legal_case_2_2() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 }
@@ -678,7 +685,8 @@ async fn test_check_vote_request_is_legal_case_2_3() {
         last_log_term,
         Some(VotedFor {
             voted_for_id,
-            voted_for_term
+            voted_for_term,
+            committed: false
         })
     ));
 }

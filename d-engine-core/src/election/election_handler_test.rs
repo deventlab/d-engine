@@ -185,6 +185,7 @@ async fn test_handle_vote_request_deny_already_voted_different_candidate() {
     let voted_for_option = Some(VotedFor {
         voted_for_id: 1,
         voted_for_term: 2,
+        committed: false,
     }); // Already voted for node 1
     let last_log_id = Some(LogId { index: 3, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
@@ -222,6 +223,7 @@ async fn test_handle_vote_request_grant_revote_same_candidate() {
     let voted_for_option = Some(VotedFor {
         voted_for_id: 1,
         voted_for_term: 2,
+        committed: false,
     }); // Already voted for node 1
     let last_log_id = Some(LogId { index: 3, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
@@ -264,6 +266,7 @@ async fn test_handle_vote_request_grant_higher_term_resets_vote() {
     let voted_for_option = Some(VotedFor {
         voted_for_id: 1,
         voted_for_term: 2,
+        committed: false,
     }); // Voted for node 1 in term 2
     let last_log_id = Some(LogId { index: 3, term: 2 });
     let raft_log = Arc::new(create_mock_raft_log(last_log_id));
@@ -481,6 +484,7 @@ async fn test_check_vote_request_is_legal_already_voted_different() {
     let voted_for_option = Some(VotedFor {
         voted_for_id: 1,
         voted_for_term: 2,
+        committed: false,
     }); // Already voted for node 1
 
     // Act

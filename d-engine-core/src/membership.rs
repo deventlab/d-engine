@@ -104,25 +104,14 @@ where
     where
         F: Fn(i32) -> bool + Send + Sync + 'static;
 
-    async fn mark_leader_id(
+    /// retrieve latest cluster membership with current leader ID
+    ///
+    /// # Parameters
+    /// - `current_leader_id`: Optional current leader ID from runtime state
+    async fn retrieve_cluster_membership_config(
         &self,
-        leader_id: u32,
-    ) -> Result<()>;
-
-    async fn current_leader_id(&self) -> Option<u32>;
-
-    /// Reset old leader to follower
-    async fn reset_leader(&self) -> Result<()>;
-
-    /// If node role not found return Error
-    async fn update_node_role(
-        &self,
-        node_id: u32,
-        new_role: i32,
-    ) -> Result<()>;
-
-    /// retrieve latest cluster membership
-    async fn retrieve_cluster_membership_config(&self) -> ClusterMembership;
+        current_leader_id: Option<u32>,
+    ) -> ClusterMembership;
 
     /// invoked when receive requests from Leader
     async fn update_cluster_conf_from_leader(

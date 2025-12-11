@@ -834,7 +834,7 @@ impl FileStateMachine {
     /// - M bytes: value data (only if length > 0)
     pub(crate) async fn append_to_wal(
         &self,
-        entries: Vec<(Entry, String, Bytes, Option<Bytes>, Option<u64>)>,
+        entries: Vec<(Entry, String, Bytes, Option<Bytes>, u64)>,
     ) -> Result<(), Error> {
         if entries.is_empty() {
             return Ok(());
@@ -881,8 +881,9 @@ impl FileStateMachine {
 
             // Write absolute expiration time (8 bytes) - 0 means no TTL
             // Store UNIX timestamp (seconds since epoch) for crash-safe expiration
-            let expire_at_secs = if let Some(ttl) = ttl_secs {
-                let expire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(ttl);
+            let expire_at_secs = if ttl_secs > 0 {
+                let expire_at =
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(ttl_secs);
                 expire_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -1044,7 +1045,7 @@ impl StateMachine for FileStateMachine {
             match entry.payload.as_ref().unwrap().payload.as_ref() {
                 Some(Payload::Noop(_)) => {
                     debug!("Handling NOOP command at index {}", entry.index);
-                    batch_operations.push((entry, "NOOP", Bytes::new(), None, None));
+                    batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
                 }
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
                     Ok(write_cmd) => {
@@ -1064,11 +1065,11 @@ impl StateMachine for FileStateMachine {
                                 ));
                             }
                             Some(Operation::Delete(Delete { key })) => {
-                                batch_operations.push((entry, "DELETE", key, None, None));
+                                batch_operations.push((entry, "DELETE", key, None, 0));
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
-                                batch_operations.push((entry, "NOOP", Bytes::new(), None, None));
+                                batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
                             }
                         }
                     }
@@ -1082,7 +1083,7 @@ impl StateMachine for FileStateMachine {
                 },
                 Some(Payload::Config(_config_change)) => {
                     debug!("Ignoring config change at index {}", entry.index);
-                    batch_operations.push((entry, "CONFIG", Bytes::new(), None, None));
+                    batch_operations.push((entry, "CONFIG", Bytes::new(), None, 0));
                 }
                 None => panic!("Entry payload variant should not be None!"),
             }
@@ -1099,7 +1100,7 @@ impl StateMachine for FileStateMachine {
                 operation.to_string(),
                 key.clone(),
                 value.clone(),
-                *ttl_secs, // ttl_secs is already Option<u32> from protobuf
+                *ttl_secs, // ttl_secs is now u64 (0 = no TTL) from protobuf
             ));
         }
 
@@ -1119,12 +1120,9 @@ impl StateMachine for FileStateMachine {
                             data.insert(key.clone(), (value, entry.term));
 
                             // Register lease if specified and lease is configured
-                            if let Some(ref lease) = self.lease {
-                                if let Some(ttl) = ttl_secs {
-                                    if ttl > 0 {
-                                        #[allow(clippy::unnecessary_cast)]
-                                        lease.register(key, ttl as u64);
-                                    }
+                            if ttl_secs > 0 {
+                                if let Some(ref lease) = self.lease {
+                                    lease.register(key, ttl_secs);
                                 }
                             }
                         }

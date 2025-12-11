@@ -47,3 +47,4 @@ lcov.info
 
 CONTEXT
 *.bak*
+.claudeignore

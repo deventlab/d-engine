@@ -43,7 +43,7 @@ use d_engine_core::Result;
 use d_engine_core::TypeConfig;
 use d_engine_proto::common::MembershipChange;
 use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeRole::Leader;
+
 use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::common::membership_change::Change;
@@ -283,61 +283,15 @@ where
             .await
     }
 
-    async fn mark_leader_id(
+    async fn retrieve_cluster_membership_config(
         &self,
-        leader_id: u32,
-    ) -> Result<()> {
-        self.reset_leader().await?;
-        self.update_node_role(leader_id, Leader as i32).await
-    }
-
-    async fn reset_leader(&self) -> Result<()> {
-        self.membership
-            .blocking_write(|guard| {
-                for node in guard.nodes.values_mut() {
-                    if node.role == Leader as i32 {
-                        node.role = Follower as i32;
-                    }
-                }
-                Ok(())
-            })
-            .await
-    }
-
-    async fn update_node_role(
-        &self,
-        node_id: u32,
-        new_role: i32,
-    ) -> Result<()> {
-        self.membership
-            .blocking_write(|guard| {
-                guard
-                    .nodes
-                    .get_mut(&node_id)
-                    .map(|node| {
-                        node.role = new_role;
-                        Ok(())
-                    })
-                    .unwrap_or_else(|| {
-                        Err(MembershipError::NoMetadataFoundForNode { node_id }.into())
-                    })
-            })
-            .await
-    }
-
-    async fn current_leader_id(&self) -> Option<u32> {
-        self.membership
-            .blocking_read(|guard| {
-                guard.nodes.values().find(|node| node.role == Leader as i32).map(|node| node.id)
-            })
-            .await
-    }
-
-    async fn retrieve_cluster_membership_config(&self) -> ClusterMembership {
+        current_leader_id: Option<u32>,
+    ) -> ClusterMembership {
         self.membership
             .blocking_read(|guard| ClusterMembership {
                 version: guard.cluster_conf_version,
                 nodes: guard.nodes.values().cloned().collect(),
+                current_leader_id,
             })
             .await
     }
@@ -529,9 +483,8 @@ where
         &self,
         node_id: u32,
     ) -> Result<()> {
-        if self.current_leader_id().await == Some(node_id) {
-            return Err(MembershipError::RemoveNodeIsLeader(node_id).into());
-        }
+        // Allow leader self-removal per Raft protocol
+        // Leader will step down after applying this config change
 
         // Purge cached connections
         self.connection_cache.remove_node(node_id);

@@ -59,7 +59,7 @@ fn create_entries_with_ttl(
             let insert = Insert {
                 key: Bytes::from(key),
                 value: Bytes::from(value),
-                ttl_secs: Some(ttl_secs),
+                ttl_secs,
             };
             let write_cmd = WriteCommand {
                 operation: Some(Operation::Insert(insert)),

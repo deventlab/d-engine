@@ -224,8 +224,28 @@ where
         Ok(())
     }
 
+    /// Check if configuration change is a self-removal
+    ///
+    /// Returns true if the change is RemoveNode(my_id), indicating
+    /// that this node is removing itself from the cluster.
+    pub(crate) fn is_self_removal_config(
+        my_id: u32,
+        change: &d_engine_proto::common::MembershipChange,
+    ) -> bool {
+        matches!(
+            &change.change,
+            Some(d_engine_proto::common::membership_change::Change::RemoveNode(remove))
+            if remove.node_id == my_id
+        )
+    }
+
+    /// Apply configuration change and detect self-removal
+    ///
     /// If the first configure been applied failed, then all the following commands will be
     /// rejected. (Consistency)
+    ///
+    /// Per Raft protocol: Leader can remove itself. After applying the removal,
+    /// leader must step down immediately.
     async fn apply_config_change(
         &self,
         entry: Entry,
@@ -235,6 +255,9 @@ where
 
         if let Some(payload) = entry.payload {
             if let Some(Payload::Config(change)) = payload.payload {
+                // Check if this is a self-removal (check BEFORE applying)
+                let is_self_removal = Self::is_self_removal_config(self.my_id, &change);
+
                 // 1. Apply to membership state
                 if let Err(e) = self.membership.apply_config_change(change).await {
                     error!(
@@ -247,6 +270,21 @@ where
 
                 // 2. CRITICAL: Barrier point
                 self.membership.notify_config_applied(entry.index).await;
+
+                // 3. Leader self-removal: Step down immediately per Raft protocol
+                if is_self_removal {
+                    warn!(
+                        "[{}] Node removed from cluster membership, triggering step down (index {})",
+                        self.my_id, entry.index
+                    );
+                    // Signal step down - error is non-fatal as removal is already committed
+                    if let Err(e) = self.event_tx.send(RaftEvent::StepDownSelfRemoved).await {
+                        error!(
+                            "[{}] Failed to send StepDownSelfRemoved event: {:?}",
+                            self.my_id, e
+                        );
+                    }
+                }
             }
         }
 
@@ -276,8 +314,9 @@ where
         if !batch.is_empty() {
             let entries = std::mem::take(batch);
             trace!(
-                "[Node-{}] Flushing command batch: {:?}",
-                self.my_id, entries
+                "[Node-{}] Flushing command batch length: {}",
+                self.my_id,
+                entries.len()
             );
             self.state_machine_handler.apply_chunk(entries).await?;
         }

@@ -188,15 +188,83 @@ impl LocalKvClient {
         Ok(())
     }
 
-    /// Retrieve value associated with a key.
-    pub async fn get(
+    /// Strongly consistent read (linearizable).
+    ///
+    /// Guarantees reading the latest committed value by querying the Leader.
+    /// Use for critical reads where staleness is unacceptable.
+    ///
+    /// # Performance
+    /// - Latency: ~1-5ms (network RTT to Leader)
+    /// - Throughput: Limited by Leader capacity
+    ///
+    /// # Raft Protocol
+    /// Implements linearizable read per Raft §8.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = node.local_client();
+    /// let value = client.get_linearizable(b"critical-config").await?;
+    /// ```
+    pub async fn get_linearizable(
         &self,
         key: impl AsRef<[u8]>,
+    ) -> Result<Option<Bytes>> {
+        self.get_with_consistency(key, ReadConsistencyPolicy::LinearizableRead).await
+    }
+
+    /// Eventually consistent read (stale OK).
+    ///
+    /// Reads from local state machine without Leader coordination.
+    /// Fast but may return stale data if replication is lagging.
+    ///
+    /// # Performance
+    /// - Latency: ~0.1ms (local memory access)
+    /// - Throughput: High (no Leader bottleneck)
+    ///
+    /// # Use Cases
+    /// - Read-heavy workloads
+    /// - Analytics/reporting (staleness acceptable)
+    /// - Caching scenarios
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = node.local_client();
+    /// let cached_value = client.get_eventual(b"user-preference").await?;
+    /// ```
+    pub async fn get_eventual(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<Bytes>> {
+        self.get_with_consistency(key, ReadConsistencyPolicy::EventualConsistency).await
+    }
+
+    /// Advanced: Read with explicit consistency policy.
+    ///
+    /// For fine-grained control over read consistency vs performance trade-off.
+    ///
+    /// # Consistency Policies
+    /// - `LinearizableRead`: Read from Leader (strong consistency, may be slower)
+    /// - `EventualConsistency`: Read from local node (fast, may be stale)
+    /// - `LeaseRead`: Optimized Leader read using lease mechanism
+    ///
+    /// # Example
+    /// ```ignore
+    /// use d_engine_proto::client::ReadConsistencyPolicy;
+    ///
+    /// let value = client.get_with_consistency(
+    ///     b"key",
+    ///     ReadConsistencyPolicy::LeaseRead,
+    /// ).await?;
+    /// ```
+    pub async fn get_with_consistency(
+        &self,
+        key: impl AsRef<[u8]>,
+        consistency: ReadConsistencyPolicy,
     ) -> Result<Option<Bytes>> {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: vec![Bytes::copy_from_slice(key.as_ref())],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(consistency as i32),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -228,6 +296,88 @@ impl LocalKvClient {
                 Ok(read_results.results.first().map(|r| r.value.clone()))
             }
             _ => Ok(None),
+        }
+    }
+
+    /// Get multiple keys with linearizable consistency.
+    ///
+    /// Reads multiple keys from the Leader with strong consistency guarantee.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let keys = vec![Bytes::from("key1"), Bytes::from("key2")];
+    /// let values = client.get_multi_linearizable(&keys).await?;
+    /// ```
+    pub async fn get_multi_linearizable(
+        &self,
+        keys: &[Bytes],
+    ) -> Result<Vec<Option<Bytes>>> {
+        self.get_multi_with_consistency(keys, ReadConsistencyPolicy::LinearizableRead)
+            .await
+    }
+
+    /// Get multiple keys with eventual consistency.
+    ///
+    /// Reads multiple keys from local state machine (fast, may be stale).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let keys = vec![Bytes::from("key1"), Bytes::from("key2")];
+    /// let values = client.get_multi_eventual(&keys).await?;
+    /// ```
+    pub async fn get_multi_eventual(
+        &self,
+        keys: &[Bytes],
+    ) -> Result<Vec<Option<Bytes>>> {
+        self.get_multi_with_consistency(keys, ReadConsistencyPolicy::EventualConsistency)
+            .await
+    }
+
+    /// Advanced: Get multiple keys with explicit consistency policy.
+    pub async fn get_multi_with_consistency(
+        &self,
+        keys: &[Bytes],
+        consistency: ReadConsistencyPolicy,
+    ) -> Result<Vec<Option<Bytes>>> {
+        let request = ClientReadRequest {
+            client_id: self.client_id,
+            keys: keys.to_vec(),
+            consistency_policy: Some(consistency as i32),
+        };
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::ClientReadRequest(request, resp_tx))
+            .await
+            .map_err(|_| LocalClientError::ChannelClosed)?;
+
+        let result = tokio::time::timeout(self.timeout, resp_rx)
+            .await
+            .map_err(|_| LocalClientError::Timeout(self.timeout))?
+            .map_err(|_| LocalClientError::ChannelClosed)?;
+
+        let response = result.map_err(|status| {
+            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
+        })?;
+
+        if response.error != ErrorCode::Success as i32 {
+            return Err(Self::map_error_response(response.error, response.metadata));
+        }
+
+        match response.success_result {
+            Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
+                read_results,
+            )) => {
+                // Reconstruct result vector in requested key order.
+                // Server only returns results for keys that exist, so we must
+                // map by key to preserve positional correspondence with input.
+                let results_by_key: std::collections::HashMap<_, _> =
+                    read_results.results.into_iter().map(|r| (r.key, r.value)).collect();
+
+                Ok(keys.iter().map(|k| results_by_key.get(k).cloned()).collect())
+            }
+            _ => Ok(vec![None; keys.len()]),
         }
     }
 
@@ -274,6 +424,12 @@ impl LocalKvClient {
     /// Returns the configured timeout duration for operations
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    /// Returns the node ID for testing purposes
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn node_id(&self) -> u32 {
+        self.client_id
     }
 }
 
@@ -346,54 +502,14 @@ impl KvClient for LocalKvClient {
         &self,
         key: impl AsRef<[u8]> + Send,
     ) -> KvResult<Option<Bytes>> {
-        self.get(key).await.map_err(Into::into)
+        self.get_linearizable(key).await.map_err(Into::into)
     }
 
     async fn get_multi(
         &self,
         keys: &[Bytes],
     ) -> KvResult<Vec<Option<Bytes>>> {
-        let request = ClientReadRequest {
-            client_id: self.client_id,
-            keys: keys.to_vec(),
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
-        };
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.event_tx
-            .send(RaftEvent::ClientReadRequest(request, resp_tx))
-            .await
-            .map_err(|_| KvClientError::ChannelClosed)?;
-
-        let result = tokio::time::timeout(self.timeout, resp_rx)
-            .await
-            .map_err(|_| KvClientError::Timeout)?
-            .map_err(|_| KvClientError::ChannelClosed)?;
-
-        let response = result.map_err(|status| {
-            KvClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
-
-        if response.error != ErrorCode::Success as i32 {
-            let local_err = LocalKvClient::map_error_response(response.error, response.metadata);
-            return Err(local_err.into());
-        }
-
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                read_results,
-            )) => {
-                // Reconstruct result vector in requested key order.
-                // Server only returns results for keys that exist, so we must
-                // map by key to preserve positional correspondence with input.
-                let results_by_key: std::collections::HashMap<_, _> =
-                    read_results.results.into_iter().map(|r| (r.key, r.value)).collect();
-
-                Ok(keys.iter().map(|k| results_by_key.get(k).cloned()).collect())
-            }
-            _ => Ok(vec![None; keys.len()]),
-        }
+        self.get_multi_linearizable(keys).await.map_err(Into::into)
     }
 
     async fn delete(

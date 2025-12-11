@@ -168,10 +168,18 @@ async fn run_success_with_joining() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     // Create mock membership with expectations
-    let mut membership = mock_membership();
-    membership.expect_current_leader_id().returning(|| Some(1));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+    let membership = mock_membership();
+
     let mut transport = MockTransport::new();
+    transport.expect_discover_leader().returning(|_, _, _| {
+        Ok(vec![
+            d_engine_proto::server::cluster::LeaderDiscoveryResponse {
+                leader_id: 3,
+                leader_address: "127.0.0.1:8082".to_string(),
+                term: 1,
+            },
+        ])
+    });
     transport.expect_join_cluster().returning(|_, _, _, _| {
         Ok(JoinResponse {
             success: true,

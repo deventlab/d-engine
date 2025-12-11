@@ -35,7 +35,7 @@ RUST_LOG_LEVEL ?= d_engine_server=debug,d_engine_core=debug,d_engine_client=debu
 RUST_BACKTRACE ?= 1
 
 # Workspace member crates
-WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine-docs
+WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine-docs d-engine
 
 # Color codes for formatted output
 RED := \033[0;31m
@@ -234,7 +234,7 @@ build-release: check check-workspace
 test: install-tools check-workspace
 	@echo "$(BLUE)Running tests on all targets...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --lib --bins --tests --examples --no-fail-fast -- --test-threads=1 --nocapture
+		$(CARGO) test --workspace --lib --bins --tests --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 ## test-detailed        Run tests with detailed failure output for each crate
@@ -244,15 +244,21 @@ test-detailed: install-tools check-workspace
 	@echo "$(BLUE)Running tests with detailed output per crate...$(NC)"
 	@for member in $(WORKSPACE_MEMBERS); do \
 		echo "$(CYAN)Testing crate: $$member$(NC)"; \
-		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $$member --lib --tests --no-fail-fast -- --test-threads=1 --nocapture || \
-		{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		if [ "$$member" = "d-engine-server" ]; then \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test -p $$member --lib --tests --features rocksdb --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		else \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test -p $$member --lib --tests --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+		fi; \
 		echo "$(GREEN)✓ Tests passed for crate: $$member$(NC)"; \
 		echo ""; \
 	done
 	@echo "$(BLUE)Running examples tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --examples --no-fail-fast -- --test-threads=1 --nocapture || \
+		$(CARGO) test --workspace --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture || \
 		{ echo "$(RED)✗ Examples tests failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ All examples tests passed$(NC)"
 	@echo "$(GREEN)✓ All tests passed with detailed output$(NC)"
@@ -268,7 +274,7 @@ test-unit: install-tools check-workspace
 test-integration: install-tools check-workspace
 	@echo "$(BLUE)Running integration tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --tests --no-fail-fast
+		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ Integration tests passed$(NC)"
 
 ## test-doc             Run documentation tests only
@@ -281,7 +287,7 @@ test-doc: install-tools check-workspace
 test-examples: install-tools check-workspace
 	@echo "$(BLUE)Running examples tests...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --examples --no-fail-fast -- --test-threads=1 --nocapture
+		$(CARGO) test --workspace --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
 	@echo "$(GREEN)✓ Examples tests passed$(NC)"
 
 ## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine)
@@ -292,7 +298,7 @@ ifndef CRATE
 endif
 	@echo "$(BLUE)Running tests for crate: $(CRATE)$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $(CRATE) --lib --tests --no-fail-fast -- --test-threads=1 --nocapture --show-output
+		$(CARGO) test -p $(CRATE) --lib --tests --no-fail-fast -- --nocapture --show-output
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
 ## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
@@ -301,9 +307,9 @@ test-all: clippy test-detailed test-doc bench
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace
-	@echo "$(BLUE)Running tests (verbose, single-threaded)...$(NC)"
+	@echo "$(BLUE)Running tests (verbose)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	    $(CARGO) test --workspace --lib --tests --no-fail-fast --test-threads=1 --show-output
+	    $(CARGO) test --workspace --lib --tests --features d-engine-server/rocksdb --no-fail-fast --show-output
 	@echo "$(GREEN)✓ Verbose test run completed$(NC)"
 
 # ============================================================================

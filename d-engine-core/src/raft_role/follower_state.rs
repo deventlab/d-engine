@@ -225,9 +225,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         // 2. If update my voted_for
                         let new_voted_for = state_update.new_voted_for;
                         if let Some(v) = new_voted_for {
-                            if let Err(e) = self.update_voted_for(v) {
-                                error("update_voted_for", &e);
-                                return Err(e);
+                            match self.update_voted_for(v) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error("update_voted_for", &e);
+                                    return Err(e);
+                                }
                             }
                         }
 
@@ -267,7 +270,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx.membership().retrieve_cluster_membership_config().await;
+                let cluster_conf = ctx
+                    .membership()
+                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
+                    .await;
                 debug!("Follower receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
@@ -280,7 +286,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version().await;
 
-                let current_leader_id = ctx.membership().current_leader_id().await;
+                let current_leader_id = self.shared_state().current_leader();
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
                     "Follower receive ClusterConfUpdate"
@@ -407,7 +413,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
                 debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
 
-                let leader_id = ctx.membership().current_leader_id().await;
+                let leader_id = self.shared_state().current_leader();
 
                 // ----------------------
                 // Phase 1: Validate Leader purge log request
@@ -596,9 +602,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 }
                 .into());
             }
+
+            RaftEvent::StepDownSelfRemoved => {
+                // Unreachable: handled at Raft level before reaching RoleState
+                unreachable!("StepDownSelfRemoved should be handled in Raft::run()");
+            }
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 

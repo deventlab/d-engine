@@ -37,6 +37,8 @@ use tracing::{error, info};
 
 use crate::node::{LocalKvClient, NodeBuilder};
 use crate::{Result, StateMachine, StorageEngine};
+use bytes::Bytes;
+use d_engine_core::watch::WatcherHandle;
 
 #[cfg(feature = "rocksdb")]
 use crate::{RocksDBStateMachine, RocksDBStorageEngine};
@@ -67,6 +69,7 @@ pub struct EmbeddedEngine {
     kv_client: LocalKvClient,
     ready_rx: watch::Receiver<bool>,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
+    watch_manager: Option<Arc<d_engine_core::watch::WatchManager>>,
 }
 
 impl EmbeddedEngine {
@@ -77,17 +80,21 @@ impl EmbeddedEngine {
     ///
     /// # Arguments
     /// - `data_dir`: Base directory for all data (defaults to "/tmp/d-engine" if empty)
+    /// - `config_path`: Optional path to config file (e.g. "d-engine.toml")
     ///
     /// # Example
     /// ```ignore
-    /// // Use default /tmp location
-    /// let engine = EmbeddedEngine::with_rocksdb("").await?;
+    /// // Use default /tmp location and default config
+    /// let engine = EmbeddedEngine::with_rocksdb("", None).await?;
     ///
-    /// // Or specify custom directory
-    /// let engine = EmbeddedEngine::with_rocksdb("./my-data").await?;
+    /// // Or specify custom directory and config
+    /// let engine = EmbeddedEngine::with_rocksdb("./my-data", Some("config.toml")).await?;
     /// ```
     #[cfg(feature = "rocksdb")]
-    pub async fn with_rocksdb<P: AsRef<std::path::Path>>(data_dir: P) -> Result<Self> {
+    pub async fn with_rocksdb<P: AsRef<std::path::Path>>(
+        data_dir: P,
+        config_path: Option<&str>,
+    ) -> Result<Self> {
         let data_dir = data_dir.as_ref();
 
         // Use /tmp/d-engine if empty path provided
@@ -111,7 +118,7 @@ impl EmbeddedEngine {
 
         info!("Starting embedded engine with RocksDB at {:?}", base_dir);
 
-        Self::start(None, storage, state_machine).await
+        Self::start(config_path, storage, state_machine).await
     }
 
     /// Start the embedded engine with custom storage.
@@ -144,8 +151,15 @@ impl EmbeddedEngine {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
+        // Load config or use default
+        let node_config = if let Some(path) = config_path {
+            d_engine_core::RaftNodeConfig::new()?.with_override_config(path)?
+        } else {
+            d_engine_core::RaftNodeConfig::new()?
+        };
+
         // Build node and start RPC server (required for cluster communication)
-        let node = NodeBuilder::new(config_path, shutdown_rx)
+        let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .build()
@@ -162,6 +176,9 @@ impl EmbeddedEngine {
 
         // Create local KV client before spawning
         let kv_client = node.local_client();
+
+        // Capture watch manager (if enabled)
+        let watch_manager = node.watch_manager.clone();
 
         // Spawn node.run() in background
         let node_handle = tokio::spawn(async move {
@@ -181,6 +198,7 @@ impl EmbeddedEngine {
             kv_client,
             ready_rx,
             leader_elected_rx,
+            watch_manager,
         })
     }
 
@@ -291,6 +309,28 @@ impl EmbeddedEngine {
         &self.kv_client
     }
 
+    /// Register a watcher for a specific key.
+    ///
+    /// Returns a handle that receives watch events via an mpsc channel.
+    /// The watcher is automatically unregistered when the handle is dropped.
+    ///
+    /// # Arguments
+    /// * `key` - The exact key to watch
+    ///
+    /// # Returns
+    /// * `Result<WatcherHandle>` - Handle for receiving events
+    pub async fn watch(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<WatcherHandle> {
+        let manager = self.watch_manager.as_ref().ok_or_else(|| {
+            crate::Error::Fatal("Watch feature disabled (WatchManager not initialized)".to_string())
+        })?;
+
+        let key_bytes = Bytes::copy_from_slice(key.as_ref());
+        Ok(manager.register(key_bytes).await)
+    }
+
     /// Gracefully stop the embedded engine.
     ///
     /// This method:
@@ -326,6 +366,16 @@ impl EmbeddedEngine {
         } else {
             Ok(())
         }
+    }
+
+    /// Returns the node ID for testing purposes
+    ///
+    /// This is useful in integration tests that need to identify which node
+    /// they're interacting with, especially in multi-node scenarios like
+    /// failover testing.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn node_id(&self) -> u32 {
+        self.kv_client.node_id()
     }
 }
 

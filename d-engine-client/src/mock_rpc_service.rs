@@ -106,6 +106,7 @@ impl MockNode {
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
+                    current_leader_id: Some(1),
                 })
             })
         });
@@ -135,6 +136,7 @@ impl MockNode {
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
+                    current_leader_id: Some(1),
                 })
             })
         });
@@ -166,6 +168,7 @@ impl MockNode {
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
+                    current_leader_id: Some(1),
                 })
             })
         });
@@ -197,6 +200,7 @@ impl MockNode {
                         address: format!("127.0.0.1:{port}",),
                         status: NodeStatus::Active.into(),
                     }],
+                    current_leader_id: Some(1),
                 })
             })
         });

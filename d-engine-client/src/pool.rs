@@ -1,4 +1,3 @@
-use d_engine_proto::common::NodeRole;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
@@ -10,6 +9,7 @@ use super::ClientApiError;
 use crate::ClientConfig;
 use crate::utils::address_str;
 use d_engine_proto::error::ErrorCode;
+use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::cluster::cluster_management_service_client::ClusterManagementServiceClient;
@@ -26,6 +26,7 @@ pub struct ConnectionPool {
     pub(super) config: ClientConfig,
     pub(super) members: Vec<NodeMeta>,
     pub(super) endpoints: Vec<String>,
+    pub(super) current_leader_id: Option<u32>,
 }
 
 impl ConnectionPool {
@@ -39,7 +40,7 @@ impl ConnectionPool {
         endpoints: Vec<String>,
         config: ClientConfig,
     ) -> std::result::Result<Self, ClientApiError> {
-        let (leader_conn, follower_conns, members) =
+        let (leader_conn, follower_conns, members, current_leader_id) =
             Self::build_connections(&endpoints, &config).await?;
 
         Ok(Self {
@@ -48,6 +49,7 @@ impl ConnectionPool {
             config,
             members,
             endpoints,
+            current_leader_id,
         })
     }
 
@@ -65,13 +67,14 @@ impl ConnectionPool {
         if let Some(endpoints) = new_endpoints {
             self.endpoints = endpoints;
         }
-        let (leader_conn, follower_conns, members) =
+        let (leader_conn, follower_conns, members, current_leader_id) =
             Self::build_connections(&self.endpoints, &self.config).await?;
 
         // Atomic update of fields
         self.leader_conn = leader_conn;
         self.follower_conns = follower_conns;
         self.members = members;
+        self.current_leader_id = current_leader_id;
 
         Ok(())
     }
@@ -80,13 +83,14 @@ impl ConnectionPool {
     async fn build_connections(
         endpoints: &[String],
         config: &ClientConfig,
-    ) -> std::result::Result<(Channel, Vec<Channel>, Vec<NodeMeta>), ClientApiError> {
+    ) -> std::result::Result<(Channel, Vec<Channel>, Vec<NodeMeta>, Option<u32>), ClientApiError>
+    {
         // 1. Load cluster metadata
-        let members = Self::load_cluster_metadata(endpoints, config).await?;
-        info!("Cluster members discovered: {:?}", members);
+        let membership = Self::load_cluster_metadata(endpoints, config).await?;
+        info!("Cluster members discovered: {:?}", membership.nodes);
 
         // 2. Parse leader and follower addresses
-        let (leader_addr, follower_addrs) = Self::parse_cluster_metadata(&members)?;
+        let (leader_addr, follower_addrs) = Self::parse_cluster_metadata(&membership)?;
 
         // 3. Establish all connections in parallel
         let leader_future = Self::create_channel(leader_addr, config);
@@ -101,7 +105,12 @@ impl ConnectionPool {
         let follower_conns =
             follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
 
-        Ok((leader_conn, follower_conns, members))
+        Ok((
+            leader_conn,
+            follower_conns,
+            membership.nodes,
+            membership.current_leader_id,
+        ))
     }
 
     pub(super) async fn create_channel(
@@ -136,11 +145,16 @@ impl ConnectionPool {
         self.members.clone()
     }
 
+    /// Get the current leader ID
+    pub(crate) fn get_leader_id(&self) -> Option<u32> {
+        self.current_leader_id
+    }
+
     /// Discover cluster metadata by probing nodes
     pub(super) async fn load_cluster_metadata(
         endpoints: &[String],
         config: &ClientConfig,
-    ) -> std::result::Result<Vec<NodeMeta>, ClientApiError> {
+    ) -> std::result::Result<ClusterMembership, ClientApiError> {
         for addr in endpoints {
             match Self::create_channel(addr.clone(), config).await {
                 Ok(channel) => {
@@ -152,7 +166,7 @@ impl ConnectionPool {
                     }
                     match client.get_cluster_metadata(tonic::Request::new(MetadataRequest {})).await
                     {
-                        Ok(response) => return Ok(response.into_inner().nodes),
+                        Ok(response) => return Ok(response.into_inner()),
                         Err(e) => {
                             error!("get_cluster_metadata: {:?}", e);
                             // Try next node
@@ -172,23 +186,28 @@ impl ConnectionPool {
         Err(ErrorCode::ClusterUnavailable.into())
     }
 
-    /// Extract leader address from metadata
+    /// Extract leader address from metadata using current_leader_id
     pub(super) fn parse_cluster_metadata(
-        nodes: &[NodeMeta]
+        membership: &ClusterMembership
     ) -> std::result::Result<(String, Vec<String>), ClientApiError> {
+        let leader_id = membership.current_leader_id.ok_or(ErrorCode::NotLeader)?;
+
         let mut leader_addr = None;
         let mut followers = Vec::new();
 
-        for node in nodes {
+        for node in &membership.nodes {
             let addr = address_str(&node.address);
-            debug!("parse_cluster_metadata, addr: {:?}", &addr);
-            if node.role == NodeRole::Leader as i32 {
+            debug!(
+                "parse_cluster_metadata, node_id: {}, addr: {:?}",
+                node.id, &addr
+            );
+            if node.id == leader_id {
                 leader_addr = Some(addr);
             } else {
                 followers.push(addr);
             }
         }
 
-        leader_addr.map(|addr| (addr, followers)).ok_or(ErrorCode::NotLeader.into())
+        leader_addr.ok_or(ErrorCode::NotLeader.into()).map(|addr| (addr, followers))
     }
 }

@@ -110,6 +110,7 @@ async fn test_new_with_restart() {
     let voted_for = VotedFor {
         voted_for_id: 3,
         voted_for_term: 2,
+        committed: false,
     };
     // Fresh start
     {
@@ -140,6 +141,7 @@ async fn test_new_with_restart() {
             voted_for: Some(VotedFor {
                 voted_for_id: 3,
                 voted_for_term: 2,
+                committed: false,
             }),
         });
         let last_applied_index_option = Some(2);
@@ -258,6 +260,7 @@ async fn test_handle_raft_event_case1_2() {
                 new_voted_for: Some(VotedFor {
                     voted_for_id: 1,
                     voted_for_term: 1,
+                    committed: false,
                 }),
                 term_update: Some(updated_term),
             })
@@ -332,12 +335,13 @@ async fn test_handle_raft_event_case2() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_handle_raft_event_case2", graceful_rx, None);
     let mut membership = MockMembership::new();
-    membership.expect_retrieve_cluster_membership_config().times(1).returning(|| {
-        ClusterMembership {
+    membership.expect_retrieve_cluster_membership_config().times(1).returning(
+        |_current_leader_id| ClusterMembership {
             version: 1,
             nodes: vec![],
-        }
-    });
+            current_leader_id: None,
+        },
+    );
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -376,7 +380,6 @@ async fn test_handle_raft_event_case3_1() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -427,7 +430,6 @@ async fn test_handle_raft_event_case3_2() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| Some(2)); // Actual leader is 2
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -478,7 +480,6 @@ async fn test_handle_raft_event_case3_3() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 5); // Current version is 5
-    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -530,7 +531,6 @@ async fn test_handle_raft_event_case3_4() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -579,7 +579,6 @@ async fn test_handle_raft_event_case3_5() {
             )))
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| Some(2)); // Leader is 2
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -630,7 +629,6 @@ async fn test_handle_raft_event_case3_6() {
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_current_leader_id().returning(|| None); // No known leader
     context.membership = Arc::new(membership);
 
     let mut state =
@@ -698,17 +696,11 @@ async fn test_handle_raft_event_case4_1() {
         })
     });
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(1);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
@@ -737,8 +729,13 @@ async fn test_handle_raft_event_case4_1() {
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
     // Validation criterias
-    // 2. I should not receive BecomeFollower event
-    // 4. I should send out new commit signal
+    // 2. I should receive LeaderDiscovered event (new leader detected)
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::LeaderDiscovered(5, _)
+    ));
+
+    // 3. I should send out new commit signal
     assert!(matches!(
         role_rx.try_recv().unwrap(),
         RoleEvent::NotifyNewCommitIndex(NewCommitData {
@@ -781,17 +778,11 @@ async fn test_handle_raft_event_case4_2() {
         .expect_check_append_entries_request_is_legal()
         .returning(move |_, _, _| AppendEntriesResponse::success(1, follower_term, None));
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
     // Validation criterias
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(0);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
@@ -859,17 +850,11 @@ async fn test_handle_raft_event_case4_3() {
         .expect_handle_append_entries()
         .returning(|_, _, _| Err(Error::Fatal("test".to_string())));
 
-    let mut membership = MockMembership::new();
+    let membership = MockMembership::new();
 
-    // Validation criterias
+    // Validation criterias:
     // 1. I should mark new leader id in memberhip
-    membership
-        .expect_mark_leader_id()
-        .returning(|id| {
-            assert_eq!(id, 5);
-            Ok(())
-        })
-        .times(1);
+    // Removed: expect_mark_leader_id() - no longer needed with atomic leader_id
 
     context.membership = Arc::new(membership);
     context.handlers.replication_handler = replication_handler;
@@ -898,7 +883,13 @@ async fn test_handle_raft_event_case4_3() {
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
 
     // Validation criterias
-    // 2. I should not receive any event
+    // 2. I should receive LeaderDiscovered event even when append fails
+    assert!(matches!(
+        role_rx.try_recv().unwrap(),
+        RoleEvent::LeaderDiscovered(5, _)
+    ));
+
+    // No other events should be sent
     assert!(role_rx.try_recv().is_err());
 
     // Validation criterias
@@ -1013,8 +1004,7 @@ async fn test_handle_raft_event_case8_1() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock membership with no current leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| None);
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1071,8 +1061,7 @@ async fn test_handle_raft_event_case8_2() {
     context.handlers.purge_executor = Arc::new(purge_executor);
 
     // Mock membership with current leader
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().returning(|| Some(2));
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1148,8 +1137,7 @@ async fn test_handle_raft_event_case8_3() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock membership
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().return_const(1);
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1210,8 +1198,7 @@ async fn test_handle_raft_event_case8_4() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock membership
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().return_const(1);
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state with higher term
@@ -1265,8 +1252,7 @@ async fn test_handle_raft_event_case8_5() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock membership
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().return_const(1);
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state where commit index < purge index
@@ -1325,8 +1311,7 @@ async fn test_handle_raft_event_case8_6() {
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Mock membership
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().return_const(1);
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state where last_purged_index > requested purge index
@@ -1390,8 +1375,7 @@ async fn test_handle_raft_event_case8_7() {
     context.handlers.purge_executor = Arc::new(purge_executor);
 
     // Mock membership
-    let mut membership = MockMembership::new();
-    membership.expect_current_leader_id().return_const(1);
+    let membership = MockMembership::new();
     context.membership = Arc::new(membership);
 
     // Prepare follower state
@@ -1786,3 +1770,7 @@ mod handle_client_read_request {
         assert_eq!(response.error, ErrorCode::Success as i32); // Should succeed
     }
 }
+
+// Note: Integration tests for Follower leader discovery notification (ADR-012)
+// are covered by unit tests in d-engine-core/src/raft_test.rs
+// See notify_leader_elected_tests module for comprehensive test coverage

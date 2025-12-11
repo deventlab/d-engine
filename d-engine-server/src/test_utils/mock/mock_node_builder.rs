@@ -569,15 +569,14 @@ pub(crate) fn mock_membership() -> MockMembership<MockTypeConfig> {
     membership.expect_voters().returning(Vec::new);
     membership.expect_replication_peers().returning(Vec::new);
     membership.expect_members().returning(Vec::new);
-    membership.expect_reset_leader().returning(|| Ok(()));
-    membership.expect_update_node_role().returning(|_, _| Ok(()));
-    membership.expect_mark_leader_id().returning(|_| Ok(()));
+
     membership.expect_check_cluster_is_ready().returning(|| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
-        .returning(|| ClusterMembership {
+        .returning(|_current_leader_id| ClusterMembership {
             version: 1,
             nodes: vec![],
+            current_leader_id: None,
         });
     membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
