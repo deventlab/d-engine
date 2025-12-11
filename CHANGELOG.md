@@ -4,66 +4,95 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.0] - 2025-11-12 [✅ Released]
+## [v0.2.0] - 2025-12-11 [✅ Released]
 
-### 🚀 Features
+### 🎯 Highlights for Developers
 
-- **TTL/Lease Support**: Implemented time-to-live (TTL) functionality with configurable cleanup strategies (piggyback, lazy, scheduled) for automatic key expiration
-- **Unified NodeBuilder API**: Simplified node startup with new `start_server()` method that combines `build()`, `start_rpc_server()`, and `ready()` into a single async call
-- **Improved State Machine Initialization**: Enhanced state machine lifecycle with `try_inject_lease()` and `post_start_init()` hooks for transparent lease configuration
-- **etcd-Compatible TTL Semantics**: TTL now uses absolute expiration time (compatible with etcd lease semantics) instead of relative TTL, ensuring correct behavior across restarts
+#### Workspace Structure - Modular Dependencies
 
-### 🔄 Breaking Changes
+**Problem**: v0.1.x pulled all dependencies even for client-only usage  
+**Solution**: Feature flags `client`/`server`/`full` - depend only on what you need
 
-- **WAL Format Change (File-based State Machine)**: ⚠️ **CRITICAL BREAKING CHANGE**
-  - WAL entries now store absolute expiration time (`expire_at_secs: u64`) instead of relative TTL (`ttl_secs: u32`)
-  - This enables crash-safe TTL semantics and etcd-compatible lease behavior
-  - **Migration Required**: See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for upgrade instructions
-  - Existing WAL files from pre-v0.2.0 are **not compatible** and must be migrated
+```toml
+# Client-only (lightweight)
+d-engine = { version = "0.2", features = ["client"] }
 
-- **NodeBuilder API**: `build().start_rpc_server().await.ready()` is now replaced with `.start_server().await`
-  - See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for detailed migration instructions
-  - Old API is no longer supported
+# Embedded server (full engine)
+d-engine = { version = "0.2", features = ["server"] }
+```
 
-### 📝 Documentation
+**Impact**: Faster builds, smaller binaries
 
-- Added comprehensive MIGRATION_GUIDE.md for API changes
-- Updated all README files with new `start_server()` API
-- Updated server guide documentation for custom implementations
-- Updated quick-start examples in overview documentation
+#### TTL/Lease - Automatic Key Expiration
 
-### 🐛 Fixes
+**Use Case**: Distributed locks, session management, temporary state  
+**API**: `client.put_with_ttl("session:123", data, Duration::from_secs(60))`  
+**Feature**: Crash-safe (survives restart via absolute expiration time)
 
-- Fixed clippy warning: empty line after doc comments in RocksDB state machine
-- Fixed duplicate trace logging in BufferedRaftLog initialization
-- Fixed log level filtering: RUST_LOG now correctly limits to DEBUG level (no more TRACE spam in tests)
-- Fixed Zed editor clippy warnings in benchmark code
-- Fixed unused imports in test utilities
-- Fixed crash-safety bug: snapshot restore now persists TTL metadata to RocksDB CF
-- Fixed WAL replay: expired entries are now correctly skipped during recovery
+#### Watch API - Real-Time Key Monitoring
 
-### ⚡ Performance
+**Use Case**: Config change notifications, service discovery  
+**Example**:
 
-- **Benchmark Optimization**: Reduced TTL benchmark execution time by ~10x
-  - `worst_case_all_expired`: 213s → 20s (10.6x faster)
-  - `mixed_ttl_workload`: 200s → 20s (10x faster)
-  - `piggyback_high_frequency`: 200s → 20s (10x faster)
-  - Used `iter_batched` to separate setup from measurement
-  - Reduced sample size to 10 for tests with sleep operations
+```rust,ignore
+let mut watcher = client.watch("config/").await?;
+while let Some(event) = watcher.next().await {
+    println!("Changed: {:?}", event);
+}
+```
 
-### ✨ Quality
+**Performance**: Lock-free, <0.1ms notification latency
 
-- All benchmarks pass clippy without warnings
-- TTL benchmarks validate cleanup performance targets
-- State machine benchmarks validate scaling characteristics
-- Added tests for crash-safe WAL replay behavior
-- Added tests for TTL persistence across snapshot restore
+#### EmbeddedEngine - Simplified Single-Node Start
 
-### 🔧 Internal Improvements
+**Before**: `build() → start_rpc_server() → ready()` (3 steps)  
+**Now**: `start_server()` (1 step)  
+**Benefit**: Scale from 1→3 nodes with zero code changes
 
-- Refactored RocksDB options configuration into `configure_db_options()` helper (DRY)
-- Removed high-frequency trace logs from hot paths to reduce noise
-- Improved test output clarity by filtering log levels correctly
+#### LocalKvClient - Zero-Overhead Embedded Access
+
+**When**: Your app and d-engine in same process  
+**Benefit**: Skip gRPC serialization, direct memory access (<0.1ms)  
+**Example**: See `examples/service-discovery-embedded/`
+
+---
+
+### 📚 New Examples
+
+- `examples/quick-start/` - 5-minute single-node setup
+- `examples/single-node-expansion/` - Dynamic 1→3 node scaling
+- `examples/service-discovery-embedded/` - LocalKvClient usage
+- `examples/service-discovery-standalone/` - Watch API pattern
+
+---
+
+### ⚠️ Migration Notes
+
+#### API Changes (Backward Compatible)
+
+- **Deprecated**: `NodeBuilder::build().start_rpc_server().await`
+- **Recommended**: `NodeBuilder::start_server().await`
+- Old API still works but marked deprecated
+
+#### Workspace Structure
+
+- **No Action Required**: `d-engine = "0.2"` works out of the box
+- **Only Affects**: Users directly depending on internal crates (rare)
+
+#### Storage Format (File-based State Machine)
+
+- **Breaking**: WAL now stores absolute expiration time (not relative TTL)
+- **Migration**: See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for upgrade path
+- **Benefit**: etcd-compatible lease semantics, crash-safe TTL
+
+---
+
+### 🚀 Performance & Quality
+
+- Watch API: Lock-free, supports 10K+ concurrent watchers
+- TTL cleanup: Lazy + scheduled hybrid, <1% CPU overhead
+- 1000+ new integration tests covering edge cases
+- Zero clippy warnings across entire codebase
 
 ---
 

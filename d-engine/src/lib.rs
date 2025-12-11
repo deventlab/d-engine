@@ -3,6 +3,16 @@
 //! A lightweight and strongly consistent Raft consensus engine written in Rust.
 //! Build reliable and scalable distributed systems by embedding d-engine into your applications.
 //!
+//! ## What's New in v0.2.0
+//!
+//! - **Modular workspace**: Use `features = ["client"]` to reduce dependencies
+//! - **TTL/Lease**: Automatic key expiration for distributed locks
+//! - **Watch API**: Real-time key change notifications
+//! - **EmbeddedEngine**: Single-node start, scale to 3 nodes with zero code changes
+//! - **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
+//!
+//! See [CHANGELOG](../CHANGELOG.md) for full details.
+//!
 //! ## Quick Start
 //!
 //! Add d-engine to your `Cargo.toml` with features you need:

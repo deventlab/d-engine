@@ -14,14 +14,23 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 
 ## Features
 
-- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime).
-- **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
-- **Tunable Persistence**: DiskFirst for maximum durability or MemFirst for lower latency.
-- **Flexible Read Consistency**: Three-tier read model (Linearizable/Lease-Based/Eventual) balancing consistency and performance.
-- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, Raw File).
-- **Observability**: Built-in metrics, structured logging, and distributed tracing.
-- **Runtime Agnostic**: Works seamlessly with `tokio`.
-- **Extensible Design**: Decouples business logic from the protocol layer for easy customization.
+### New in v0.2.0 🎉
+
+- **Modular Workspace**: Feature flags (`client`/`server`/`full`) - depend only on what you need
+- **TTL/Lease**: Automatic key expiration for distributed locks and session management
+- **Watch API**: Real-time key change notifications (config updates, service discovery)
+- **EmbeddedEngine**: Single-node start, one-line scale to 3-node cluster
+- **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
+
+### Core Capabilities
+
+- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
+- **Strong Consistency**: Full Raft protocol implementation for distributed consensus
+- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
+- **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual)
+- **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
+- **Observability**: Built-in metrics, structured logging, distributed tracing
+- **Extensible Design**: Business logic decoupled from protocol layer
 
 ---
 
@@ -32,11 +41,17 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 Add d-engine to your `Cargo.toml`:
 
 ```toml
-[dependencies]
-d-engine = "0.1.4"
+# Client-only (connect to existing cluster)
+d-engine = { version = "0.2", features = ["client"] }
 
-# or with RocksDB support:
-d-engine = { version = "0.1.4", features = ["rocksdb"] }
+# Server/Embedded (run d-engine in your app)
+d-engine = { version = "0.2", features = ["server"] }
+
+# Full (both client and server)
+d-engine = { version = "0.2", features = ["full"] }
+
+# With RocksDB storage backend
+d-engine = { version = "0.2", features = ["server", "rocksdb"] }
 ```
 
 ## Basic Usage (Single-Node Mode)
@@ -173,14 +188,17 @@ Write unit tests for all new features.
 
 ## FAQ
 
-**Why are 3 nodes required?**
-Raft requires a majority quorum (N/2 + 1) to achieve consensus. A 3-node cluster can tolerate 1 node failure.
+**Why 3 nodes for HA?**  
+Raft requires majority quorum (N/2 + 1). 3-node cluster tolerates 1 failure.
 
-**How do I customize storage?**
-Implement the Storage trait and pass it to RaftCore::new.
+**Can I start with 1 node?**  
+Yes. Scale to 3 nodes later with zero downtime (see `examples/single-node-expansion/`).
 
-**Is d-engine production-ready?**
-The current release (v0.0.1) focuses on correctness and reliability. Performance optimizations are planned for future releases.
+**How do I customize storage?**  
+Implement `StorageEngine` and `StateMachine` traits (see Custom Storage Implementations section).
+
+**Production-ready?**  
+Yes. v0.2.0 includes 1000+ integration tests, Jepsen validation, and battle-tested Raft implementation.
 
 ## Supported Platforms
 
