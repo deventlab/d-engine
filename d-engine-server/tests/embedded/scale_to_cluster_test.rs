@@ -115,9 +115,12 @@ general_raft_timeout_duration_in_ms = 5000
     // Phase 3: Verify cluster operational
     info!("Phase 3: Verifying cluster health");
 
+    // Use leader's client for all operations
+    let leader_idx = (leader.leader_id - 1) as usize;
+
     // Old data should still be readable (from single-node phase)
     // Note: This assumes node 1 retained its data directory
-    let old_val = engines[0].client().get_eventual(b"dev-key".to_vec()).await?;
+    let old_val = engines[leader_idx].client().get_eventual(b"dev-key".to_vec()).await?;
     assert_eq!(
         old_val.as_deref(),
         Some(b"dev-value".as_ref()),
@@ -125,7 +128,7 @@ general_raft_timeout_duration_in_ms = 5000
     );
 
     // Write new data in cluster mode
-    engines[0]
+    engines[leader_idx]
         .client()
         .put(b"cluster-key".to_vec(), b"cluster-value".to_vec())
         .await?;
