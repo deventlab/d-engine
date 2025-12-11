@@ -20,7 +20,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
-use tracing::trace;
 use tracing::warn;
 
 use crate::storage::DefaultLease;
@@ -519,11 +518,9 @@ impl StateMachine for RocksDBStateMachine {
                             batch.put_cf(&cf, &key, &value);
 
                             // Register TTL if specified
-                            if let Some(ttl) = ttl_secs {
-                                if ttl > 0 {
-                                    if let Some(ref lease) = self.lease {
-                                        lease.register(key.clone(), ttl);
-                                    }
+                            if ttl_secs > 0 {
+                                if let Some(ref lease) = self.lease {
+                                    lease.register(key.clone(), ttl_secs);
                                 }
                             }
                         }
@@ -556,8 +553,8 @@ impl StateMachine for RocksDBStateMachine {
 
         self.apply_batch(batch)?;
 
-        // TTL cleanup (DefaultLease handles strategy internally)
-        // Zero overhead if TTL cleanup is disabled - DefaultLease checks config
+        // TTL cleanup: piggyback on apply_chunk for minimal overhead
+        // DefaultLease uses time-limited cleanup to avoid blocking
         if let Some(ref lease) = self.lease {
             let expired_keys = lease.on_apply();
             if !expired_keys.is_empty() {
@@ -571,7 +568,6 @@ impl StateMachine for RocksDBStateMachine {
                     batch.delete_cf(&cf, key);
                 }
                 self.apply_batch(batch)?;
-                trace!("TTL cleanup: deleted {} expired keys", expired_keys.len());
             }
         }
 

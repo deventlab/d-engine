@@ -487,7 +487,7 @@ fn create_insert_entry(
     let insert = Insert {
         key,
         value,
-        ttl_secs: None,
+        ttl_secs: 0,
     };
     let operation = Operation::Insert(insert);
     let write_cmd = WriteCommand {

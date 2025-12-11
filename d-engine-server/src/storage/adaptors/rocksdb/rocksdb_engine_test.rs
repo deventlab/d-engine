@@ -105,7 +105,7 @@ fn create_test_command_payload(index: u64) -> d_engine_proto::common::EntryPaylo
     let insert = Insert {
         key,
         value,
-        ttl_secs: None,
+        ttl_secs: 0,
     };
     let operation = d_engine_proto::client::write_command::Operation::Insert(insert);
     let write_cmd = d_engine_proto::client::WriteCommand {

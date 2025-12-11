@@ -57,7 +57,7 @@ impl WriteCommand {
         let cmd = write_command::Insert {
             key: key.into(),
             value: value.into(),
-            ttl_secs: None,
+            ttl_secs: 0,
         };
         Self {
             operation: Some(write_command::Operation::Insert(cmd)),
@@ -78,7 +78,7 @@ impl WriteCommand {
         let cmd = write_command::Insert {
             key: key.into(),
             value: value.into(),
-            ttl_secs: Some(ttl_secs),
+            ttl_secs,
         };
         Self {
             operation: Some(write_command::Operation::Insert(cmd)),

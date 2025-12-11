@@ -10,9 +10,9 @@ message WriteCommand {
     message Insert {
         bytes key = 1;
         bytes value = 2;
-        // Time-to-live in seconds. If set, key will automatically expire after this duration.
-        // Zero or absent means no expiration.
-        optional uint64 ttl_secs = 3;
+        // Time-to-live in seconds. 0 means no expiration (default).
+        // Non-zero values specify expiration time in seconds from insertion.
+        uint64 ttl_secs = 3;
     }
     message Delete {
         bytes key = 1;

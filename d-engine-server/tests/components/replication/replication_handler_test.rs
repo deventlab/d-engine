@@ -814,14 +814,14 @@ fn test_client_command_to_entry_payloads_case1() {
     let commands = vec![
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                ttl_secs: None,
+                ttl_secs: 0,
                 key: Bytes::from(b"key1".to_vec()),
                 value: Bytes::from(b"value1".to_vec()),
             })),
         },
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                ttl_secs: None,
+                ttl_secs: 0,
                 key: Bytes::from(b"key2".to_vec()),
                 value: Bytes::from(b"value2".to_vec()),
             })),

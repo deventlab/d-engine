@@ -15,10 +15,10 @@ pub mod write_command {
         pub key: ::prost::bytes::Bytes,
         #[prost(bytes = "bytes", tag = "2")]
         pub value: ::prost::bytes::Bytes,
-        /// Time-to-live in seconds. If set, key will automatically expire after this duration.
-        /// Zero or absent means no expiration.
-        #[prost(uint64, optional, tag = "3")]
-        pub ttl_secs: ::core::option::Option<u64>,
+        /// Time-to-live in seconds. 0 means no expiration (default).
+        /// Non-zero values specify expiration time in seconds from insertion.
+        #[prost(uint64, tag = "3")]
+        pub ttl_secs: u64,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Message)]
