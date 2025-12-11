@@ -124,6 +124,9 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
 
+    // Wait for node to be actually ready
+    check_cluster_is_ready(&format!("127.0.0.1:{}", ports[0]), 10).await?;
+
     info!("Node 1 restarted. Verifying data sync");
 
     // Verify node 1 synced data from cluster

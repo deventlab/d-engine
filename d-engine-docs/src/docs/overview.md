@@ -24,28 +24,47 @@
 
 ## Quick Start
 
-```ignore
-use d_engine_server::NodeBuilder;
-use d_engine_server::FileStorageEngine;
-use d_engine_server::FileStateMachine;
-use tokio::sync::watch;
-use tracing::error;
-use tracing::info;
-use std::path::PathBuf;
+### Fastest Way (Recommended for Most Users)
+
+```rust,ignore
+use d_engine::EmbeddedEngine;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Start with RocksDB (auto-creates directories)
+    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+    engine.ready().await;
+
+    // Use local KV client (zero-overhead)
+    let client = engine.client();
+    client.put(b"key".to_vec(), b"value".to_vec()).await?;
+
+    engine.stop().await?;
+    Ok(())
+}
+```
+
+**Why**: Single call, batteries included, production-ready defaults.
+
+---
+
+### Advanced: Custom Storage (For Framework Developers)
+
+```rust,ignore
+use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
 use std::sync::Arc;
+use std::path::PathBuf;
 
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let (graceful_tx, graceful_rx) = watch::channel(());
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     let path = PathBuf::from("/tmp/db");
-    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage")).unwrap());
-    let state_machine =
-        Arc::new(FileStateMachine::new(path.join("state_machine")).await.unwrap());
+    let storage = Arc::new(FileStorageEngine::new(path.join("storage"))?);
+    let state_machine = Arc::new(FileStateMachine::new(path.join("sm")).await?);
 
-    let node = NodeBuilder::new(None, graceful_rx.clone())
-        .storage_engine(storage_engine)
+    let node = NodeBuilder::new(None, shutdown_rx)
+        .storage_engine(storage)
         .state_machine(state_machine)
         .start_server()
         .await
