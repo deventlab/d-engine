@@ -209,7 +209,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_events_sequential() {
         let config = WatchConfig::default();
-        let manager = WatchManager::new(config);
+        let manager = Arc::new(WatchManager::new(config));
         manager.start();
 
         let key = Bytes::from("test_key");

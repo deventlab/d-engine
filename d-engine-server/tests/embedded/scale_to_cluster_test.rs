@@ -74,8 +74,11 @@ general_raft_timeout_duration_in_ms = 5000
         let mut config_str =
             create_node_config(node_id, ports[i], ports, DB_ROOT_DIR, LOG_DIR).await;
 
-        // Add timeout config
+        // Add timeout config with election timeout randomization
         config_str.push_str("\n[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n");
+        config_str.push_str(
+            "[raft.election]\nelection_timeout_min = 3000\nelection_timeout_max = 6000\n",
+        );
 
         let config = node_config(&config_str);
 
@@ -105,8 +108,8 @@ general_raft_timeout_duration_in_ms = 5000
 
     info!("All 3 nodes initialized, waiting for leader election");
 
-    // Wait for leader election in cluster mode
-    let leader = engines[0].wait_leader(Duration::from_secs(10)).await?;
+    // Wait for leader election in cluster mode (increased timeout for election randomization)
+    let leader = engines[0].wait_leader(Duration::from_secs(20)).await?;
     info!(
         "Cluster leader elected: {} (term {})",
         leader.leader_id, leader.term

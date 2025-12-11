@@ -314,8 +314,9 @@ where
         if !batch.is_empty() {
             let entries = std::mem::take(batch);
             trace!(
-                "[Node-{}] Flushing command batch: {:?}",
-                self.my_id, entries
+                "[Node-{}] Flushing command batch length: {}",
+                self.my_id,
+                entries.len()
             );
             self.state_machine_handler.apply_chunk(entries).await?;
         }
