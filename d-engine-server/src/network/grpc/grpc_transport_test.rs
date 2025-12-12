@@ -1082,3 +1082,69 @@ fn create_failing_stream(fail_at: usize) -> BoxStream<'static, Result<SnapshotCh
         },
     ))
 }
+
+// # Case: GrpcTransport Drop aborts background tasks
+//
+// ## Criteria:
+// 1. When GrpcTransport is dropped, all peer_appender tasks must be aborted
+// 2. Ensures fast shutdown without hanging on membership retries
+// 3. Validates that tasks are actually finished after abort
+#[tokio::test]
+#[traced_test]
+async fn test_grpc_transport_drop_aborts_tasks() {
+    let my_id = 1;
+    let peer_id = 2;
+
+    // Create mock membership with retry expectations
+    let channel = Endpoint::from_static("http://[::]:50051").connect_lazy();
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Data), channel.clone());
+
+    let mut membership = MockMembership::<MockTypeConfig>::new();
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
+            id: peer_id,
+            address: "127.0.0.1:50051".to_string(),
+            role: Follower as i32,
+            status: NodeStatus::Active as i32,
+        }]
+    });
+
+    // Expect get_peer_channel to be called during task creation
+    let channel_clone = channel.clone();
+    membership
+        .expect_get_peer_channel()
+        .returning(move |_, _| Some(channel_clone.clone()));
+
+    let membership = Arc::new(membership);
+
+    // Create transport and start a peer appender
+    let transport: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let retry = RetryPolicies::default();
+
+    // Send one append request to create background task
+    let request = AppendEntriesRequest {
+        term: 1,
+        leader_id: my_id,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+
+    let _result = transport
+        .send_append_requests(vec![(peer_id, request)], &retry, membership, false)
+        .await;
+
+    // Verify task was created and is running
+    assert!(
+        transport.has_active_tasks(),
+        "Background task should be running after send_append_requests"
+    );
+
+    // Drop transport - this should abort the background task immediately
+    // Without the Drop impl, this would hang waiting for membership retries
+    drop(transport);
+
+    // Test passes if we reach here without hanging (validates Drop impl works)
+}

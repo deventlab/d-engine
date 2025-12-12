@@ -293,6 +293,7 @@ impl MockBuilder {
     ///
     /// Wraps the Raft instance in a Node container for integration testing.
     pub fn build_node(self) -> Node<MockTypeConfig> {
+        let shutdown_signal = self.shutdown_signal.clone();
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
         let node_config = raft.ctx.node_config.clone();
@@ -312,6 +313,7 @@ impl MockBuilder {
             node_config,
             watch_manager: None,
             watch_dispatcher_handle: None,
+            shutdown_signal,
         }
     }
 
@@ -349,6 +351,7 @@ impl MockBuilder {
             node_config: node_config_arc.clone(),
             watch_manager: None,
             watch_dispatcher_handle: None,
+            shutdown_signal: shutdown.clone(),
         });
         let node_clone = node.clone();
         let listen_address = node_config_arc.cluster.listen_address;

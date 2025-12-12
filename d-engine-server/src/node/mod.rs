@@ -104,6 +104,9 @@ where
     /// Optional watch dispatcher handle for registering new watch streams
     /// When None, watch functionality is disabled
     pub(crate) watch_dispatcher_handle: Option<WatchDispatcherHandle>,
+
+    /// Shutdown signal for graceful termination
+    pub(crate) shutdown_signal: watch::Receiver<()>,
 }
 
 impl<T> Debug for Node<T>
@@ -150,13 +153,27 @@ where
         // self.node_config.clone()).await?;
 
         // 2. Healthcheck if all server is start serving
-        self.membership.check_cluster_is_ready().await?;
+        let mut shutdown_signal = self.shutdown_signal.clone();
+        shutdown_signal.borrow_and_update(); // Mark current value as seen
+        tokio::select! {
+            result = self.membership.check_cluster_is_ready() => result?,
+            _ = shutdown_signal.changed() => {
+                info!("Shutdown signal received during cluster ready check");
+                return Ok(());
+            }
+        }
 
         // 3. Set node is ready to run Raft protocol
         self.set_ready(true);
 
         // 4. Warm up connections with peers
-        self.membership.pre_warm_connections().await?;
+        tokio::select! {
+            result = self.membership.pre_warm_connections() => result?,
+            _ = shutdown_signal.changed() => {
+                info!("Shutdown signal received during connection warmup");
+                return Ok(());
+            }
+        }
 
         let mut raft = self.raft_core.lock().await;
         // 5. if join as a new node
@@ -240,7 +257,10 @@ where
 
     /// Create a Node from a pre-built Raft instance
     /// This method is designed to support testing and external builders
-    pub fn from_raft(raft: Raft<T>) -> Self {
+    pub fn from_raft(
+        raft: Raft<T>,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
         let event_tx = raft.event_sender();
         let node_config = raft.ctx.node_config();
         let membership = raft.ctx.membership();
@@ -261,6 +281,7 @@ where
             node_config,
             watch_manager: None,
             watch_dispatcher_handle: None,
+            shutdown_signal,
         }
     }
 

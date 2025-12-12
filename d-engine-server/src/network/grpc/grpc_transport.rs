@@ -541,6 +541,23 @@ where
     }
 }
 
+impl<T> Drop for GrpcTransport<T>
+where
+    T: TypeConfig,
+{
+    fn drop(&mut self) {
+        // Abort all background peer appender tasks to ensure fast shutdown.
+        // Without this, tasks may hang in membership.get_peer_channel() retries.
+        for entry in self.peer_appenders.iter() {
+            entry.value().task_handle.abort();
+        }
+        debug!(
+            "Aborted {} peer appender tasks during GrpcTransport drop",
+            self.peer_appenders.len()
+        );
+    }
+}
+
 impl<T> GrpcTransport<T>
 where
     T: TypeConfig,
@@ -732,5 +749,21 @@ where
             appender.task_handle.abort();
             debug!("Removed appender task for peer {}", peer_id);
         }
+    }
+
+    /// Abort all background peer appender tasks immediately.
+    /// Called during node shutdown to prevent connection retry spam.
+    pub fn abort_all_tasks(&self) {
+        for entry in self.peer_appenders.iter() {
+            entry.value().task_handle.abort();
+        }
+        debug!("Aborted {} peer appender tasks", self.peer_appenders.len());
+    }
+
+    /// Check if any peer appender tasks are still running.
+    /// Used in tests to verify tasks are properly aborted.
+    #[cfg(test)]
+    pub fn has_active_tasks(&self) -> bool {
+        self.peer_appenders.iter().any(|entry| !entry.value().task_handle.is_finished())
     }
 }

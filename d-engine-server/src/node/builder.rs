@@ -453,6 +453,7 @@ where
             node_config: node_config_arc,
             watch_manager,
             watch_dispatcher_handle,
+            shutdown_signal: self.shutdown_signal.clone(),
         };
 
         self.node = Some(Arc::new(node));
