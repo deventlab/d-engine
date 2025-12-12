@@ -347,13 +347,19 @@ See [examples/three-nodes-cluster.md](./examples/three-nodes-cluster.md):
 - Benchmark reference setup
 - Performance profiling
 
-### Understand Integration Modes
+### Integration Modes
 
-See [02-integration-modes.md](../../d-engine-product-design/product-handbook/02-integration-modes.md):
+**Embedded Mode** (this guide):
 
-- Embedded vs Standalone mode
-- When to use which mode
-- Performance comparison
+- Runs inside your Rust application
+- Zero serialization overhead
+- <0.1ms latency
+
+**Standalone Mode**:
+
+- Runs as separate server process
+- Language-agnostic (Go, Python, etc.)
+- gRPC communication
 
 ### Advanced Usage
 

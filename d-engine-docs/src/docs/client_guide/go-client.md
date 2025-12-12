@@ -483,8 +483,7 @@ func (c *DEngineClient) GetLogged(ctx context.Context, key string) (string, erro
 For complete API documentation, see:
 
 - [d-engine Proto Definitions](https://github.com/deventlab/d-engine/tree/main/d-engine-proto/proto)
-- [gRPC Services](../architecture/api-spec.md)
-- [Error Codes](../architecture/error-codes.md)
+- [Error Handling](error-handling.md) - Error categories and retry strategies
 
 ## Resources
 

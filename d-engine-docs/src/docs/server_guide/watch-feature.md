@@ -284,5 +284,4 @@ while let Some(event) = stream.next().await {
 ## See Also
 
 - [Customize State Machine](customize-state-machine.md) - Integrate Watch notifications
-- [Configuration Reference](../configuration.md) - Full config options
-- [Performance Tuning](../performance.md) - Optimization guidelines
+- [Performance Optimization](../performance/throughput-optimization-guide.md) - Optimization guidelines

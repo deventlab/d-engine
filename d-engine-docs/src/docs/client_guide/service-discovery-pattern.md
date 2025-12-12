@@ -7,16 +7,19 @@ This guide explains how to use d-engine for service discovery use cases like DNS
 Service discovery systems have specific requirements that align well with d-engine's design:
 
 **Cost-Effective Start**
+
 - Start with 1 node: $100/month vs etcd's 3-node requirement ($300/month)
 - Scale to 3 nodes only when high availability is needed
 - No external dependencies (Redis, PostgreSQL, etc.)
 
 **Read-Heavy Workload Optimization**
+
 - DNS queries are 99% reads, 1% writes
 - EventualConsistency policy enables local reads (<0.1ms)
 - Watch API eliminates polling overhead
 
 **Local-First Architecture**
+
 - Most reads served from local memory
 - Network communication only for writes and coordination
 - Embedded mode: zero serialization overhead (Rust only)
@@ -28,11 +31,13 @@ Service discovery systems have specific requirements that align well with d-engi
 Monitor key changes in real-time without polling.
 
 **What it does:**
+
 - Receive notifications when keys change (PUT/DELETE)
 - FIFO ordering per key
 - Lock-free implementation with minimal write path overhead
 
 **Current Limitations:**
+
 - Exact key match only (no prefix or range watch)
 - At-most-once delivery (events may drop under high load)
 - No event history (only future changes after watch starts)
@@ -43,11 +48,11 @@ See [Watch Feature Guide](../server_guide/watch-feature.md) for configuration an
 
 Choose between consistency and performance based on your needs.
 
-| Policy | Latency | Use Case |
-|--------|---------|----------|
-| LinearizableRead | High | Critical operations requiring absolute latest data |
-| LeaseRead | Medium | Most production applications (default) |
-| EventualConsistency | Lowest | DNS queries, caching, monitoring |
+| Policy              | Latency | Use Case                                           |
+| ------------------- | ------- | -------------------------------------------------- |
+| LinearizableRead    | High    | Critical operations requiring absolute latest data |
+| LeaseRead           | Medium  | Most production applications (default)             |
+| EventualConsistency | Lowest  | DNS queries, caching, monitoring                   |
 
 **For service discovery**: EventualConsistency is typically sufficient. DNS tolerates 50-100ms staleness, and d-engine's EventualConsistency provides much lower staleness in practice.
 
@@ -89,11 +94,13 @@ PUT /services/api-gateway/instance-2 -> "192.168.1.11:8080"
 ### DNS Server (like CoreDNS)
 
 **Requirements:**
+
 - High read throughput (10K+ queries/sec)
 - Stale reads acceptable (50-100ms)
 - Cache invalidation on record changes
 
 **How d-engine fits:**
+
 - Watch DNS record keys (`dns.example.com/A`)
 - EventualConsistency for query serving
 - Update cache on Watch events
@@ -101,11 +108,13 @@ PUT /services/api-gateway/instance-2 -> "192.168.1.11:8080"
 ### Service Registry (like Consul)
 
 **Requirements:**
+
 - Service health checks
 - Endpoint discovery
 - Dynamic service registration
 
 **How d-engine fits:**
+
 - Services register endpoints via PUT
 - Clients watch service keys
 - Health checker updates TTL or deletes unhealthy endpoints
@@ -113,11 +122,13 @@ PUT /services/api-gateway/instance-2 -> "192.168.1.11:8080"
 ### Configuration Center
 
 **Requirements:**
+
 - Feature flags, runtime config
 - Real-time updates without restart
 - Version control
 
 **How d-engine fits:**
+
 - Store config as KV pairs
 - Applications watch config keys
 - Reload config on Watch events
@@ -146,6 +157,7 @@ PUT /services/api-gateway/instance-2 -> "192.168.1.11:8080"
 ### Workarounds
 
 **For prefix watch needs:**
+
 ```text
 // Instead of: watch("/services/*")
 // Do: Maintain an index key
@@ -155,6 +167,7 @@ watch(/services/_index)  // Watch the index
 ```
 
 **For event replay needs:**
+
 ```text
 // Pattern: Read-then-Watch
 1. Read current state: GET /services/api-gateway/*
@@ -178,16 +191,19 @@ For these scenarios, evaluate etcd, Consul, or specialized databases.
 If you're using etcd for service discovery:
 
 **What works the same:**
+
 - Basic KV operations (PUT/GET/DELETE)
 - Watch single keys
 - Linearizable/Lease read consistency
 
 **What requires changes:**
+
 - Prefix watch → Index key pattern
 - Range operations → Individual key operations
 - Transactions → Not yet supported
 
 **Performance comparison:**
+
 - d-engine: 5.6x faster than etcd (average throughput)
 - See `benches/reports/` for detailed benchmarks
 
@@ -196,7 +212,7 @@ If you're using etcd for service discovery:
 1. **Start with single node**: Follow [Quick Start (5min)](../quick-start-5min.md)
 2. **Enable Watch**: Check [Watch Feature Guide](../server_guide/watch-feature.md)
 3. **Choose consistency policy**: See [Read Consistency Guide](read_consistency.md)
-4. **Scale when needed**: Follow [Scale to Cluster](../scale-to-cluster.md)
+4. **Scale when needed**: Follow [Single Node Expansion](../examples/single-node-expansion.md)
 
 ## Production Checklist
 

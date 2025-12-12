@@ -337,8 +337,8 @@ bench-compile: check-workspace
 
 ## docs                Generate API documentation and open in browser (opens d-engine-docs hub)
 docs: check-workspace
-	@echo "$(BLUE)Generating API documentation for all workspace crates...$(NC)"
-	@$(CARGO) doc --workspace --no-deps
+	@echo "$(BLUE)Generating API documentation for public crates...$(NC)"
+	@$(CARGO) doc --workspace --no-deps --exclude d-engine-core --exclude d-engine-proto
 	@echo "$(GREEN)✓ Documentation generated$(NC)"
 	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
 	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"

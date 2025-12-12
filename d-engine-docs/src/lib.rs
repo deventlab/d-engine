@@ -66,14 +66,14 @@
 //! ### For Server Operators
 //!
 //! - **[d_engine_server API](../d_engine_server/index.html)** - Server runtime and node management
-//!   - How to [customize storage engines](./docs/server_guide/customize-storage-engine.html)
-//!   - How to [implement state machines](./docs/server_guide/customize-state-machine.html)
-//!   - [Performance tuning guide](./docs/performance/throughput-optimization-guide.html)
+//!   - How to [customize storage engines](./docs/server_guide/customize_storage_engine/index.html)
+//!   - How to [implement state machines](./docs/server_guide/customize_state_machine/index.html)
+//!   - [Performance tuning guide](./docs/performance/throughput_optimization_guide/index.html)
 //!
 //! ### For Client Developers
 //!
 //! - **[d_engine_client API](../d_engine_client/index.html)** - Client library for applications
-//!   - [Read consistency policies](./docs/client_guide/read_consistency.html)
+//!   - [Read consistency policies](./docs/client_guide/read_consistency/index.html)
 //!   - Error handling and retry strategies
 //!   - Connection pooling and timeouts
 //!
@@ -88,19 +88,19 @@
 //!
 //! Deep dive into d-engine's design and implementation:
 //!
-//! - [Raft Roles and State Transitions](./docs/architecture/raft-role.html)
+//! - [Raft Roles and State Transitions](./docs/architecture/raft_role/index.html)
 //!   - How leader, candidate, and follower states work
-//! - [Election Design](./docs/architecture/election-design.html)
+//! - [Election Design](./docs/architecture/election_design/index.html)
 //!   - Why randomized timeouts prevent split-brain
-//! - [Raft Log Persistence Architecture](./docs/architecture/raft-log-persistence-architecture.html)
+//! - [Raft Log Persistence Architecture](./docs/architecture/raft_log_persistence_architecture/index.html)
 //!   - How log entries are persisted and recovered
-//! - [Snapshot Module Design](./docs/architecture/snapshot-module-design.html)
+//! - [Snapshot Module Design](./docs/architecture/snapshot_module_design/index.html)
 //!   - Snapshots for recovery optimization
-//! - [New Node Join Architecture](./docs/architecture/new-node-join-architecture.html)
+//! - [New Node Join Architecture](./docs/architecture/new_node_join_architecture/index.html)
 //!   - Dynamic cluster membership changes
-//! - [Error Handling Design Principles](./docs/architecture/error-handling-design-principles.html)
+//! - [Error Handling Design Principles](./docs/architecture/error_handling_design_principles/index.html)
 //!   - How errors are categorized and handled
-//! - [Single Responsibility Principle](./docs/architecture/single-responsibility-principle.html)
+//! - [Single Responsibility Principle](./docs/architecture/single_responsibility_principle/index.html)
 //!   - Design philosophy behind modularity
 //!
 //! ## Key Concepts
@@ -126,7 +126,7 @@
 //! - **Strong consistency**: Read from leader only (guarantees latest value)
 //! - **Eventual consistency**: Read from any replica (may be stale)
 //!
-//! See [consistency policies guide](./docs/client_guide/read_consistency.html) for details.
+//! See [consistency policies guide](./docs/client_guide/read_consistency/index.html) for details.
 //!
 //! ### Storage Abstraction
 //!
@@ -139,21 +139,21 @@
 //!
 //! ### Implementing a Custom Storage Engine
 //!
-//! See [Customize Storage Engine guide](./docs/server_guide/customize-storage-engine.html) for:
+//! See [Customize Storage Engine guide](./docs/server_guide/customize_storage_engine/index.html) for:
 //! - Trait requirements
 //! - Persistence guarantees
 //! - Concurrency considerations
 //!
 //! ### Implementing a Custom State Machine
 //!
-//! See [Customize State Machine guide](./docs/server_guide/customize-state-machine.html) for:
+//! See [Customize State Machine guide](./docs/server_guide/customize_state_machine/index.html) for:
 //! - Processing write commands
 //! - Snapshot serialization
 //! - Recovery from snapshots
 //!
 //! ### Configuring Log Purging
 //!
-//! See [Log Purge Executor guide](./docs/server_guide/customize-raft-log-purge-executor.html) for:
+//! See [Log Purge Executor guide](./docs/server_guide/customize_raft_log_purge_executor/index.html) for:
 //! - Automatic log cleanup
 //! - Retention policies
 //! - Performance impact
@@ -165,7 +165,7 @@
 //! - **Latency**: Single-digit millisecond write latencies
 //! - **Scalability**: Efficient leader-based replication
 //!
-//! See [Performance Tuning Guide](./docs/performance/throughput-optimization-guide.html) for:
+//! See [Performance Tuning Guide](./docs/performance/throughput_optimization_guide/index.html) for:
 //! - Configuration recommendations
 //! - Benchmarking methodology
 //! - Common bottlenecks and solutions
