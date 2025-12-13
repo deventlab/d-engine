@@ -1264,12 +1264,18 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         membership: &Arc<T::M>,
     ) -> Result<()> {
+        let is_single_node = membership.is_single_node_cluster().await;
         let voters = membership.voters().await;
-        self.cluster_metadata.total_voters = voters.len() + 1;
+        let total_voters = voters.len() + 1;
+
+        self.cluster_metadata = ClusterMetadata {
+            is_single_node,
+            total_voters,
+        };
 
         debug!(
-            "Updated cluster metadata: total_voters={}",
-            self.cluster_metadata.total_voters
+            "Updated cluster metadata: is_single_node={}, total_voters={}",
+            is_single_node, total_voters
         );
         Ok(())
     }

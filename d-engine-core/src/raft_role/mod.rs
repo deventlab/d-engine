@@ -7,6 +7,9 @@ pub mod role_state;
 #[cfg(test)]
 mod raft_role_test;
 
+#[cfg(test)]
+mod leader_state_test;
+
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
 pub use leader_state::ClusterMetadata;
