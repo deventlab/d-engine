@@ -1,7 +1,7 @@
 [package]
 name = "d-engine-proto"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 authors = ["Joshua Chi <joshokn@gmail.com>"]
 description = "Protocol definitions and message types for d-engine using Prost"
 homepage = "https://github.com/deventlab/d-engine"

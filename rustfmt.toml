@@ -2,7 +2,7 @@
 max_width = 100   # Maximum line width (default: 100)
 hard_tabs = false
 tab_spaces = 4    # Indentation with 4 spaces
-edition = "2021"  # Rust edition (align with Cargo.toml)
+edition = "2024"  # Rust edition (align with Cargo.toml)
 
 # Comment Styling
 wrap_comments = true # Wrap long comments
