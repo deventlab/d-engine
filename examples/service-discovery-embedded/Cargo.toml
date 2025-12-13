@@ -9,7 +9,7 @@ name = "server"
 path = "server.rs"
 
 [dependencies]
-d-engine = { path = "../../d-engine", features = ["server", "rocksdb"] }
+d-engine = { path = "../../d-engine" }
 d-engine-core = { path = "../../d-engine-core" }
 
 tokio = { version = "1.36.0", features = ["full"] }

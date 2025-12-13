@@ -202,14 +202,11 @@ pub mod storage {
 /// ```
 pub mod prelude {
     #[cfg(feature = "client")]
-    pub use d_engine_client::{Client, ClientBuilder, GrpcKvClient};
+    pub use d_engine_client::{Client, ClientBuilder, GrpcKvClient, KvClient};
 
     #[cfg(feature = "server")]
     pub use d_engine_server::{
         EmbeddedEngine, FileStateMachine, FileStorageEngine, LeaderInfo, LocalClientError,
         LocalKvClient, Node, NodeBuilder, StateMachine, StorageEngine,
     };
-
-    #[cfg(feature = "full")]
-    pub use d_engine_client::KvClient;
 }

@@ -283,12 +283,16 @@ test-doc: install-tools check-workspace
 	@$(CARGO) test --doc --workspace
 	@echo "$(GREEN)✓ Documentation tests passed$(NC)"
 
-## test-examples        Run tests for examples only
+## test-examples        Verify all examples compile
 test-examples: install-tools check-workspace
-	@echo "$(BLUE)Running examples tests...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
-	@echo "$(GREEN)✓ Examples tests passed$(NC)"
+	@echo "$(BLUE)Verifying examples compilation...$(NC)"
+	@for dir in examples/*/; do \
+		if [ -f "$$dir/Cargo.toml" ]; then \
+			echo "  Checking $$(basename $$dir)..."; \
+			(cd "$$dir" && $(CARGO) check --quiet) || exit 1; \
+		fi \
+	done
+	@echo "$(GREEN)✓ All examples verified$(NC)"
 
 ## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine)
 test-crate: install-tools check-workspace
@@ -302,8 +306,8 @@ endif
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
 ## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
-test-all: clippy test-detailed test-doc bench
-	@echo "$(GREEN)✓ All test suites passed$(NC)"
+test-all: clippy test-detailed test-doc test-examples bench
+	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace

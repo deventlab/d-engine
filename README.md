@@ -16,7 +16,7 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 
 ### New in v0.2.0 🎉
 
-- **Modular Workspace**: Feature flags (`client`/`server`/`full`) - depend only on what you need
+- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
 - **TTL/Lease**: Automatic key expiration for distributed locks and session management
 - **Watch API**: Real-time key change notifications (config updates, service discovery)
 - **EmbeddedEngine**: Single-node start, one-line scale to 3-node cluster
@@ -41,70 +41,99 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 Add d-engine to your `Cargo.toml`:
 
 ```toml
-# Client-only (connect to existing cluster)
-d-engine = { version = "0.2", features = ["client"] }
+# Default: Embedded mode with RocksDB (recommended for most use cases)
+d-engine = "0.2"
 
-# Server/Embedded (run d-engine in your app)
-d-engine = { version = "0.2", features = ["server"] }
+# Standalone mode: Connect to existing d-engine cluster
+d-engine = { version = "0.2", features = ["client"], default-features = false }
 
-# Full (both client and server)
-d-engine = { version = "0.2", features = ["full"] }
-
-# With RocksDB storage backend
-d-engine = { version = "0.2", features = ["server", "rocksdb"] }
+# Custom storage backend (disable RocksDB)
+d-engine = { version = "0.2", features = ["server"], default-features = false }
 ```
+
+### When to Use
+
+#### Embedded Mode (Default) - Rust Applications
+
+```toml
+d-engine = "0.2"
+```
+
+**Use when**: Building Rust services needing distributed coordination  
+**Examples**: Database HA coordinators, distributed schedulers, control plane services  
+**Why**: Zero-overhead (<0.1ms), single binary, type-safe
+
+❌ **Don't use**: For non-Rust applications (use Standalone mode instead)
+
+---
+
+#### Standalone Mode - Non-Rust Applications
+
+```toml
+d-engine = { version = "0.2", features = ["client"], default-features = false }
+```
+
+**Use when**: Go/Python/Java apps need distributed KV  
+**Examples**: Microservices requiring distributed KV, multi-language deployments  
+**Why**: Language-agnostic gRPC API, optimized for write-heavy workloads
+
+\*Benchmarks show 51% higher write throughput vs etcd in test environments. Production results vary by hardware. See benches/ for methodology.
+
+❌ **Don't use**: For Rust apps (embedded mode has zero overhead)
+
+---
+
+#### Custom Storage - Advanced Use Cases
+
+```toml
+d-engine = { version = "0.2", features = ["server"], default-features = false }
+```
+
+**Use when**: Specific storage requirements (Sled, memory-only, cloud storage)  
+**Examples**: Embedded devices, testing environments  
+**See**: [Custom Storage Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines) | [Sled Example](examples/sled-cluster)
+
+---
 
 ## Basic Usage (Single-Node Mode)
 
-use d-engine::{RaftCore, MemoryStorage, Config};
-
 ```rust
-use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
-use tokio::sync::watch;
-use std::sync::Arc;
-use std::path::PathBuf;
+use d_engine::prelude::*;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize graceful shutdown channel
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    // Start embedded engine with RocksDB (auto-creates directories)
+    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 
-    // Configure storage
-    let path = PathBuf::from("/tmp/db");
-    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage"))?);
-    let state_machine = Arc::new(FileStateMachine::new(path.join("state_machine"))?);
+    // Wait for node initialization
+    engine.ready().await;
 
-    // Build and start node
-    let node = NodeBuilder::new(None, graceful_rx)
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .start_server()
-        .await
-        .expect("Failed to start node");
+    // Wait for leader election (single-node: instant)
+    engine.wait_leader(Duration::from_secs(5)).await?;
 
-    // Run node (blocks until shutdown)
-    node.run().await?;
+    // Get KV client (zero-overhead, in-process)
+    let client = engine.client();
+
+    // Store and retrieve data
+    client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+
+    if let Some(value) = client.get(b"hello".to_vec()).await? {
+        println!("Retrieved: hello = {}", String::from_utf8_lossy(&value));
+    }
+
+    // Graceful shutdown
+    engine.stop().await?;
     Ok(())
 }
-```
-
-### **Using RocksDB Storage**
-
-Enable the **`rocksdb`** feature and use the RocksDB implementations:
-
-```rust
-use d_engine::{NodeBuilder, RocksDBStorageEngine, RocksDBStateMachine};
-// ... same setup as above
-let storage_engine = Arc::new(RocksDBStorageEngine::new(path.join("storage"))?);
-let state_machine = Arc::new(RocksDBStateMachine::new(path.join("state_machine"))?);
 ```
 
 ## **Custom Storage Implementations**
 
 d-engine provides flexible storage abstraction layers. Implement your own storage engines and state machines by implementing the respective traits:
 
-- **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
-- **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
+- **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
+- **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
 
 Note: Single-node deployment is supported for development and low-traffic production. For high availability, you can dynamically expand to a 3-node cluster with zero downtime.
 

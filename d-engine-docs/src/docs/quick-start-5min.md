@@ -29,7 +29,7 @@ Add d-engine to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = { version = "0.2", features = ["server", "rocksdb"] }
+d-engine = "0.2"  # Default includes server + rocksdb
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 

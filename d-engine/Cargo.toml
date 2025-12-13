@@ -22,9 +22,9 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+default = ["server", "rocksdb"]
 client = ["dep:d-engine-client"]
 server = ["dep:d-engine-server"]
-full = ["client", "server"]
 rocksdb = ["server", "d-engine-server/rocksdb"]
 
 [dependencies]
