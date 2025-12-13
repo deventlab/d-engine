@@ -62,6 +62,7 @@ where
         entry_payloads: Vec<EntryPayload>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
+        cluster_metadata: &crate::raft_role::ClusterMetadata,
         ctx: &RaftContext<T>,
     ) -> Result<AppendResults> {
         let _timer = ScopedTimer::new("handle_raft_request_in_batch");
@@ -72,8 +73,8 @@ where
         // ----------------------
         // Phase 1: Pre-Checks and Cluster Topology Detection
         // ----------------------
+        let is_single_node = cluster_metadata.is_single_node;
         let membership = ctx.membership();
-        let is_single_node = membership.is_single_node_cluster().await;
 
         // Determine replication targets based on cluster topology
         let replication_targets = if is_single_node {

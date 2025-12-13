@@ -339,6 +339,9 @@ where
                     peer_ids,
                 )?;
 
+                // Initialize cluster metadata cache for hot path optimization
+                self.role.state_mut().init_cluster_metadata(&self.ctx.membership()).await?;
+
                 //async action
                 if !self
                     .role

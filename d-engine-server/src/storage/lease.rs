@@ -82,7 +82,7 @@ impl DefaultLease {
         }
     }
 
-    /// Cleanup expired keys with time limit (方案 2: iter + remove_if).
+    /// Cleanup expired keys with time limit
     ///
     /// Uses DashMap::iter() which acquires read locks on all shards.
     /// Read locks allow concurrent writes to proceed (only blocks on same shard).

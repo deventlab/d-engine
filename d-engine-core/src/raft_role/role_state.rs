@@ -79,11 +79,20 @@ pub trait RaftRoleState: Send + Sync + 'static {
     }
     fn init_peers_next_index_and_match_index(
         &mut self,
-        _last_entry_id: u64,
-        _peer_ids: Vec<u32>,
+        _last_log_id: u64,
+        _node_ids: Vec<u32>,
     ) -> Result<()> {
         warn!("init_peers_next_index_and_match_index NotLeader error");
         Err(MembershipError::NotLeader.into())
+    }
+
+    /// Initialize cluster metadata cache (only relevant for Leader)
+    async fn init_cluster_metadata(
+        &mut self,
+        _membership: &std::sync::Arc<<Self::T as crate::TypeConfig>::M>,
+    ) -> Result<()> {
+        // Default: no-op for non-leader roles
+        Ok(())
     }
     #[allow(dead_code)]
     fn noop_log_id(&self) -> Result<Option<u64>> {

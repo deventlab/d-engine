@@ -28,7 +28,7 @@ use bytes::Bytes;
 
 use crate::Result;
 
-/// Lease (租约) management interface for key expiration.
+/// Lease management interface for key expiration.
 ///
 /// Manages key lifecycles through time-based leases. d-engine provides a default
 /// implementation (`DefaultLease` in d-engine-server), but developers can implement

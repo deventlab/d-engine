@@ -9,6 +9,7 @@ mod raft_role_test;
 
 use candidate_state::CandidateState;
 use follower_state::FollowerState;
+pub use leader_state::ClusterMetadata;
 use leader_state::LeaderState;
 use learner_state::LearnerState;
 use role_state::RaftRoleState;

@@ -10,6 +10,7 @@ use tracing::debug;
 use tracing_test::traced_test;
 
 use d_engine_core::AppendResult;
+use d_engine_core::ClusterMetadata;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
 use d_engine_core::LeaderStateSnapshot;
@@ -907,7 +908,16 @@ mod handle_raft_request_in_batch_test {
         };
 
         let e = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await
             .unwrap_err();
         assert!(matches!(
@@ -985,7 +995,16 @@ mod handle_raft_request_in_batch_test {
         context.transport = Arc::new(transport);
 
         let result = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await
             .unwrap();
 
@@ -1048,7 +1067,16 @@ mod handle_raft_request_in_batch_test {
         context.membership = Arc::new(membership);
 
         let e = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await
             .unwrap_err();
 
@@ -1123,7 +1151,16 @@ mod handle_raft_request_in_batch_test {
         context.membership = Arc::new(membership);
 
         let result = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await;
 
         assert!(result.is_ok());
@@ -1190,7 +1227,16 @@ mod handle_raft_request_in_batch_test {
         });
         context.membership = Arc::new(membership);
         let result = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await;
 
         assert!(matches!(
@@ -1289,6 +1335,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await;
@@ -1455,6 +1505,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await;
@@ -1665,6 +1719,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -1806,6 +1864,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -1936,6 +1998,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2057,6 +2123,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2155,6 +2225,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2256,6 +2330,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2362,6 +2440,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2467,6 +2549,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2564,6 +2650,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2625,7 +2715,16 @@ mod handle_raft_request_in_batch_test {
 
         // Should return error: NoPeerFound
         let e = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await
             .unwrap_err();
         assert!(matches!(
@@ -2738,6 +2837,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2841,6 +2944,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -2930,6 +3037,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -3014,6 +3125,10 @@ mod handle_raft_request_in_batch_test {
                 client_command_to_entry_payloads(commands),
                 state_snapshot,
                 leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
                 &context,
             )
             .await
@@ -3082,7 +3197,16 @@ mod single_node_cluster_replication_tests {
         };
 
         let result = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: true,
+                    total_voters: 1,
+                },
+                &context,
+            )
             .await;
 
         // Verify: Should succeed with quorum achieved, no peer updates
@@ -3202,7 +3326,16 @@ mod single_node_cluster_replication_tests {
         };
 
         let result = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await;
 
         // Verify: Should succeed with peer updates
@@ -3274,7 +3407,16 @@ mod single_node_cluster_replication_tests {
         };
 
         let result = handler
-            .handle_raft_request_in_batch(commands, state_snapshot, leader_state_snapshot, &context)
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    is_single_node: false,
+                    total_voters: 3,
+                },
+                &context,
+            )
             .await;
 
         // Verify: Should get NoPeerFound error (not treated as single-node)

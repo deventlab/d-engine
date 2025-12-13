@@ -56,7 +56,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
     //Configure mock behavior
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(move |_, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),

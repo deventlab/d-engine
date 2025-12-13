@@ -218,7 +218,7 @@ async fn test_handle_rpc_services_successfully() {
     });
     replication_handler
         .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),

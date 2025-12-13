@@ -107,6 +107,7 @@ where
         entry_payloads: Vec<EntryPayload>,
         state_snapshot: StateSnapshot,
         leader_state_snapshot: LeaderStateSnapshot,
+        cluster_metadata: &crate::raft_role::ClusterMetadata,
         ctx: &crate::RaftContext<T>,
     ) -> Result<AppendResults>;
 

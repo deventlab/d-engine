@@ -101,7 +101,7 @@ async fn setup_process_raft_request_test_context(
     replication_handler
         .expect_handle_raft_request_in_batch()
         .times(handle_raft_request_in_batch_expect_times)
-        .returning(move |_, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -761,7 +761,7 @@ async fn test_handle_raft_event_case5_1() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
@@ -806,7 +806,7 @@ async fn test_handle_raft_event_case6_1() {
     replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -856,10 +856,8 @@ async fn test_handle_raft_event_case6_2() {
     let expect_new_commit_index = 3;
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _| {
+    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+        |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
@@ -882,7 +880,8 @@ async fn test_handle_raft_event_case6_2() {
                 ]),
                 learner_progress: HashMap::new(),
             })
-        });
+        },
+    );
 
     let mut raft_log = MockRaftLog::new();
     raft_log
@@ -953,7 +952,7 @@ async fn test_handle_raft_event_case6_3() {
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        move |_, _, _, _| {
+        move |_, _, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(1),
             )))
@@ -1820,7 +1819,7 @@ fn test_state_size() {
         "LeaderState size: {}",
         size_of::<LeaderState<MockTypeConfig>>()
     );
-    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 360);
+    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 376);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus
@@ -1992,7 +1991,7 @@ async fn test_process_batch_case1_quorum_achieved() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
@@ -2062,7 +2061,7 @@ async fn test_process_batch_case2_quorum_failed() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2124,7 +2123,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(move |_, _, _, _| {
+        .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 peer_updates: HashMap::from([(
@@ -2158,6 +2157,13 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         ]
     });
     context.raft_context.membership = Arc::new(membership);
+
+    // Re-initialize cluster metadata after changing membership
+    context
+        .state
+        .init_cluster_metadata(&context.raft_context.membership)
+        .await
+        .unwrap();
 
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
@@ -2195,7 +2201,7 @@ async fn test_process_batch_case3_higher_term() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(10), // Higher term
             )))
@@ -2236,7 +2242,7 @@ async fn test_process_batch_case4_partial_timeouts() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2272,6 +2278,13 @@ async fn test_process_batch_case4_partial_timeouts() {
     });
     context.raft_context.membership = Arc::new(membership);
 
+    // Re-initialize cluster metadata after changing membership
+    context
+        .state
+        .init_cluster_metadata(&context.raft_context.membership)
+        .await
+        .unwrap();
+
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let result = context
@@ -2304,7 +2317,7 @@ async fn test_process_batch_case5_all_timeout() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2364,7 +2377,7 @@ async fn test_process_batch_case6_fatal_error() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
 
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
@@ -2420,6 +2433,9 @@ mod process_batch_commit_index_tests {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
         state.update_commit_index(5).unwrap();
 
+        // Initialize cluster metadata to match the test scenario
+        state.init_cluster_metadata(&context.membership).await.unwrap();
+
         ProcessRaftRequestTestContext {
             state,
             raft_context: context,
@@ -2447,7 +2463,7 @@ mod process_batch_commit_index_tests {
             .replication_handler
             .expect_handle_raft_request_in_batch()
             .times(1)
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     learner_progress: HashMap::new(),
@@ -2508,7 +2524,7 @@ mod process_batch_commit_index_tests {
             .replication_handler
             .expect_handle_raft_request_in_batch()
             .times(1)
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     learner_progress: HashMap::new(),
@@ -2567,7 +2583,7 @@ mod process_batch_commit_index_tests {
             .replication_handler
             .expect_handle_raft_request_in_batch()
             .times(1)
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     learner_progress: HashMap::new(),
@@ -2629,9 +2645,19 @@ async fn setup_process_batch_test_context(
     path: &str,
     graceful_rx: watch::Receiver<()>,
 ) -> ProcessRaftRequestTestContext {
-    let context = mock_raft_context(path, graceful_rx, None);
+    let mut context = mock_raft_context(path, graceful_rx, None);
+
+    // Setup default membership mock with voters() support for init_cluster_metadata
+    let mut membership = MockMembership::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_voters().returning(Vec::new); // Empty voters list by default
+    context.membership = Arc::new(membership);
+
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_commit_index(5).unwrap(); // Initial commit index
+
+    // Initialize cluster metadata with default membership
+    state.init_cluster_metadata(&context.membership).await.unwrap();
 
     ProcessRaftRequestTestContext {
         state,
@@ -2669,7 +2695,7 @@ async fn test_verify_internal_quorum_case1_quorum_achieved() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
@@ -2717,7 +2743,7 @@ async fn test_verify_internal_quorum_case2_verifiable_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2757,7 +2783,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2794,6 +2820,9 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
 
+    // Initialize cluster metadata after setting up membership
+    state.init_cluster_metadata(&raft_context.membership).await.unwrap();
+
     let (role_tx, _) = mpsc::unbounded_channel();
 
     let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
@@ -2821,7 +2850,7 @@ async fn test_verify_internal_quorum_case4_partial_timeouts() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2861,7 +2890,7 @@ async fn test_verify_internal_quorum_case5_all_timeouts() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -2897,7 +2926,7 @@ async fn test_verify_internal_quorum_case6_higher_term() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Err(Error::Consensus(ConsensusError::Replication(
                 ReplicationError::HigherTerm(10),
             )))
@@ -2942,7 +2971,7 @@ async fn test_verify_internal_quorum_case7_critical_failure() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
 
@@ -3002,7 +3031,7 @@ async fn test_handle_join_cluster_case1_success() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
@@ -3122,7 +3151,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
@@ -3185,7 +3214,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| Err(Error::Fatal("Test error".to_string())));
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Test error".to_string())));
 
     // Mock quorum verification to return error
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -3262,7 +3291,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
         .replication_handler
         .expect_handle_raft_request_in_batch()
         .times(1)
-        .returning(|_, _, _, _| {
+        .returning(|_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
@@ -3467,7 +3496,7 @@ mod batch_promote_learners_test {
         });
         let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
         replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-            move |_, _, _, _| {
+            move |_, _, _, _, _| {
                 match verify_leadership_limited_retry_success {
                     VerifyInternalQuorumWithRetrySuccess::Success => Ok(AppendResults {
                         commit_quorum_achieved: true,
@@ -3693,7 +3722,7 @@ mod pending_promotion_tests {
                 .handlers
                 .replication_handler
                 .expect_handle_raft_request_in_batch()
-                .returning(|_, _, _, _| {
+                .returning(|_, _, _, _, _| {
                     Ok(AppendResults {
                         commit_quorum_achieved: true,
                         learner_progress: HashMap::new(),
@@ -3737,7 +3766,7 @@ mod pending_promotion_tests {
                 .handlers
                 .replication_handler
                 .expect_handle_raft_request_in_batch()
-                .returning(|_, _, _, _| {
+                .returning(|_, _, _, _, _| {
                     Ok(AppendResults {
                         commit_quorum_achieved: false,
                         learner_progress: HashMap::new(),
@@ -4210,7 +4239,7 @@ mod handle_client_read_request {
 
         let mut replication_handler = MockReplicationCore::new();
         replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-            |_, _, _, _| {
+            |_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     peer_updates: HashMap::new(),
@@ -4262,7 +4291,7 @@ mod handle_client_read_request {
     async fn test_handle_client_read_lease_read_expired_lease() {
         let mut replication_handler = MockReplicationCore::new();
         replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-            |_, _, _, _| {
+            |_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     peer_updates: HashMap::new(),
@@ -4315,7 +4344,7 @@ mod handle_client_read_request {
     async fn test_handle_client_read_unspecified_policy_leader() {
         let mut replication_handler = MockReplicationCore::new();
         replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-            |_, _, _, _| {
+            |_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     peer_updates: HashMap::new(),

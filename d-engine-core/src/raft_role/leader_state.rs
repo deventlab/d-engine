@@ -113,6 +113,18 @@ impl PendingPromotion {
     }
 }
 
+/// Cached cluster topology metadata for hot path optimization.
+///
+/// This metadata is immutable during leadership and only updated on membership changes.
+/// Caching avoids repeated async calls to membership queries in hot paths like append_entries.
+#[derive(Debug, Clone)]
+pub struct ClusterMetadata {
+    /// Whether this is a single-node cluster (immutable during leadership)
+    pub is_single_node: bool,
+    /// Total number of voters including self (updated on membership changes)
+    pub total_voters: usize,
+}
+
 /// Leader node's state in Raft consensus algorithm.
 ///
 /// This structure maintains all state that should be persisted on leader crashes,
@@ -224,6 +236,11 @@ pub struct LeaderState<T: TypeConfig> {
     /// Lease timestamp for LeaseRead policy
     /// Tracks when leadership was last confirmed with quorum
     pub(super) lease_timestamp: AtomicU64,
+
+    // -- Cluster Topology Cache --
+    /// Cached cluster metadata (updated on membership changes)
+    /// Avoids repeated async calls in hot paths
+    pub(super) cluster_metadata: ClusterMetadata,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -480,6 +497,28 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///
     /// 7. Critical failure (e.g., system or logic error):
     ///    - Return: original error
+    /// Override: Initialize cluster metadata after becoming leader.
+    /// Must be called once after leader election succeeds.
+    async fn init_cluster_metadata(
+        &mut self,
+        membership: &Arc<T::M>,
+    ) -> Result<()> {
+        let is_single_node = membership.is_single_node_cluster().await;
+        let voters = membership.voters().await;
+        let total_voters = voters.len() + 1; // Include self
+
+        self.cluster_metadata = ClusterMetadata {
+            is_single_node,
+            total_voters,
+        };
+
+        debug!(
+            "Initialized cluster metadata: is_single_node={}, total_voters={}",
+            is_single_node, total_voters
+        );
+        Ok(())
+    }
+
     async fn verify_internal_quorum(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -1219,6 +1258,22 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 }
 
 impl<T: TypeConfig> LeaderState<T> {
+    /// Initialize cluster metadata after becoming leader.
+    /// Update cluster metadata when membership changes.
+    pub async fn update_cluster_metadata(
+        &mut self,
+        membership: &Arc<T::M>,
+    ) -> Result<()> {
+        let voters = membership.voters().await;
+        self.cluster_metadata.total_voters = voters.len() + 1;
+
+        debug!(
+            "Updated cluster metadata: total_voters={}",
+            self.cluster_metadata.total_voters
+        );
+        Ok(())
+    }
+
     /// The fun will retrieve current state snapshot
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
@@ -1320,9 +1375,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         // 2. Execute the copy
-        let membership = ctx.membership();
-        let voters = membership.voters().await;
-        let cluster_size = voters.len() + 1;
+        let cluster_size = self.cluster_metadata.total_voters;
         trace!(%cluster_size);
 
         let result = ctx
@@ -1331,6 +1384,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 entry_payloads,
                 self.state_snapshot(),
                 self.leader_state_snapshot(),
+                &self.cluster_metadata,
                 ctx,
             )
             .await;
@@ -1355,7 +1409,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 // 3. Update commit index
                 // Single-node cluster: commit index = last log index (quorum of 1)
                 // Multi-node cluster: calculate commit index based on majority quorum
-                let new_commit_index = if ctx.membership().is_single_node_cluster().await {
+                let new_commit_index = if self.cluster_metadata.is_single_node {
                     let last_log_index = ctx.raft_log().last_entry_id();
                     if last_log_index > self.commit_index() {
                         Some(last_log_index)
@@ -1867,6 +1921,11 @@ impl<T: TypeConfig> LeaderState<T> {
                     ctx.membership().replication_peers().await
                 );
 
+                // 4.5. Update cluster metadata cache
+                if let Err(e) = self.update_cluster_metadata(&ctx.membership()).await {
+                    warn!("Failed to update cluster metadata: {:?}", e);
+                }
+
                 // 5. Send successful response
                 debug!("5. Send successful response");
                 info!("Join config committed for node {}", node_id);
@@ -1958,6 +2017,10 @@ impl<T: TypeConfig> LeaderState<T> {
         } = node_config.raft.replication;
 
         LeaderState {
+            cluster_metadata: ClusterMetadata {
+                is_single_node: false,
+                total_voters: 0,
+            },
             shared_state: SharedState::new(node_id, None, None),
             timer: Box::new(ReplicationTimer::new(
                 rpc_append_entries_clock_in_ms,
@@ -2396,6 +2459,10 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             peer_purge_progress: HashMap::new(),
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
+            cluster_metadata: ClusterMetadata {
+                is_single_node: false,
+                total_voters: 0,
+            },
 
             _marker: PhantomData,
             lease_timestamp: AtomicU64::new(0),
