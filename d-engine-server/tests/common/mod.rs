@@ -188,8 +188,18 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
         ..Default::default()
     };
 
+    // Election retry policy - increased for test stability during concurrent node startup
+    // When multiple nodes start simultaneously, RPC servers may not be ready immediately
+    let election_policy = BackoffPolicy {
+        max_retries: 5,
+        timeout_ms: 2000, // Increased from default 100ms to handle slow RPC server startup
+        base_delay_ms: 100,
+        max_delay_ms: 5000,
+    };
+
     config.raft = raft;
     config.retry.append_entries = append_policy;
+    config.retry.election = election_policy;
 
     config
 }
