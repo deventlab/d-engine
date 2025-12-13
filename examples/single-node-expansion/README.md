@@ -83,6 +83,7 @@ initial_cluster_size = 1  # KEY: Triggers single-node mode
 ```
 
 **Key Points**:
+
 - `initial_cluster_size = 1` is **IMMUTABLE** and triggers single-node bootstrap
 - `role = 2` (Leader) - node expects to become leader immediately
 - `status = 2` (Active) - node is active from the start
@@ -101,6 +102,7 @@ initial_cluster_size = 1  # Must match Node 1
 ```
 
 **Key Points**:
+
 - Lists ALL nodes (existing + self)
 - Self has `role = 3` (Learner), `status = 0` (Joining)
 - `initial_cluster_size = 1` matches Node 1 (immutable)
@@ -148,6 +150,7 @@ make start-node1
 ```
 
 **Expected logs**:
+
 ```
 Single-node mode detected (initial_cluster_size=1)
 Node 1 transitioning directly to Leader role
@@ -155,6 +158,7 @@ Leader state initialized successfully
 ```
 
 **What to observe**:
+
 - Node 1 becomes leader immediately (no election)
 - Can accept writes immediately
 
@@ -169,6 +173,7 @@ make join-node2
 **Expected logs**:
 
 Node 2:
+
 ```
 Learner state initialized
 Discovering leader from initial_cluster
@@ -178,6 +183,7 @@ Syncing raft logs via AppendEntries
 ```
 
 Node 1:
+
 ```
 Received JoinRequest from Node 2
 Committing AddNode configuration change
@@ -187,12 +193,14 @@ Promoting learner 2 to voter (caught up)
 ```
 
 Node 2:
+
 ```
 Received promotion to Voter
 Transitioned from Learner to Follower
 ```
 
 **What to observe**:
+
 - Node 2 joins as Learner
 - Node 2 syncs data via AppendEntries
 - Node 1 monitors Node 2's progress
@@ -209,6 +217,7 @@ make join-node3
 **Expected logs**: Similar to Node 2's join flow.
 
 **What to observe**:
+
 - Node 3 joins as Learner
 - Configuration change now requires 2/3 quorum (Node 1 + Node 2)
 - Node 3 syncs and promotes to Voter
@@ -242,24 +251,24 @@ make clean-logs
 
 ### Successful Join Flow
 
-| Stage | Node | Log Message |
-|-------|------|-------------|
-| 1. Join Request | Node 2/3 | `Sending JoinRequest to Node 1` |
-| 2. Leader Accepts | Node 1 | `Node X successfully added as learner` |
-| 3. Config Change | Node 1 | `Committing AddNode configuration change` |
-| 4. Learner Syncing | Node 2/3 | `Syncing raft logs via AppendEntries` |
-| 5. Leader Monitors | Node 1 | `Learner progress: node_id=X, match_index=Y` |
-| 6. Promotion Triggered | Node 1 | `Promoting learner X to voter` |
-| 7. Learner Promoted | Node 2/3 | `Transitioned from Learner to Follower` |
+| Stage                  | Node     | Log Message                                  |
+| ---------------------- | -------- | -------------------------------------------- |
+| 1. Join Request        | Node 2/3 | `Sending JoinRequest to Node 1`              |
+| 2. Leader Accepts      | Node 1   | `Node X successfully added as learner`       |
+| 3. Config Change       | Node 1   | `Committing AddNode configuration change`    |
+| 4. Learner Syncing     | Node 2/3 | `Syncing raft logs via AppendEntries`        |
+| 5. Leader Monitors     | Node 1   | `Learner progress: node_id=X, match_index=Y` |
+| 6. Promotion Triggered | Node 1   | `Promoting learner X to voter`               |
+| 7. Learner Promoted    | Node 2/3 | `Transitioned from Learner to Follower`      |
 
 ### Error Scenarios
 
-| Error | Possible Cause | Solution |
-|-------|----------------|----------|
-| `NoLeader` | Node 1 not started | Start Node 1 first |
-| `NodeAlreadyExists` | Duplicate node_id | Use unique node_ids |
-| `CommitTimeout` | Quorum not available | Ensure majority of voters are running |
-| `JoinClusterFailed` | Network issue | Check addresses in config |
+| Error               | Possible Cause       | Solution                              |
+| ------------------- | -------------------- | ------------------------------------- |
+| `NoLeader`          | Node 1 not started   | Start Node 1 first                    |
+| `NodeAlreadyExists` | Duplicate node_id    | Use unique node_ids                   |
+| `CommitTimeout`     | Quorum not available | Ensure majority of voters are running |
+| `JoinClusterFailed` | Network issue        | Check addresses in config             |
 
 ## Testing Checklist
 
@@ -282,6 +291,7 @@ make clean-logs
 **Symptom**: `NoLeader` error in logs
 
 **Solution**:
+
 1. Verify Node 1 is running: `ps aux | grep demo`
 2. Check Node 1 logs for "Leader state initialized"
 3. Verify addresses in config files match
@@ -291,6 +301,7 @@ make clean-logs
 **Symptom**: `CommitTimeout` or `JoinClusterFailed`
 
 **Solution**:
+
 1. Check network connectivity: `curl http://0.0.0.0:9081` (should fail but proves port is open)
 2. Verify `initial_cluster` in joining node's config lists correct leader address
 3. Check Node 1 logs for error messages
@@ -300,6 +311,7 @@ make clean-logs
 **Symptom**: Node stays in Learner role indefinitely
 
 **Solution**:
+
 1. Check Node 1 logs for "Learner progress" messages
 2. Verify `match_index` is increasing (data is syncing)
 3. Check for errors in AppendEntries replication
@@ -310,6 +322,7 @@ make clean-logs
 **Symptom**: Node 3 join fails because only 1 voter exists
 
 **Solution**:
+
 1. Wait for Node 2 to promote to Voter first
 2. Check Node 2's role: should see "Transitioned from Learner to Follower"
 3. Retry Node 3 join after Node 2 is promoted
@@ -319,6 +332,7 @@ make clean-logs
 ### Manual Testing Without Makefile
 
 **Node 1**:
+
 ```bash
 CONFIG_PATH=config/n1 \
 DB_PATH="./db/1" \
@@ -330,6 +344,7 @@ RUST_BACKTRACE=1 \
 ```
 
 **Node 2**:
+
 ```bash
 CONFIG_PATH=config/n2 \
 DB_PATH="./db/2" \
@@ -343,6 +358,7 @@ RUST_BACKTRACE=1 \
 ### Testing with Writes During Expansion
 
 You can send write requests to Node 1 while nodes are joining to verify:
+
 - Leader continues accepting writes
 - New nodes sync all committed entries
 - No data loss during expansion
@@ -358,7 +374,6 @@ You can send write requests to Node 1 while nodes are joining to verify:
 - [Issue #179: Single-node cluster support](https://github.com/your-repo/d-engine/issues/179)
 - [Raft Paper: Section 6 - Cluster Membership Changes](https://raft.github.io/raft.pdf)
 - [etcd Learner Documentation](https://etcd.io/docs/v3.5/learning/design-learner/)
-- [openraft Membership Changes](https://docs.rs/openraft/latest/openraft/docs/cluster_control/index.html)
 
 ## Next Steps
 

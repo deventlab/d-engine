@@ -137,11 +137,11 @@ impl From<tonic::transport::Error> for ClientApiError {
             };
         }
 
-        // Default case: unexpected connection loss
+        // Default case: unexpected transport failure
         Self::Network {
-            code: ErrorCode::ConnectionTimeout,
-            message: "Connection unexpectedly closed".into(),
-            retry_after_ms: Some(5000), // Retry after 5 seconds
+            code: ErrorCode::Uncategorized,
+            message: format!("Transport error: {err}"),
+            retry_after_ms: Some(5000),
             leader_hint: None,
         }
     }

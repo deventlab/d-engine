@@ -1,6 +1,9 @@
 name: Performance Benchmarks
 
-# Run benchmarks on a schedule and for important changes
+permissions:
+  contents: read
+
+# Run benchmarks on a schedule and manual trigger only
 on:
   # Run weekly on Sunday at 2 AM UTC
   schedule:
@@ -8,15 +11,6 @@ on:
 
   # Allow manual triggering for on-demand performance testing
   workflow_dispatch:
-
-  # Run on pushes to main branch that affect performance-critical code
-  push:
-    branches:
-      - main
-    paths:
-      - "d-engine-server/src/storage/**"
-      - "d-engine-server/benches/**"
-      - "d-engine-core/src/**"
 
 env:
   CARGO_TERM_COLOR: always

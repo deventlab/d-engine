@@ -190,7 +190,7 @@ impl ConnectionPool {
     pub(super) fn parse_cluster_metadata(
         membership: &ClusterMembership
     ) -> std::result::Result<(String, Vec<String>), ClientApiError> {
-        let leader_id = membership.current_leader_id.ok_or(ErrorCode::NotLeader)?;
+        let leader_id = membership.current_leader_id.ok_or(ErrorCode::ClusterUnavailable)?;
 
         let mut leader_addr = None;
         let mut followers = Vec::new();
@@ -208,6 +208,8 @@ impl ConnectionPool {
             }
         }
 
-        leader_addr.ok_or(ErrorCode::NotLeader.into()).map(|addr| (addr, followers))
+        leader_addr
+            .ok_or(ErrorCode::ClusterUnavailable.into())
+            .map(|addr| (addr, followers))
     }
 }

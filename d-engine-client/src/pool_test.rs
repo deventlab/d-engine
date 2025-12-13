@@ -56,7 +56,7 @@ async fn test_parse_cluster_metadata_no_leader() {
 
     let result = ConnectionPool::parse_cluster_metadata(&membership);
     let e = result.unwrap_err();
-    assert_eq!(e.code(), ErrorCode::NotLeader);
+    assert_eq!(e.code(), ErrorCode::ClusterUnavailable);
 }
 
 #[tokio::test]
@@ -75,7 +75,7 @@ async fn test_parse_cluster_metadata_leader_not_in_nodes() {
 
     let result = ConnectionPool::parse_cluster_metadata(&membership);
     let e = result.unwrap_err();
-    assert_eq!(e.code(), ErrorCode::NotLeader);
+    assert_eq!(e.code(), ErrorCode::ClusterUnavailable);
 }
 
 #[tokio::test]
@@ -295,7 +295,7 @@ async fn test_parse_cluster_metadata_leader_id_zero() {
 
     let result = ConnectionPool::parse_cluster_metadata(&membership);
     let e = result.unwrap_err();
-    assert_eq!(e.code(), ErrorCode::NotLeader);
+    assert_eq!(e.code(), ErrorCode::ClusterUnavailable);
 }
 
 #[tokio::test]
@@ -309,7 +309,7 @@ async fn test_parse_cluster_metadata_empty_nodes() {
 
     let result = ConnectionPool::parse_cluster_metadata(&membership);
     let e = result.unwrap_err();
-    assert_eq!(e.code(), ErrorCode::NotLeader);
+    assert_eq!(e.code(), ErrorCode::ClusterUnavailable);
 }
 
 #[tokio::test]

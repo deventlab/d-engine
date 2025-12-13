@@ -81,7 +81,7 @@ impl Clone for SharedState {
             node_id: self.node_id,
             hard_state: self.hard_state,
             commit_index: self.commit_index,
-            current_leader_id: AtomicU32::new(self.current_leader_id.load(Ordering::Relaxed)),
+            current_leader_id: AtomicU32::new(self.current_leader_id.load(Ordering::Acquire)),
         }
     }
 }
@@ -145,7 +145,7 @@ impl SharedState {
     /// Get current leader ID (0 = no leader)
     /// Hot-path optimized: ~5ns atomic load vs ~50ns RwLock read
     pub fn current_leader(&self) -> Option<u32> {
-        match self.current_leader_id.load(Ordering::Relaxed) {
+        match self.current_leader_id.load(Ordering::Acquire) {
             0 => None,
             id => Some(id),
         }
@@ -157,12 +157,12 @@ impl SharedState {
         &self,
         leader_id: u32,
     ) {
-        self.current_leader_id.store(leader_id, Ordering::Relaxed);
+        self.current_leader_id.store(leader_id, Ordering::Release);
     }
 
     /// Clear current leader (same as set_current_leader(0))
     pub fn clear_current_leader(&self) {
-        self.current_leader_id.store(0, Ordering::Relaxed);
+        self.current_leader_id.store(0, Ordering::Release);
     }
     pub fn current_term(&self) -> u64 {
         self.hard_state.current_term

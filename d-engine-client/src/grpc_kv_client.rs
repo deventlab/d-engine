@@ -15,8 +15,7 @@ use super::ClientInner;
 use crate::ClientApiError;
 use crate::ClientResponseExt;
 use crate::scoped_timer::ScopedTimer;
-#[allow(unused_imports)]
-use crate::{KvClient as CoreKvClient, KvClientError, KvResult};
+use crate::{KvClient as CoreKvClient, KvResult};
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;

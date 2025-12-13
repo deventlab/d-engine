@@ -263,7 +263,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     self.send_become_follower_event(&role_tx)?;
 
                     info!(
-                        "Candiate will not process ReceiveVoteRequest, it should let Follower do it."
+                        "Candidate will not process ReceiveVoteRequest, it should let Follower do it."
                     );
                     self.send_replay_raft_event(
                         &role_tx,
@@ -304,7 +304,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 let current_leader_id = self.shared_state().current_leader();
 
                 debug!(?current_leader_id, %current_conf_version, ?cluste_conf_change_request,
-                    "Candiate receive ClusterConfUpdate"
+                    "Candidate receive ClusterConfUpdate"
                 );
 
                 let my_id = self.node_id();
@@ -379,7 +379,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     self.send_become_follower_event(&role_tx)?;
 
                     info!(
-                        "Candiate will not process AppendEntries request, it should let Follower do it."
+                        "Candidate will not process AppendEntries request, it should let Follower do it."
                     );
                     self.send_replay_raft_event(
                         &role_tx,
