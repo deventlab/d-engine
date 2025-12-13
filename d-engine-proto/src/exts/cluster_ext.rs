@@ -1,6 +1,6 @@
 use crate::{
-    common::NodeStatus, server::cluster::cluster_conf_update_response::ErrorCode,
-    server::cluster::ClusterConfUpdateResponse,
+    common::NodeStatus, server::cluster::ClusterConfUpdateResponse,
+    server::cluster::cluster_conf_update_response::ErrorCode,
 };
 
 impl ClusterConfUpdateResponse {

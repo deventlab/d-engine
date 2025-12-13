@@ -1,5 +1,5 @@
 use crate::common::{
-    entry_payload::Payload, membership_change::Change, AddNode, EntryPayload, RemoveNode,
+    AddNode, EntryPayload, RemoveNode, entry_payload::Payload, membership_change::Change,
 };
 use bytes::Bytes;
 

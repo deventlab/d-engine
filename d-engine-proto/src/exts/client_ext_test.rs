@@ -1,6 +1,6 @@
 use crate::client::{
-    client_response::SuccessResult, ClientReadRequest, ClientResponse, ClientResult,
-    ReadConsistencyPolicy, WriteCommand,
+    ClientReadRequest, ClientResponse, ClientResult, ReadConsistencyPolicy, WriteCommand,
+    client_response::SuccessResult,
 };
 use crate::error::ErrorCode;
 use bytes::Bytes;

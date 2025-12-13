@@ -1,7 +1,7 @@
 use crate::{
     common::LogId,
     server::replication::{
-        append_entries_response, AppendEntriesResponse, ConflictResult, SuccessResult,
+        AppendEntriesResponse, ConflictResult, SuccessResult, append_entries_response,
     },
 };
 
