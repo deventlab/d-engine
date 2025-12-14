@@ -61,29 +61,18 @@ while let Some(event) = watcher.next().await {
 
 - `examples/quick-start/` - 5-minute single-node setup
 - `examples/single-node-expansion/` - Dynamic 1→3 node scaling
-- `examples/service-discovery-embedded/` - LocalKvClient usage
+- `examples/service-discovery-embedded/` - LocalKvClient zero-overhead access
 - `examples/service-discovery-standalone/` - Watch API pattern
 
 ---
 
-### ⚠️ Migration Notes
+### ⚠️ Breaking Changes
 
-#### API Changes (Backward Compatible)
+**File-based State Machine WAL Format**
 
-- **Deprecated**: `NodeBuilder::build().start_rpc_server().await`
-- **Recommended**: `NodeBuilder::start_server().await`
-- Old API still works but marked deprecated
-
-#### Workspace Structure
-
-- **No Action Required**: `d-engine = "0.2"` works out of the box
-- **Only Affects**: Users directly depending on internal crates (rare)
-
-#### Storage Format (File-based State Machine)
-
-- **Breaking**: WAL now stores absolute expiration time (not relative TTL)
-- **Migration**: See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) for upgrade path
-- **Benefit**: etcd-compatible lease semantics, crash-safe TTL
+- WAL now uses absolute expiration time (not relative TTL)
+- **Action Required**: See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) if upgrading from v0.1.x
+- **New users**: No action needed
 
 ---
 

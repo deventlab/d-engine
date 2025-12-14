@@ -12,6 +12,26 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 
 ---
 
+## 🚧 Project Status
+
+d-engine is in **active development** (pre-1.0).
+
+**For Production Use**:
+
+- ✅ Core Raft consensus is stable (1000+ integration tests, Jepsen validated)
+- ✅ API surface is stabilizing (v0.2.0 focuses on developer experience)
+- ⚠️ Pre-1.0: Breaking changes may occur between minor versions (e.g., v0.2 → v0.3)
+- 📋 [Semantic Versioning](https://semver.org/) will strictly apply after v1.0
+
+**Compatibility Promise**:
+
+- **Before v1.0**: Breaking changes documented in [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md)
+- **After v1.0**: Breaking changes only in major versions (v1.x → v2.0)
+
+**Current Focus**: API stabilization for v1.0 release (Q2 2026)
+
+---
+
 ## Features
 
 ### New in v0.2.0 🎉
@@ -227,7 +247,7 @@ Yes. Scale to 3 nodes later with zero downtime (see `examples/single-node-expans
 Implement `StorageEngine` and `StateMachine` traits (see Custom Storage Implementations section).
 
 **Production-ready?**  
-Yes. v0.2.0 includes 1000+ integration tests, Jepsen validation, and battle-tested Raft implementation.
+Core Raft engine is production-grade (1000+ tests, Jepsen validated). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md)).
 
 ## Supported Platforms
 
