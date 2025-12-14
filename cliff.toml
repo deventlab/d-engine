@@ -64,6 +64,7 @@ commit_parsers = [
   { message = "^fix #\\d+:", group = "Bug Fixes" },
   { message = "^refs #\\d+:", group = "Work in progress" },
   { message = "^doc #\\d+:", group = "Documentation" },
+  { message = "^docs? #\\d+:", group = "Documentation" },
   { message = "^perf #\\d+:", group = "Performance" },
   { message = "^refactor #\\d+:", group = "Refactor" },
   { message = "^style #\\d+:", group = "Styling" },

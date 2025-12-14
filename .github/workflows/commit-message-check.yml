@@ -16,7 +16,7 @@ jobs:
           BASE_SHA=${{ github.event.pull_request.base.sha }}
           HEAD_SHA=${{ github.event.pull_request.head.sha }}
 
-          ALLOWED_TYPES="feat|fix|refs|doc|perf|refactor|style|test|chore|ci|revert"
+          ALLOWED_TYPES="feat|fix|refs|doc|docs|perf|refactor|style|test|chore|ci|revert"
           SCOPE_PATTERN="([a-z][a-z0-9-]*)"
           TICKET_PATTERN="#[0-9]+:"
           FULL_PATTERN="^($ALLOWED_TYPES)(\($SCOPE_PATTERN\))? $TICKET_PATTERN.+$"
