@@ -24,42 +24,52 @@
 //! | **d-engine-server** | Server runtime implementation | Running d-engine nodes |
 //! | **d-engine-docs** | Guides, tutorials, and architecture | Learning and reference |
 //!
-//! ## Quick Start: 5 Minutes
+//! ## Quick Start: Choose Your Mode
 //!
-//! ### Running a Cluster
+//! d-engine supports two integration modes. Pick the one that fits your stack:
 //!
-//! ```bash
-//! # Terminal 1: Start first node
-//! cargo run --example three-nodes-cluster -- --node-id 1 --port 9000
+//! | Mode | Language | Setup Time | Latency | Best For |
+//! |------|----------|-----------|---------|----------|
+//! | **Embedded** | Rust only | 30 seconds | <0.1ms | Rust apps, microservices |
+//! | **Standalone** | Any language (Go, Python, Java) | 1 minute | 1-2ms | Multi-language teams |
 //!
-//! # Terminal 2: Start second node
-//! cargo run --example three-nodes-cluster -- --node-id 2 --port 9001
+//! ### Embedded Mode (Rust Apps)
 //!
-//! # Terminal 3: Start third node
-//! cargo run --example three-nodes-cluster -- --node-id 3 --port 9002
-//! ```
+//! Start d-engine **inside your Rust application**:
 //!
-//! ### Using the Client
-//!
-//! ```ignore
-//! use d_engine_client::ClientBuilder;
+//! ```rust
+//! use d_engine::prelude::*;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Create a client
-//!     let client = ClientBuilder::new()
-//!         .endpoints(vec!["http://127.0.0.1:9000".to_string()])
-//!         .build()
-//!         .await?;
+//!     // Embedded engine: zero serialization, <0.1ms latency
+//!     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+//!     engine.ready().await;
+//!     engine.wait_leader(std::time::Duration::from_secs(5)).await?;
 //!
-//!     // Perform operations
-//!     client.put(b"key", b"value").await?;
-//!     let value = client.get(b"key").await?;
+//!     let client = engine.client();
+//!     client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+//!     let value = client.get(b"hello".to_vec()).await?;
+//!
 //!     println!("Value: {:?}", value);
-//!
 //!     Ok(())
 //! }
 //! ```
+//!
+//! **→ [Detailed Embedded Guide](./docs/quick-start-5min/index.html)**
+//!
+//! ### Standalone Mode (Any Language)
+//!
+//! Start d-engine as a **separate server**, connect with gRPC:
+//!
+//! ```bash
+//! cd examples/three-nodes-cluster
+//! make start-cluster    # Starts 3-node cluster
+//! ```
+//!
+//! Then connect from Go, Python, or any gRPC-supported language.
+//!
+//! **→ [Detailed Standalone Guide](./docs/quick-start-standalone/index.html)**
 //!
 //! ## API Documentation
 //!

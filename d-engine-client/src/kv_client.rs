@@ -62,9 +62,9 @@ pub trait KvClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`KvClientError::ServerError`] for server-side errors (e.g., not leader)
+    /// - [`crate::kv_error::KvClientError::ChannelClosed`] if node is shutting down
+    /// - [`crate::kv_error::KvClientError::Timeout`] if operation exceeds timeout
+    /// - [`crate::kv_error::KvClientError::ServerError`] for server-side errors (e.g., not leader)
     ///
     /// # Example
     ///
@@ -121,9 +121,9 @@ pub trait KvClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`KvClientError::ServerError`] for server-side errors
+    /// - [`crate::kv_error::KvClientError::ChannelClosed`] if node is shutting down
+    /// - [`crate::kv_error::KvClientError::Timeout`] if operation exceeds timeout
+    /// - [`crate::kv_error::KvClientError::ServerError`] for server-side errors
     ///
     /// # Example
     ///
@@ -181,9 +181,9 @@ pub trait KvClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`KvClientError::ServerError`] for server-side errors
+    /// - [`crate::kv_error::KvClientError::ChannelClosed`] if node is shutting down
+    /// - [`crate::kv_error::KvClientError::Timeout`] if operation exceeds timeout
+    /// - [`crate::kv_error::KvClientError::ServerError`] for server-side errors
     ///
     /// # Example
     ///
