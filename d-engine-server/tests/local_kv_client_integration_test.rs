@@ -58,7 +58,7 @@ async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sen
     let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
         .storage_engine(storage_engine)
         .state_machine(state_machine)
-        .start_server()
+        .start()
         .await
         .expect("Failed to start node");
 

@@ -33,7 +33,9 @@ use d_engine::EmbeddedEngine;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start with RocksDB (auto-creates directories)
     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
-    engine.ready().await;
+
+    // Wait for leader election
+    engine.wait_ready(Duration::from_secs(5)).await?;
 
     // Use local KV client (zero-overhead)
     let client = engine.client();
@@ -66,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = NodeBuilder::new(None, shutdown_rx)
         .storage_engine(storage)
         .state_machine(state_machine)
-        .start_server()
+        .start()
         .await
         .expect("start node failed.");
 

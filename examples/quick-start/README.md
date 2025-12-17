@@ -69,9 +69,8 @@ let (shutdown_tx, shutdown_rx) = watch::channel(());
 let node = NodeBuilder::new(None, shutdown_rx)
     .storage_engine(storage)
     .state_machine(state_machine)
-    .build()
-    .await?
-    .ready()?;
+    .start()
+    .await?;
 
 // 5. Get the embedded KV client (in-process, zero-copy)
 let client = node.local_client();

@@ -7,7 +7,7 @@
 //!
 //! ### Using Node (Low-level API)
 //! ```ignore
-//! let node = NodeBuilder::new(config).build().await?.ready()?;
+//! let node = NodeBuilder::new(config).start().await?;
 //! let client = node.local_client();
 //! tokio::spawn(async move { node.run().await });
 //! // Manual lifecycle management required
@@ -16,7 +16,7 @@
 //! ### Using EmbeddedEngine (High-level API)
 //! ```ignore
 //! let engine = EmbeddedEngine::start(config).await?;
-//! engine.ready().await;
+//! engine.wait_ready(Duration::from_secs(5)).await?;
 //! let client = engine.client();
 //! engine.stop().await?;
 //! // Lifecycle managed automatically
@@ -56,7 +56,7 @@ use crate::{RocksDBStateMachine, RocksDBStorageEngine};
 /// use d_engine::EmbeddedEngine;
 ///
 /// let engine = EmbeddedEngine::start(config).await?;
-/// engine.ready().await;
+/// engine.wait_ready(Duration::from_secs(5)).await?;
 ///
 /// let client = engine.client();
 /// client.put(b"key", b"value").await?;
@@ -67,7 +67,6 @@ pub struct EmbeddedEngine {
     node_handle: Option<JoinHandle<Result<()>>>,
     shutdown_tx: watch::Sender<()>,
     kv_client: LocalKvClient,
-    ready_rx: watch::Receiver<bool>,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
     watch_manager: Option<Arc<d_engine_core::watch::WatchManager>>,
 }
@@ -162,17 +161,11 @@ impl EmbeddedEngine {
         let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
-            .build()
-            .await?
-            .start_rpc_server()
-            .await
-            .ready()?;
+            .start()
+            .await?;
 
-        // Get ready notifier before moving node
-        let ready_rx = node.ready_notifier();
-
-        // Get leader election notifier before moving node
-        let leader_elected_rx = node.leader_elected_notifier();
+        // Get leader change notifier before moving node
+        let leader_elected_rx = node.leader_change_notifier();
 
         // Create local KV client before spawning
         let kv_client = node.local_client();
@@ -196,28 +189,9 @@ impl EmbeddedEngine {
             node_handle: Some(node_handle),
             shutdown_tx,
             kv_client,
-            ready_rx,
             leader_elected_rx,
             watch_manager,
         })
-    }
-
-    /// Wait for node initialization to complete.
-    ///
-    /// Blocks until the node has finished bootstrapping and is ready to
-    /// start participating in Raft protocol.
-    ///
-    /// Note: This does NOT guarantee that leader election has completed.
-    /// Use `wait_leader()` to wait for leader election.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let engine = EmbeddedEngine::start(config).await?;
-    /// engine.ready().await; // Node initialized
-    /// ```
-    pub async fn ready(&self) {
-        let _ = self.ready_rx.clone().wait_for(|&v| v).await;
-        info!("Embedded d-engine node initialized");
     }
 
     /// Wait for leader election to complete.
@@ -232,11 +206,10 @@ impl EmbeddedEngine {
     /// # Example
     /// ```ignore
     /// let engine = EmbeddedEngine::start(config).await?;
-    /// engine.ready().await;
-    /// let leader = engine.wait_leader(Duration::from_secs(10)).await?;
+    /// let leader = engine.wait_ready(Duration::from_secs(10)).await?;
     /// println!("Leader elected: {} (term {})", leader.leader_id, leader.term);
     /// ```
-    pub async fn wait_leader(
+    pub async fn wait_ready(
         &self,
         timeout: std::time::Duration,
     ) -> Result<crate::LeaderInfo> {
@@ -249,7 +222,7 @@ impl EmbeddedEngine {
                     "Leader already elected: {} (term {})",
                     info.leader_id, info.term
                 );
-                return Ok(info.clone());
+                return Ok(*info);
             }
 
             loop {
@@ -259,7 +232,7 @@ impl EmbeddedEngine {
                 // Check if a leader is elected
                 if let Some(info) = rx.borrow().as_ref() {
                     info!("Leader elected: {} (term {})", info.leader_id, info.term);
-                    return Ok(info.clone());
+                    return Ok(*info);
                 }
             }
         })
@@ -279,7 +252,7 @@ impl EmbeddedEngine {
     ///
     /// # Example
     /// ```ignore
-    /// let mut leader_rx = engine.leader_notifier();
+    /// let mut leader_rx = engine.leader_change_notifier();
     /// tokio::spawn(async move {
     ///     while leader_rx.changed().await.is_ok() {
     ///         match leader_rx.borrow().as_ref() {
@@ -289,19 +262,19 @@ impl EmbeddedEngine {
     ///     }
     /// });
     /// ```
-    pub fn leader_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
+    pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
         self.leader_elected_rx.clone()
     }
 
     /// Get a reference to the local KV client.
     ///
     /// The client is available immediately after `start()`,
-    /// but requests will only succeed after `ready()` completes.
+    /// but requests will only succeed after `wait_ready()` completes.
     ///
     /// # Example
     /// ```ignore
     /// let engine = EmbeddedEngine::start(config).await?;
-    /// engine.ready().await;
+    /// engine.wait_ready(Duration::from_secs(5)).await?;
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;
     /// ```

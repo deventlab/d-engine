@@ -37,15 +37,14 @@
 //!
 //! Start d-engine **inside your Rust application**:
 //!
-//! ```rust
+//! ```rust,ignore
 //! use d_engine::prelude::*;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Embedded engine: zero serialization, <0.1ms latency
 //!     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
-//!     engine.ready().await;
-//!     engine.wait_leader(std::time::Duration::from_secs(5)).await?;
+//!     engine.wait_ready(std::time::Duration::from_secs(5)).await?;
 //!
 //!     let client = engine.client();
 //!     client.put(b"hello".to_vec(), b"world".to_vec()).await?;

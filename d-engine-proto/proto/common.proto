@@ -105,3 +105,21 @@ enum NodeRole {
     LEADER = 2;
     LEARNER = 3;
 }
+
+// Leader election information
+// Used at: Application layer (internal Raft protocol notifications)
+// Purpose: Notify applications about leader changes via watch channel
+// Fields: Minimal - only what Raft protocol needs
+message LeaderInfo {
+    uint32 leader_id = 1;  // Current leader node ID
+    uint64 term = 2;       // Current Raft term
+}
+
+// Leader hint for client redirection
+// Used at: Network layer (gRPC error responses)
+// Purpose: Help clients redirect requests to the current leader
+// Fields: Includes network address for immediate retry
+message LeaderHint {
+    uint32 leader_id = 1;  // Current leader node ID
+    string address = 2;    // Leader's network address (e.g., "127.0.0.1:5001")
+}

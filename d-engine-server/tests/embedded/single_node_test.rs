@@ -32,11 +32,8 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
 
-    // Wait for node initialization
-    engine.ready().await;
-
     // Single-node should elect itself as leader
-    let leader_info = engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader_info = engine.wait_ready(Duration::from_secs(5)).await?;
     assert_eq!(
         leader_info.leader_id, 1,
         "Single node should elect itself as leader"
@@ -102,20 +99,18 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
 
-    engine.ready().await;
-
     // Wait for leader election
-    let leader_info = engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader_info = engine.wait_ready(Duration::from_secs(5)).await?;
     assert_eq!(
         leader_info.leader_id, 1,
         "Single node should elect itself as leader"
     );
 
     // Subscribe to leader changes AFTER election
-    let leader_rx = engine.leader_notifier();
+    let leader_rx = engine.leader_change_notifier();
 
     // Current value should already show leader elected
-    let leader = leader_rx.borrow().clone();
+    let leader = *leader_rx.borrow();
     assert!(leader.is_some(), "Leader should already be elected");
 
     engine.stop().await?;
@@ -143,8 +138,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     // First session: write data
     {
         let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
-        engine.ready().await;
-        engine.wait_leader(Duration::from_secs(5)).await?;
+        engine.wait_ready(Duration::from_secs(5)).await?;
 
         engine.client().put(b"persist-key".to_vec(), b"persist-value".to_vec()).await?;
 
@@ -160,8 +154,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     // Second session: verify data still exists
     {
         let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
-        engine.ready().await;
-        engine.wait_leader(Duration::from_secs(5)).await?;
+        engine.wait_ready(Duration::from_secs(5)).await?;
 
         let value = engine.client().get_linearizable(b"persist-key".to_vec()).await?;
         assert_eq!(

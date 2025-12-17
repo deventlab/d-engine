@@ -31,10 +31,10 @@ use d_engine_proto::server::cluster::NodeMeta;
 async fn test_readiness_state_transition() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let node = mock_node("/tmp/test_readiness_state_transition", shutdown_rx, None);
-    assert!(!node.server_is_ready());
+    assert!(!node.is_rpc_ready());
 
-    node.set_ready(true);
-    assert!(node.server_is_ready());
+    node.set_rpc_ready(true);
+    assert!(node.is_rpc_ready());
 }
 
 #[tokio::test]
@@ -146,14 +146,14 @@ async fn run_success_without_joining() {
     shutdown_tx.send(()).expect("Should send shutdown");
 
     // Verify node state
-    assert!(node.server_is_ready(), "Node should be marked ready");
+    assert!(node.is_rpc_ready(), "Node should be marked ready");
 
     // Wait for completion
     handle.await.expect("Node task should complete");
 
     // Verify logs show correct behavior
     assert!(
-        logs_contain("Set node is ready to run Raft protocol"),
+        logs_contain("Set node RPC server ready: true"),
         "Readiness should be set"
     );
     assert!(
@@ -256,11 +256,11 @@ async fn run_success_with_joining() {
     handle.await.expect("Node task should complete");
 
     // Verify node state
-    assert!(node.server_is_ready(), "Node should be marked ready");
+    assert!(node.is_rpc_ready(), "Node should be marked ready");
 
     // Verify logs show correct behavior
     assert!(
-        logs_contain("Set node is ready to run Raft protocol"),
+        logs_contain("Set node RPC server ready: true"),
         "Readiness should be set"
     );
     assert!(
@@ -331,11 +331,11 @@ async fn run_fails_on_health_check() {
     assert!(result.is_err(), "Node should fail when health check fails");
 
     // Verify node state
-    assert!(!node.server_is_ready(), "Node should not be marked ready");
+    assert!(!node.is_rpc_ready(), "Node should not be marked ready");
 
     // Verify logs show correct behavior
     assert!(
-        !logs_contain("Set node is ready to run Raft protocol"),
+        !logs_contain("Set node RPC server ready: true"),
         "Readiness should be set"
     );
     assert!(
@@ -345,101 +345,88 @@ async fn run_fails_on_health_check() {
     assert!(!logs_contain("Node is running"), "Node should be running");
 }
 
-/// Unit tests for Node leader election notification
-/// TODO: These tests need proper mock implementation
+/// Unit tests for Node leader change notification APIs
 #[cfg(test)]
-#[allow(dead_code)]
-mod leader_elected_tests {
-    /*
-    use std::sync::Arc;
-
+mod leader_change_tests {
     use crate::LeaderInfo;
-    use crate::node::Node;
-    use d_engine_core::test_utils::mock_raft_context;
+    use crate::node::test_helpers::*;
 
     #[tokio::test]
-    async fn test_leader_elected_notifier_subscription() {
-        // Create a Node instance
-        let raft = mock_raft_context(1).await;
-        let node = Node::from_raft(raft);
+    async fn test_leader_change_notifier_subscription() {
+        let (node, _shutdown_tx) = create_test_node();
 
-        // Subscribe to leader election notifications
-        let mut rx = node.leader_elected_notifier();
+        // Subscribe to leader change notifications
+        let rx = node.leader_change_notifier();
 
         // Initial state should be None (no leader yet)
         assert_eq!(*rx.borrow(), None);
     }
 
     #[tokio::test]
-    async fn test_leader_elected_notifier_receives_updates() {
-        // Create a Node instance
-        let raft = mock_raft_context(1).await;
-        let node = Arc::new(Node::from_raft(raft));
+    async fn test_leader_change_notifier_receives_updates() {
+        let (node, _shutdown_tx) = create_test_node_arc();
 
-        // Subscribe to leader election notifications
-        let mut rx = node.leader_elected_notifier();
+        // Subscribe to leader change notifications
+        let mut rx = node.leader_change_notifier();
 
         // Simulate leader election by sending to the channel
         let leader_info = LeaderInfo {
             leader_id: 1,
             term: 5,
         };
-        node.leader_elected_tx
-            .send(Some(leader_info.clone()))
+        node.leader_notifier
+            .sender()
+            .send(Some(leader_info))
             .expect("Should send leader info");
 
         // Wait for update
         rx.changed().await.expect("Should receive change notification");
 
         // Verify received data
-        let received = rx.borrow().clone();
+        let received = *rx.borrow();
         assert_eq!(received, Some(leader_info));
     }
 
     #[tokio::test]
     async fn test_multiple_subscribers() {
-        // Create a Node instance
-        let raft = mock_raft_context(1).await;
-        let node = Arc::new(Node::from_raft(raft));
+        let (node, _shutdown_tx) = create_test_node_arc();
 
         // Create multiple subscribers
-        let mut rx1 = node.leader_elected_notifier();
-        let mut rx2 = node.leader_elected_notifier();
+        let mut rx1 = node.leader_change_notifier();
+        let mut rx2 = node.leader_change_notifier();
 
         // Send leader info
         let leader_info = LeaderInfo {
             leader_id: 2,
             term: 10,
         };
-        node.leader_elected_tx.send(Some(leader_info.clone())).expect("Should send");
+        node.leader_notifier.sender().send(Some(leader_info)).expect("Should send");
 
         // Both should receive
         rx1.changed().await.expect("Subscriber 1 should receive");
         rx2.changed().await.expect("Subscriber 2 should receive");
 
-        assert_eq!(*rx1.borrow(), Some(leader_info.clone()));
+        assert_eq!(*rx1.borrow(), Some(leader_info));
         assert_eq!(*rx2.borrow(), Some(leader_info));
     }
 
     #[tokio::test]
     async fn test_leader_change_sequence() {
-        // Create a Node instance
-        let raft = mock_raft_context(1).await;
-        let node = Arc::new(Node::from_raft(raft));
+        let (node, _shutdown_tx) = create_test_node_arc();
 
-        let mut rx = node.leader_elected_notifier();
+        let mut rx = node.leader_change_notifier();
 
         // Leader 1 elected
         let leader1 = LeaderInfo {
             leader_id: 1,
             term: 5,
         };
-        node.leader_elected_tx.send(Some(leader1.clone())).unwrap();
+        node.leader_notifier.sender().send(Some(leader1)).unwrap();
         rx.changed().await.unwrap();
         assert_eq!(*rx.borrow(), Some(leader1));
 
         // Leader changes to None (during election)
-        node.leader_elected_tx.send(None).unwrap();
+        node.leader_notifier.sender().send(None).unwrap();
         rx.changed().await.unwrap();
         assert_eq!(*rx.borrow(), None);
 
@@ -448,28 +435,26 @@ mod leader_elected_tests {
             leader_id: 2,
             term: 6,
         };
-        node.leader_elected_tx.send(Some(leader2.clone())).unwrap();
+        node.leader_notifier.sender().send(Some(leader2)).unwrap();
         rx.changed().await.unwrap();
         assert_eq!(*rx.borrow(), Some(leader2));
     }
 
     #[tokio::test]
     async fn test_ready_notifier_independent() {
-        // Create a Node instance
-        let raft = mock_raft_context(1).await;
-        let node = Arc::new(Node::from_raft(raft));
+        let (node, _shutdown_tx) = create_test_node_arc();
 
         let mut ready_rx = node.ready_notifier();
-        let mut leader_rx = node.leader_elected_notifier();
+        let mut leader_rx = node.leader_change_notifier();
 
         // Initially both should be false/None
-        assert_eq!(*ready_rx.borrow(), false);
+        assert!(!(*ready_rx.borrow()));
         assert_eq!(*leader_rx.borrow(), None);
 
         // Set ready
-        node.set_ready(true);
+        node.set_rpc_ready(true);
         ready_rx.changed().await.expect("Should receive ready change");
-        assert_eq!(*ready_rx.borrow(), true);
+        assert!(*ready_rx.borrow());
 
         // Leader should still be None
         assert_eq!(*leader_rx.borrow(), None);
@@ -479,34 +464,119 @@ mod leader_elected_tests {
             leader_id: 1,
             term: 1,
         };
-        node.leader_elected_tx.send(Some(leader_info.clone())).unwrap();
+        node.leader_notifier.sender().send_if_modified(|current| {
+            *current = Some(leader_info);
+            true
+        });
         leader_rx.changed().await.expect("Should receive leader change");
         assert_eq!(*leader_rx.borrow(), Some(leader_info));
 
         // Ready should still be true
-        assert_eq!(*ready_rx.borrow(), true);
+        assert!(*ready_rx.borrow());
+    }
+}
+
+/// Unit tests for Node readiness state management
+#[cfg(test)]
+mod readiness_tests {
+    use crate::node::test_helpers::*;
+
+    #[tokio::test]
+    async fn test_set_ready_and_server_is_ready() {
+        let (node, _shutdown_tx) = create_test_node();
+
+        // Initially not ready
+        assert!(!node.is_rpc_ready());
+
+        // Set ready
+        node.set_rpc_ready(true);
+        assert!(node.is_rpc_ready());
+
+        // Set not ready
+        node.set_rpc_ready(false);
+        assert!(!node.is_rpc_ready());
     }
 
     #[tokio::test]
-    async fn test_initial_receiver_keeps_channel_alive() {
-        // Create a Node instance
-        let raft = mock_raft_context(1).await;
-        let node = Arc::new(Node::from_raft(raft));
+    async fn test_ready_notifier_receives_updates() {
+        let (node, _shutdown_tx) = create_test_node();
 
-        // The node holds _leader_elected_rx, so new subscribers should work
-        let mut rx = node.leader_elected_notifier();
+        let mut ready_rx = node.ready_notifier();
 
-        // Send should succeed
-        let leader_info = LeaderInfo {
-            leader_id: 1,
-            term: 1,
-        };
-        node.leader_elected_tx
-            .send(Some(leader_info.clone()))
-            .expect("Channel should be alive");
+        // Initial state
+        assert!(!(*ready_rx.borrow()));
 
-        rx.changed().await.expect("Should receive");
-        assert_eq!(*rx.borrow(), Some(leader_info));
+        // Set ready
+        node.set_rpc_ready(true);
+        ready_rx.changed().await.expect("Should receive update");
+        assert!(*ready_rx.borrow());
     }
-    */
+
+    #[tokio::test]
+    async fn test_concurrent_set_ready() {
+        let (node, _shutdown_tx) = create_test_node_arc();
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let node_clone = node.clone();
+            let handle = tokio::spawn(async move {
+                node_clone.set_rpc_ready(i % 2 == 0);
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.await.expect("Task should not panic");
+        }
+
+        // Final state should be deterministic (last write wins)
+        // Just verify the method is callable without panic
+        let _is_ready = node.is_rpc_ready();
+    }
+}
+
+/// Unit tests for Node local_client API
+#[cfg(test)]
+mod client_tests {
+    use crate::node::test_helpers::*;
+
+    #[tokio::test]
+    async fn test_local_client_creation() {
+        let (node, _shutdown_tx) = create_test_node();
+
+        let client = node.local_client();
+        assert_eq!(client.node_id(), node.node_id());
+    }
+
+    #[tokio::test]
+    async fn test_local_client_concurrent_creation() {
+        let (node, _shutdown_tx) = create_test_node_arc();
+
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let node_clone = node.clone();
+            let handle = tokio::spawn(async move {
+                let client = node_clone.local_client();
+                client.node_id()
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let node_id = handle.await.expect("Task should not panic");
+            assert_eq!(node_id, node.node_id());
+        }
+    }
+}
+
+/// Unit tests for Node node_id API
+#[cfg(test)]
+mod node_id_tests {
+    use crate::node::test_helpers::*;
+
+    #[tokio::test]
+    async fn test_node_id_returns_correct_value() {
+        let (node, _shutdown_tx) = create_test_node_with_id(42);
+        assert_eq!(node.node_id(), 42);
+    }
 }

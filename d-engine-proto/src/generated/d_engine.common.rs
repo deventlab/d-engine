@@ -138,6 +138,34 @@ pub struct Snapshot {
     #[prost(message, repeated, tag = "2")]
     pub data: ::prost::alloc::vec::Vec<SnapshotEntry>,
 }
+/// Leader election information
+/// Used at: Application layer (internal Raft protocol notifications)
+/// Purpose: Notify applications about leader changes via watch channel
+/// Fields: Minimal - only what Raft protocol needs
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct LeaderInfo {
+    /// Current leader node ID
+    #[prost(uint32, tag = "1")]
+    pub leader_id: u32,
+    /// Current Raft term
+    #[prost(uint64, tag = "2")]
+    pub term: u64,
+}
+/// Leader hint for client redirection
+/// Used at: Network layer (gRPC error responses)
+/// Purpose: Help clients redirect requests to the current leader
+/// Fields: Includes network address for immediate retry
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LeaderHint {
+    /// Current leader node ID
+    #[prost(uint32, tag = "1")]
+    pub leader_id: u32,
+    /// Leader's network address (e.g., "127.0.0.1:5001")
+    #[prost(string, tag = "2")]
+    pub address: ::prost::alloc::string::String,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

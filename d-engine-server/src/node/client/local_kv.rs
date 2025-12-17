@@ -10,7 +10,7 @@
 //!
 //! # Usage
 //! ```rust,ignore
-//! let node = NodeBuilder::new(config).build().await?.ready()?;
+//! let node = NodeBuilder::new(config).start().await?;
 //! let client = node.local_client();
 //! client.put(b"key", b"value").await?;
 //! ```

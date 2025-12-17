@@ -41,7 +41,7 @@ enabled = true
         EmbeddedEngine::start(Some(config_path.to_str().unwrap()), storage, state_machine).await?;
 
     // Wait for leader election
-    engine.wait_leader(Duration::from_secs(5)).await?;
+    engine.wait_ready(Duration::from_secs(5)).await?;
 
     // 2. Start Watcher
     let key = "test-key";

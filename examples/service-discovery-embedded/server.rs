@@ -30,14 +30,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         EmbeddedEngine::with_rocksdb("./data/service-discovery-embedded", Some("d-engine.toml"))
             .await?;
 
-    // Wait for node to be ready (bootstrap complete)
-    engine.ready().await;
-    println!("✓ Node initialized");
-
     // Wait for leader election (single-node cluster elects itself immediately)
-    let leader = engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader = engine.wait_ready(Duration::from_secs(5)).await?;
     println!(
-        "✓ Leader elected: node {} (term {})",
+        "✓ Cluster is ready: leader {} (term {})",
         leader.leader_id, leader.term
     );
 

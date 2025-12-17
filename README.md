@@ -126,11 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start embedded engine with RocksDB (auto-creates directories)
     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 
-    // Wait for node initialization
-    engine.ready().await;
-
     // Wait for leader election (single-node: instant)
-    engine.wait_leader(Duration::from_secs(5)).await?;
+    engine.wait_ready(Duration::from_secs(5)).await?;
 
     // Get KV client (zero-overhead, in-process)
     let client = engine.client();

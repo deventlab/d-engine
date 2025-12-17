@@ -392,12 +392,14 @@ pub trait RaftRoleState: Send + Sync + 'static {
         }
 
         // Important to confirm heartbeat from Leader immediatelly
-        // Keep syncing leader_id (hot-path: ~5ns atomic store vs ~50ns RwLock)
         let new_leader_id = append_entries_request.leader_id;
         let request_term = append_entries_request.term;
 
-        self.shared_state().set_current_leader(new_leader_id);
-
+        // CRITICAL: Check is_new_leader BEFORE setting current_leader
+        // This ensures node restart scenario works correctly:
+        // - After restart, current_leader is None (memory cleared)
+        // - update_voted_for() detects None and returns true
+        // - Triggers LeaderDiscovered event for wait_ready()
         // Mark vote as committed (follower confirms leader)
         // Returns true only on state transition (committed: false->true or leader/term change)
         let is_new_leader = self.update_voted_for(VotedFor {
@@ -405,6 +407,9 @@ pub trait RaftRoleState: Send + Sync + 'static {
             voted_for_term: request_term,
             committed: true,
         })?;
+
+        // Keep syncing leader_id (hot-path: ~5ns atomic store vs ~50ns RwLock)
+        self.shared_state().set_current_leader(new_leader_id);
 
         // Trigger leader discovery notification only on state transition
         // Event-driven: avoids redundant notifications on every heartbeat

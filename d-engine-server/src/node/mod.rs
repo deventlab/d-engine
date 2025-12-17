@@ -11,7 +11,7 @@
 //!
 //! ## Example Usage
 //! ```ignore
-//! let node = NodeBuilder::new(node_config).build().ready().unwrap();
+//! let node = NodeBuilder::new(node_config).start().await?;
 //! tokio::spawn(async move {
 //!     node.run().await.expect("Raft node execution failed");
 //! });
@@ -22,6 +22,9 @@ pub use builder::*;
 
 mod client;
 pub use client::*;
+
+mod leader_notifier;
+pub(crate) use leader_notifier::*;
 
 #[doc(hidden)]
 mod type_config;
@@ -35,6 +38,8 @@ pub use type_config::*;
 mod builder_test;
 #[cfg(test)]
 mod node_test;
+#[cfg(test)]
+mod test_helpers;
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -66,7 +71,7 @@ use d_engine_core::watch::WatchManager;
 /// # Running the Node
 ///
 /// ```rust,ignore
-/// let node = builder.ready()?;
+/// let node = builder.start()?;
 /// node.run().await?;  // Blocks until shutdown
 /// ```
 pub struct Node<T>
@@ -84,15 +89,11 @@ where
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) ready: AtomicBool,
 
-    /// Notifies when node becomes ready to participate in cluster
-    pub(crate) ready_notify_tx: watch::Sender<bool>,
+    /// Notifies when RPC server is ready to accept requests
+    pub(crate) rpc_ready_tx: watch::Sender<bool>,
 
     /// Notifies when leader is elected (includes leader changes)
-    /// Contains Some(LeaderInfo) when a leader exists, None during election
-    pub(crate) leader_elected_tx: watch::Sender<Option<crate::LeaderInfo>>,
-
-    /// Initial receiver for leader_elected_tx (kept alive to prevent channel closure)
-    pub(crate) _leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
+    pub(crate) leader_notifier: LeaderNotifier,
 
     /// Raft node config
     pub node_config: Arc<RaftNodeConfig>,
@@ -163,8 +164,8 @@ where
             }
         }
 
-        // 3. Set node is ready to run Raft protocol
-        self.set_ready(true);
+        // 3. Set node RPC server is ready
+        self.set_rpc_ready(true);
 
         // 4. Warm up connections with peers
         tokio::select! {
@@ -189,31 +190,37 @@ where
         Ok(())
     }
 
-    /// Controls the node's operational readiness state.
+    /// Marks the node's RPC server as ready to accept requests.
     ///
     /// # Parameters
-    /// - `is_ready`: When `true`, marks node as ready to participate in cluster. When `false`,
-    ///   marks node as temporarily unavailable.
+    /// - `is_ready`: When `true`, marks RPC server as ready. When `false`,
+    ///   marks server as temporarily unavailable.
+    ///
+    /// # Note
+    /// This indicates the RPC server is listening, NOT that leader election is complete.
+    /// Use `leader_change_notifier()` to wait for leader election.
     ///
     /// # Usage
-    /// Typically used during cluster bootstrap or maintenance operations.
-    /// The readiness state is atomically updated using SeqCst ordering.
-    pub fn set_ready(
+    /// Called internally after RPC server starts and cluster health check passes.
+    pub fn set_rpc_ready(
         &self,
         is_ready: bool,
     ) {
-        info!("Set node is ready to run Raft protocol");
+        info!("Set node RPC server ready: {}", is_ready);
         self.ready.store(is_ready, Ordering::SeqCst);
-        // Notify waiters that node is ready
-        let _ = self.ready_notify_tx.send(is_ready);
+        // Notify waiters that RPC server is ready
+        let _ = self.rpc_ready_tx.send(is_ready);
     }
 
-    /// Checks if the node is in a ready state to participate in cluster operations.
+    /// Checks if the node's RPC server is ready to accept requests.
     ///
     /// # Returns
-    /// `true` if the node is operational and ready to handle Raft protocol operations,
+    /// `true` if the RPC server is operational and listening,
     /// `false` otherwise.
-    pub fn server_is_ready(&self) -> bool {
+    ///
+    /// # Note
+    /// This does NOT indicate leader election status. Use `leader_change_notifier()` for that.
+    pub fn is_rpc_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
 
@@ -226,33 +233,33 @@ where
     /// ```ignore
     /// let ready_rx = node.ready_notifier();
     /// ready_rx.wait_for(|&ready| ready).await?;
-    /// // Node is now initialized
+    /// // RPC server is now listening
     /// ```
     pub fn ready_notifier(&self) -> watch::Receiver<bool> {
-        self.ready_notify_tx.subscribe()
+        self.rpc_ready_tx.subscribe()
     }
 
-    /// Returns a receiver for leader election notifications.
+    /// Returns a receiver for leader change notifications.
     ///
-    /// Subscribe to this channel to be notified when:
+    /// Subscribe to be notified when:
     /// - First leader is elected (initial election)
     /// - Leader changes (re-election)
     /// - No leader exists (during election)
     ///
     /// # Performance
-    /// Event-driven notification (no polling), <1ms latency
+    /// Event-driven notification, <1ms latency
     ///
     /// # Example
     /// ```ignore
-    /// let mut leader_rx = node.leader_elected_notifier();
+    /// let mut leader_rx = node.leader_change_notifier();
     /// while leader_rx.changed().await.is_ok() {
     ///     if let Some(info) = leader_rx.borrow().as_ref() {
     ///         println!("Leader: {} (term {})", info.leader_id, info.term);
     ///     }
     /// }
     /// ```
-    pub fn leader_elected_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
-        self.leader_elected_tx.subscribe()
+    pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
+        self.leader_notifier.subscribe()
     }
 
     /// Create a Node from a pre-built Raft instance
@@ -266,8 +273,8 @@ where
         let membership = raft.ctx.membership();
         let node_id = raft.node_id;
 
-        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
-        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+        let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
+        let leader_notifier = LeaderNotifier::new();
 
         Node {
             node_id,
@@ -275,9 +282,8 @@ where
             membership,
             event_tx,
             ready: AtomicBool::new(false),
-            ready_notify_tx,
-            leader_elected_tx,
-            _leader_elected_rx: leader_elected_rx,
+            rpc_ready_tx,
+            leader_notifier,
             node_config,
             watch_manager: None,
             watch_dispatcher_handle: None,
@@ -304,7 +310,7 @@ where
     ///
     /// # Example
     /// ```ignore
-    /// let node = NodeBuilder::new(config).build().await?.ready()?;
+    /// let node = NodeBuilder::new(config).start().await?;
     /// let client = node.local_client();
     /// client.put(b"key", b"value").await?;
     /// ```

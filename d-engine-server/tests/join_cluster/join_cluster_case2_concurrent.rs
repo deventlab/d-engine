@@ -13,6 +13,7 @@ use d_engine_client::ClientApiError;
 use d_engine_core::convert::safe_kv;
 use d_engine_proto::common::NodeStatus;
 use d_engine_server::{FileStateMachine, StateMachine};
+use serial_test::serial;
 use tokio::time::sleep;
 use tracing_test::traced_test;
 
@@ -41,6 +42,7 @@ const JOIN_CLUSTER_CASE2_LOG_DIR: &str = "./logs/join_cluster/case2";
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     // Initialize test environment and reset any previous state
     reset(JOIN_CLUSTER_CASE2_DIR).await?;

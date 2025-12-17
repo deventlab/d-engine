@@ -44,9 +44,7 @@ general_raft_timeout_duration_in_ms = 5000
         tokio::fs::write(config_path, config_content).await?;
 
         let engine = EmbeddedEngine::with_rocksdb(&node1_data_dir, Some(config_path)).await?;
-        engine.ready().await;
-
-        let leader = engine.wait_leader(Duration::from_secs(2)).await?;
+        let leader = engine.wait_ready(Duration::from_secs(2)).await?;
         info!(
             "Single-node leader elected: {} (term {})",
             leader.leader_id, leader.term
@@ -104,14 +102,10 @@ general_raft_timeout_duration_in_ms = 5000
     }
 
     // Wait for all nodes to initialize
-    for engine in &engines {
-        engine.ready().await;
-    }
+    // Wait for all nodes to be ready - leader will be elected during this process
+    let leader = engines[0].wait_ready(Duration::from_secs(10)).await?;
 
-    info!("All 3 nodes initialized, waiting for leader election");
-
-    // Wait for leader election in cluster mode (increased timeout for election randomization)
-    let leader = engines[0].wait_leader(Duration::from_secs(20)).await?;
+    info!("All 3 nodes initialized and leader elected");
     info!(
         "Cluster leader elected: {} (term {})",
         leader.leader_id, leader.term
@@ -206,11 +200,8 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
         engines.push(engine);
     }
 
-    for engine in &engines {
-        engine.ready().await;
-    }
+    let leader = engines[0].wait_ready(Duration::from_secs(10)).await?;
 
-    let leader = engines[0].wait_leader(Duration::from_secs(10)).await?;
     info!("Initial leader: {}", leader.leader_id);
 
     // Write data before failure - use leader engine
@@ -229,7 +220,7 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Remaining nodes should elect new leader
-    let new_leader = engines[0].wait_leader(Duration::from_secs(5)).await?;
+    let new_leader = engines[0].wait_ready(Duration::from_secs(5)).await?;
     info!("New leader after failover: {}", new_leader.leader_id);
 
     // Cluster should still accept writes (2/3 majority)

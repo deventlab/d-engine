@@ -24,7 +24,6 @@ use d_engine_core::PersistenceStrategy;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
-use d_engine_core::SystemError;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
@@ -121,33 +120,17 @@ async fn test_build_creates_node() {
     assert!(builder.node.is_some());
 }
 
-#[test]
-fn test_ready_fails_without_build() {
-    let (_, shutdown_rx) = watch::channel(());
-    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
-        "/tmp/test_ready_fails_without_build",
-        shutdown_rx,
-    );
-
-    let result = builder.ready();
-    assert!(matches!(
-        result,
-        Err(Error::System(SystemError::NodeStartFailed(_)))
-    ));
-}
-
 #[tokio::test]
-#[should_panic(expected = "failed to start RPC server")]
-async fn test_start_rpc_panics_without_node() {
+async fn test_start_fails_without_components() {
     let (_, shutdown_rx) = watch::channel(());
     let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new_from_db_path(
-        "/tmp/test_start_rpc_panics_without_node",
+        "/tmp/test_start_fails_without_components",
         shutdown_rx,
     );
 
-    // If start the RPC service directly without calling build(), the service should
-    // panic.
-    let _ = builder.start_rpc_server().await;
+    // start() should fail if storage_engine or state_machine not set
+    let result = builder.start().await;
+    assert!(result.is_err());
 }
 
 // Test helper function: create a temporary configuration file

@@ -51,13 +51,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Start embedded engine with RocksDB (auto-creates directories)
     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 
-    // Wait for node initialization
-    engine.ready().await;
-    println!("✓ Node initialized");
-
     // Wait for leader election (single-node: instant)
-    let leader = engine.wait_leader(Duration::from_secs(5)).await?;
-    println!("✓ Leader elected: node {} (term {})\n", leader.leader_id, leader.term);
+    let leader = engine.wait_ready(Duration::from_secs(5)).await?;
+    println!("✓ Cluster is ready: leader {} (term {})\n", leader.leader_id, leader.term);
 
     // Get KV client (zero-overhead, in-process)
     let client = engine.client();
@@ -91,8 +87,7 @@ cargo run
 ```
 Starting d-engine...
 
-✓ Node initialized
-✓ Leader elected: node 1 (term 1)
+✓ Cluster is ready: leader 1 (term 1)
 
 ✓ Stored: hello = world
 ✓ Retrieved: hello = world
@@ -122,16 +117,10 @@ This one line:
 6. Returned immediately (non-blocking)
 
 ```rust
-engine.ready().await
+engine.wait_ready(Duration::from_secs(5)).await?
 ```
 
-Waits for node initialization (gRPC server ready, ~100ms).
-
-```rust
-engine.wait_leader(Duration::from_secs(5)).await?
-```
-
-Waits for leader election:
+Waits for leader election (combines node initialization + leader election):
 
 - **Single-node**: Instant (<100ms, auto-elected)
 - **Multi-node**: Waits for majority quorum (~1-2s)
@@ -198,17 +187,14 @@ EmbeddedEngine::start(
     state_machine: Arc<impl StateMachine>
 ) -> Result<Self>
 
-// Wait for initialization (NOT election)
-engine.ready().await
-
 // Wait for leader election (event-driven, no polling)
-engine.wait_leader(timeout: Duration) -> Result<LeaderInfo>
+engine.wait_ready(timeout: Duration) -> Result<LeaderInfo>
 
 // Get KV client
 engine.client() -> &LocalKvClient
 
 // Subscribe to leader changes (optional, for monitoring)
-engine.leader_notifier() -> watch::Receiver<Option<LeaderInfo>>
+engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>
 
 // Graceful shutdown
 engine.stop().await -> Result<()>
@@ -259,7 +245,7 @@ let engine = EmbeddedEngine::with_rocksdb("./my-app-data", None).await?;
 ### Pattern 3: Monitor Leader Changes
 
 ```rust
-let mut leader_rx = engine.leader_notifier();
+let mut leader_rx = engine.leader_change_notifier();
 
 tokio::spawn(async move {
     while leader_rx.changed().await.is_ok() {
@@ -274,7 +260,7 @@ tokio::spawn(async move {
 ### Pattern 4: Handle Election Timeout
 
 ```rust
-match engine.wait_leader(Duration::from_secs(10)).await {
+match engine.wait_ready(Duration::from_secs(10)).await {
     Ok(leader) => println!("Leader ready: {}", leader.leader_id),
     Err(_) => {
         eprintln!("Election timeout - check cluster configuration");
@@ -374,7 +360,7 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 ## Key Takeaways
 
-- ✅ **3-line startup**: `with_rocksdb()` → `ready()` → `wait_leader()`
+- ✅ **2-line startup**: `with_rocksdb()` → `wait_ready()`
 - ✅ **Zero boilerplate**: No manual spawn, no shutdown channels
 - ✅ **Event-driven**: No polling, <1ms notification latency
 - ✅ **Production-ready**: Auto-creates directories, graceful shutdown

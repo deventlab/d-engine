@@ -286,17 +286,10 @@ async fn build_node(
     builder = builder.state_machine(state_machine);
 
     // Build and start the node
-    let node = builder
-        .build()
-        .await
-        .map_err(|e| {
-            eprintln!("Failed to build node: {e:?}");
-            std::io::Error::other(format!("Failed to build node: {e}"))
-        })?
-        .start_rpc_server()
-        .await
-        .ready()
-        .expect("Should succeed to start node");
+    let node = builder.start().await.map_err(|e| {
+        eprintln!("Failed to start node: {e:?}");
+        std::io::Error::other(format!("Failed to start node: {e}"))
+    })?;
 
     // Return both the node and the temp directory to keep it alive
     Ok(node)

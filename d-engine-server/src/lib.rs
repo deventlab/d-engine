@@ -24,10 +24,8 @@
 //!     let node = NodeBuilder::new(None, rx)
 //!         .storage_engine(storage)
 //!         .state_machine(state_machine)
-//!         .build()
-//!         .start_rpc_server()
-//!         .await
-//!         .ready()?;
+//!         .start()
+//!         .await?;
 //!
 //!     node.run().await?;
 //!     Ok(())
@@ -65,14 +63,8 @@ pub mod node;
 /// Contains [`EmbeddedEngine`] for simplified embedded usage.
 pub mod embedded;
 
-/// Leader election information
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaderInfo {
-    /// ID of the current leader node
-    pub leader_id: u32,
-    /// Current Raft term
-    pub term: u64,
-}
+// Re-export LeaderInfo from d-engine-core
+pub use d_engine_core::LeaderInfo;
 
 /// Storage layer implementations
 ///

@@ -14,14 +14,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Start embedded engine with RocksDB (auto-creates directories)
     let engine = EmbeddedEngine::with_rocksdb("./data/single-node", None).await?;
 
-    // Wait for node initialization
-    engine.ready().await;
-    println!("✓ Node initialized");
-
     // Wait for leader election (single-node: instant)
-    let leader = engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader = engine.wait_ready(Duration::from_secs(5)).await?;
     println!(
-        "✓ Leader elected: node {} (term {})\n",
+        "✓ Cluster is ready: leader {} (term {})",
         leader.leader_id, leader.term
     );
 

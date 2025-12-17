@@ -113,7 +113,7 @@ async fn test_server_is_not_ready() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = mock_node("/tmp/test_server_is_not_ready", graceful_rx, None);
     // Force the server to not be ready (implementation-specific)
-    node.set_ready(false);
+    node.set_rpc_ready(false);
 
     // Vote request
     let result = node
@@ -246,7 +246,7 @@ async fn test_handle_rpc_services_successfully() {
         .with_election_handler(election_handler)
         .with_node_config(settings)
         .build_node();
-    node.set_ready(true);
+    node.set_rpc_ready(true);
 
     // Start Raft run thread
     let raft_lock = node.raft_core.clone();

@@ -197,6 +197,14 @@ impl SharedState {
     /// - leader/term changes with committed=true
     ///
     /// This enables event-driven leader discovery notifications without hot-path overhead.
+    /// Update voted_for and return true if this represents a new leader commitment
+    ///
+    /// Returns true when:
+    /// - committed transitions from false to true, OR
+    /// - leader/term changes with committed=true, OR
+    /// - current_leader is None (node restart scenario)
+    ///
+    /// This enables event-driven leader discovery notifications without hot-path overhead.
     pub fn update_voted_for(
         &mut self,
         new_vote: VotedFor,
@@ -207,7 +215,8 @@ impl SharedState {
                 new_vote.committed
                     && (old.voted_for_id != new_vote.voted_for_id
                         || old.voted_for_term != new_vote.voted_for_term
-                        || !old.committed) // committed: false → true
+                        || !old.committed // committed: false → true
+                        || self.current_leader().is_none()) // Node restart: memory cleared
             }
             None => new_vote.committed,
         };

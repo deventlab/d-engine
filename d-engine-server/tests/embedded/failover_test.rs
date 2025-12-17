@@ -61,16 +61,9 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         engines.push(engine);
     }
 
-    // Wait for cluster initialization
-    for engine in &engines {
-        engine.ready().await;
-    }
-
-    info!("All nodes initialized, waiting for leader election");
-
     // Wait for initial leader
     let initial_leader = engines[0]
-        .wait_leader(Duration::from_secs(10))
+        .wait_ready(Duration::from_secs(10))
         .await
         .expect("Failed to elect initial leader");
     info!(
@@ -105,7 +98,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         "Initial leader: {}, Watcher node: {}",
         initial_leader.leader_id, watcher_id
     );
-    let mut leader_rx = engines[watcher_idx].leader_notifier();
+    let mut leader_rx = engines[watcher_idx].leader_change_notifier();
 
     // Kill the actual leader node
     info!("Killing leader node {}", initial_leader.leader_id);
@@ -118,7 +111,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     let new_leader_info = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             // Check current state
-            let current = leader_rx.borrow().clone();
+            let current = *leader_rx.borrow();
 
             if let Some(leader) = current {
                 if leader.leader_id != initial_leader.leader_id {
@@ -236,13 +229,8 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         engines.push(engine);
     }
 
-    for engine in &engines {
-        engine.ready().await;
-    }
-
-    info!("Waiting for leader election");
     let leader_info = engines[0]
-        .wait_leader(Duration::from_secs(10))
+        .wait_ready(Duration::from_secs(10))
         .await
         .expect("Failed to elect leader");
     info!(
@@ -297,7 +285,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
     let restarted_engine =
         EmbeddedEngine::start(Some(&killed_config.1), storage, state_machine).await?;
-    restarted_engine.ready().await;
+    restarted_engine.wait_ready(Duration::from_secs(30)).await?;
 
     // Wait for sync
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -367,12 +355,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         engines.push(engine);
     }
 
-    for engine in &engines {
-        engine.ready().await;
-    }
-
-    info!("Waiting for leader election in 3-node cluster");
-    let leader_info = engines[0].wait_leader(Duration::from_secs(10)).await?;
+    let leader_info = engines[0].wait_ready(Duration::from_secs(10)).await?;
     info!(
         "Leader elected successfully: node {}",
         leader_info.leader_id

@@ -327,3 +327,362 @@ fn test_shared_state_leader_lifecycle() {
     shared.set_current_leader(5);
     assert_eq!(shared.current_leader(), Some(5));
 }
+
+// ============================================================================
+// update_voted_for() Business Scenario Tests
+// ============================================================================
+
+/// Scenario 1: First time discovering leader (follower receives first AppendEntries)
+#[test]
+fn test_update_voted_for_first_leader_discovery() {
+    let mut shared = SharedState::new(2, None, None);
+
+    // Initial state: no voted_for, no leader
+    assert!(shared.voted_for().unwrap().is_none());
+    assert_eq!(shared.current_leader(), None);
+
+    // Receive first AppendEntries from leader 3
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should trigger LeaderDiscovered event
+    assert!(is_new, "First leader discovery should return true");
+    assert_eq!(shared.voted_for().unwrap().unwrap().voted_for_id, 3);
+    assert_eq!(shared.voted_for().unwrap().unwrap().voted_for_term, 5);
+}
+
+/// Scenario 2: Same leader sends heartbeat (no change)
+#[test]
+fn test_update_voted_for_same_leader_heartbeat() {
+    let mut shared = SharedState::new(2, None, None);
+
+    // First heartbeat
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
+    // Simulate memory update (in real code, caller updates current_leader_id)
+    shared.set_current_leader(3);
+
+    // Second heartbeat from same leader
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should NOT trigger event (same leader)
+    assert!(!is_new, "Same leader heartbeat should return false");
+}
+
+/// Scenario 3: Leader changes (new leader elected)
+#[test]
+fn test_update_voted_for_leader_change() {
+    let mut shared = SharedState::new(2, None, None);
+
+    // Old leader
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+    shared.set_current_leader(3);
+
+    // New leader elected in higher term
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 5,
+            voted_for_term: 6,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should trigger LeaderDiscovered event
+    assert!(is_new, "Leader change should return true");
+    assert_eq!(shared.voted_for().unwrap().unwrap().voted_for_id, 5);
+    assert_eq!(shared.voted_for().unwrap().unwrap().voted_for_term, 6);
+}
+
+/// Scenario 4: Candidate votes for self (uncommitted)
+#[test]
+fn test_update_voted_for_candidate_vote() {
+    let mut shared = SharedState::new(1, None, None);
+
+    // Candidate votes for self (not yet leader)
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 1,
+            voted_for_term: 5,
+            committed: false,
+        })
+        .unwrap();
+
+    // Should NOT trigger event (not committed)
+    assert!(!is_new, "Uncommitted candidate vote should return false");
+    assert!(!shared.voted_for().unwrap().unwrap().committed);
+}
+
+/// Scenario 5: Candidate becomes leader (uncommitted → committed)
+#[test]
+fn test_update_voted_for_candidate_to_leader() {
+    let mut shared = SharedState::new(1, None, None);
+
+    // Step 1: Candidate votes for self
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 1,
+            voted_for_term: 5,
+            committed: false,
+        })
+        .unwrap();
+
+    // Step 2: Receives quorum, becomes leader
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 1,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should trigger event (committed flag transition)
+    assert!(is_new, "Candidate to leader transition should return true");
+    assert!(shared.voted_for().unwrap().unwrap().committed);
+}
+
+/// Scenario 6: Node restart - same leader still exists (CRITICAL FIX)
+#[test]
+fn test_update_voted_for_node_restart_same_leader() {
+    // Simulate node state before shutdown
+    let hard_state_before_shutdown = HardState {
+        current_term: 4,
+        voted_for: Some(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 4,
+            committed: true,
+        }),
+    };
+
+    // Node restarts - load hard_state from disk
+    let mut shared = SharedState::new(1, Some(hard_state_before_shutdown), None);
+
+    // Key: current_leader_id is reset to 0 (memory cleared)
+    assert_eq!(
+        shared.current_leader(),
+        None,
+        "After restart, current_leader should be None"
+    );
+    assert!(
+        shared.voted_for().unwrap().is_some(),
+        "voted_for loaded from disk"
+    );
+
+    // Leader 3 sends first heartbeat after restart
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 4,
+            committed: true,
+        })
+        .unwrap();
+
+    // CRITICAL: Should trigger LeaderDiscovered event
+    // Because current_leader_id is None (memory cleared after restart)
+    assert!(
+        is_new,
+        "Node restart: should rediscover leader even if voted_for unchanged"
+    );
+}
+
+/// Scenario 7: Node restart - leader changed during downtime
+#[test]
+fn test_update_voted_for_node_restart_leader_changed() {
+    // Node state before shutdown (old leader 3)
+    let hard_state_before_shutdown = HardState {
+        current_term: 4,
+        voted_for: Some(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 4,
+            committed: true,
+        }),
+    };
+
+    // Node restarts
+    let mut shared = SharedState::new(1, Some(hard_state_before_shutdown), None);
+
+    // New leader 5 sends heartbeat (term advanced)
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 5,
+            voted_for_term: 6,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should trigger event (leader changed)
+    assert!(is_new, "Node restart with new leader should return true");
+    assert_eq!(shared.voted_for().unwrap().unwrap().voted_for_id, 5);
+    assert_eq!(shared.voted_for().unwrap().unwrap().voted_for_term, 6);
+}
+
+/// Scenario 8: Term advances but no leader yet
+#[test]
+fn test_update_voted_for_term_advance_no_leader() {
+    let mut shared = SharedState::new(2, None, None);
+
+    // Old leader
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+    shared.set_current_leader(3);
+
+    // Term advances, candidate votes (not yet leader)
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 5,
+            voted_for_term: 6,
+            committed: false, // Not yet leader
+        })
+        .unwrap();
+
+    // Should NOT trigger event (uncommitted)
+    assert!(
+        !is_new,
+        "Term advance without committed leader should return false"
+    );
+}
+
+/// Scenario 9: Leader step down (leader discovers higher term)
+#[test]
+fn test_update_voted_for_leader_step_down() {
+    let mut shared = SharedState::new(3, None, None);
+
+    // Node 3 is leader in term 5
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+    shared.set_current_leader(3);
+
+    // Discovers higher term, resets vote
+    shared.update_current_term(6);
+    shared.reset_voted_for().unwrap();
+    shared.clear_current_leader();
+
+    // New leader in term 6
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 5,
+            voted_for_term: 6,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should trigger event (new leader after step down)
+    assert!(is_new, "New leader after step down should return true");
+}
+
+/// Scenario 10: Multiple leader changes in sequence
+#[test]
+fn test_update_voted_for_multiple_leader_changes() {
+    let mut shared = SharedState::new(2, None, None);
+
+    // Leader 1 (term 3)
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 1,
+            voted_for_term: 3,
+            committed: true,
+        })
+        .unwrap();
+    assert!(is_new);
+    shared.set_current_leader(1);
+
+    // Leader 2 (term 4)
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 2,
+            voted_for_term: 4,
+            committed: true,
+        })
+        .unwrap();
+    assert!(is_new, "First leader change");
+    shared.set_current_leader(2);
+
+    // Leader 3 (term 5)
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+    assert!(is_new, "Second leader change");
+}
+
+/// Scenario 11: Edge case - same leader but term regressed (network partition recovery)
+#[test]
+fn test_update_voted_for_term_regression() {
+    let mut shared = SharedState::new(2, None, None);
+
+    // Current leader in term 6
+    shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 6,
+            committed: true,
+        })
+        .unwrap();
+    shared.set_current_leader(3);
+
+    // Receive stale message from term 5 (should be rejected in practice)
+    // But test update_voted_for logic
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 5,
+            committed: true,
+        })
+        .unwrap();
+
+    // Term regression is considered a change
+    assert!(is_new, "Term regression should return true");
+}
+
+/// Scenario 12: Learner node receives leader info
+#[test]
+fn test_update_voted_for_learner_discovers_leader() {
+    let mut shared = SharedState::new(10, None, None); // Learner node
+
+    // Learner discovers leader through snapshot or replication
+    let is_new = shared
+        .update_voted_for(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 8,
+            committed: true,
+        })
+        .unwrap();
+
+    // Should trigger event (first discovery)
+    assert!(is_new, "Learner first leader discovery should return true");
+}

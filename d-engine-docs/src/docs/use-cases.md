@@ -64,11 +64,13 @@ Applications that coordinate distributed systems: database HA managers, distribu
 ### Real-World Examples
 
 **Patroni (PostgreSQL HA)**:
+
 - 3-node Patroni cluster manages 1 PostgreSQL primary
 - Patroni embeds distributed consensus for leader election
 - REST API accepts requests on any node, forwards to leader internally
 
 **Apache APISIX (API Gateway)**:
+
 - Embeds d-engine for configuration synchronization
 - Any gateway node can receive config updates
 - Leader writes, followers read locally
@@ -90,11 +92,10 @@ use d_engine::prelude::*;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
-    engine.ready().await;
-    engine.wait_leader(Duration::from_secs(5)).await?;
-    
+    engine.wait_ready(Duration::from_secs(5)).await?;
+
     let client = engine.client();  // <0.1ms local access
-    
+
     // Application logic: forward writes to leader if needed
     match client.put(key, value).await {
         Err(e) if e.is_not_leader() => {
@@ -104,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(_) => { /* success */ }
         Err(e) => { /* other errors */ }
     }
-    
+
     Ok(())
 }
 ```
@@ -165,11 +166,13 @@ DNS servers, service registries, configuration centers that serve read-heavy wor
 ### Real-World Examples
 
 **CoreDNS (Kubernetes)**:
+
 - Watches Kubernetes Service/Endpoints resources
 - Updates local DNS cache on changes
 - Serves DNS queries from local cache
 
 **Consul (Service Discovery)**:
+
 - Agents watch service registry
 - Three consistency modes: stale/default/consistent
 - Balances performance vs consistency
@@ -269,11 +272,13 @@ Kubernetes Operators, storage orchestrators, task schedulers that require leader
 ### Real-World Examples
 
 **Rook Ceph Operator**:
+
 - Uses etcd for leader election
 - Only leader pod executes storage orchestration
 - Kubernetes Service routes to active leader
 
 **Vitess (MySQL Orchestrator)**:
+
 - Leader-only shard management
 - Followers watch for leader changes
 - Automatic failover
@@ -285,11 +290,17 @@ Kubernetes Operators, storage orchestrators, task schedulers that require leader
 ```rust
 use d_engine::prelude::*;
 
-let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
-engine.ready().await;
+// Get node_id from config file (production recommended)
+let config = RaftNodeConfig::new()?.with_override_config("node1.toml")?;
+let my_node_id = config.cluster.node_id;
+
+let engine = EmbeddedEngine::with_rocksdb("./data", Some("node1.toml")).await?;
+
+// Wait for initial leader election
+engine.wait_ready(Duration::from_secs(5)).await?;
 
 // Subscribe to leader changes
-let mut leader_rx = engine.leader_notifier();
+let mut leader_rx = engine.leader_change_notifier();
 
 tokio::spawn(async move {
     while leader_rx.changed().await.is_ok() {
@@ -319,11 +330,11 @@ tokio::spawn(async move {
 
 ## Comparison Table
 
-| Use Case                 | Read/Write Ratio | Consistency Needs     | Recommended Mode       | Key APIs                      |
-| ------------------------ | ---------------- | --------------------- | ---------------------- | ----------------------------- |
-| Control Plane Services   | 50/50            | Strong (LeaseRead)    | Embedded (Rust)        | LocalKvClient, error handling |
-| DNS/Service Discovery    | 99/1             | Eventual (<100ms lag) | Embedded or Standalone | Watch, EventualConsistency    |
-| Distributed Orchestration| 10/90            | Strong (leader-only)  | Embedded (Rust)        | leader_notifier, wait_leader  |
+| Use Case                  | Read/Write Ratio | Consistency Needs     | Recommended Mode       | Key APIs                           |
+| ------------------------- | ---------------- | --------------------- | ---------------------- | ---------------------------------- |
+| Control Plane Services    | 50/50            | Strong (LeaseRead)    | Embedded (Rust)        | LocalKvClient, error handling      |
+| DNS/Service Discovery     | 99/1             | Eventual (<100ms lag) | Embedded or Standalone | Watch, EventualConsistency         |
+| Distributed Orchestration | 10/90            | Strong (leader-only)  | Embedded (Rust)        | leader_change_notifier, wait_ready |
 
 ---
 
@@ -349,12 +360,14 @@ Is your application written in Rust?
 ### When NOT to Use d-engine
 
 ❌ **Don't use d-engine for**:
+
 - Large-scale data storage (use TiKV, CockroachDB)
 - Multi-datacenter geo-replication (use CockroachDB, YugabyteDB)
 - Weak consistency is acceptable (use Redis, Memcached)
 - SQL query interface required (use PostgreSQL, MySQL)
 
 ✅ **d-engine is for**:
+
 - Coordination metadata (<100MB)
 - Strong consistency within single datacenter
 - Embedded Rust applications

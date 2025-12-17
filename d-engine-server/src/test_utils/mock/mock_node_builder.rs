@@ -14,6 +14,7 @@ use tracing::trace;
 use super::MockTypeConfig;
 use crate::Node;
 use crate::network::grpc;
+use crate::node::LeaderNotifier;
 use d_engine_core::ElectionConfig;
 use d_engine_core::MockElectionCore;
 use d_engine_core::MockMembership;
@@ -298,8 +299,8 @@ impl MockBuilder {
         let event_tx = raft.event_sender();
         let node_config = raft.ctx.node_config.clone();
         let membership = raft.ctx.membership.clone();
-        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
-        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+        let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
+        let leader_notifier = LeaderNotifier::new();
 
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -307,9 +308,8 @@ impl MockBuilder {
             membership,
             event_tx,
             ready: AtomicBool::new(false),
-            ready_notify_tx,
-            leader_elected_tx,
-            _leader_elected_rx: leader_elected_rx,
+            rpc_ready_tx,
+            leader_notifier,
             node_config,
             watch_manager: None,
             watch_dispatcher_handle: None,
@@ -336,8 +336,8 @@ impl MockBuilder {
             "build_node_with_rpc_server"
         );
         let node_config_arc = Arc::new(node_config);
-        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
-        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
+        let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
+        let leader_notifier = LeaderNotifier::new();
 
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -345,9 +345,8 @@ impl MockBuilder {
             membership,
             event_tx,
             ready: AtomicBool::new(false),
-            ready_notify_tx,
-            leader_elected_tx,
-            _leader_elected_rx: leader_elected_rx,
+            rpc_ready_tx,
+            leader_notifier,
             node_config: node_config_arc.clone(),
             watch_manager: None,
             watch_dispatcher_handle: None,

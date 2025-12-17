@@ -69,7 +69,7 @@ async fn start_dengine_server(
     let node = NodeBuilder::new(None, graceful_rx.clone())
         .storage_engine(storage_engine)
         .state_machine(state_machine)
-        .start_server()
+        .start()
         .await
         .expect("start node failed.");
 
