@@ -73,7 +73,6 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)Testing:$(NC)"
 	@echo "    make test           # Run unit + integration tests"
-	@echo "    make test-detailed  # Run tests with detailed failure output"
 	@echo "    make test-all       # Run all tests including benchmarks"
 	@echo "    make test-unit      # Run unit tests only"
 	@echo ""
@@ -230,51 +229,39 @@ build-release: check check-workspace
 # TESTING
 # ============================================================================
 
-## test                 Run all tests (lib + bins + examples + integration, excluding benches)
+## test                 Run unit tests (parallel) + integration tests (serial)
 test: install-tools check-workspace
-	@echo "$(BLUE)Running tests on all targets...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --lib --bins --tests --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
-	@echo "$(GREEN)✓ All tests passed$(NC)"
+	@$(MAKE) test-unit
+	@$(MAKE) test-integration
+	@echo ""
+	@echo "$(GREEN)╔════════════════════════════════════════╗$(NC)"
+	@echo "$(GREEN)║  ✓ All tests passed!                  ║$(NC)"
+	@echo "$(GREEN)╚════════════════════════════════════════╝$(NC)"
 
-## test-detailed        Run tests with detailed failure output for each crate
-test-detailed: install-tools check-workspace
-	@echo "$(BLUE)Validating excluded projects (examples, benches)...$(NC)"
-	@$(MAKE) check-examples check-benches
-	@echo "$(BLUE)Running tests with detailed output per crate...$(NC)"
+## test-unit            Run unit tests only (parallel, fast)
+test-unit:
+	@echo "$(BLUE)Running unit tests per crate (parallel)...$(NC)"
 	@for member in $(WORKSPACE_MEMBERS); do \
-		echo "$(CYAN)Testing crate: $$member$(NC)"; \
+		echo "$(CYAN)Unit testing crate: $$member$(NC)"; \
 		if [ "$$member" = "d-engine-server" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --tests --features rocksdb --no-fail-fast -- --nocapture || \
-			{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+			$(CARGO) test -p $$member --lib --features rocksdb --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
 		else \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --tests --no-fail-fast -- --nocapture || \
-			{ echo "$(RED)✗ Tests failed in crate: $$member$(NC)"; exit 1; }; \
+			$(CARGO) test -p $$member --lib --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
 		fi; \
-		echo "$(GREEN)✓ Tests passed for crate: $$member$(NC)"; \
+		echo "$(GREEN)✓ Unit tests passed for crate: $$member$(NC)"; \
 		echo ""; \
 	done
-	@echo "$(BLUE)Running examples tests...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --examples --features d-engine-server/rocksdb --no-fail-fast -- --nocapture || \
-		{ echo "$(RED)✗ Examples tests failed$(NC)"; exit 1; }
-	@echo "$(GREEN)✓ All examples tests passed$(NC)"
-	@echo "$(GREEN)✓ All tests passed with detailed output$(NC)"
 
-## test-unit            Run unit tests only (library code only)
-test-unit: install-tools check-workspace
-	@echo "$(BLUE)Running unit tests (lib only)...$(NC)"
+## test-integration     Run integration tests only (serial, avoid port conflicts)
+test-integration:
+	@echo "$(BLUE)Running integration tests (serial)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --lib --no-fail-fast
-	@echo "$(GREEN)✓ Unit tests passed$(NC)"
-
-## test-integration     Run integration tests only (--test flag)
-test-integration: install-tools check-workspace
-	@echo "$(BLUE)Running integration tests...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb --no-fail-fast -- --nocapture
+		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb --no-fail-fast -- --nocapture --test-threads=1 || \
+		{ echo "$(RED)✗ Integration tests failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Integration tests passed$(NC)"
 
 ## test-doc             Run documentation tests only
@@ -306,7 +293,7 @@ endif
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
 ## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
-test-all: clippy test-detailed test-doc test-examples bench
+test-all: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
 	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution

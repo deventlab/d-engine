@@ -40,6 +40,40 @@ const SNAPSHOT_DIR: &str = "./snapshots/join_cluster/case2";
 const JOIN_CLUSTER_CASE2_DB_ROOT_DIR: &str = "./db/join_cluster/case2";
 const JOIN_CLUSTER_CASE2_LOG_DIR: &str = "./logs/join_cluster/case2";
 
+/// Test Objective: Concurrent Multi-Node Join with Snapshot Transfer
+///
+/// This integration test validates the complete workflow of adding multiple new nodes
+/// to an existing Raft cluster concurrently, focusing on:
+///
+/// 1. **Snapshot Generation**: Initial 3-node cluster (with 10 log entries) automatically
+///    generates snapshots based on log size policy (max_log_entries_before_snapshot=10).
+///
+/// 2. **Concurrent Node Addition**: Two new nodes (node 4 and node 5) join the cluster
+///    sequentially while the cluster is operational, testing the system's ability to
+///    handle membership changes without disrupting ongoing operations.
+///
+/// 3. **Snapshot Transfer & Installation**: New nodes receive snapshots from the leader
+///    via chunked InstallSnapshot RPCs, validating:
+///    - Snapshot chunking (chunk_size=100 bytes)
+///    - Snapshot reassembly on receiving nodes
+///    - Snapshot application to state machine
+///
+/// 4. **Data Persistence Verification**: After all nodes join, the test writes a new
+///    entry (entry 11) and verifies that all nodes, including the newly joined ones,
+///    successfully replicate and persist the data to disk. This ensures:
+///    - Raft log replication across all 5 nodes
+///    - Commit handler processing on all nodes
+///    - State machine persistence (FileStateMachine.persist_data_async())
+///
+/// 5. **Cluster Consistency**: Final assertions verify:
+///    - All 5 nodes are in Active status
+///    - Leader remains stable (node 3)
+///    - All nodes have identical state (11 entries)
+///
+/// Key Race Condition Mitigation:
+/// The test includes deliberate sleep delays after write operations to allow sufficient
+/// time for asynchronous replication and disk persistence across all nodes, preventing
+/// timing-dependent test failures.
 #[tokio::test]
 #[traced_test]
 #[serial]
@@ -288,6 +322,14 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
 
     // Insert a new entry to trigger commit handler and ensure all nodes are in sync
     test_put_get(&mut client_manager, 11, 200).await?;
+
+    // Wait for all nodes to complete replication and persistence
+    // This ensures entry 11 has been:
+    // 1. Replicated from leader to all followers via AppendEntries RPC
+    // 2. Committed by the leader once majority acknowledgment received
+    // 3. Applied to state machine on all nodes via commit handler
+    // 4. Persisted to disk via FileStateMachine.persist_data_async()
+    sleep(Duration::from_secs(2)).await;
 
     // Verify data length by re-opening node 1 state machine
     let node1_sm = FileStateMachine::new(PathBuf::from(format!(

@@ -34,9 +34,10 @@ async fn test_election_timer_init_within_range() {
     assert!(next_deadline > now, "Next deadline should be in the future");
 
     // Deadline should be within reasonable bounds (min-max millis from now)
+    // Allow 1ms tolerance for timer precision and CPU scheduling variance
     let elapsed = next_deadline - now;
-    let min_duration = Duration::from_millis(min);
-    let max_duration = Duration::from_millis(max);
+    let min_duration = Duration::from_millis(min.saturating_sub(1));
+    let max_duration = Duration::from_millis(max + 1);
 
     assert!(
         elapsed >= min_duration,

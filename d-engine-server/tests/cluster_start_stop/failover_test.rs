@@ -57,8 +57,9 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     // Write test data before failover
     client.kv().put("before-failover", "initial-value").await?;
-    // Wait for commit to propagate before reading
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    // Wait for data to replicate to all nodes before reading
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
+    // Use get_eventual() after sufficient wait time to ensure data is replicated
     let result = client.kv().get_eventual("before-failover").await?;
     assert_eq!(
         result.expect("Key should exist after write").value.as_ref(),
@@ -98,9 +99,8 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
             Err(e) => return Err(e),
         }
     }
-    // Wait for commit to propagate after successful put
+    // Wait for data to replicate after failover and re-election
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
-
     // Verify old data still readable
     let old_val = client.kv().get_eventual("before-failover").await?.unwrap();
     assert_eq!(old_val.value.as_ref(), b"initial-value");
@@ -129,6 +129,8 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     info!("Node 1 restarted. Verifying data sync");
 
+    // Wait for node 1 to sync data from cluster
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
     // Verify node 1 synced data from cluster
     client.refresh(None).await?;
     let synced_val = client.kv().get_eventual("after-failover").await?.unwrap();
