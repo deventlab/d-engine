@@ -14,6 +14,14 @@ pub mod overview {
     #![doc = include_str!("overview.md")]
 }
 
+pub mod quick_start_5min {
+    #![doc = include_str!("quick-start-5min.md")]
+}
+
+pub mod quick_start_standalone {
+    #![doc = include_str!("quick-start-standalone.md")]
+}
+
 pub mod architecture;
 pub mod client_guide;
 pub mod performance;

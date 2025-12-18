@@ -60,7 +60,7 @@ jobs:
       - name: Install cargo tools
         run: |
           cargo install cargo-llvm-cov --locked
-          cargo install cargo-nextest --locked
+          cargo install cargo-nextest --version 0.9.114 --locked
 
       - name: Run tests with nextest and generate coverage
         run: |

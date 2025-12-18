@@ -10,14 +10,13 @@
 //! - Allows precise behavior injection for handlers
 //! - Enables isolated testing of component interactions
 //!
-//! The [`TestContext`] struct encapsulates a controlled testing environment
-//! containing:
+//! The mock context encapsulates a controlled testing environment containing:
 //! - Mock storage implementations (raft log, state machine)
 //! - Simulated network layer
 //! - Configurable cluster membership
 //! - Instrumented handler implementations
 //!
-//! The [`setup_mock_context`] function initializes a test environment with:
+//! Mock initialization provides a test environment with:
 //! - Auto-generated mock objects via [mockall] attributes
 //! - Preconfigured peer responses
 //! - Deterministic transport simulation

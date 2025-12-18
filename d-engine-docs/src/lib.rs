@@ -55,7 +55,7 @@
 //! }
 //! ```
 //!
-//! **→ [Detailed Embedded Guide](./docs/quick-start-5min/index.html)**
+//! **→ See [quick_start_5min](docs::quick_start_5min) module for detailed guide**
 //!
 //! ### Standalone Mode (Any Language)
 //!
@@ -68,7 +68,7 @@
 //!
 //! Then connect from Go, Python, or any gRPC-supported language.
 //!
-//! **→ [Detailed Standalone Guide](./docs/quick-start-standalone/index.html)**
+//! **→ See [quick_start_standalone](docs::quick_start_standalone) module for detailed guide**
 //!
 //! ## API Documentation
 //!
