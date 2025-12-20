@@ -10,13 +10,14 @@
 //! - End-to-end Watch notification latency: < 100µs
 //! - Batch operations: Linear scaling
 
+#![cfg(feature = "watch")]
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::StateMachine;
-use d_engine_core::config::WatchConfig;
 use d_engine_core::watch::{WatchDispatcher, WatchRegistry, WatcherHandle};
 use d_engine_proto::client::{
     WriteCommand,

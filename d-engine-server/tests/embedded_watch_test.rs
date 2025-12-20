@@ -21,13 +21,12 @@ async fn setup_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn std::error:
     let config_content = format!(
         r#"
 [cluster]
-listen_address = "127.0.0.1:{}"
+listen_address = "127.0.0.1:{port}"
 
 [raft.watch]
 event_queue_size = 1000
 watcher_buffer_size = 10
-"#,
-        port
+"#
     );
     std::fs::write(&config_path, config_content)?;
 
@@ -108,9 +107,8 @@ async fn test_embedded_watch_always_available_when_compiled()
     let config_content = format!(
         r#"
 [cluster]
-listen_address = "127.0.0.1:{}"
-"#,
-        port
+listen_address = "127.0.0.1:{port}"
+"#
     );
     std::fs::write(&config_path, config_content)?;
 

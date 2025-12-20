@@ -29,13 +29,12 @@ async fn create_test_engine() -> (EmbeddedEngine, TempDir) {
     let config_content = format!(
         r#"
 [cluster]
-listen_address = "127.0.0.1:{}"
+listen_address = "127.0.0.1:{port}"
 
 [raft.watch]
 event_queue_size = 10000
 watcher_buffer_size = 100
-"#,
-        port
+"#
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
@@ -69,7 +68,7 @@ async fn measure_put_latency(watcher_count: usize) -> f64 {
     // Register watchers
     let mut _watchers = Vec::new();
     for i in 0..watcher_count {
-        let key = format!("watch_key_{}", i).into_bytes();
+        let key = format!("watch_key_{i}").into_bytes();
         let watcher = engine.watch(&key).expect("Failed to register watcher");
         _watchers.push(watcher);
     }
@@ -80,8 +79,8 @@ async fn measure_put_latency(watcher_count: usize) -> f64 {
     // Measure 100 PUT operations
     let start = Instant::now();
     for i in 0..100 {
-        let key = format!("key_{}", i).into_bytes();
-        let value = format!("value_{}", i).into_bytes();
+        let key = format!("key_{i}").into_bytes();
+        let value = format!("value_{i}").into_bytes();
         engine.client().put(&key, &value).await.expect("PUT failed");
     }
     let elapsed = start.elapsed();
@@ -100,20 +99,20 @@ async fn test_watch_overhead_100_watchers_gate() {
     // Measure baseline (no watchers)
     println!("Measuring baseline (0 watchers)...");
     let baseline = measure_put_latency(0).await;
-    println!("   Baseline: {:.3}s for 100 PUTs", baseline);
+    println!("   Baseline: {baseline:.3}s for 100 PUTs");
 
     // Measure with 100 watchers
     println!("Measuring with 100 watchers...");
     let with_100 = measure_put_latency(100).await;
-    println!("   With 100 watchers: {:.3}s for 100 PUTs", with_100);
+    println!("   With 100 watchers: {with_100:.3}s for 100 PUTs");
 
     // Calculate overhead
     let overhead_percent = (with_100 - baseline) / baseline * 100.0;
-    println!("\nOverhead: {:.2}%", overhead_percent);
+    println!("\nOverhead: {overhead_percent:.2}%");
 
     // Gate check
     const THRESHOLD: f64 = 10.0;
-    println!("Threshold: < {:.1}%", THRESHOLD);
+    println!("Threshold: < {THRESHOLD:.1}%");
 
     if overhead_percent < THRESHOLD {
         println!("PASS: Performance gate passed!");
@@ -125,7 +124,7 @@ async fn test_watch_overhead_100_watchers_gate() {
         overhead_percent < THRESHOLD,
         "\n\nPerformance Gate FAILED\n\
          \n\
-         Watch overhead with 100 watchers is {:.2}%, exceeding {:.1}% threshold.\n\
+         Watch overhead with 100 watchers is {overhead_percent:.2}%, exceeding {THRESHOLD:.1}% threshold.\n\
          \n\
          This indicates a performance regression. Possible causes:\n\
          - Lock contention in watch system\n\
@@ -133,9 +132,7 @@ async fn test_watch_overhead_100_watchers_gate() {
          - Broadcast channel bottleneck\n\
          \n\
          Run detailed benchmark for analysis:\n\
-         cargo bench --bench watch_overhead --features rocksdb,watch\n",
-        overhead_percent,
-        THRESHOLD
+         cargo bench --bench watch_overhead --features rocksdb,watch\n"
     );
 }
 
@@ -147,20 +144,20 @@ async fn test_watch_overhead_1000_watchers_gate() {
     // Measure baseline (no watchers)
     println!("Measuring baseline (0 watchers)...");
     let baseline = measure_put_latency(0).await;
-    println!("   Baseline: {:.3}s for 100 PUTs", baseline);
+    println!("   Baseline: {baseline:.3}s for 100 PUTs");
 
     // Measure with 1000 watchers
     println!("Measuring with 1000 watchers...");
     let with_1000 = measure_put_latency(1000).await;
-    println!("   With 1000 watchers: {:.3}s for 100 PUTs", with_1000);
+    println!("   With 1000 watchers: {with_1000:.3}s for 100 PUTs");
 
     // Calculate overhead
     let overhead_percent = (with_1000 - baseline) / baseline * 100.0;
-    println!("\nOverhead: {:.2}%", overhead_percent);
+    println!("\nOverhead: {overhead_percent:.2}%");
 
     // Gate check (more lenient threshold for 1000 watchers)
     const THRESHOLD: f64 = 15.0;
-    println!("Threshold: < {:.1}%", THRESHOLD);
+    println!("Threshold: < {THRESHOLD:.1}%");
 
     if overhead_percent < THRESHOLD {
         println!("PASS: Performance gate passed!");
@@ -172,7 +169,7 @@ async fn test_watch_overhead_1000_watchers_gate() {
         overhead_percent < THRESHOLD,
         "\n\nPerformance Gate FAILED\n\
          \n\
-         Watch overhead with 1000 watchers is {:.2}%, exceeding {:.1}% threshold.\n\
+         Watch overhead with 1000 watchers is {overhead_percent:.2}%, exceeding {THRESHOLD:.1}% threshold.\n\
          \n\
          This indicates a performance regression. Possible causes:\n\
          - Lock contention in watch system\n\
@@ -180,8 +177,6 @@ async fn test_watch_overhead_1000_watchers_gate() {
          - Broadcast channel bottleneck\n\
          \n\
          Run detailed benchmark for analysis:\n\
-         cargo bench --bench watch_overhead --features rocksdb,watch\n",
-        overhead_percent,
-        THRESHOLD
+         cargo bench --bench watch_overhead --features rocksdb,watch\n"
     );
 }

@@ -35,7 +35,7 @@ async fn setup_standalone_cluster()
     // Start 3 nodes
     for (i, &port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
-        let node_dir = base_path.join(format!("node_{}", node_id));
+        let node_dir = base_path.join(format!("node_{node_id}"));
         let log_dir = node_dir.join("logs");
         tokio::fs::create_dir_all(&log_dir).await?;
 
@@ -77,7 +77,7 @@ async fn setup_standalone_cluster()
 
     // Create client connecting to all nodes
     let endpoints: Vec<String> =
-        ports.iter().map(|port| format!("http://127.0.0.1:{}", port)).collect();
+        ports.iter().map(|port| format!("http://127.0.0.1:{port}")).collect();
 
     let client = ClientBuilder::new(endpoints)
         .connect_timeout(Duration::from_secs(10))

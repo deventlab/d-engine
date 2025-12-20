@@ -38,8 +38,8 @@ fn create_test_entries(
 ) -> Vec<Entry> {
     let mut entries = Vec::new();
     for i in 0..count {
-        let key = format!("key_{}", i);
-        let value = format!("value_{}", i);
+        let key = format!("key_{i}");
+        let value = format!("value_{i}");
 
         let write_cmd = WriteCommand {
             operation: Some(Operation::Insert(Insert {
@@ -74,13 +74,12 @@ async fn create_embedded_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn s
     let config_content = format!(
         r#"
 [cluster]
-listen_address = "127.0.0.1:{}"
+listen_address = "127.0.0.1:{port}"
 
 [raft.watch]
 event_queue_size = 10000
 watcher_buffer_size = 100
-"#,
-        port
+"#
     );
     std::fs::write(&config_path, config_content)?;
 
@@ -114,7 +113,7 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
 
     for &watcher_count in &[0, 10, 100] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_watchers", watcher_count)),
+            BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
                 // Setup: Create engine once, reuse across iterations
@@ -125,7 +124,7 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
                 // Register watchers once
                 let mut _watchers = Vec::new();
                 for i in 0..count {
-                    let key = format!("watch_key_{}", i).into_bytes();
+                    let key = format!("watch_key_{i}").into_bytes();
                     let watcher = engine.watch(&key).expect("Failed to register watcher");
                     _watchers.push(watcher);
                 }
@@ -137,8 +136,8 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
                 // Benchmark: Only measure PUT operations
                 b.to_async(&runtime).iter(|| async {
                     for i in 0..100 {
-                        let key = format!("key_{}", i).into_bytes();
-                        let value = format!("value_{}", i).into_bytes();
+                        let key = format!("key_{i}").into_bytes();
+                        let value = format!("value_{i}").into_bytes();
                         engine.client().put(&key, &value).await.expect("PUT failed");
                     }
                 });
@@ -204,7 +203,7 @@ fn bench_multiple_watchers_same_key(c: &mut Criterion) {
 
     for &watcher_count in &[1, 10, 100] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_watchers", watcher_count)),
+            BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
                 b.to_async(&runtime).iter(|| async {
@@ -251,7 +250,7 @@ fn bench_watcher_cleanup(c: &mut Criterion) {
 
     for &watcher_count in &[10, 100, 1000] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_watchers", watcher_count)),
+            BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
                 b.to_async(&runtime).iter(|| async {
@@ -261,7 +260,7 @@ fn bench_watcher_cleanup(c: &mut Criterion) {
                     // Register many watchers
                     let mut watchers = Vec::new();
                     for i in 0..count {
-                        let key = format!("cleanup_key_{}", i).into_bytes();
+                        let key = format!("cleanup_key_{i}").into_bytes();
                         let watcher = engine.watch(&key).expect("Failed to register watcher");
                         watchers.push(watcher);
                     }
@@ -298,7 +297,7 @@ fn bench_standalone_mode_with_watchers(c: &mut Criterion) {
 
     for &watcher_count in &[0, 10] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_watchers", watcher_count)),
+            BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
                 b.to_async(&runtime).iter(|| async {
@@ -309,9 +308,9 @@ fn bench_standalone_mode_with_watchers(c: &mut Criterion) {
                     // Create configs for 3 nodes
                     let mut configs = Vec::new();
                     for i in 0..3 {
-                        let node_id = (i + 1) as u32;
+                        let node_id = i + 1;
                         let port = base_port + i;
-                        let config_path = temp_dir.path().join(format!("node{}.toml", node_id));
+                        let config_path = temp_dir.path().join(format!("node{node_id}.toml"));
 
                         let peers: Vec<String> = (0..3)
                             .filter(|&j| j != i)
@@ -335,7 +334,7 @@ watcher_buffer_size = 100
                             port,
                             peers
                                 .iter()
-                                .map(|p| format!("\"{}\"", p))
+                                .map(|p| format!("\"{p}\""))
                                 .collect::<Vec<_>>()
                                 .join(",\n    ")
                         );
@@ -386,7 +385,7 @@ watcher_buffer_size = 100
                     // Register watchers on leader
                     let mut _watchers = Vec::new();
                     for i in 0..count {
-                        let key = format!("watch_key_{}", i).into_bytes();
+                        let key = format!("watch_key_{i}").into_bytes();
                         let watcher = leader.watch(&key).expect("Failed to register watcher");
                         _watchers.push(watcher);
                     }
@@ -396,8 +395,8 @@ watcher_buffer_size = 100
                     // Benchmark: 100 PUT operations through gRPC-like client
                     let start = std::time::Instant::now();
                     for i in 0..100 {
-                        let key = format!("key_{}", i).into_bytes();
-                        let value = format!("value_{}", i).into_bytes();
+                        let key = format!("key_{i}").into_bytes();
+                        let value = format!("value_{i}").into_bytes();
                         client.put(&key, &value).await.expect("PUT failed");
                     }
                     let elapsed = start.elapsed();

@@ -489,7 +489,6 @@ where
     /// Spawn watch dispatcher as background task.
     ///
     /// The dispatcher manages all watch streams for the lifetime of the node.
-
     /// Sets a custom state machine handler implementation.
     ///
     /// This allows developers to provide their own implementation of the state machine handler

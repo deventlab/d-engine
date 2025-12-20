@@ -30,6 +30,8 @@
 #[cfg(test)]
 mod mod_test;
 
+#[cfg(feature = "watch")]
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;

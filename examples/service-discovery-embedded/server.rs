@@ -47,29 +47,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Watching key: {service_key}");
 
     // Register watcher directly on the engine
-    let watcher = engine.watch(service_key).await?;
+    let watcher = engine.watch(service_key)?;
 
     // Spawn a background task to process watch events
     // This simulates the "Watcher" component running inside the same process
     tokio::spawn(async move {
         // Get the event receiver from the handle
-        let (_, _, mut receiver, _guard) = watcher.into_receiver();
+        let (_, _, mut receiver) = watcher.into_receiver();
 
         while let Some(event) = receiver.recv().await {
             let value = String::from_utf8_lossy(&event.value);
             match event.event_type {
-                WatchEventType::Put => {
+                e if e == WatchEventType::Put as i32 => {
                     println!(
                         "\n[WATCHER] Service Updated: {} -> {}",
                         String::from_utf8_lossy(&event.key),
                         value
                     );
                 }
-                WatchEventType::Delete => {
+                e if e == WatchEventType::Delete as i32 => {
                     println!(
                         "\n[WATCHER] Service Removed: {}",
                         String::from_utf8_lossy(&event.key)
                     );
+                }
+                _ => {
+                    eprintln!("[WATCHER] Unknown event type: {}", event.event_type);
                 }
             }
         }

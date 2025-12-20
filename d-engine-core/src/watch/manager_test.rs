@@ -327,18 +327,14 @@ async fn test_watcher_buffer_overflow() {
 
     // Try to receive - should get only buffered events (older ones dropped)
     let mut received_count = 0;
-    loop {
-        match timeout(Duration::from_millis(50), handle.receiver_mut().recv()).await {
-            Ok(Some(_)) => received_count += 1,
-            _ => break, // Timeout or channel closed
-        }
+    while let Ok(Some(_)) = timeout(Duration::from_millis(50), handle.receiver_mut().recv()).await {
+        received_count += 1;
     }
 
     // Should have lost some events due to buffer overflow
     assert!(
         received_count <= 2,
-        "Should receive at most buffer_size events, got {}",
-        received_count
+        "Should receive at most buffer_size events, got {received_count}"
     );
 }
 

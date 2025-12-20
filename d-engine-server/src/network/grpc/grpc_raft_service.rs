@@ -7,7 +7,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures::Stream;
-
+#[cfg(feature = "watch")]
+use futures::StreamExt;
 use tokio::select;
 use tokio::time::timeout;
 
@@ -18,7 +19,8 @@ use tonic::Status;
 use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
-
+#[cfg(feature = "watch")]
+use tracing::info;
 use tracing::warn;
 
 use crate::Node;
@@ -421,7 +423,7 @@ where
         );
 
         // Register watcher and get receiver
-        let handle = registry.register(key.into());
+        let handle = registry.register(key);
         let (_watcher_id, _key, receiver) = handle.into_receiver();
 
         // Convert mpsc::Receiver -> Boxed Stream with sentinel error on close
