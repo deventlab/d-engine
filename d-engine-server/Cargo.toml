@@ -86,3 +86,7 @@ harness = false
 name = "watch_overhead"
 harness = false
 required-features = ["watch", "rocksdb"]
+
+[[bench]]
+name = "lease_performance"
+harness = false

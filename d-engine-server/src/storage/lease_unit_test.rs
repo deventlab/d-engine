@@ -16,7 +16,11 @@ use crate::storage::lease::DefaultLease;
 use d_engine_core::Lease;
 
 fn default_config() -> d_engine_core::config::LeaseConfig {
-    d_engine_core::config::LeaseConfig::default()
+    d_engine_core::config::LeaseConfig {
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
+    }
 }
 
 // ============================================================================
@@ -298,9 +302,9 @@ fn test_reload_invalid_data() {
 #[test]
 fn test_reload_clears_apply_counter() {
     let config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "piggyback".to_string(),
-        piggyback_frequency: 2,
-        ..default_config()
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
     };
 
     let lease = DefaultLease::new(config.clone());
@@ -327,40 +331,32 @@ fn test_reload_clears_apply_counter() {
 // ============================================================================
 
 #[test]
-fn test_on_apply_with_piggyback_disabled() {
-    let config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "disabled".to_string(),
-        ..default_config()
-    };
+fn test_on_apply_piggyback_removed() {
+    let config = default_config();
 
     let lease = DefaultLease::new(config);
     lease.register(Bytes::from("key1"), 1);
 
     sleep(Duration::from_secs(2));
 
-    // Even with expired keys, piggyback cleanup should return empty
+    // on_apply() is now deprecated and always returns empty
+    // Cleanup is handled by Lazy (in get) or Background (async task)
     let result = lease.on_apply();
     assert!(result.is_empty());
 
-    // Expired key should still be in lease (no cleanup)
+    // Expired key should still be in lease (on_apply no longer cleans up)
     assert_eq!(lease.len(), 1);
 }
 
 #[test]
-fn test_on_apply_with_piggyback_frequency() {
+fn test_enabled_config() {
     let config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "piggyback".to_string(),
-        piggyback_frequency: 3,
-        ..default_config()
+        enabled: true,
+        interval_ms: 5000,
+        max_cleanup_duration_ms: 1,
     };
 
     let lease = DefaultLease::new(config);
-    lease.register(Bytes::from("key1"), 1);
-
-    sleep(Duration::from_secs(2));
-
-    // First apply: counter=0, 0 % 3 == 0, triggers cleanup
-    let result = lease.on_apply();
-    assert_eq!(result.len(), 1);
-    assert_eq!(lease.len(), 0);
+    assert!(lease.config().enabled);
+    assert_eq!(lease.config().interval_ms, 5000);
 }

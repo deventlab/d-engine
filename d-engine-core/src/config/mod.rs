@@ -8,18 +8,22 @@
 mod cluster;
 use std::fmt::Debug;
 use std::path::Path;
+mod lease;
 mod network;
 mod raft;
 mod retry;
 mod tls;
 pub use cluster::*;
 use config::ConfigError;
+pub use lease::*;
 pub use network::*;
 pub use raft::*;
 pub use retry::*;
 pub use tls::*;
 #[cfg(test)]
 mod config_test;
+#[cfg(test)]
+mod lease_test;
 #[cfg(test)]
 mod network_test;
 #[cfg(test)]

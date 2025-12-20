@@ -1,4 +1,4 @@
-use d_engine_server::embedded::EmbeddedEngine;
+use d_engine_server::api::EmbeddedEngine;
 #[cfg(feature = "rocksdb")]
 use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use serial_test::serial;

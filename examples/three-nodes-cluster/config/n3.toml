@@ -51,6 +51,11 @@ snapshot_cool_down_since_last_check = { secs = 60 }
 snapshots_dir = "./snapshots/"
 retained_log_entries = 3
 
+# == TTL Lease Configuration ==
+[raft.state_machine.lease]
+enabled = true
+interval_ms = 1000
+max_cleanup_duration_ms = 1
 
 # == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]

@@ -1,10 +1,10 @@
 //! TTL Manager Performance Benchmarks
 //!
 //! This benchmark suite focuses specifically on TTL management operations,
-//! particularly the piggyback cleanup mechanism and TTL registration overhead.
+//! particularly background cleanup and TTL registration overhead.
 //!
 //! Performance Targets:
-//! - Piggyback cleanup: < 1ms for typical workloads
+//! - Background cleanup: < 1ms for typical workloads
 //! - TTL registration: < 100ns per entry
 //! - Expired check: < 50ns per key
 
@@ -27,10 +27,11 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     use d_engine_server::storage::DefaultLease;
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    // For TTL benchmarks, we need piggyback cleanup enabled
+    // For TTL benchmarks, we need lease enabled
     let lease_config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "piggyback".to_string(),
-        ..Default::default()
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
     };
 
     let mut sm = FileStateMachine::new(temp_dir.path().to_path_buf())
@@ -99,8 +100,9 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
     // Test with different numbers of expired keys
     for expired_count in [10, 50, 100, 500].iter() {
         let lease_config = d_engine_core::config::LeaseConfig {
-            cleanup_strategy: "piggyback".to_string(),
-            ..Default::default()
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
         };
         let lease = DefaultLease::new(lease_config);
 
@@ -136,8 +138,9 @@ fn bench_ttl_registration(c: &mut Criterion) {
     use d_engine_server::storage::DefaultLease;
 
     let lease_config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "piggyback".to_string(),
-        ..Default::default()
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
     };
     let lease = DefaultLease::new(lease_config);
 

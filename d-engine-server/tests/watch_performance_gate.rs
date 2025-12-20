@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use d_engine_server::embedded::EmbeddedEngine;
+use d_engine_server::api::EmbeddedEngine;
 use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use tempfile::TempDir;
 

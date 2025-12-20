@@ -162,6 +162,8 @@ pub use d_engine_server::{
     ProstError,
     Result,
     SnapshotError,
+    // Standalone mode
+    StandaloneServer,
     StateMachine,
     StorageEngine,
     StorageError,
@@ -207,6 +209,6 @@ pub mod prelude {
     #[cfg(feature = "server")]
     pub use d_engine_server::{
         EmbeddedEngine, FileStateMachine, FileStorageEngine, LeaderInfo, LocalClientError,
-        LocalKvClient, Node, NodeBuilder, StateMachine, StorageEngine,
+        LocalKvClient, Node, NodeBuilder, StandaloneServer, StateMachine, StorageEngine,
     };
 }

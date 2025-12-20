@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 use d_engine_core::watch::WatchEventType;
-use d_engine_server::embedded::EmbeddedEngine;
+use d_engine_server::api::EmbeddedEngine;
 use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 /// Helper function to create a test EmbeddedEngine with RocksDB

@@ -155,8 +155,11 @@ mod file_state_machine_tests {
     #[tokio::test]
     async fn test_ttl_expiration_after_apply() {
         let temp_dir = TempDir::new().unwrap();
-        let mut lease_config = d_engine_core::config::LeaseConfig::default();
-        lease_config.cleanup_strategy = "piggyback".to_string();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm =
             create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
 
@@ -171,25 +174,27 @@ mod file_state_machine_tests {
         // Wait for expiration
         sleep(Duration::from_secs(3)).await;
 
-        // Apply another entry to trigger expiration check
-        let entry2 = create_insert_entry(2, 1, b"other_key", b"other_value", 0);
-        sm.apply_chunk(vec![entry2]).await.unwrap();
+        // Background strategy: manually trigger cleanup (simulates background worker)
+        sm.lease_background_cleanup().await.unwrap();
 
-        // Key should be expired
+        // Key should be deleted by background cleanup
         let value = sm.get(b"ttl_key").unwrap();
         assert_eq!(value, None);
-
-        // Other key should still exist
-        let value = sm.get(b"other_key").unwrap();
-        assert_eq!(value, Some(Bytes::from("other_value")));
     }
 
     #[tokio::test]
     async fn test_ttl_snapshot_persistence() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
-        let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm = create_file_state_machine_with_lease(
+            temp_dir.path().to_path_buf(),
+            lease_config.clone(),
+        )
+        .await;
 
         // Insert key with 3600 second TTL (won't expire during test)
         let entry = create_insert_entry(1, 1, b"persistent_key", b"persistent_value", 3600);
@@ -204,9 +209,11 @@ mod file_state_machine_tests {
         .await
         .unwrap();
 
-        // Create new state machine and restore snapshot
+        // Create new state machine with lease config and restore snapshot
         let temp_dir2 = TempDir::new().unwrap();
-        let sm2 = FileStateMachine::new(temp_dir2.path().to_path_buf()).await.unwrap();
+        let sm2 =
+            create_file_state_machine_with_lease(temp_dir2.path().to_path_buf(), lease_config)
+                .await;
 
         sm2.apply_snapshot_from_file(
             &d_engine_proto::server::storage::SnapshotMetadata {
@@ -227,8 +234,11 @@ mod file_state_machine_tests {
     async fn test_file_state_machine_ttl_persistence_across_restart() {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().to_path_buf();
-        let mut lease_config = d_engine_core::config::LeaseConfig::default();
-        lease_config.cleanup_strategy = "piggyback".to_string();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
 
         // Phase 1: Create state machine and insert keys with TTL
         {
@@ -279,9 +289,8 @@ mod file_state_machine_tests {
             // Wait for short TTL to expire
             sleep(Duration::from_secs(3)).await;
 
-            // Trigger expiration check
-            let entry4 = create_insert_entry(4, 1, b"trigger", b"trigger", 0);
-            sm.apply_chunk(vec![entry4]).await.unwrap();
+            // Manually trigger background cleanup
+            sm.lease_background_cleanup().await.unwrap();
 
             // short_ttl_key should be expired
             assert_eq!(sm.get(b"short_ttl_key").unwrap(), None);
@@ -298,9 +307,13 @@ mod file_state_machine_tests {
     #[tokio::test]
     async fn test_ttl_update_cancels_previous() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
-        let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
 
         // Insert key with 2 second TTL
         let entry1 = create_insert_entry(1, 1, b"update_key", b"value1", 2);
@@ -313,117 +326,23 @@ mod file_state_machine_tests {
         // Wait past original TTL
         sleep(Duration::from_secs(3)).await;
 
-        // Trigger expiration check
-        let entry3 = create_insert_entry(3, 1, b"trigger", b"trigger", 0);
-        sm.apply_chunk(vec![entry3]).await.unwrap();
+        // Manually trigger cleanup
+        sm.lease_background_cleanup().await.unwrap();
 
         // Key should still exist (new TTL not expired)
         let value = sm.get(b"update_key").unwrap();
         assert_eq!(value, Some(Bytes::from("value2")));
     }
-
-    #[tokio::test]
-    async fn test_passive_deletion_on_get() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut lease_config = d_engine_core::config::LeaseConfig::default();
-        lease_config.cleanup_strategy = "piggyback".to_string();
-        let sm =
-            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
-
-        // Insert key with 1 second TTL
-        let entry = create_insert_entry(1, 1, b"passive_key", b"passive_value", 1);
-        sm.apply_chunk(vec![entry]).await.unwrap();
-
-        // Key should exist immediately
-        let value = sm.get(b"passive_key").unwrap();
-        assert_eq!(value, Some(Bytes::from("passive_value")));
-
-        // Wait for expiration
-        sleep(Duration::from_secs(2)).await;
-
-        // Passive deletion: key should be deleted on get() without apply_chunk
-        let value = sm.get(b"passive_key").unwrap();
-        assert_eq!(value, None);
-
-        // Verify key is truly deleted (not just hidden)
-        let value = sm.get(b"passive_key").unwrap();
-        assert_eq!(value, None);
-    }
-
-    #[tokio::test]
-    async fn test_piggyback_cleanup_frequency() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut lease_config = d_engine_core::config::LeaseConfig::default();
-        lease_config.cleanup_strategy = "piggyback".to_string();
-        let sm =
-            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
-
-        // Insert 5 keys with 1 second TTL
-        for i in 0..5 {
-            let key = format!("piggyback_key_{i}");
-            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // Wait for all keys to expire
-        sleep(Duration::from_secs(2)).await;
-
-        // Apply 100 entries to trigger piggyback cleanup (frequency=100)
-        for i in 100..200 {
-            let entry = create_insert_entry(i, 1, b"dummy", b"dummy", 0);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // Expired keys should be cleaned up by piggyback mechanism
-        for i in 0..5 {
-            let key = format!("piggyback_key_{i}");
-            let value = sm.get(key.as_bytes()).unwrap();
-            assert_eq!(
-                value, None,
-                "Key {} should be deleted by piggyback cleanup",
-                i
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_lazy_activation_no_ttl_overhead() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
-        let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
-
-        // Insert keys WITHOUT TTL
-        for i in 0..10 {
-            let key = format!("no_ttl_key_{i}");
-            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 0);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // Apply 150 more entries (should trigger piggyback cleanup check)
-        for i in 10..160 {
-            let entry = create_insert_entry(i + 1, 1, b"dummy", b"dummy", 0);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // All keys should still exist (no TTL, lazy activation should skip cleanup)
-        for i in 0..10 {
-            let key = format!("no_ttl_key_{i}");
-            let value = sm.get(key.as_bytes()).unwrap();
-            assert_eq!(value, Some(Bytes::from("value")));
-        }
-    }
-
-    /// Test crash-safe TTL behavior: WAL replay skips expired keys
-    ///
-    /// This test verifies that when replaying WAL after a crash, keys with absolute
     /// expiration times in the past are NOT restored to the state machine.
     #[tokio::test]
     async fn test_crash_safe_ttl_wal_replay_skips_expired() {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().to_path_buf();
-        let mut lease_config = d_engine_core::config::LeaseConfig::default();
-        lease_config.cleanup_strategy = "piggyback".to_string();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
 
         // Phase 1: Write keys with TTL to WAL (without persisting to state.data)
         {
@@ -453,11 +372,14 @@ mod file_state_machine_tests {
             // Wait for expired_key TTL to expire
             sleep(Duration::from_secs(2)).await;
 
-            // Verify expired_key is now expired (passive deletion)
+            // Manually trigger background cleanup
+            sm.lease_background_cleanup().await.unwrap();
+
+            // Verify expired_key is now expired
             assert_eq!(
                 sm.get(b"expired_key").unwrap(),
                 None,
-                "Key should be expired via passive deletion"
+                "Key should be expired after background cleanup"
             );
 
             // Now manually delete state.data to force WAL replay on next startup
@@ -666,6 +588,104 @@ mod file_state_machine_tests {
             Some(Bytes::from("value3"))
         );
     }
+
+    /// Test: Background strategy manual cleanup
+    ///
+    /// Verifies that Background strategy can clean expired keys via manual trigger.
+    /// This simulates what the background worker task does periodically.
+    #[tokio::test]
+    async fn test_background_strategy_manual_cleanup() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 50,
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
+
+        // Insert 20 keys with 1 second TTL
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
+            sm.apply_chunk(vec![entry]).await.unwrap();
+        }
+
+        // All keys should exist immediately
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            assert_eq!(sm.get(key.as_bytes()).unwrap(), Some(Bytes::from("value")));
+        }
+
+        // Wait for expiration
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // In Background mode, get() should NOT clean expired keys
+        // (they remain until background task runs)
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            // Keys still exist because Background strategy doesn't check in get()
+            assert_eq!(sm.get(key.as_bytes()).unwrap(), Some(Bytes::from("value")));
+        }
+
+        // Manually trigger background cleanup (simulates what NodeBuilder's worker does)
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        assert_eq!(
+            cleaned.len(),
+            20,
+            "Background cleanup should remove all 20 expired keys"
+        );
+
+        // Now all keys should be gone
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            assert_eq!(sm.get(key.as_bytes()).unwrap(), None);
+        }
+    }
+
+    /// Test: Background cleanup respects max_cleanup_duration_ms
+    ///
+    /// Verifies that cleanup cycle doesn't exceed configured time limit.
+    #[tokio::test]
+    async fn test_background_cleanup_respects_max_duration() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1, // Very short limit
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
+
+        // Insert 100 keys with 1 second TTL (intentionally more than can be cleaned in 1ms)
+        for i in 0..100 {
+            let key = format!("duration_key_{}", i);
+            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
+            sm.apply_chunk(vec![entry]).await.unwrap();
+        }
+
+        // Wait for expiration
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Manually trigger cleanup with time limit
+        let start = std::time::Instant::now();
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        let duration = start.elapsed();
+
+        // Should have cleaned some keys (partial cleanup due to time limit)
+        assert!(
+            !cleaned.is_empty(),
+            "Background cleanup should clean at least some expired keys"
+        );
+
+        // With max_cleanup_duration_ms=1, cleanup should be fast
+        // Allow some tolerance for test environment variance
+        assert!(
+            duration < Duration::from_millis(100),
+            "Cleanup should respect max duration (took {:?})",
+            duration
+        );
+    }
 }
 
 #[cfg(all(test, feature = "rocksdb"))]
@@ -749,8 +769,11 @@ mod rocksdb_state_machine_tests {
     #[tokio::test]
     async fn test_rocksdb_ttl_expiration_after_apply() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
@@ -766,25 +789,23 @@ mod rocksdb_state_machine_tests {
         // Wait for expiration
         sleep(Duration::from_secs(3)).await;
 
-        // Apply another entry to trigger expiration check
-        let entry2 = create_insert_entry(2, 1, b"other_key", b"other_value", 0);
-        sm.apply_chunk(vec![entry2]).await.unwrap();
+        // Manually trigger background cleanup
+        sm.lease_background_cleanup().await.unwrap();
 
-        // Key should be expired
+        // Key should be expired after cleanup
         let value = sm.get(b"ttl_key").unwrap();
         assert_eq!(value, None);
-
-        // Other key should still exist
-        let value = sm.get(b"other_key").unwrap();
-        assert_eq!(value, Some(Bytes::from("other_value")));
     }
 
     #[tokio::test]
     #[ignore] // TODO: Fix RocksDB lock contention in snapshot restoration
     async fn test_rocksdb_ttl_snapshot_persistence() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm = create_rocksdb_state_machine_with_lease(
             temp_dir.path().join("rocksdb"),
             ttl_config.clone(),
@@ -834,8 +855,11 @@ mod rocksdb_state_machine_tests {
     #[tokio::test]
     async fn test_rocksdb_ttl_update_cancels_previous() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
@@ -863,8 +887,11 @@ mod rocksdb_state_machine_tests {
     #[tokio::test]
     async fn test_rocksdb_ttl_delete_unregisters() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
@@ -890,8 +917,11 @@ mod rocksdb_state_machine_tests {
     #[tokio::test]
     async fn test_rocksdb_multiple_keys_with_different_ttls() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
@@ -911,9 +941,8 @@ mod rocksdb_state_machine_tests {
         // Wait 2 seconds
         sleep(Duration::from_secs(2)).await;
 
-        // Trigger expiration check
-        let entry4 = create_insert_entry(4, 1, b"trigger", b"trigger", 0);
-        sm.apply_chunk(vec![entry4]).await.unwrap();
+        // Manually trigger background cleanup
+        sm.lease_background_cleanup().await.unwrap();
 
         // key_1sec should be expired
         assert_eq!(sm.get(b"key_1sec").unwrap(), None);
@@ -924,9 +953,8 @@ mod rocksdb_state_machine_tests {
         // Wait another 4 seconds (total 6 seconds)
         sleep(Duration::from_secs(4)).await;
 
-        // Trigger expiration check again
-        let entry5 = create_insert_entry(5, 1, b"trigger2", b"trigger2", 0);
-        sm.apply_chunk(vec![entry5]).await.unwrap();
+        // Manually trigger background cleanup again
+        sm.lease_background_cleanup().await.unwrap();
 
         // key_5sec should now be expired too
         assert_eq!(sm.get(b"key_5sec").unwrap(), None);
@@ -938,8 +966,11 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_ttl_persistence_across_restart() {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().join("rocksdb");
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
 
         // Phase 1: Create state machine and insert keys with TTL
         {
@@ -991,9 +1022,8 @@ mod rocksdb_state_machine_tests {
             // Wait for short TTL to expire
             sleep(Duration::from_secs(3)).await;
 
-            // Trigger expiration check
-            let entry4 = create_insert_entry(4, 1, b"trigger", b"trigger", 0);
-            sm.apply_chunk(vec![entry4]).await.unwrap();
+            // Manually trigger background cleanup
+            sm.lease_background_cleanup().await.unwrap();
 
             // short_ttl_key should be expired
             assert_eq!(sm.get(b"short_ttl_key").unwrap(), None);
@@ -1010,8 +1040,11 @@ mod rocksdb_state_machine_tests {
     #[tokio::test]
     async fn test_rocksdb_reset_clears_ttl_manager() {
         let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
         let sm =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
@@ -1030,99 +1063,65 @@ mod rocksdb_state_machine_tests {
         assert_eq!(sm.len(), 0);
     }
 
-    #[tokio::test]
-    async fn test_rocksdb_passive_deletion_on_get() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
-        let sm =
-            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
-                .await;
-
-        // Insert key with 1 second TTL
-        let entry = create_insert_entry(1, 1, b"passive_key", b"passive_value", 1);
-        sm.apply_chunk(vec![entry]).await.unwrap();
-
-        // Key should exist immediately
-        let value = sm.get(b"passive_key").unwrap();
-        assert_eq!(value, Some(Bytes::from("passive_value")));
-
-        // Wait for expiration
-        sleep(Duration::from_secs(2)).await;
-
-        // Passive deletion: key should be deleted on get() without apply_chunk
-        let value = sm.get(b"passive_key").unwrap();
-        assert_eq!(value, None);
-
-        // Verify key is truly deleted (not just hidden)
-        let value = sm.get(b"passive_key").unwrap();
-        assert_eq!(value, None);
-    }
-
-    #[tokio::test]
-    async fn test_rocksdb_piggyback_cleanup_frequency() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
-        let sm =
-            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
-                .await;
-
-        // Insert 5 keys with 1 second TTL
-        for i in 0..5 {
-            let key = format!("piggyback_key_{i}");
-            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // Wait for all keys to expire
-        sleep(Duration::from_secs(2)).await;
-
-        // Apply 100 entries to trigger piggyback cleanup (frequency=100)
-        for i in 100..200 {
-            let entry = create_insert_entry(i, 1, b"dummy", b"dummy", 0);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // Expired keys should be cleaned up by piggyback mechanism
-        for i in 0..5 {
-            let key = format!("piggyback_key_{i}");
-            let value = sm.get(key.as_bytes()).unwrap();
-            assert_eq!(
-                value, None,
-                "Key {} should be deleted by piggyback cleanup",
-                i
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_rocksdb_lazy_activation_no_ttl_overhead() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut ttl_config = d_engine_core::config::LeaseConfig::default();
-        ttl_config.cleanup_strategy = "piggyback".to_string();
-        let sm =
-            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
-                .await;
-
-        // Insert keys WITHOUT TTL
-        for i in 0..10 {
-            let key = format!("no_ttl_key_{i}");
-            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 0);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // Apply 150 more entries (should trigger piggyback cleanup check)
-        for i in 10..160 {
-            let entry = create_insert_entry(i + 1, 1, b"dummy", b"dummy", 0);
-            sm.apply_chunk(vec![entry]).await.unwrap();
-        }
-
-        // All keys should still exist (no TTL, lazy activation should skip cleanup)
-        for i in 0..10 {
-            let key = format!("no_ttl_key_{i}");
-            let value = sm.get(key.as_bytes()).unwrap();
-            assert_eq!(value, Some(Bytes::from("value")));
-        }
-    }
+    //     #[tokio::test]
+    //     async fn test_rocksdb_passive_deletion_on_get() {
+    //         let temp_dir = TempDir::new().unwrap();
+    //         let ttl_config = d_engine_core::config::LeaseConfig {
+    //             enabled: true,
+    //             interval_ms: 1000,
+    //             max_cleanup_duration_ms: 1,
+    //         };
+    //         let sm =
+    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+    //                 .await;
+    //
+    //         // Insert key with 1 second TTL
+    //         let entry = create_insert_entry(1, 1, b"passive_key", b"passive_value", 1);
+    //         sm.apply_chunk(vec![entry]).await.unwrap();
+    //
+    //         // Key should exist immediately
+    //         let value = sm.get(b"passive_key").unwrap();
+    //         assert_eq!(value, Some(Bytes::from("passive_value")));
+    //
+    //         // Wait for expiration
+    //         sleep(Duration::from_secs(2)).await;
+    //
+    //         // Passive deletion: key should be deleted on get() without apply_chunk
+    //         let value = sm.get(b"passive_key").unwrap();
+    //         assert_eq!(value, None);
+    //
+    //         // Verify key is truly deleted (not just hidden)
+    //         let value = sm.get(b"passive_key").unwrap();
+    //         assert_eq!(value, None);
+    // //     }
+    // //
+    // //     #[tokio::test]
+    //     async fn test_rocksdb_lazy_activation_no_ttl_overhead() {
+    //         let temp_dir = TempDir::new().unwrap();
+    //         let mut ttl_config = d_engine_core::config::LeaseConfig::default();
+    //         ttl_config.cleanup_strategy = "piggyback".to_string();
+    //         let sm =
+    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+    //                 .await;
+    //
+    //         // Insert keys WITHOUT TTL
+    //         for i in 0..10 {
+    //             let key = format!("no_ttl_key_{i}");
+    //             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 0);
+    //             sm.apply_chunk(vec![entry]).await.unwrap();
+    //         }
+    //
+    //         // Apply 150 more entries (should trigger piggyback cleanup check)
+    //         for i in 10..160 {
+    //             let entry = create_insert_entry(i + 1, 1, b"dummy", b"dummy", 0);
+    //             sm.apply_chunk(vec![entry]).await.unwrap();
+    //         }
+    //
+    //         // All keys should still exist (no TTL, lazy activation should skip cleanup)
+    //         for i in 0..10 {
+    //             let key = format!("no_ttl_key_{i}");
+    //             let value = sm.get(key.as_bytes()).unwrap();
+    //             assert_eq!(value, Some(Bytes::from("value")));
+    //         }
+    //     }
 }

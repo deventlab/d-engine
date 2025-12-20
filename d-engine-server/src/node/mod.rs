@@ -107,6 +107,12 @@ where
     #[cfg(feature = "watch")]
     pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
 
+    /// Commit handler task handle (background log application)
+    pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
+
+    /// Lease cleanup task handle (background TTL cleanup)
+    pub(crate) _lease_cleanup_handle: Option<tokio::task::JoinHandle<()>>,
+
     /// Shutdown signal for graceful termination
     pub(crate) shutdown_signal: watch::Receiver<()>,
 }
@@ -290,6 +296,8 @@ where
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
+            _commit_handler_handle: None,
+            _lease_cleanup_handle: None,
             shutdown_signal,
         }
     }

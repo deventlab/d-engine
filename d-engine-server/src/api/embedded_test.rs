@@ -5,7 +5,7 @@ mod embedded_engine_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::embedded::EmbeddedEngine;
+    use crate::api::EmbeddedEngine;
     use crate::storage::FileStateMachine;
     use crate::storage::FileStorageEngine;
 

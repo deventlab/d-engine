@@ -1,26 +1,21 @@
-use d_engine::NodeBuilder;
-// use d_engine::FileStateMachine;
-// use d_engine::FileStorageEngine;
-use d_engine::RocksDBStateMachine;
-use d_engine::RocksDBStorageEngine;
+use d_engine::StandaloneServer;
 use std::env;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
+use tokio::signal::unix::signal;
 use tokio::sync::watch;
 use tokio_metrics::RuntimeMonitor;
 use tracing::error;
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 // #[tokio::main(flavor = "current_thread")]
@@ -32,6 +27,10 @@ async fn main() {
     let log_dir = env::var("LOG_DIR")
         .map_err(|_| "LOG_DIR environment variable not set")
         .expect("Set log dir successfully.");
+
+    let config_path = env::var("CONFIG_PATH")
+        .map(|path| format!("{path}.toml"))
+        .unwrap_or_else(|_| "d-engine.toml".to_string());
 
     let metrics_port: u16 = env::var("METRICS_PORT")
         .map(|v| v.parse::<u16>().expect("METRICS_PORT must be a valid port"))
@@ -60,7 +59,11 @@ async fn main() {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     // Start the server (wait for its initialization to complete)
-    let server_handler = tokio::spawn(start_dengine_server(db_path, graceful_rx.clone()));
+    let server_handler = tokio::spawn(start_dengine_server(
+        db_path,
+        config_path,
+        graceful_rx.clone(),
+    ));
 
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -93,29 +96,20 @@ async fn main() {
 
 async fn start_dengine_server(
     db_path: PathBuf,
+    config_path: String,
     graceful_rx: watch::Receiver<()>,
 ) {
-    // Option 1: RAW FILE
-    // let storage_engine = Arc::new(FileStorageEngine::new(db_path.join("storage_engine")).unwrap());
-    // let state_machine = Arc::new(FileStateMachine::new(db_path.join("state_machine")).await.unwrap());
-
-    // Option 2: ROCKSDB
-    let storage_engine = Arc::new(RocksDBStorageEngine::new(db_path.join("storage")).unwrap());
-    let state_machine = Arc::new(RocksDBStateMachine::new(db_path.join("state_machine")).unwrap());
-
-    // Start Node
-    let node = NodeBuilder::new(None, graceful_rx.clone())
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .start()
+    // Simplified with StandaloneServer - one line to start!
+    // Config file path from CONFIG_PATH env var (e.g., config/n1 -> config/n1.toml)
+    let server = StandaloneServer::start(db_path, Some(&config_path), graceful_rx)
         .await
-        .expect("start node failed.");
+        .expect("Failed to start standalone server");
 
-    // Start Node
-    if let Err(e) = node.run().await {
-        error!("node stops: {:?}", e);
+    // Run the server (blocks until shutdown)
+    if let Err(e) = server.run().await {
+        error!("Server stopped with error: {:?}", e);
     } else {
-        info!("node stops.");
+        info!("Server stopped gracefully");
     }
 
     println!("Exiting program.");

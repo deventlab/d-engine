@@ -802,7 +802,6 @@ where
             state_machine,
             snapshot_config,
             snapshot_policy,
-            #[cfg(feature = "watch")]
             None, // No watch event tx for tests
         )
     }

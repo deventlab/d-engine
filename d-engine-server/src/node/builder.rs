@@ -232,36 +232,15 @@ where
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
         // Handle state machine initialization
-        let mut state_machine = self.state_machine.take().ok_or_else(|| {
+        let state_machine = self.state_machine.take().ok_or_else(|| {
             SystemError::NodeStartFailed(
                 "State machine must be set before calling build()".to_string(),
             )
         })?;
 
-        // Inject lease configuration into state machine
-        // Framework-level feature: developers don't see lease, it's transparent
-        // Lease config comes from NodeConfig, injected before Arc wrapping
-        {
-            let lease_config = node_config.raft.state_machine.lease.clone();
-
-            // Try to inject lease config into d-engine built-in state machines
-            // User-defined state machines silently skip (no error, no lease)
-            // state_machine is Arc<SM>, so we need Arc::get_mut for mutable access
-            if let Some(sm) = Arc::get_mut(&mut state_machine) {
-                sm.try_inject_lease(lease_config)?;
-            } else {
-                // Arc has multiple references - this indicates a bug in builder usage
-                // State machine should be created fresh and passed directly to builder
-                error!(
-                    "CRITICAL: Cannot inject lease config - Arc<StateMachine> has multiple references. This is a builder API usage error."
-                );
-                return Err(d_engine_core::StorageError::StateMachineError(
-                    "State machine Arc must have single ownership when passed to builder"
-                        .to_string(),
-                )
-                .into());
-            }
-        }
+        // Note: Lease configuration should be injected BEFORE wrapping in Arc.
+        // See StandaloneServer::start() or EmbeddedEngine::with_rocksdb() for correct pattern.
+        // If state_machine is passed from user code, they are responsible for lease injection.
 
         // Start state machine: synchronous setup (flip flags, prepare structures)
         state_machine.start()?;
@@ -269,6 +248,23 @@ where
         // Post-start async initialization: load persisted lease data, etc.
         // Guaranteed to complete before node becomes operational
         state_machine.post_start_init().await?;
+
+        // Spawn lease background cleanup task (if TTL feature is enabled)
+        // Framework-level feature: completely transparent to developers
+        let lease_cleanup_handle = if node_config.raft.state_machine.lease.enabled {
+            info!(
+                "Starting lease background cleanup worker (interval: {}ms)",
+                node_config.raft.state_machine.lease.interval_ms
+            );
+            Some(Self::spawn_background_cleanup_worker(
+                Arc::clone(&state_machine),
+                node_config.raft.state_machine.lease.interval_ms,
+                self.shutdown_signal.clone(),
+            ))
+        } else {
+            debug!("Lease feature disabled: no background cleanup worker");
+            None
+        };
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().ok_or_else(|| {
@@ -440,7 +436,7 @@ where
         // Spawn commit listener via Builder method
         // This ensures all tokio::spawn calls are visible in one place (Builder impl)
         // Following the "one page visible" Builder pattern principle
-        Self::spawn_state_machine_commit_listener(commit_handler);
+        let commit_handler_handle = Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
@@ -458,6 +454,8 @@ where
             watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: watch_system.map(|(_, _, handle)| handle),
+            _commit_handler_handle: Some(commit_handler_handle),
+            _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
         };
 
@@ -470,9 +468,12 @@ where
     /// This method is called during node build() to start the commit handler thread.
     /// All spawn_* methods are centralized in NodeBuilder so developers can see
     /// all resource consumption (threads/tasks) in one place.
+    ///
+    /// # Returns
+    /// * `JoinHandle` - Task handle for lifecycle management
     fn spawn_state_machine_commit_listener(
         mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             match commit_handler.run().await {
                 Ok(_) => {
@@ -483,7 +484,62 @@ where
                     println!("commit_handler exit program");
                 }
             }
-        });
+        })
+    }
+
+    /// Spawn lease background cleanup task (if enabled).
+    ///
+    /// This task runs independently from Raft apply pipeline, avoiding any blocking.
+    /// Only spawns when cleanup_strategy = "background" (not "disabled" or "piggyback").
+    ///
+    /// # Arguments
+    /// * `state_machine` - Arc reference to state machine for accessing lease manager
+    /// * `lease_config` - Lease configuration determining cleanup behavior
+    /// * `shutdown_signal` - Watch channel for graceful shutdown notification
+    ///
+    /// # Returns
+    /// * `Option<JoinHandle>` - Task handle if background cleanup is enabled, None otherwise
+    ///
+    /// # Design Principles
+    /// - **Zero overhead**: If disabled, returns None immediately (no task spawned)
+    /// - **One page visible**: All long-running tasks spawned here in builder.rs
+    /// - **Industry standard**: Follows etcd/TiKV/Consul background cleanup pattern
+    /// - **Graceful shutdown**: Monitors shutdown signal for clean termination
+    fn spawn_background_cleanup_worker(
+        state_machine: Arc<SM>,
+        interval_ms: u64,
+        mut shutdown_signal: watch::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Call state machine's lease background cleanup
+                        match state_machine.lease_background_cleanup().await {
+                            Ok(deleted_keys) => {
+                                if !deleted_keys.is_empty() {
+                                    debug!(
+                                        "Lease background cleanup: deleted {} expired keys",
+                                        deleted_keys.len()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!("Lease background cleanup failed: {:?}", e);
+                            }
+                        }
+                    }
+                    _ = shutdown_signal.changed() => {
+                        info!("Lease background cleanup received shutdown signal");
+                        break;
+                    }
+                }
+            }
+
+            debug!("Lease background cleanup worker stopped");
+        })
     }
 
     /// Spawn watch dispatcher as background task.

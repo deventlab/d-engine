@@ -20,7 +20,7 @@ use d_engine_core::StateMachine;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::{Insert, Operation};
 use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
-use d_engine_server::embedded::EmbeddedEngine;
+use d_engine_server::api::EmbeddedEngine;
 use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use prost::Message;
 use tempfile::TempDir;

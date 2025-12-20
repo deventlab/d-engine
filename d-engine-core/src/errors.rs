@@ -232,6 +232,14 @@ pub enum StorageError {
     /// ID allocation errors
     #[error(transparent)]
     IdAllocation(#[from] IdAllocationError),
+
+    /// Feature not enabled in configuration
+    ///
+    /// Returned when client requests a feature (e.g., TTL) that is not
+    /// enabled in the server configuration. This prevents silent failures
+    /// and ensures explicit feature activation.
+    #[error("Feature not enabled: {0}")]
+    FeatureNotEnabled(String),
 }
 
 #[derive(Debug, thiserror::Error)]

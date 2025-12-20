@@ -166,41 +166,6 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Async operation as it may involve cleaning up files and data.
     async fn reset(&self) -> Result<(), Error>;
 
-    /// Framework-internal: Inject lease configuration if supported.
-    ///
-    /// This is an optional feature for state machine implementations.
-    /// Built-in state machines (RocksDB, File) override this to support lease-based TTL.
-    /// User-defined state machines can optionally implement this for TTL support.
-    ///
-    /// # Default Implementation
-    /// No-op - user-defined SMs that don't need TTL don't have to implement this.
-    ///
-    /// # Arguments
-    /// * `config` - Lease configuration from NodeConfig
-    ///
-    /// # Returns
-    /// - Ok(()) - Configuration injected successfully, or not applicable
-    /// - Err(Error) - Framework error during injection
-    ///
-    /// # Called By
-    /// Framework calls this in NodeBuilder::build() before start() is called,
-    /// when the state machine is still mutable and unwrapped from Arc.
-    ///
-    /// # Example (Implementation in RocksDBStateMachine)
-    /// ```ignore
-    /// fn try_inject_lease(&mut self, config: LeaseConfig) -> Result<(), Error> {
-    ///     let lease = Arc::new(DefaultLease::new(config));
-    ///     self.lease = Some(lease);
-    ///     Ok(())
-    /// }
-    /// ```
-    fn try_inject_lease(
-        &mut self,
-        _config: crate::config::LeaseConfig,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
-
     /// Post-start async initialization hook.
     ///
     /// Called after `start()` and after the state machine is wrapped in Arc.
@@ -225,5 +190,37 @@ pub trait StateMachine: Send + Sync + 'static {
     /// ```
     async fn post_start_init(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Background lease cleanup hook.
+    ///
+    /// Called periodically by the background cleanup task (if enabled).
+    /// Returns keys that were cleaned up.
+    ///
+    /// # Default Implementation
+    /// No-op, suitable for state machines without lease support.
+    ///
+    /// # Called By
+    /// Framework calls this from background cleanup task spawned in NodeBuilder::build().
+    /// Only called when cleanup_strategy = "background".
+    ///
+    /// # Returns
+    /// - Vec of deleted keys (for logging/metrics)
+    ///
+    /// # Example (d-engine built-in state machines)
+    /// ```ignore
+    /// async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
+    ///     if let Some(ref lease) = self.lease {
+    ///         let expired_keys = lease.get_expired_keys(SystemTime::now());
+    ///         if !expired_keys.is_empty() {
+    ///             self.delete_batch(&expired_keys).await?;
+    ///         }
+    ///         return Ok(expired_keys);
+    ///     }
+    ///     Ok(vec![])
+    /// }
+    /// ```
+    async fn lease_background_cleanup(&self) -> Result<Vec<bytes::Bytes>, Error> {
+        Ok(vec![])
     }
 }

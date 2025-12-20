@@ -71,11 +71,10 @@
 //!    - Restores keys AND their TTL metadata
 //!    - Ensures crash consistency (operations are idempotent)
 //!
-//! ## TTL Cleanup Strategies
+//! ## TTL Cleanup Strategy
 //!
-//! - **Passive Deletion**: Keys are checked and deleted on read access (`get()`)
-//! - **Piggyback Cleanup**: Batch cleanup during `apply_chunk()` (every 100 applies)
-//! - **Lazy Activation**: Cleanup skipped if TTL never used (zero overhead)
+//! - **Background Cleanup**: Periodic async worker scans and deletes expired keys
+//! - **Zero Overhead**: When TTL feature is disabled, no lease components are initialized
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -84,6 +83,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -165,6 +165,13 @@ pub struct FileStateMachine {
     // Injected by NodeBuilder after construction
     lease: Option<Arc<DefaultLease>>,
 
+    /// Whether lease manager is enabled (immutable after init)
+    /// Set to true when lease is injected, never changes after that
+    ///
+    /// Invariant: lease_enabled == true ⟹ lease.is_some()
+    /// Performance: Allows safe unwrap_unchecked in hot paths
+    lease_enabled: bool,
+
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
@@ -196,7 +203,8 @@ impl FileStateMachine {
 
         let machine = Self {
             data: RwLock::new(HashMap::new()),
-            lease: None, // Will be injected by NodeBuilder
+            lease: None,          // Will be injected by NodeBuilder
+            lease_enabled: false, // Default: no lease until set
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
@@ -219,6 +227,8 @@ impl FileStateMachine {
         &mut self,
         lease: Arc<DefaultLease>,
     ) {
+        // Mark lease as enabled (immutable after this point)
+        self.lease_enabled = true;
         self.lease = Some(lease);
     }
 
@@ -971,15 +981,6 @@ impl StateMachine for FileStateMachine {
         Ok(())
     }
 
-    fn try_inject_lease(
-        &mut self,
-        config: d_engine_core::config::LeaseConfig,
-    ) -> Result<(), Error> {
-        let lease = Arc::new(DefaultLease::new(config));
-        self.lease = Some(lease);
-        Ok(())
-    }
-
     fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
@@ -988,19 +989,10 @@ impl StateMachine for FileStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
-        // Passive expiration check: DefaultLease handles expiration logic
-        if let Some(ref lease) = self.lease {
-            if lease.is_expired(key_buffer) {
-                // Key has expired, delete it
-                let mut data = self.data.write();
-                data.remove(key_buffer);
-                lease.unregister(key_buffer);
-
-                debug!("Passive expiration: deleted key {:?}", key_buffer);
-                return Ok(None);
-            }
-        }
-
+        // Lazy cleanup: only check expiration in Lazy strategy
+        // Background strategy handles cleanup in dedicated async task
+        // Background cleanup strategy: expired keys are cleaned by background worker
+        // No on-read checks needed (simplifies get() hot path)
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
@@ -1119,11 +1111,19 @@ impl StateMachine for FileStateMachine {
                             // ZERO-COPY: Use existing Bytes without cloning if possible
                             data.insert(key.clone(), (value, entry.term));
 
-                            // Register lease if specified and lease is configured
+                            // Register lease if TTL specified
                             if ttl_secs > 0 {
-                                if let Some(ref lease) = self.lease {
-                                    lease.register(key, ttl_secs);
+                                // Validate lease is enabled before accepting TTL requests
+                                if !self.lease_enabled {
+                                    return Err(StorageError::FeatureNotEnabled(
+                                        "TTL feature is not enabled on this server. \
+                                         Enable it in config: [raft.state_machine.lease] enabled = true".into()
+                                    ).into());
                                 }
+
+                                // Safety: lease_enabled invariant ensures lease.is_some()
+                                let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
+                                lease.register(key, ttl_secs);
                             }
                         }
                     }
@@ -1141,17 +1141,11 @@ impl StateMachine for FileStateMachine {
             }
         } // Lock released immediately - no awaits inside!
 
-        // PHASE 4: Lease cleanup (DefaultLease handles strategy internally)
-        // Zero overhead if lease cleanup is disabled - DefaultLease checks config
-        if let Some(ref lease) = self.lease {
-            let expired_keys = lease.on_apply();
-            if !expired_keys.is_empty() {
-                let mut data = self.data.write();
-                for key in &expired_keys {
-                    data.remove(key);
-                }
-            }
-        }
+        // PHASE 4: Update last applied index
+        // Note: Lease cleanup is now handled by:
+        // - Lazy strategy: cleanup in get() method
+        // - Background strategy: dedicated async task
+        // This avoids blocking the Raft apply hot path
 
         if let Some(log_id) = highest_index_entry {
             debug!("State machine - updated last_applied: {:?}", log_id);
@@ -1457,5 +1451,45 @@ impl StateMachine for FileStateMachine {
 
     async fn reset(&self) -> Result<(), Error> {
         self.reset().await
+    }
+
+    async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
+        // Fast path: no lease configured
+        let Some(ref lease) = self.lease else {
+            return Ok(vec![]);
+        };
+
+        // Get all expired keys
+        let now = SystemTime::now();
+        let expired_keys = lease.get_expired_keys(now);
+
+        if expired_keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        debug!(
+            "Lease background cleanup: found {} expired keys",
+            expired_keys.len()
+        );
+
+        // Delete expired keys from storage
+        {
+            let mut data = self.data.write();
+            for key in &expired_keys {
+                data.remove(key);
+            }
+        }
+
+        // Persist to disk after batch deletion
+        if let Err(e) = self.persist_data() {
+            error!("Failed to persist after background cleanup: {:?}", e);
+        }
+
+        info!(
+            "Lease background cleanup: deleted {} expired keys",
+            expired_keys.len()
+        );
+
+        Ok(expired_keys)
     }
 }

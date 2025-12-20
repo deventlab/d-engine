@@ -27,9 +27,6 @@
 //! - **EmbeddedEngine**: Application developers who want simplicity
 //! - **Node**: Framework developers who need fine-grained control
 
-#[cfg(test)]
-mod mod_test;
-
 #[cfg(feature = "watch")]
 use bytes::Bytes;
 use std::sync::Arc;

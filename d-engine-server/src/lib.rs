@@ -58,10 +58,10 @@
 /// Contains [`Node`] and [`NodeBuilder`] for server setup.
 pub mod node;
 
-/// Embedded mode - application-friendly API
+/// Public API layer for different deployment modes
 ///
-/// Contains [`EmbeddedEngine`] for simplified embedded usage.
-pub mod embedded;
+/// Contains [`EmbeddedEngine`] and [`StandaloneServer`].
+pub mod api;
 
 // Re-export LeaderInfo from d-engine-core
 pub use d_engine_core::LeaderInfo;
@@ -72,7 +72,7 @@ pub use d_engine_core::LeaderInfo;
 pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
-pub use embedded::EmbeddedEngine;
+pub use api::{EmbeddedEngine, StandaloneServer};
 pub use node::{LocalClientError, LocalKvClient, Node, NodeBuilder};
 
 // Re-export storage implementations

@@ -39,7 +39,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 Create `src/main.rs`:
 
-```rust
+```rust,ignore
 use d_engine::prelude::*;
 use std::error::Error;
 use std::time::Duration;
@@ -103,7 +103,7 @@ Done!
 
 ### Behind the Scenes
 
-```rust
+```rust,ignore
 EmbeddedEngine::with_rocksdb("./data", None).await?
 ```
 
@@ -116,7 +116,7 @@ This one line:
 5. Spawned `node.run()` in background (Raft protocol)
 6. Returned immediately (non-blocking)
 
-```rust
+```rust,ignore
 engine.wait_ready(Duration::from_secs(5)).await?
 ```
 
@@ -125,8 +125,8 @@ Waits for leader election (combines node initialization + leader election):
 - **Single-node**: Instant (<100ms, auto-elected)
 - **Multi-node**: Waits for majority quorum (~1-2s)
 
-```rust
-let client = engine.client()
+```rust,ignore
+let client = engine.client();
 ```
 
 Returns `LocalKvClient` for zero-overhead KV operations.
@@ -150,7 +150,7 @@ Returns `LocalKvClient` for zero-overhead KV operations.
 
 ### 2. Local-First Operations
 
-```rust
+```rust,ignore
 client.put(key, value).await?;  // <0.1ms (local memory + disk)
 ```
 
@@ -160,7 +160,7 @@ No network, no serialization. Just direct function calls to Raft core.
 
 ### 3. Automatic Lifecycle Management
 
-```rust
+```rust,ignore
 let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 // ↑ Internally spawns node.run() in background
 
@@ -176,7 +176,7 @@ No manual `tokio::spawn()`, no leaked tasks.
 
 ### EmbeddedEngine
 
-```rust
+```rust,ignore
 // Quick-start (development)
 EmbeddedEngine::with_rocksdb(data_dir: &str, config_path: Option<&str>) -> Result<Self>
 
@@ -202,7 +202,7 @@ engine.stop().await -> Result<()>
 
 ### LocalKvClient
 
-```rust
+```rust,ignore
 // Write (replicates to majority)
 client.put(key: Vec<u8>, value: Vec<u8>) -> Result<PutResponse>
 
@@ -230,21 +230,21 @@ client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 
 ### Pattern 1: Use Default /tmp Location
 
-```rust
+```rust,ignore
 // Data stored in /tmp/d-engine/
 let engine = EmbeddedEngine::with_rocksdb("", None).await?;
 ```
 
 ### Pattern 2: Custom Data Directory
 
-```rust
+```rust,ignore
 // Data stored in ./my-app-data/
 let engine = EmbeddedEngine::with_rocksdb("./my-app-data", None).await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes
 
-```rust
+```rust,ignore
 let mut leader_rx = engine.leader_change_notifier();
 
 tokio::spawn(async move {
@@ -259,7 +259,7 @@ tokio::spawn(async move {
 
 ### Pattern 4: Handle Election Timeout
 
-```rust
+```rust,ignore
 match engine.wait_ready(Duration::from_secs(10)).await {
     Ok(leader) => println!("Leader ready: {}", leader.leader_id),
     Err(_) => {

@@ -1,4 +1,4 @@
-use d_engine_server::embedded::EmbeddedEngine;
+use d_engine_server::api::EmbeddedEngine;
 use std::time::Duration;
 use tracing_test::traced_test;
 
