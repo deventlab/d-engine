@@ -759,7 +759,7 @@ where
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
-        #[cfg(feature = "watch")] watch_event_tx: Option<
+        #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
             tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
         >,
     ) -> Self {

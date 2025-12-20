@@ -58,6 +58,7 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::Result;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
+#[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
 
 /// Raft consensus node

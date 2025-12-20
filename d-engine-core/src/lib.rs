@@ -27,6 +27,8 @@ pub use membership::*;
 pub use network::*;
 pub use raft::*;
 pub use storage::*;
+
+#[cfg(feature = "watch")]
 pub use watch::*;
 
 pub use commit_handler::*;

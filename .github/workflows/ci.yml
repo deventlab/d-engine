@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
@@ -38,6 +41,8 @@ jobs:
     name: Test and Collect Coverage
     runs-on: ubuntu-latest
     needs: lint
+    permissions:
+      contents: read
     env:
       RUST_TOOLCHAIN: 1.88.0
     steps:

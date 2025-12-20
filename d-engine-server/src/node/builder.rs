@@ -328,9 +328,6 @@ where
             Some((broadcast_tx, registry, dispatcher_handle))
         };
 
-        #[cfg(not(feature = "watch"))]
-        let watch_system = None;
-
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             #[cfg(feature = "watch")]
             let watch_event_tx = watch_system.as_ref().map(|(tx, _, _)| tx.clone());

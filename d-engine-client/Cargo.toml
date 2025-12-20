@@ -15,6 +15,9 @@ publish = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+watch = ["d-engine-core/watch"]
+
 [dependencies]
 d-engine-proto = { workspace = true }
 d-engine-core = { workspace = true }

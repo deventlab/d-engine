@@ -81,3 +81,8 @@ harness = false
 [[bench]]
 name = "ttl"
 harness = false
+
+[[bench]]
+name = "watch_overhead"
+harness = false
+required-features = ["watch", "rocksdb"]

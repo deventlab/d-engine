@@ -26,6 +26,7 @@ default = ["server", "rocksdb"]
 client = ["dep:d-engine-client"]
 server = ["dep:d-engine-server"]
 rocksdb = ["server", "d-engine-server/rocksdb"]
+watch = ["server", "d-engine-server/watch"]
 
 [dependencies]
 d-engine-client = { workspace = true, optional = true }

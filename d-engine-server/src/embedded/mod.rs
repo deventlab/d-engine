@@ -37,7 +37,7 @@ use tracing::{error, info};
 
 use crate::node::{LocalKvClient, NodeBuilder};
 use crate::{Result, StateMachine, StorageEngine};
-use bytes::Bytes;
+
 #[cfg(feature = "watch")]
 use d_engine_core::watch::{WatchRegistry, WatcherHandle};
 

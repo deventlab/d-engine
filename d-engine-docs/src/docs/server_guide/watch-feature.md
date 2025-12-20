@@ -19,16 +19,22 @@ enable_metrics = false        # Detailed logging (default: false)
 
 ### Client Usage
 
+**Key Insight**: Watch works on **any node** (Leader or Follower) because events trigger after Raft consensus → `StateMachine.apply()`.
+
 ```rust,ignore
 use d_engine_client::Client;
 use futures::StreamExt;
 
-// Connect to server
-let client = Client::builder(vec!["http://127.0.0.1:9081".to_string()])
-    .build()
-    .await?;
+// Multi-node connection (recommended for high availability)
+let client = Client::builder(vec![
+    "http://node1:9081".to_string(),
+    "http://node2:9082".to_string(),
+    "http://node3:9083".to_string(),
+])
+.build()
+.await?;
 
-// Start watching a key
+// Watch connects to any available node
 let mut stream = client.watch("my_key").await?;
 
 // Receive events

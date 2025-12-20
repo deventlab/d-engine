@@ -16,7 +16,7 @@
 # ============================================================================
 
 .PHONY: help all check fmt fmt-check clippy clippy-fix test test-unit \
-        test-integration test-doc bench clean doc build build-release \
+        test-integration test-doc bench bench-gate clean doc build build-release \
         pre-release install check-env audit deny troubleshoot \
         test-crate test-examples test-detailed \
         docs docs-all docs-check docs-check-all
@@ -245,7 +245,11 @@ test-unit:
 		echo "$(CYAN)Unit testing crate: $$member$(NC)"; \
 		if [ "$$member" = "d-engine-server" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --features rocksdb --no-fail-fast -- --nocapture || \
+			$(CARGO) test -p $$member --lib --features rocksdb,watch --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
+		elif [ "$$member" = "d-engine-core" ]; then \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test -p $$member --lib --features watch --no-fail-fast -- --nocapture || \
 			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
 		else \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
@@ -260,7 +264,7 @@ test-unit:
 test-integration:
 	@echo "$(BLUE)Running integration tests (serial)...$(NC)"
 	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb --no-fail-fast -- --nocapture --test-threads=1 || \
+		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb,d-engine-server/watch --no-fail-fast -- --nocapture --test-threads=1 || \
 		{ echo "$(RED)✗ Integration tests failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Integration tests passed$(NC)"
 
@@ -321,6 +325,13 @@ bench-compile: check-workspace
 	@$(CARGO) bench --no-run --workspace || \
 		{ echo "$(RED)✗ Benchmark compilation failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Benchmarks compile successfully$(NC)"
+
+## bench-gate           Run performance gate tests (enforces thresholds)
+bench-gate: check-workspace
+	@echo "$(BLUE)Running performance gate tests...$(NC)"
+	@$(CARGO) test --release --workspace --tests --features rocksdb,watch -- --ignored --nocapture || \
+		{ echo "$(RED)✗ Performance gate FAILED - overhead exceeds threshold$(NC)"; exit 1; }
+	@echo "$(GREEN)✓ Performance gate PASSED$(NC)"
 
 # ============================================================================
 # DOCUMENTATION

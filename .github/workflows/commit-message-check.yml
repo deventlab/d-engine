@@ -1,11 +1,16 @@
 name: Validate Commit Messages
 
+permissions:
+  contents: read
+
 on:
   pull_request:
 
 jobs:
   validate-commits:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v3
         with:

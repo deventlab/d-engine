@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures::Stream;
-use futures::StreamExt;
+
 use tokio::select;
 use tokio::time::timeout;
 
@@ -18,7 +18,7 @@ use tonic::Status;
 use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
-use tracing::info;
+
 use tracing::warn;
 
 use crate::Node;
