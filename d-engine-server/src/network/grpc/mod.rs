@@ -9,11 +9,6 @@
 
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
-mod watch_dispatcher;
-mod watch_handler;
-
-pub(crate) use watch_dispatcher::{WatchDispatcher, WatchDispatcherHandle, WatchRegistration};
-pub(crate) use watch_handler::WatchStreamHandler;
 
 #[cfg(test)]
 mod grpc_raft_service_test;

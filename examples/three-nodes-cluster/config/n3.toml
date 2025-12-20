@@ -13,9 +13,6 @@ log_dir = "./logs"
 [raft]
 general_raft_timeout_duration_in_ms = 100
 
-[raft.watch]
-enabled = false
-
 [raft.commit_handler]
 batch_size_threshold = 500
 process_interval_ms = 10

@@ -311,8 +311,10 @@ impl MockBuilder {
             rpc_ready_tx,
             leader_notifier,
             node_config,
-            watch_manager: None,
-            watch_dispatcher_handle: None,
+            #[cfg(feature = "watch")]
+            watch_registry: None,
+            #[cfg(feature = "watch")]
+            _watch_dispatcher_handle: None,
             shutdown_signal,
         }
     }
@@ -348,8 +350,10 @@ impl MockBuilder {
             rpc_ready_tx,
             leader_notifier,
             node_config: node_config_arc.clone(),
-            watch_manager: None,
-            watch_dispatcher_handle: None,
+            #[cfg(feature = "watch")]
+            watch_registry: None,
+            #[cfg(feature = "watch")]
+            _watch_dispatcher_handle: None,
             shutdown_signal: shutdown.clone(),
         });
         let node_clone = node.clone();

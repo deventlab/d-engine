@@ -1311,16 +1311,6 @@ fn default_client_compression() -> bool {
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WatchConfig {
-    /// Enable or disable the Watch feature
-    ///
-    /// When `false`, the Watch manager is not created and all Watch RPC calls
-    /// will return `UNAVAILABLE` status. This provides zero overhead when
-    /// Watch functionality is not needed.
-    ///
-    /// **Default**: false
-    #[serde(default = "default_watch_enabled")]
-    pub enabled: bool,
-
     /// Buffer size for the global event queue shared across all watchers
     ///
     /// This queue sits between the write path and the dispatcher thread.
@@ -1373,7 +1363,6 @@ pub struct WatchConfig {
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
-            enabled: default_watch_enabled(),
             event_queue_size: default_event_queue_size(),
             watcher_buffer_size: default_watcher_buffer_size(),
             enable_metrics: default_enable_watch_metrics(),
@@ -1384,9 +1373,9 @@ impl Default for WatchConfig {
 impl WatchConfig {
     /// Validates watch configuration parameters
     pub fn validate(&self) -> Result<()> {
-        if self.enabled && self.event_queue_size == 0 {
+        if self.event_queue_size == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "watch.event_queue_size must be greater than 0 when watch is enabled".into(),
+                "watch.event_queue_size must be greater than 0".into(),
             )));
         }
 
@@ -1398,9 +1387,9 @@ impl WatchConfig {
             );
         }
 
-        if self.enabled && self.watcher_buffer_size == 0 {
+        if self.watcher_buffer_size == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "watch.watcher_buffer_size must be greater than 0 when watch is enabled".into(),
+                "watch.watcher_buffer_size must be greater than 0".into(),
             )));
         }
 
@@ -1414,10 +1403,6 @@ impl WatchConfig {
 
         Ok(())
     }
-}
-
-const fn default_watch_enabled() -> bool {
-    false
 }
 
 const fn default_event_queue_size() -> usize {

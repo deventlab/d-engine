@@ -38,7 +38,8 @@ use tracing::{error, info};
 use crate::node::{LocalKvClient, NodeBuilder};
 use crate::{Result, StateMachine, StorageEngine};
 use bytes::Bytes;
-use d_engine_core::watch::WatcherHandle;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::{WatchRegistry, WatcherHandle};
 
 #[cfg(feature = "rocksdb")]
 use crate::{RocksDBStateMachine, RocksDBStorageEngine};
@@ -68,7 +69,8 @@ pub struct EmbeddedEngine {
     shutdown_tx: watch::Sender<()>,
     kv_client: LocalKvClient,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
-    watch_manager: Option<Arc<d_engine_core::watch::WatchManager>>,
+    #[cfg(feature = "watch")]
+    watch_registry: Option<Arc<WatchRegistry>>,
 }
 
 impl EmbeddedEngine {
@@ -170,8 +172,9 @@ impl EmbeddedEngine {
         // Create local KV client before spawning
         let kv_client = node.local_client();
 
-        // Capture watch manager (if enabled)
-        let watch_manager = node.watch_manager.clone();
+        // Capture watch registry (if enabled)
+        #[cfg(feature = "watch")]
+        let watch_registry = node.watch_registry.clone();
 
         // Spawn node.run() in background
         let node_handle = tokio::spawn(async move {
@@ -190,7 +193,8 @@ impl EmbeddedEngine {
             shutdown_tx,
             kv_client,
             leader_elected_rx,
-            watch_manager,
+            #[cfg(feature = "watch")]
+            watch_registry,
         })
     }
 
@@ -292,16 +296,28 @@ impl EmbeddedEngine {
     ///
     /// # Returns
     /// * `Result<WatcherHandle>` - Handle for receiving events
-    pub async fn watch(
+    ///
+    /// # Example
+    /// ```ignore
+    /// let engine = EmbeddedEngine::start(config).await?;
+    /// let mut handle = engine.watch(b"mykey")?;
+    /// while let Some(event) = handle.receiver_mut().recv().await {
+    ///     println!("Key changed: {:?}", event);
+    /// }
+    /// ```
+    #[cfg(feature = "watch")]
+    pub fn watch(
         &self,
         key: impl AsRef<[u8]>,
     ) -> Result<WatcherHandle> {
-        let manager = self.watch_manager.as_ref().ok_or_else(|| {
-            crate::Error::Fatal("Watch feature disabled (WatchManager not initialized)".to_string())
+        let registry = self.watch_registry.as_ref().ok_or_else(|| {
+            crate::Error::Fatal(
+                "Watch feature disabled (WatchRegistry not initialized)".to_string(),
+            )
         })?;
 
         let key_bytes = Bytes::copy_from_slice(key.as_ref());
-        Ok(manager.register(key_bytes).await)
+        Ok(registry.register(key_bytes))
     }
 
     /// Gracefully stop the embedded engine.

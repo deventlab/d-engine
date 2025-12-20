@@ -18,6 +18,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 test-utils = ["mockall", "astral-tokio-tar", "async-compression", "nanoid"]
 rocksdb = ["dep:rocksdb"]
+# Experimental: Watch API for key change notifications
+# WARNING: This feature is under active development and not production-ready
+watch = ["d-engine-core/watch"]
 
 [dependencies]
 d-engine-proto = { workspace = true }

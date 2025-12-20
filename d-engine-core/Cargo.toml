@@ -18,6 +18,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 test-utils = ["mockall","uuid", "tonic-health"]
+# Experimental: Watch API for key change notifications
+# WARNING: This feature is under active development and not production-ready
+watch = []
 
 [dependencies]
 d-engine-proto = { workspace = true }

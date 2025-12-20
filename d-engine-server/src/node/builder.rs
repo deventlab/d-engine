@@ -44,7 +44,6 @@ use super::RaftTypeConfig;
 use crate::Node;
 use crate::membership::RaftMembership;
 use crate::network::grpc;
-use crate::network::grpc::WatchDispatcher;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::storage::BufferedRaftLog;
 use d_engine_core::ClusterConfig;
@@ -69,7 +68,9 @@ use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
-use d_engine_core::WatchManager;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::{WatchDispatcher, WatchRegistry};
+
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::SMHOF;
 use d_engine_core::alias::SNP;
@@ -299,23 +300,43 @@ where
 
         let shutdown_signal = self.shutdown_signal.clone();
 
-        // Initialize watch manager and dispatcher if enabled in config
-        let (watch_manager, watch_dispatcher_handle) = if node_config.raft.watch.enabled {
-            let watch_mgr = WatchManager::new(node_config.raft.watch.clone());
-            watch_mgr.start();
-            let watch_mgr_arc = Arc::new(watch_mgr);
+        // Initialize watch system (controlled by feature flag at compile time)
+        // All resource allocation is explicit and visible here (no hidden spawns)
+        #[cfg(feature = "watch")]
+        let watch_system = {
+            let (broadcast_tx, broadcast_rx) =
+                tokio::sync::broadcast::channel(node_config.raft.watch.event_queue_size);
 
-            // Create and spawn watch dispatcher
-            let (dispatcher, handle) =
-                WatchDispatcher::new(watch_mgr_arc.clone(), shutdown_signal.clone());
-            Self::spawn_watch_dispatcher(dispatcher);
+            // Create unregister channel
+            let (unregister_tx, unregister_rx) = mpsc::unbounded_channel();
 
-            (Some(watch_mgr_arc), Some(handle))
-        } else {
-            (None, None)
+            // Create shared registry
+            let registry = Arc::new(WatchRegistry::new(
+                node_config.raft.watch.watcher_buffer_size,
+                unregister_tx,
+            ));
+
+            // Create dispatcher
+            let dispatcher =
+                WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+
+            // Explicitly spawn dispatcher task (resource allocation visible)
+            let dispatcher_handle = tokio::spawn(async move {
+                dispatcher.run().await;
+            });
+
+            Some((broadcast_tx, registry, dispatcher_handle))
         };
 
+        #[cfg(not(feature = "watch"))]
+        let watch_system = None;
+
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
+            #[cfg(feature = "watch")]
+            let watch_event_tx = watch_system.as_ref().map(|(tx, _, _)| tx.clone());
+            #[cfg(not(feature = "watch"))]
+            let watch_event_tx = None;
+
             Arc::new(DefaultStateMachineHandler::new(
                 node_id,
                 last_applied_index,
@@ -323,7 +344,7 @@ where
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,
-                watch_manager.clone(),
+                watch_event_tx,
             ))
         });
         let membership = Arc::new(self.membership.take().unwrap_or_else(|| {
@@ -436,8 +457,10 @@ where
             rpc_ready_tx,
             leader_notifier,
             node_config: node_config_arc,
-            watch_manager,
-            watch_dispatcher_handle,
+            #[cfg(feature = "watch")]
+            watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),
+            #[cfg(feature = "watch")]
+            _watch_dispatcher_handle: watch_system.map(|(_, _, handle)| handle),
             shutdown_signal: self.shutdown_signal.clone(),
         };
 
@@ -469,23 +492,6 @@ where
     /// Spawn watch dispatcher as background task.
     ///
     /// The dispatcher manages all watch streams for the lifetime of the node.
-    /// It spawns a separate task for each active watch client, providing:
-    /// - **Isolation**: One slow client doesn't affect others
-    /// - **Resource control**: Dispatcher can limit max concurrent watches
-    /// - **Observability**: Centralized metrics and monitoring
-    ///
-    /// Expected resource usage:
-    /// - Dispatcher itself: ~2KB (1 tokio task)
-    /// - Per watch client: ~2KB (1 tokio task per client)
-    /// - Auto cleanup when client disconnects
-    ///
-    /// # Arguments
-    /// * `dispatcher` - The watch dispatcher instance
-    fn spawn_watch_dispatcher(dispatcher: WatchDispatcher) {
-        tokio::spawn(async move {
-            dispatcher.run().await;
-        });
-    }
 
     /// Sets a custom state machine handler implementation.
     ///

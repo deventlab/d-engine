@@ -16,6 +16,8 @@ mod storage;
 mod timer;
 mod type_config;
 mod utils;
+
+#[cfg(feature = "watch")]
 pub mod watch;
 
 pub use config::*;

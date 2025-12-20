@@ -3,12 +3,14 @@
 //! log replication, and cluster configuration management.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
-use super::WatchRegistration;
+use futures::Stream;
+use futures::StreamExt;
 use tokio::select;
 use tokio::time::timeout;
-use tokio_stream::wrappers::ReceiverStream;
+
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::Response;
@@ -308,9 +310,8 @@ impl<T> RaftClientService for Node<T>
 where
     T: TypeConfig,
 {
-    type WatchStream = tokio_stream::wrappers::ReceiverStream<
-        Result<d_engine_proto::client::WatchResponse, Status>,
-    >;
+    type WatchStream =
+        Pin<Box<dyn Stream<Item = Result<d_engine_proto::client::WatchResponse, Status>> + Send>>;
 
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic
@@ -387,6 +388,9 @@ where
     /// Watch for changes on a specific key
     ///
     /// Returns a stream of WatchResponse events whenever the watched key changes.
+    /// Watch for changes to a specific key
+    ///
+    /// Returns a stream of events (PUT/DELETE) for the specified key.
     /// The stream will continue until the client disconnects or the server shuts down.
     ///
     /// # Arguments
@@ -397,6 +401,7 @@ where
     ///
     /// # Errors
     /// Returns Status::UNAVAILABLE if Watch is disabled in configuration
+    #[cfg(feature = "watch")]
     async fn watch(
         &self,
         request: tonic::Request<WatchRequest>,
@@ -404,20 +409,10 @@ where
         let watch_request = request.into_inner();
         let key = watch_request.key;
 
-        // Check if watch dispatcher is enabled
-        let dispatcher_handle = match &self.watch_dispatcher_handle {
-            Some(handle) => handle,
-            None => {
-                return Err(Status::unavailable(
-                    "Watch feature is disabled in server configuration",
-                ));
-            }
-        };
-
-        let watch_manager = self
-            .watch_manager
-            .as_ref()
-            .expect("Watch manager must exist if dispatcher handle exists");
+        // Check if watch registry is available
+        let registry = self.watch_registry.as_ref().ok_or_else(|| {
+            Status::unavailable("Watch feature is disabled in server configuration")
+        })?;
 
         info!(
             node_id = self.node_id,
@@ -425,32 +420,32 @@ where
             "Registering watch for key"
         );
 
-        // Register watcher and get handle
-        let watcher_handle = watch_manager.register(key.clone()).await;
+        // Register watcher and get receiver
+        let handle = registry.register(key.into());
+        let (_watcher_id, _key, receiver) = handle.into_receiver();
 
-        // Extract receiver while keeping cleanup guard
-        let (watcher_id, watched_key, event_receiver, guard) = watcher_handle.into_receiver();
+        // Convert mpsc::Receiver -> Boxed Stream with sentinel error on close
+        // When the stream ends (receiver closed), send an UNAVAILABLE error to help clients
+        // detect server shutdown/restart and implement reconnection logic
+        let stream = tokio_stream::wrappers::ReceiverStream::new(receiver)
+            .map(Ok)
+            .chain(futures::stream::once(async {
+                Err(Status::unavailable(
+                    "Watch stream closed: server may have shut down or restarted. Please reconnect and re-register the watcher."
+                ))
+            }));
 
-        // Create output channel for gRPC stream
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
 
-        // Send registration request to dispatcher
-        // The dispatcher will spawn a task to handle this watch stream
-        // All spawns are controlled through the dispatcher (spawned in NodeBuilder::build())
-        let registration = WatchRegistration {
-            key: watched_key,
-            response_sender: tx,
-            guard,
-            event_receiver,
-            watcher_id,
-        };
-
-        dispatcher_handle
-            .register(registration)
-            .await
-            .map_err(|_| Status::internal("Failed to register watch with dispatcher"))?;
-
-        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    #[cfg(not(feature = "watch"))]
+    async fn watch(
+        &self,
+        _request: tonic::Request<WatchRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
+        Err(Status::unimplemented(
+            "Watch feature is not compiled in this build",
+        ))
     }
 }
 

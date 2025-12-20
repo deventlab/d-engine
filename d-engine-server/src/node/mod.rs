@@ -51,7 +51,6 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::network::grpc::WatchDispatcherHandle;
 use d_engine_core::Membership;
 use d_engine_core::Raft;
 use d_engine_core::RaftEvent;
@@ -59,7 +58,7 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::Result;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
-use d_engine_core::watch::WatchManager;
+use d_engine_core::watch::WatchRegistry;
 
 /// Raft consensus node
 ///
@@ -98,13 +97,14 @@ where
     /// Raft node config
     pub node_config: Arc<RaftNodeConfig>,
 
-    /// Optional watch manager for monitoring key changes
+    /// Optional watch registry for watcher registration
     /// When None, watch functionality is disabled
-    pub(crate) watch_manager: Option<Arc<WatchManager>>,
+    #[cfg(feature = "watch")]
+    pub(crate) watch_registry: Option<Arc<WatchRegistry>>,
 
-    /// Optional watch dispatcher handle for registering new watch streams
-    /// When None, watch functionality is disabled
-    pub(crate) watch_dispatcher_handle: Option<WatchDispatcherHandle>,
+    /// Watch dispatcher task handle (keeps dispatcher alive)
+    #[cfg(feature = "watch")]
+    pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
 
     /// Shutdown signal for graceful termination
     pub(crate) shutdown_signal: watch::Receiver<()>,
@@ -285,8 +285,10 @@ where
             rpc_ready_tx,
             leader_notifier,
             node_config,
-            watch_manager: None,
-            watch_dispatcher_handle: None,
+            #[cfg(feature = "watch")]
+            watch_registry: None,
+            #[cfg(feature = "watch")]
+            _watch_dispatcher_handle: None,
             shutdown_signal,
         }
     }
