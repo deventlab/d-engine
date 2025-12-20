@@ -1,12 +1,12 @@
 [package]
 name = "d-engine-proto"
-version = "0.2.0"
-edition = "2024"
-authors = ["Joshua Chi <joshokn@gmail.com>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "Protocol definitions and message types for d-engine using Prost"
-homepage = "https://github.com/deventlab/d-engine"
-repository = "https://github.com/deventlab/d-engine"
-license = "MIT OR Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
 keywords = ["raft", "protobuf", "grpc"]
 categories = ["encoding", "network-programming"]
 publish = false

@@ -1,12 +1,12 @@
 [package]
 name = "d-engine-server"
-version = "0.2.0"
-edition = "2024"
-authors = ["Joshua Chi <joshokn@gmail.com>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "Production-ready Raft consensus engine server and runtime"
-homepage = "https://github.com/deventlab/d-engine"
-repository = "https://github.com/deventlab/d-engine"
-license = "MIT OR Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
 keywords = ["raft", "consensus", "distributed-systems", "async"]
 categories = ["asynchronous", "concurrency", "network-programming"]
 publish = false

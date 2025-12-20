@@ -84,7 +84,7 @@ cargo run
 
 **Expected output**:
 
-```
+```text
 Starting d-engine...
 
 ✓ Cluster is ready: leader 1 (term 1)
@@ -137,7 +137,7 @@ Returns `LocalKvClient` for zero-overhead KV operations.
 
 ### 1. Single-Node is a Valid Cluster
 
-```
+```text
 1 node = Raft cluster of 1
 - Auto-elected as leader
 - All writes commit immediately (quorum = 1)
