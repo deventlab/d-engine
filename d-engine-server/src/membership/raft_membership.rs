@@ -236,20 +236,13 @@ where
         }
 
         if peer_ids.len() == success_count {
-            info!(
-                "
-
-                ... CLUSTER IS READY ...
-
-            "
-            );
-            println!(
-                "
-
-                ... CLUSTER IS READY ...
-
-            "
-            );
+            if !peer_ids.is_empty() {
+                info!("All {} peer(s) health check passed", peer_ids.len());
+                println!(
+                    "[Cluster] All {} peer(s) health check passed",
+                    peer_ids.len()
+                );
+            }
 
             return Ok(());
         } else {

@@ -406,8 +406,15 @@ impl RocksDBStateMachine {
 
 #[async_trait]
 impl StateMachine for RocksDBStateMachine {
-    fn start(&self) -> Result<(), Error> {
+    async fn start(&self) -> Result<(), Error> {
         self.is_serving.store(true, Ordering::SeqCst);
+
+        // Load persisted lease data if configured
+        if let Some(ref _lease) = self.lease {
+            self.load_lease_data().await?;
+            debug!("Lease data loaded during state machine initialization");
+        }
+
         info!("RocksDB state machine started");
         Ok(())
     }
@@ -750,14 +757,6 @@ impl StateMachine for RocksDBStateMachine {
 
     async fn flush_async(&self) -> Result<(), Error> {
         self.flush()
-    }
-
-    async fn post_start_init(&self) -> Result<(), Error> {
-        if let Some(ref _lease) = self.lease {
-            self.load_lease_data().await?;
-            debug!("Lease data loaded during state machine initialization");
-        }
-        Ok(())
     }
 
     #[instrument(skip(self))]

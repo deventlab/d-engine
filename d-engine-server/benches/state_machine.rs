@@ -32,9 +32,19 @@ use tokio::sync::{broadcast, mpsc};
 /// Helper to create a temporary state machine for benchmarking
 async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let sm = FileStateMachine::new(temp_dir.path().to_path_buf())
+    let mut sm = FileStateMachine::new(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to create state machine");
+
+    // Enable TTL for benchmarks that need it
+    let lease_config = d_engine_core::config::LeaseConfig {
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
+    };
+    let lease = Arc::new(d_engine_server::storage::DefaultLease::new(lease_config));
+    sm.set_lease(lease);
+
     (sm, temp_dir)
 }
 

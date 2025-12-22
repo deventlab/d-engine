@@ -9,7 +9,7 @@ repository.workspace = true
 license.workspace = true
 keywords = ["raft", "consensus", "documentation"]
 categories = ["documentation"]
-publish = false
+publish = true
 
 [package.metadata.docs.rs]
 all-features = true

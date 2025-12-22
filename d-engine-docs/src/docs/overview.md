@@ -28,11 +28,12 @@
 
 ```rust,ignore
 use d_engine::EmbeddedEngine;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Start with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+    // Start with config file
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election
     engine.wait_ready(Duration::from_secs(5)).await?;
@@ -53,31 +54,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Advanced: Custom Storage (For Framework Developers)
 
 ```rust,ignore
-use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
+use d_engine_server::{EmbeddedEngine, FileStorageEngine, FileStateMachine};
 use std::sync::Arc;
 use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-
     let path = PathBuf::from("/tmp/db");
     let storage = Arc::new(FileStorageEngine::new(path.join("storage"))?);
     let state_machine = Arc::new(FileStateMachine::new(path.join("sm")).await?);
 
-    let node = NodeBuilder::new(None, shutdown_rx)
-        .storage_engine(storage)
-        .state_machine(state_machine)
-        .start()
-        .await
-        .expect("start node failed.");
+    let engine = EmbeddedEngine::start_custom(None, storage, state_machine).await?;
 
+    engine.wait_ready(std::time::Duration::from_secs(5)).await?;
 
-    if let Err(e) = node.run().await {
-        error!("node stops: {:?}", e);
-    } else {
-        info!("node stops.");
-    }
+    // Use engine...
+
+    engine.stop().await?;
+    Ok(())
 }
 ```
 

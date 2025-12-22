@@ -20,10 +20,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 // #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let db_path: PathBuf = env::var("DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/db"));
-
     let log_dir = env::var("LOG_DIR")
         .map_err(|_| "LOG_DIR environment variable not set")
         .expect("Set log dir successfully.");
@@ -59,11 +55,7 @@ async fn main() {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     // Start the server (wait for its initialization to complete)
-    let server_handler = tokio::spawn(start_dengine_server(
-        db_path,
-        config_path,
-        graceful_rx.clone(),
-    ));
+    let server_handler = tokio::spawn(start_dengine_server(config_path, graceful_rx.clone()));
 
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -95,18 +87,12 @@ async fn main() {
 }
 
 async fn start_dengine_server(
-    db_path: PathBuf,
     config_path: String,
     graceful_rx: watch::Receiver<()>,
 ) {
-    // Simplified with StandaloneServer - one line to start!
-    // Config file path from CONFIG_PATH env var (e.g., config/n1 -> config/n1.toml)
-    let server = StandaloneServer::start(db_path, Some(&config_path), graceful_rx)
-        .await
-        .expect("Failed to start standalone server");
-
-    // Run the server (blocks until shutdown)
-    if let Err(e) = server.run().await {
+    // StandaloneServer with explicit config path
+    // Blocks until shutdown signal received
+    if let Err(e) = StandaloneServer::run_with(&config_path, graceful_rx).await {
         error!("Server stopped with error: {:?}", e);
     } else {
         info!("Server stopped gracefully");

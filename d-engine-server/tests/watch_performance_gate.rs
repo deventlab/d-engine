@@ -51,9 +51,10 @@ watcher_buffer_size = 100
     let state_machine =
         Arc::new(RocksDBStateMachine::new(sm_path).expect("Failed to create state machine"));
 
-    let engine = EmbeddedEngine::start(Some(config_path.to_str().unwrap()), storage, state_machine)
-        .await
-        .expect("Failed to start engine");
+    let engine =
+        EmbeddedEngine::start_custom(Some(config_path.to_str().unwrap()), storage, state_machine)
+            .await
+            .expect("Failed to start engine");
 
     // Wait for ready
     engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");

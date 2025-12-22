@@ -21,15 +21,17 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9001");
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", &data_dir);
     }
 
     // Start embedded engine with RocksDB
-    let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
+    let engine = EmbeddedEngine::start().await?;
 
     // Clean up environment variables immediately
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
+        std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR");
     }
 
     // Single-node should elect itself as leader
@@ -90,13 +92,15 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9002");
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", &data_dir);
     }
 
-    let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
+    let engine = EmbeddedEngine::start().await?;
 
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
+        std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR");
     }
 
     // Wait for leader election
@@ -133,11 +137,12 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9003");
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", &data_dir);
     }
 
     // First session: write data
     {
-        let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
+        let engine = EmbeddedEngine::start().await?;
         engine.wait_ready(Duration::from_secs(5)).await?;
 
         engine.client().put(b"persist-key".to_vec(), b"persist-value".to_vec()).await?;
@@ -153,7 +158,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // Second session: verify data still exists
     {
-        let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
+        let engine = EmbeddedEngine::start().await?;
         engine.wait_ready(Duration::from_secs(5)).await?;
 
         let value = engine.client().get_linearizable(b"persist-key".to_vec()).await?;
@@ -170,6 +175,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
+        std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR");
     }
 
     Ok(())

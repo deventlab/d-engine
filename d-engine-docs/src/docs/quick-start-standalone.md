@@ -88,13 +88,13 @@ make start-cluster
 
 ## Key Differences: Embedded vs Standalone
 
-| Feature           | Embedded (Rust)                  | Standalone (gRPC)      |
-| ----------------- | -------------------------------- | ---------------------- |
-| **Latency**       | <0.1ms                           | 1-2ms                  |
-| **Serialization** | None                             | Protobuf               |
-| **Language**      | Rust only                        | Any (Go, Python, Java) |
-| **Deployment**    | 1 binary                         | 3 server processes     |
-| **Setup**         | `EmbeddedEngine::with_rocksdb()` | `make start-cluster`   |
+| Feature           | Embedded (Rust)              | Standalone (gRPC)      |
+| ----------------- | ---------------------------- | ---------------------- |
+| **Latency**       | <0.1ms                       | 1-2ms                  |
+| **Serialization** | None                         | Protobuf               |
+| **Language**      | Rust only                    | Any (Go, Python, Java) |
+| **Deployment**    | 1 binary                     | 3 server processes     |
+| **Setup**         | `EmbeddedEngine::start_with()` | `make start-cluster`   |
 
 ---
 

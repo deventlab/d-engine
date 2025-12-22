@@ -8,3 +8,6 @@ pub use standalone::StandaloneServer;
 
 #[cfg(test)]
 mod embedded_test;
+
+#[cfg(test)]
+mod standalone_test;

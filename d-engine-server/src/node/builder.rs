@@ -242,12 +242,8 @@ where
         // See StandaloneServer::start() or EmbeddedEngine::with_rocksdb() for correct pattern.
         // If state_machine is passed from user code, they are responsible for lease injection.
 
-        // Start state machine: synchronous setup (flip flags, prepare structures)
-        state_machine.start()?;
-
-        // Post-start async initialization: load persisted lease data, etc.
-        // Guaranteed to complete before node becomes operational
-        state_machine.post_start_init().await?;
+        // Start state machine: flip flags and load persisted data
+        state_machine.start().await?;
 
         // Spawn lease background cleanup task (if TTL feature is enabled)
         // Framework-level feature: completely transparent to developers

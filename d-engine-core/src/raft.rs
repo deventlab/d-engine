@@ -251,7 +251,7 @@ where
                 biased;
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
-                    warn!("[Raft:{}] shutdown signal received.", self.node_id);
+                    info!("[Raft:{}] shutdown signal received.", self.node_id);
                     return Ok(());
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election

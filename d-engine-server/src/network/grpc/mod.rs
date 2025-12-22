@@ -189,7 +189,7 @@ where
             // SocketAddr::from_str(&listen_address).map_err(|e| Error::AddrParseError(e))?,
             listen_address,
             shutdown_signal.changed().map(|_s| {
-                warn!("Stopping RPC server. {}", listen_address);
+                info!("Stopping RPC server. {}", listen_address);
             }),
         )
         .await

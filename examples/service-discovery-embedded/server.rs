@@ -24,11 +24,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting embedded d-engine for service discovery...\n");
 
-    // Start embedded engine with RocksDB
+    // Start embedded engine with explicit config file
     // This automatically handles node startup, storage creation, and background tasks
-    let engine =
-        EmbeddedEngine::with_rocksdb("./data/service-discovery-embedded", Some("d-engine.toml"))
-            .await?;
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election (single-node cluster elects itself immediately)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;

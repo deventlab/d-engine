@@ -9,8 +9,13 @@ help:
 	@echo ""
 	@echo "Commands:"
 	@echo "  make build    - Build release binary"
-	@echo "  make run      - Start embedded d-engine"
+	@echo "  make run      - Start embedded d-engine (default: WARN level)"
 	@echo "  make clean    - Remove build artifacts and data"
+	@echo ""
+	@echo "Log Control:"
+	@echo "  RUST_LOG=info make run       - Show info, warn, error"
+	@echo "  RUST_LOG=debug make run      - Show debug and above"
+	@echo "  RUST_LOG=d_engine=trace make run - Trace d-engine only"
 
 build:
 	cargo build --release

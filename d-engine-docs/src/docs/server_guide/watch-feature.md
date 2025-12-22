@@ -57,7 +57,7 @@ For in-process usage (e.g., `EmbeddedEngine`), you can use the `watch()` method 
 use d_engine::d_engine_server::embedded::EmbeddedEngine;
 
 // Initialize engine with config enabling watch
-let engine = EmbeddedEngine::with_rocksdb("./data", Some("d-engine.toml")).await?;
+let engine = EmbeddedEngine::start_with("./data", Some("d-engine.toml")).await?;
 
 // Start watching
 let mut watcher = engine.watch("my_key").await?;
@@ -241,7 +241,7 @@ Write → Raft Consensus → StateMachine.apply() → broadcast::send()
 When `EmbeddedEngine` is dropped or crashes:
 
 ```rust,ignore
-let engine = EmbeddedEngine::with_rocksdb("./data", config).await?;
+let engine = EmbeddedEngine::start_with("./data", config).await?;
 let mut watcher = engine.watch(b"key").await?;
 
 // If engine crashes or is dropped:
@@ -254,7 +254,7 @@ let mut watcher = engine.watch(b"key").await?;
 
 ```rust,ignore
 loop {
-    let engine = EmbeddedEngine::with_rocksdb("./data", config).await?;
+    let engine = EmbeddedEngine::start_with("./data", config).await?;
     let mut watcher = engine.watch(b"key").await?;
 
     while let Some(event) = watcher.recv().await {

@@ -1197,7 +1197,10 @@ where
 {
     fn drop(&mut self) {
         if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
-            error!("Failed to send shutdown command: {:?}", e);
+            debug!(
+                "Shutdown command send failed (receiver already closed): {:?}",
+                e
+            );
         }
     }
 }

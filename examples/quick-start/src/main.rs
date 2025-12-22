@@ -9,17 +9,28 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    println!("Starting d-engine in embedded mode...\n");
+    // Optional: control d-engine logs via RUST_LOG env (default: warn)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
 
-    // Start embedded engine with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data/single-node", None).await?;
+    println!("🚀 Starting d-engine...");
+
+    // Start embedded engine with explicit config
+    // Config file specifies data directory and other settings
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
-    println!(
-        "✓ Cluster is ready: leader {} (term {})",
-        leader.leader_id, leader.term
-    );
+
+    println!("✅ d-engine ready!");
+    println!("   → Data directory: ./data/single-node");
+    println!("   → Node ID: {}", leader.leader_id);
+    println!("   → Listening on: 127.0.0.1:9081");
+    println!("\n─────────────────────────────────────");
 
     // Get the embedded KV client (in-process, zero-copy)
     let client = engine.client();
@@ -27,17 +38,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Run application logic
     run_demo(client).await?;
 
-    // Graceful shutdown
-    println!("\nShutting down...");
+    println!("─────────────────────────────────────");
+    println!("🛑 Shutting down...");
     engine.stop().await?;
-    println!("Done");
+    println!("✅ Stopped cleanly");
 
     Ok(())
 }
 
 async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
-    println!("=== d-engine Embedded Mode Demo ===");
-    println!("All operations: local-first, <0.1ms latency\n");
+    println!("=== Quick Start Demo ===");
 
     // Store workflow state
     println!("1. Store workflow state");
@@ -70,7 +80,9 @@ async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
 
     println!("\n=== Demo Complete ===");
     println!("All data persisted locally and durable");
-    println!("To scale to cluster: see config/cluster-node*.toml\n");
+    println!(
+        "Scale to cluster: https://docs.rs/d-engine-docs/latest/d_engine_docs/docs/examples/single_node_expansion.html\n"
+    );
 
     Ok(())
 }

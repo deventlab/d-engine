@@ -104,22 +104,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     }
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Candidate now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Candidate",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Candidate now.\n
-                =================================
-                \n\n",
+            "[Node {}] Follower → Candidate (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Candidate(Box::new(self.into())))
     }
@@ -130,22 +122,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     }
     fn become_learner(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Learner",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "[Node {}] Follower → Learner (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Learner(Box::new(self.into())))
     }

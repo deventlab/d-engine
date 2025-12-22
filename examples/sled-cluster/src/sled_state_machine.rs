@@ -93,7 +93,7 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    fn start(&self) -> Result<()> {
+    async fn start(&self) -> Result<()> {
         debug!("start state machine");
         self.is_serving.store(true, Ordering::Release);
         Ok(())

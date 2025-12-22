@@ -14,14 +14,36 @@ Minimal example of embedding d-engine in a Rust application.
 - Rust 1.88+ ([install](https://rustup.rs/))
 - ~500MB disk space
 
-## Quick Start
+## Quick Start (5 minutes)
 
 ```bash
-# Build
-make build
-
-# Run
+# Clone and build
+cd examples/quick-start
 make run
+```
+
+That's it! The engine starts with:
+
+- Data stored in `./data/single-node`
+- Single-node mode (no cluster)
+- Default port 9081
+
+**Customize**: Edit `d-engine.toml` to change data directory or port.
+
+**Log Control**: Use `RUST_LOG` environment variable to adjust verbosity:
+
+```bash
+# Default: WARN level (minimal output)
+make run
+
+# Show detailed operations
+RUST_LOG=info make run
+
+# Debug mode
+RUST_LOG=debug make run
+
+# Trace d-engine internals only
+RUST_LOG=d_engine=trace make run
 ```
 
 You'll see:

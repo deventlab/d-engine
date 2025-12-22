@@ -2,8 +2,6 @@
 
 use std::sync::Arc;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tracing::error;
 
 use crate::node::NodeBuilder;
 use crate::{Result, StateMachine, StorageEngine};
@@ -12,25 +10,52 @@ use crate::{Result, StateMachine, StorageEngine};
 use crate::{RocksDBStateMachine, RocksDBStorageEngine};
 
 /// Standalone d-engine server for independent deployment
-pub struct StandaloneServer {
-    node_handle: Option<JoinHandle<Result<()>>>,
-}
+pub struct StandaloneServer;
 
 impl StandaloneServer {
-    /// Start standalone server with RocksDB storage.
+    /// Run server with configuration from environment.
+    ///
+    /// Reads `CONFIG_PATH` environment variable or uses default configuration.
+    /// Data directory is determined by config's `cluster.db_root_dir` setting.
+    /// Blocks until shutdown signal is received.
     ///
     /// # Arguments
-    /// * `data_dir` - Base directory for all data
-    /// * `config_path` - Optional path to config file
     /// * `shutdown_rx` - Shutdown signal receiver
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Set config path via environment variable
+    /// std::env::set_var("CONFIG_PATH", "/etc/d-engine/production.toml");
+    ///
+    /// let (shutdown_tx, shutdown_rx) = watch::channel(());
+    /// StandaloneServer::run(shutdown_rx).await?;
+    /// ```
     #[cfg(feature = "rocksdb")]
-    pub async fn start<P: AsRef<std::path::Path>>(
-        data_dir: P,
-        config_path: Option<&str>,
-        shutdown_rx: watch::Receiver<()>,
-    ) -> Result<Self> {
-        let base_dir = data_dir.as_ref();
-        tokio::fs::create_dir_all(base_dir)
+    pub async fn run(shutdown_rx: watch::Receiver<()>) -> Result<()> {
+        let config = d_engine_core::RaftNodeConfig::new()?;
+
+        // Hybrid validation: strict in release, permissive in debug
+        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
+        if base_dir == std::path::PathBuf::from("/tmp/db") {
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(crate::Error::Fatal(
+                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
+                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
+                     in your config file.".into()
+                ));
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                tracing::warn!(
+                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
+                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
+                );
+            }
+        }
+
+        tokio::fs::create_dir_all(&base_dir)
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
@@ -39,52 +64,114 @@ impl StandaloneServer {
 
         tracing::info!("Starting standalone server with RocksDB at {:?}", base_dir);
 
-        let config = if let Some(path) = config_path {
-            d_engine_core::RaftNodeConfig::new()?.with_override_config(path)?
-        } else {
-            d_engine_core::RaftNodeConfig::new()?
-        };
-
         let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
         let mut sm = RocksDBStateMachine::new(sm_path)?;
 
+        // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
-        let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
-        sm.set_lease(lease);
+        if lease_cfg.enabled {
+            let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
+            sm.set_lease(lease);
+        }
 
         let sm = Arc::new(sm);
 
-        Self::start_custom(config, storage, sm, shutdown_rx).await
+        Self::run_custom(config, storage, sm, shutdown_rx).await
     }
 
-    /// Start server with custom storage and state machine.
+    /// Run server with explicit configuration file.
     ///
-    /// For advanced users who want to provide custom implementations.
+    /// Reads configuration from specified file path.
+    /// Data directory is determined by config's `cluster.db_root_dir` setting.
+    /// Blocks until shutdown signal is received.
     ///
     /// # Arguments
-    /// * `config` - Node configuration
-    /// * `storage_engine` - Custom storage engine implementation
-    /// * `state_machine` - Custom state machine implementation (already initialized)
+    /// * `config_path` - Path to configuration file
     /// * `shutdown_rx` - Shutdown signal receiver
     ///
     /// # Example
     /// ```ignore
-    /// let config = RaftNodeConfig::new()?;
+    /// let (shutdown_tx, shutdown_rx) = watch::channel(());
+    /// StandaloneServer::run_with("config/node1.toml", shutdown_rx).await?;
+    /// ```
+    #[cfg(feature = "rocksdb")]
+    pub async fn run_with(
+        config_path: &str,
+        shutdown_rx: watch::Receiver<()>,
+    ) -> Result<()> {
+        let config = d_engine_core::RaftNodeConfig::new()?.with_override_config(config_path)?;
+        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
+
+        // Hybrid validation: strict in release, permissive in debug
+        if base_dir == std::path::PathBuf::from("/tmp/db") {
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(crate::Error::Fatal(
+                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
+                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
+                     in your config file.".into()
+                ));
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                tracing::warn!(
+                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
+                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
+                );
+            }
+        }
+
+        tokio::fs::create_dir_all(&base_dir)
+            .await
+            .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
+
+        let storage_path = base_dir.join("storage");
+        let sm_path = base_dir.join("state_machine");
+
+        tracing::info!("Starting standalone server with RocksDB at {:?}", base_dir);
+
+        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
+        let mut sm = RocksDBStateMachine::new(sm_path)?;
+
+        // Inject lease if enabled
+        let lease_cfg = &config.raft.state_machine.lease;
+        if lease_cfg.enabled {
+            let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
+            sm.set_lease(lease);
+        }
+
+        let sm = Arc::new(sm);
+
+        Self::run_custom(config, storage, sm, shutdown_rx).await
+    }
+
+    /// Run server with custom storage engine and state machine.
+    ///
+    /// Advanced API for users providing custom storage implementations.
+    /// Blocks until shutdown signal is received.
+    ///
+    /// # Arguments
+    /// * `config` - Node configuration
+    /// * `storage_engine` - Custom storage engine implementation
+    /// * `state_machine` - Custom state machine implementation
+    /// * `shutdown_rx` - Shutdown signal receiver
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = RaftNodeConfig::new()?.with_override_config("config.toml")?;
     /// let storage = Arc::new(MyCustomStorage::new()?);
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
-    /// let server = StandaloneServer::start_custom(
-    ///     config,
-    ///     storage,
-    ///     sm,
-    ///     shutdown_rx
-    /// ).await?;
+    ///
+    /// let (shutdown_tx, shutdown_rx) = watch::channel(());
+    /// StandaloneServer::run_custom(config, storage, sm, shutdown_rx).await?;
     /// ```
-    pub async fn start_custom<SE, SM>(
+    pub async fn run_custom<SE, SM>(
         config: d_engine_core::RaftNodeConfig,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
         shutdown_rx: watch::Receiver<()>,
-    ) -> Result<Self>
+    ) -> Result<()>
     where
         SE: StorageEngine + std::fmt::Debug + 'static,
         SM: StateMachine + std::fmt::Debug + 'static,
@@ -95,31 +182,6 @@ impl StandaloneServer {
             .start()
             .await?;
 
-        let node_handle = tokio::spawn(async move {
-            if let Err(e) = node.run().await {
-                error!("Node run error: {:?}", e);
-                Err(e)
-            } else {
-                Ok(())
-            }
-        });
-
-        Ok(Self {
-            node_handle: Some(node_handle),
-        })
-    }
-
-    /// Run the server until shutdown signal received.
-    ///
-    /// Blocks until the node task completes or errors.
-    pub async fn run(mut self) -> Result<()> {
-        if let Some(handle) = self.node_handle.take() {
-            match handle.await {
-                Ok(result) => result,
-                Err(e) => Err(crate::Error::Fatal(format!("Node task panicked: {e}"))),
-            }
-        } else {
-            Ok(())
-        }
+        node.run().await
     }
 }

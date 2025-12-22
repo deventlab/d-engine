@@ -15,7 +15,7 @@
 //!
 //! ### Using EmbeddedEngine (High-level API)
 //! ```ignore
-//! let engine = EmbeddedEngine::start(config).await?;
+//! let engine = EmbeddedEngine::start().await?;
 //! engine.wait_ready(Duration::from_secs(5)).await?;
 //! let client = engine.client();
 //! engine.stop().await?;
@@ -45,17 +45,18 @@ use crate::{RocksDBStateMachine, RocksDBStorageEngine};
 
 /// Embedded d-engine with automatic lifecycle management.
 ///
-/// Provides a high-level KV API for embedded usage:
-/// - `start()` - Build and spawn node in background
-/// - `ready()` - Wait for election success
+/// Provides high-level KV API for embedded usage:
+/// - `start()` / `start_with()` - Initialize and spawn node
+/// - `wait_ready()` - Wait for leader election
 /// - `client()` - Get local KV client
 /// - `stop()` - Graceful shutdown
 ///
 /// # Example
 /// ```ignore
 /// use d_engine::EmbeddedEngine;
+/// use std::time::Duration;
 ///
-/// let engine = EmbeddedEngine::start(config).await?;
+/// let engine = EmbeddedEngine::start().await?;
 /// engine.wait_ready(Duration::from_secs(5)).await?;
 ///
 /// let client = engine.client();
@@ -73,38 +74,44 @@ pub struct EmbeddedEngine {
 }
 
 impl EmbeddedEngine {
-    /// Quick-start: create embedded engine with RocksDB defaults.
+    /// Start engine with configuration from environment.
     ///
-    /// This is the simplest way to start d-engine for development and testing.
-    /// Automatically creates necessary directories and uses RocksDB storage.
-    ///
-    /// # Arguments
-    /// - `data_dir`: Base directory for all data (defaults to "/tmp/d-engine" if empty)
-    /// - `config_path`: Optional path to config file (e.g. "d-engine.toml")
+    /// Reads `CONFIG_PATH` environment variable or uses default configuration.
+    /// Data directory is determined by config's `cluster.db_root_dir` setting.
     ///
     /// # Example
     /// ```ignore
-    /// // Use default /tmp location and default config
-    /// let engine = EmbeddedEngine::with_rocksdb("", None).await?;
+    /// // Set config path via environment variable
+    /// std::env::set_var("CONFIG_PATH", "/etc/d-engine/production.toml");
     ///
-    /// // Or specify custom directory and config
-    /// let engine = EmbeddedEngine::with_rocksdb("./my-data", Some("config.toml")).await?;
+    /// let engine = EmbeddedEngine::start().await?;
+    /// engine.wait_ready(Duration::from_secs(5)).await?;
     /// ```
     #[cfg(feature = "rocksdb")]
-    pub async fn with_rocksdb<P: AsRef<std::path::Path>>(
-        data_dir: P,
-        config_path: Option<&str>,
-    ) -> Result<Self> {
-        let data_dir = data_dir.as_ref();
+    pub async fn start() -> Result<Self> {
+        let config = d_engine_core::RaftNodeConfig::new()?;
 
-        // Use /tmp/d-engine if empty path provided
-        let base_dir = if data_dir.as_os_str().is_empty() {
-            std::path::PathBuf::from("/tmp/d-engine")
-        } else {
-            data_dir.to_path_buf()
-        };
+        // Hybrid validation: strict in release, permissive in debug
+        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
+        if base_dir == std::path::PathBuf::from("/tmp/db") {
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(crate::Error::Fatal(
+                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
+                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
+                     in your config file.".into()
+                ));
+            }
 
-        // Auto-create all necessary directories
+            #[cfg(debug_assertions)]
+            {
+                tracing::warn!(
+                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
+                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
+                );
+            }
+        }
+
         tokio::fs::create_dir_all(&base_dir)
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
@@ -112,22 +119,91 @@ impl EmbeddedEngine {
         let storage_path = base_dir.join("storage");
         let sm_path = base_dir.join("state_machine");
 
-        // Create storage and state machine with RocksDB
         let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let mut sm = RocksDBStateMachine::new(sm_path)?;
+
+        // Inject lease if enabled
+        let lease_cfg = &config.raft.state_machine.lease;
+        if lease_cfg.enabled {
+            let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
+            sm.set_lease(lease);
+        }
+
+        let sm = Arc::new(sm);
 
         info!("Starting embedded engine with RocksDB at {:?}", base_dir);
 
-        Self::start(config_path, storage, state_machine).await
+        Self::start_custom(None, storage, sm).await
     }
 
-    /// Start the embedded engine with custom storage.
+    /// Start engine with explicit configuration file.
     ///
-    /// For advanced users who want to provide custom storage implementations
-    /// or use non-default storage engines.
+    /// Reads configuration from specified file path.
+    /// Data directory is determined by config's `cluster.db_root_dir` setting.
     ///
     /// # Arguments
-    /// - `config_path`: Optional path to config file
+    /// - `config_path`: Path to configuration file (e.g. "d-engine.toml")
+    ///
+    /// # Example
+    /// ```ignore
+    /// let engine = EmbeddedEngine::start_with("config/node1.toml").await?;
+    /// engine.wait_ready(Duration::from_secs(5)).await?;
+    /// ```
+    #[cfg(feature = "rocksdb")]
+    pub async fn start_with(config_path: &str) -> Result<Self> {
+        let config = d_engine_core::RaftNodeConfig::new()?.with_override_config(config_path)?;
+        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
+
+        // Hybrid validation: strict in release, permissive in debug
+        if base_dir == std::path::PathBuf::from("/tmp/db") {
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(crate::Error::Fatal(
+                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
+                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
+                     in your config file.".into()
+                ));
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                tracing::warn!(
+                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
+                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
+                );
+            }
+        }
+
+        tokio::fs::create_dir_all(&base_dir)
+            .await
+            .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
+
+        let storage_path = base_dir.join("storage");
+        let sm_path = base_dir.join("state_machine");
+
+        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
+        let mut sm = RocksDBStateMachine::new(sm_path)?;
+
+        // Inject lease if enabled
+        let lease_cfg = &config.raft.state_machine.lease;
+        if lease_cfg.enabled {
+            let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
+            sm.set_lease(lease);
+        }
+
+        let sm = Arc::new(sm);
+
+        info!("Starting embedded engine with RocksDB at {:?}", base_dir);
+
+        Self::start_custom(Some(config_path), storage, sm).await
+    }
+
+    /// Start engine with custom storage and state machine.
+    ///
+    /// Advanced API for users providing custom storage implementations.
+    ///
+    /// # Arguments
+    /// - `config_path`: Optional path to configuration file
     /// - `storage_engine`: Custom storage engine implementation
     /// - `state_machine`: Custom state machine implementation
     ///
@@ -135,9 +211,9 @@ impl EmbeddedEngine {
     /// ```ignore
     /// let storage = Arc::new(MyCustomStorage::new()?);
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
-    /// let engine = EmbeddedEngine::start(None, storage, sm).await?;
+    /// let engine = EmbeddedEngine::start_custom(None, storage, sm).await?;
     /// ```
-    pub async fn start<SE, SM>(
+    pub async fn start_custom<SE, SM>(
         config_path: Option<&str>,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
@@ -158,7 +234,7 @@ impl EmbeddedEngine {
             d_engine_core::RaftNodeConfig::new()?
         };
 
-        // Build node and start RPC server (required for cluster communication)
+        // Build node and start RPC server
         let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
@@ -185,7 +261,7 @@ impl EmbeddedEngine {
             }
         });
 
-        info!("Embedded d-engine started (background task spawned)");
+        info!("Embedded d-engine started successfully");
 
         Ok(Self {
             node_handle: Some(node_handle),
@@ -208,7 +284,7 @@ impl EmbeddedEngine {
     ///
     /// # Example
     /// ```ignore
-    /// let engine = EmbeddedEngine::start(config).await?;
+    /// let engine = EmbeddedEngine::start().await?;
     /// let leader = engine.wait_ready(Duration::from_secs(10)).await?;
     /// println!("Leader elected: {} (term {})", leader.leader_id, leader.term);
     /// ```
@@ -276,7 +352,7 @@ impl EmbeddedEngine {
     ///
     /// # Example
     /// ```ignore
-    /// let engine = EmbeddedEngine::start(config).await?;
+    /// let engine = EmbeddedEngine::start().await?;
     /// engine.wait_ready(Duration::from_secs(5)).await?;
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;
@@ -298,7 +374,7 @@ impl EmbeddedEngine {
     ///
     /// # Example
     /// ```ignore
-    /// let engine = EmbeddedEngine::start(config).await?;
+    /// let engine = EmbeddedEngine::start().await?;
     /// let mut handle = engine.watch(b"mykey")?;
     /// while let Some(event) = handle.receiver_mut().recv().await {
     ///     println!("Key changed: {:?}", event);
@@ -343,7 +419,7 @@ impl EmbeddedEngine {
         if let Some(handle) = self.node_handle.take() {
             match handle.await {
                 Ok(result) => {
-                    info!("Embedded d-engine stopped");
+                    info!("Embedded d-engine stopped successfully");
                     result
                 }
                 Err(e) => {
@@ -356,11 +432,10 @@ impl EmbeddedEngine {
         }
     }
 
-    /// Returns the node ID for testing purposes
+    /// Returns the node ID for testing purposes.
     ///
-    /// This is useful in integration tests that need to identify which node
-    /// they're interacting with, especially in multi-node scenarios like
-    /// failover testing.
+    /// Useful in integration tests that need to identify which node
+    /// they're interacting with, especially in multi-node scenarios.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn node_id(&self) -> u32 {
         self.kv_client.node_id()

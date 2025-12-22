@@ -602,22 +602,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                    =================================
-                    [{:?}<{:?}>] >>> switch to Follower now.\n
-                    =================================
-                    \n\n",
+            "Node {} term {} transitioning to Follower",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                    =================================
-                    [{:?}<{:?}>] >>> switch to Follower now.\n
-                    =================================
-                    \n\n",
+            "[Node {}] Leader → Follower (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
@@ -2158,8 +2150,14 @@ impl<T: TypeConfig> LeaderState<T> {
                 return Err(e);
             }
 
-            println!("============== Promotion successful ================");
-            println!("Now cluster members: {:?}", membership.voters().await);
+            info!(
+                "Promotion successful. Cluster members: {:?}",
+                membership.voters().await
+            );
+            println!(
+                "[Cluster] Promotion successful. Members: {:?}",
+                membership.voters().await
+            );
         }
 
         trace!(
@@ -2371,14 +2369,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Step 2: Trigger operator notification
         // ctx.ops_tx().send(OpsEvent::LearnerStalled(node_id));
-        println!(
-            "
-            =====================
-            Learner {node_id} is stalled
-            =====================
-            ",
-        );
         info!("Learner {} is stalled", node_id);
+        println!("[Cluster] Learner {node_id} is stalled");
 
         Ok(())
     }

@@ -43,11 +43,17 @@ while let Some(event) = watcher.next().await {
 
 **Performance**: Lock-free, <0.1ms notification latency
 
-#### EmbeddedEngine - Simplified Single-Node Start
+#### StandaloneServer - One-Line Deployment
 
-**Before**: `build() → start_rpc_server() → ready()` (3 steps)  
-**Now**: `start_server()` (1 step)  
-**Benefit**: Scale from 1→3 nodes with zero code changes
+**Use Case**: Independent server process (production deployment)  
+**API**: `run(shutdown_rx)` uses env config, `run_with(config_path, shutdown_rx)` uses explicit config  
+**Benefit**: Blocks until shutdown, no manual lifecycle management
+
+#### EmbeddedEngine - In-Process Integration
+
+**Use Case**: Embed d-engine in your Rust application  
+**API**: `start()` uses env config, `start_with(config_path)` uses explicit config, `start_custom(...)` for advanced usage  
+**Benefit**: Zero gRPC overhead via LocalKvClient (<0.1ms latency)
 
 #### LocalKvClient - Zero-Overhead Embedded Access
 
@@ -78,8 +84,8 @@ while let Some(event) = watcher.next().await {
 
 ### 🚀 Performance & Quality
 
-- Watch API: Lock-free, supports 10K+ concurrent watchers
-- TTL cleanup: Lazy + scheduled hybrid, <1% CPU overhead
+- Watch API: Lock-free, tested with 1000+ concurrent watchers, <0.1ms notification latency
+- TTL cleanup: Lazy (read-time check) + Background (scheduled task), <1% CPU overhead
 - 1000+ new integration tests covering edge cases
 - Zero clippy warnings across entire codebase
 

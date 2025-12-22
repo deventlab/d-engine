@@ -109,22 +109,14 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     }
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Follower",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "[Node {}] Learner → Follower (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
 
         // Print promotion message (Plan B)

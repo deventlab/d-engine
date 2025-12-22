@@ -74,7 +74,7 @@ where
             tokio::select! {
                     // P0: shutdown received;
                     _ = shutdown_signal.changed() => {
-                        warn!("[CommitHandler] shutdown signal received.");
+                        info!("[CommitHandler] shutdown signal received.");
                         return Ok(());
                     }
 

@@ -2,9 +2,24 @@
 
 d-engine provides Protocol Buffer definitions and gRPC APIs for Go client integration. This guide shows how to integrate d-engine as a distributed consensus engine in your Go applications.
 
+## Reference Implementation
+
+**d-queue** is a production-ready distributed message queue built with d-engine in Go.
+
+📦 **Repository**: https://github.com/deventlab/d-queue
+
+Use d-queue as a reference for:
+
+- How to integrate d-engine in Go applications
+- Production-ready error handling patterns
+- Connection management and retry logic
+- Real-world usage of consistency policies
+
+Study the d-queue source code to see these patterns in action.
+
 ## Quick Start
 
-### Option 1: Generate from Source (Recommended for Contributors)
+### Generate Proto Definitions
 
 #### Prerequisites
 
@@ -84,21 +99,6 @@ require github.com/deventlab/d-engine v0.2.0
 // When updating d-engine, regenerate proto code
 ```
 
-### Option 2: Use Official Go Package (Future)
-
-When d-engine releases an official Go package, usage will be simpler:
-
-```bash
-go get github.com/deventlab/d-engine-go@v0.2.0
-```
-
-```go
-import pb "github.com/deventlab/d-engine/proto/client"
-
-// Use generated proto directly
-client := pb.NewRaftClientServiceClient(conn)
-```
-
 ## Core Concepts
 
 ### Connection Management
@@ -122,30 +122,34 @@ client := pb.NewRaftClientServiceClient(conn)
 
 ### Consistency Policies
 
-d-engine supports multiple read consistency policies. Choose based on your requirements:
+d-engine supports three read consistency policies. Choose based on your requirements:
 
 ```go
 import pb "github.com/deventlab/d-engine/proto/client"
 
-// EVENTUAL_CONSISTENCY: Any replica can serve reads
-// Use during initialization/startup when no leader may exist
-policy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY
+// EventualConsistency: Fastest, works on any node (leader/follower)
+// May return slightly stale data (<100ms)
+eventualPolicy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY
 
-// LINEARIZABLE_READ: Reads are linearizable (default)
-// Ensures you read the latest committed value
-policy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LINEARIZABLE_READ
+// LinearizableRead: Strongest consistency (default)
+// Always returns the latest committed value
+linearizablePolicy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LINEARIZABLE_READ
 
-// LEASE_READ: Requires leader access, strongest consistency
-// Use when you need the absolute latest value
-policy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LEASE_READ
+// LeaseRead: Balanced - 7-20x faster than LinearizableRead
+// Strong consistency with bounded staleness (~500ms)
+leasePolicy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LEASE_READ
 ```
 
-**Recommendation by scenario**:
-| Scenario | Policy | Reason |
-|----------|--------|--------|
-| System startup | EVENTUAL_CONSISTENCY | Cluster may not have elected leader |
-| Normal operations | LINEARIZABLE_READ | Good balance of consistency and availability |
-| Critical reads | LEASE_READ | Maximum consistency guarantee |
+**Selection guide**:
+
+| Scenario                                  | Policy              | Reason                                           |
+| ----------------------------------------- | ------------------- | ------------------------------------------------ |
+| Financial transactions, critical metadata | LinearizableRead    | Strongest consistency, no stale reads            |
+| General purpose, session management       | LeaseRead           | Balance performance & consistency (7-20x faster) |
+| Monitoring, dashboards, analytics         | EventualConsistency | Highest throughput (10-20x faster)               |
+| System startup (no leader yet)            | EventualConsistency | Works without leader election                    |
+
+_See [Read Consistency Guide](../server_guide/read-consistency.md) for detailed performance benchmarks and trade-offs._
 
 ### Example: KV Store Client
 
@@ -205,14 +209,14 @@ func (c *DEngineClient) Put(ctx context.Context, key, value string) error {
     return nil
 }
 
-// Get retrieves a value by key
+// Get retrieves a value by key with LinearizableRead consistency
 func (c *DEngineClient) Get(ctx context.Context, key string) (string, error) {
-    policy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LINEARIZABLE_READ
+    linearizablePolicy := pb.ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LINEARIZABLE_READ
 
     req := &pb.ClientReadRequest{
         ClientId: "my-client",
         Keys:     [][]byte{[]byte(key)},
-        ConsistencyPolicy: &policy,
+        ConsistencyPolicy: &linearizablePolicy,
     }
 
     resp, err := c.client.HandleClientRead(ctx, req)
@@ -240,32 +244,22 @@ func (c *DEngineClient) Close() error {
 
 ## Best Practices
 
-### 1. Maintain Proto Generation in Your Project
+### 1. Study d-queue for Integration Patterns
 
-❌ **Don't**:
-
-```go
-// Don't directly depend on someone else's generated proto
-import pb "github.com/someone/generated-d-engine-proto"
-```
-
-✅ **Do**:
+Before building your own integration, review d-queue's implementation:
 
 ```bash
-# Maintain generation script in your project
-./scripts/generate_dengine_proto.sh
+git clone https://github.com/deventlab/d-queue.git
+cd d-queue
 
-# Manage generated code in .gitignore
-pkg/rpc/proto/**/*.pb.go
-pkg/rpc/proto/**/*_grpc.pb.go
+# Look at client integration patterns
+# - Connection management
+# - Error handling
+# - Retry logic
+# - Consistency policy selection
 ```
 
-**Why**:
-
-- Different projects may have different proto versions
-- You control when to update d-engine
-- Reduces external dependencies
-- Better version compatibility management
+✅ **Recommended approach**: Use d-queue patterns as a template for your integration.
 
 ### 2. Version Pinning
 
@@ -438,11 +432,18 @@ If migrating from etcd:
 - Check d-engine cluster health
 - Verify network connectivity
 
-### PermissionDenied on Read
+### "Leadership verification failed" Error
 
-- Don't use LEASE_READ during cluster startup (no leader yet)
-- Use EVENTUAL_CONSISTENCY during initialization
-- Switch to LINEARIZABLE_READ once cluster is stable
+**Symptom**: LinearizableRead or LeaseRead requests fail with `FailedPrecondition` error.
+
+**Cause**: No leader elected yet (during startup), or leader lost quorum (network partition).
+
+**Solution**:
+
+- Use EventualConsistency during system startup (works without leader)
+- Switch to LinearizableRead or LeaseRead after cluster stabilizes
+- For production, use LeaseRead for general operations (balanced performance)
+- Reserve LinearizableRead for critical transactions only
 
 ### Key Not Found
 
@@ -480,13 +481,15 @@ func (c *DEngineClient) GetLogged(ctx context.Context, key string) (string, erro
 
 ## API Reference
 
-For complete API documentation, see:
+For complete API documentation and examples, see:
 
+- **d-queue Source Code**: https://github.com/deventlab/d-queue (recommended reference)
 - [d-engine Proto Definitions](https://github.com/deventlab/d-engine/tree/main/d-engine-proto/proto)
-- [Error Handling](error-handling.md) - Error categories and retry strategies
+- [Read Consistency Guide](../server_guide/read-consistency.md) - Performance and trade-offs
 
 ## Resources
 
+- **d-queue (Go Reference)**: https://github.com/deventlab/d-queue
 - **d-engine GitHub**: https://github.com/deventlab/d-engine
 - **Proto Definitions**: https://github.com/deventlab/d-engine/tree/main/d-engine-proto/proto
 - **Community Discussions**: https://github.com/deventlab/d-engine/discussions

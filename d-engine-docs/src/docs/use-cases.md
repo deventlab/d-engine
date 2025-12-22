@@ -88,10 +88,11 @@ d-engine = "0.2"  # default = server + rocksdb
 
 ```rust
 use d_engine::prelude::*;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
     engine.wait_ready(Duration::from_secs(5)).await?;
 
     let client = engine.client();  // <0.1ms local access
@@ -192,7 +193,7 @@ d-engine = "0.2"
 use d_engine::prelude::*;
 
 // DNS server with embedded d-engine
-let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 let client = engine.client();
 
 // Watch for service record changes
@@ -289,12 +290,13 @@ Kubernetes Operators, storage orchestrators, task schedulers that require leader
 
 ```rust
 use d_engine::prelude::*;
+use std::time::Duration;
 
 // Get node_id from config file (production recommended)
 let config = RaftNodeConfig::new()?.with_override_config("node1.toml")?;
 let my_node_id = config.cluster.node_id;
 
-let engine = EmbeddedEngine::with_rocksdb("./data", Some("node1.toml")).await?;
+let engine = EmbeddedEngine::start_with("./data", Some("node1.toml")).await?;
 
 // Wait for initial leader election
 engine.wait_ready(Duration::from_secs(5)).await?;

@@ -297,8 +297,29 @@ endif
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
 ## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
-test-all: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
+test-all: check-all-projects test-unit test-integration test-release test-doc test-examples docs-check-all bench
 	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
+
+## test-release         Run unit tests in release mode (validates release-only behavior)
+test-release: install-tools check-workspace
+	@echo "$(BLUE)Running unit tests in release mode...$(NC)"
+	@for member in $(WORKSPACE_MEMBERS); do \
+		echo "$(CYAN)Release mode testing crate: $$member$(NC)"; \
+		if [ "$$member" = "d-engine-server" ]; then \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test --release -p $$member --lib --features rocksdb,watch --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
+		elif [ "$$member" = "d-engine-core" ]; then \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test --release -p $$member --lib --features watch --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
+		else \
+			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+			$(CARGO) test --release -p $$member --lib --no-fail-fast -- --nocapture || \
+			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
+		fi; \
+	done
+	@echo "$(GREEN)✓ Release mode tests passed$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace

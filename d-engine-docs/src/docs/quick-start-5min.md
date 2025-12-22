@@ -35,7 +35,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ---
 
-## Step 2: Write Your First d-engine App (2 minutes)
+## Step 2: Create Config File (1 minute)
+
+Create `d-engine.toml`:
+
+```toml
+[cluster]
+db_root_dir = "./data/single-node"
+```
+
+## Step 3: Write Your First d-engine App (2 minutes)
 
 Create `src/main.rs`:
 
@@ -48,8 +57,8 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine...\n");
 
-    // Start embedded engine with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+    // Start embedded engine with config file
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
@@ -76,7 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 ---
 
-## Step 3: Run It (30 seconds)
+## Step 4: Run It (30 seconds)
 
 ```bash
 cargo run
@@ -104,17 +113,18 @@ Done!
 ### Behind the Scenes
 
 ```rust,ignore
-EmbeddedEngine::with_rocksdb("./data", None).await?
+EmbeddedEngine::start_with("d-engine.toml").await?
 ```
 
 This one line:
 
-1. Created `./data/storage/` (Raft logs)
-2. Created `./data/state_machine/` (KV data)
-3. Initialized RocksDB storage engines
-4. Built Raft node with node_id=1
-5. Spawned `node.run()` in background (Raft protocol)
-6. Returned immediately (non-blocking)
+1. Reads config from `d-engine.toml`
+2. Created `./data/single-node/storage/` (Raft logs)
+3. Created `./data/single-node/state_machine/` (KV data)
+4. Initialized RocksDB storage engines
+5. Built Raft node with node_id=1
+6. Spawned `node.run()` in background (Raft protocol)
+7. Returned immediately (non-blocking)
 
 ```rust,ignore
 engine.wait_ready(Duration::from_secs(5)).await?
@@ -161,7 +171,7 @@ No network, no serialization. Just direct function calls to Raft core.
 ### 3. Automatic Lifecycle Management
 
 ```rust,ignore
-let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 // ↑ Internally spawns node.run() in background
 
 engine.stop().await?;
@@ -177,11 +187,14 @@ No manual `tokio::spawn()`, no leaked tasks.
 ### EmbeddedEngine
 
 ```rust,ignore
-// Quick-start (development)
-EmbeddedEngine::with_rocksdb(data_dir: &str, config_path: Option<&str>) -> Result<Self>
+// Use CONFIG_PATH environment variable
+EmbeddedEngine::start() -> Result<Self>
 
-// Production (custom storage)
-EmbeddedEngine::start(
+// Use explicit config file
+EmbeddedEngine::start_with(config_path: &str) -> Result<Self>
+
+// Advanced (custom storage)
+EmbeddedEngine::start_custom(
     config_path: Option<&str>,
     storage: Arc<impl StorageEngine>,
     state_machine: Arc<impl StateMachine>
@@ -228,18 +241,18 @@ client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 
 ## Common Patterns
 
-### Pattern 1: Use Default /tmp Location
+### Pattern 1: Production (environment variable)
 
 ```rust,ignore
-// Data stored in /tmp/d-engine/
-let engine = EmbeddedEngine::with_rocksdb("", None).await?;
+// Reads config path from CONFIG_PATH env var
+let engine = EmbeddedEngine::start().await?;
 ```
 
-### Pattern 2: Custom Data Directory
+### Pattern 2: Development (explicit config)
 
 ```rust,ignore
-// Data stored in ./my-app-data/
-let engine = EmbeddedEngine::with_rocksdb("./my-app-data", None).await?;
+// Use specific config file
+let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes
@@ -285,7 +298,7 @@ match engine.wait_ready(Duration::from_secs(10)).await {
 
 ### "Failed to create data directory"
 
-**Cause**: Permission denied or invalid path.
+**Cause**: Permission denied or invalid path in config.
 
 **Fix**:
 
@@ -293,8 +306,9 @@ match engine.wait_ready(Duration::from_secs(10)).await {
 # Check permissions
 ls -la ./data
 
-# Or use /tmp (always writable)
-let engine = EmbeddedEngine::with_rocksdb("", None).await?;
+# Or update d-engine.toml to use /tmp
+[cluster]
+db_root_dir = "/tmp/d-engine"
 ```
 
 ### "Address already in use"
@@ -307,8 +321,6 @@ let engine = EmbeddedEngine::with_rocksdb("", None).await?;
 # Find and kill process
 lsof -i :9081
 kill <PID>
-
-# Or use different port in config
 ```
 
 ---
@@ -360,7 +372,7 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 ## Key Takeaways
 
-- ✅ **2-line startup**: `with_rocksdb()` → `wait_ready()`
+- ✅ **2-line startup**: `start_with()` → `wait_ready()`
 - ✅ **Zero boilerplate**: No manual spawn, no shutdown channels
 - ✅ **Event-driven**: No polling, <1ms notification latency
 - ✅ **Production-ready**: Auto-creates directories, graceful shutdown
@@ -368,7 +380,9 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 **This is what "embedded distributed engine" means**: complexity hidden, power exposed.
 
+For a complete working example, see [examples/quick-start](https://github.com/deventlab/d-engine/tree/main/examples/quick-start).
+
 ---
 
 **Created**: 2025-11-28  
-**Updated**: 2025-11-28
+**Updated**: 2025-12-22

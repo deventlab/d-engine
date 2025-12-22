@@ -29,7 +29,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let node1_data_dir = format!("{DB_ROOT_DIR}/node1");
+    let _node1_data_dir = format!("{DB_ROOT_DIR}/node1");
 
     // Phase 1: Single-node development environment
     info!("Phase 1: Starting single-node mode");
@@ -43,7 +43,7 @@ general_raft_timeout_duration_in_ms = 5000
         let config_path = "/tmp/scale_to_cluster_test_phase1.toml";
         tokio::fs::write(config_path, config_content).await?;
 
-        let engine = EmbeddedEngine::with_rocksdb(&node1_data_dir, Some(config_path)).await?;
+        let engine = EmbeddedEngine::start_with(config_path).await?;
         let leader = engine.wait_ready(Duration::from_secs(2)).await?;
         info!(
             "Single-node leader elected: {} (term {})",
@@ -97,7 +97,8 @@ general_raft_timeout_duration_in_ms = 5000
         let config_path = format!("/tmp/d-engine-test-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start(Some(&config_path), storage, state_machine).await?;
+        let engine =
+            EmbeddedEngine::start_custom(Some(&config_path), storage, state_machine).await?;
         engines.push(engine);
     }
 
@@ -196,7 +197,8 @@ async fn test_cluster_survives_single_failure() -> Result<(), Box<dyn std::error
         let config_path = format!("/tmp/d-engine-test-failover-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start(Some(&config_path), storage, state_machine).await?;
+        let engine =
+            EmbeddedEngine::start_custom(Some(&config_path), storage, state_machine).await?;
         engines.push(engine);
     }
 

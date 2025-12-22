@@ -99,22 +99,14 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Leader now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Leader",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Leader now.\n
-                =================================
-                \n\n",
+            "[Node {}] Candidate → Leader (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Leader(Box::new(self.into())))
     }
@@ -126,44 +118,28 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Follower",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "[Node {}] Candidate → Follower (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
 
     fn become_learner(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Learner",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "[Node {}] Candidate → Learner (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Learner(Box::new(self.into())))
     }

@@ -66,11 +66,11 @@ impl StateMachineTestSuite {
         assert!(state_machine.is_running());
 
         // Test explicit start/stop
-        state_machine.start()?;
+        state_machine.start().await?;
         assert!(state_machine.is_running());
         state_machine.stop()?;
         assert!(!state_machine.is_running());
-        state_machine.start()?;
+        state_machine.start().await?;
         assert!(state_machine.is_running());
 
         Ok(())

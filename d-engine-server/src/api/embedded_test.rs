@@ -30,8 +30,9 @@ mod embedded_engine_tests {
         let (storage, sm) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // Wait for leader election (should succeed quickly in single-node mode)
         let result = engine.wait_ready(Duration::from_secs(5)).await;
@@ -55,8 +56,9 @@ mod embedded_engine_tests {
     async fn test_wait_ready_timeout() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // In single-node mode, leader should be elected immediately
         // But if we had a cluster without quorum, this would timeout
@@ -74,8 +76,9 @@ mod embedded_engine_tests {
     async fn test_leader_change_notifier_subscription() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // Subscribe to leader changes
         let mut leader_rx = engine.leader_change_notifier();
@@ -107,8 +110,9 @@ mod embedded_engine_tests {
     async fn test_ready_and_wait_ready_sequence() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // Wait for leader election (wait_ready handles both node init and leader election)
         let start = std::time::Instant::now();
@@ -135,8 +139,9 @@ mod embedded_engine_tests {
     async fn test_client_available_after_wait_ready() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         engine
             .wait_ready(Duration::from_secs(5))
@@ -160,8 +165,9 @@ mod embedded_engine_tests {
     async fn test_multiple_leader_change_notifier_subscribers() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // Create multiple subscribers
         let mut rx1 = engine.leader_change_notifier();
@@ -196,8 +202,9 @@ mod embedded_engine_tests {
     async fn test_engine_stop_cleans_up() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // Stop should complete without error
         let stop_result = engine.stop().await;
@@ -208,8 +215,9 @@ mod embedded_engine_tests {
     async fn test_wait_ready_race_condition_already_elected() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // First call - wait for leader election
         let first_result = engine.wait_ready(Duration::from_secs(5)).await;
@@ -242,7 +250,9 @@ mod embedded_engine_tests {
         let (storage, sm) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine"),
+            EmbeddedEngine::start_custom(None, storage, sm)
+                .await
+                .expect("Failed to start engine"),
         );
 
         // Wait for initial leader election
@@ -286,8 +296,9 @@ mod embedded_engine_tests {
     async fn test_wait_ready_check_current_value_first() {
         let (storage, sm) = create_test_storage_and_sm().await;
 
-        let engine =
-            EmbeddedEngine::start(None, storage, sm).await.expect("Failed to start engine");
+        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            .await
+            .expect("Failed to start engine");
 
         // Wait for leader election
         engine
@@ -313,5 +324,359 @@ mod embedded_engine_tests {
         );
 
         engine.stop().await.expect("Failed to stop engine");
+    }
+
+    /// Tests for configuration validation (start/start_with with various configs)
+    #[cfg(feature = "rocksdb")]
+    mod config_validation_tests {
+        use super::*;
+        use serial_test::serial;
+
+        // Tests for start() method (reads CONFIG_PATH env var)
+
+        #[tokio::test]
+        #[cfg(debug_assertions)]
+        #[serial]
+        async fn test_start_with_config_path_env_valid() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = temp_dir.path().join("test_config.toml");
+            let data_dir = temp_dir.path().join("data");
+
+            // Create valid config with custom db_root_dir
+            let config_content = format!(
+                r#"
+[cluster]
+node_id = 1
+db_root_dir = "{}"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+"#,
+                data_dir.display()
+            );
+            std::fs::write(&config_path, config_content).expect("Failed to write config");
+
+            // Set CONFIG_PATH env var and test
+            unsafe {
+                std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
+            }
+            let result = EmbeddedEngine::start().await;
+            unsafe {
+                std::env::remove_var("CONFIG_PATH");
+            }
+
+            assert!(
+                result.is_ok(),
+                "start() should succeed with valid CONFIG_PATH"
+            );
+
+            if let Ok(engine) = result {
+                engine.stop().await.ok();
+            }
+        }
+
+        #[tokio::test]
+        #[cfg(debug_assertions)]
+        #[serial]
+        async fn test_start_with_config_path_env_nonexistent() {
+            // Set CONFIG_PATH to nonexistent file
+            unsafe {
+                std::env::set_var("CONFIG_PATH", "/nonexistent/config.toml");
+            }
+            let result = EmbeddedEngine::start().await;
+            unsafe {
+                std::env::remove_var("CONFIG_PATH");
+            }
+
+            assert!(
+                result.is_err(),
+                "start() should fail with nonexistent CONFIG_PATH"
+            );
+        }
+
+        #[tokio::test]
+        #[cfg(debug_assertions)]
+        #[serial]
+        async fn test_start_with_config_path_env_tmp_db_allows_in_debug() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = temp_dir.path().join("test_config.toml");
+
+            // Create config with /tmp/db
+            let config_content = r#"
+[cluster]
+node_id = 1
+db_root_dir = "/tmp/db"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+"#;
+            std::fs::write(&config_path, config_content).expect("Failed to write config");
+
+            // In debug mode, should succeed with warning
+            unsafe {
+                std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
+            }
+            let result = EmbeddedEngine::start().await;
+            unsafe {
+                std::env::remove_var("CONFIG_PATH");
+            }
+
+            assert!(
+                result.is_ok(),
+                "start() should allow /tmp/db in debug mode with CONFIG_PATH"
+            );
+
+            if let Ok(engine) = result {
+                engine.stop().await.ok();
+            }
+        }
+
+        #[tokio::test]
+        #[cfg(not(debug_assertions))]
+        #[serial]
+        async fn test_start_with_config_path_env_tmp_db_rejects_in_release() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = temp_dir.path().join("test_config.toml");
+
+            // Create config with /tmp/db
+            let config_content = r#"
+[cluster]
+node_id = 1
+db_root_dir = "/tmp/db"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+"#;
+            std::fs::write(&config_path, config_content).expect("Failed to write config");
+
+            // In release mode, should reject
+            unsafe {
+                std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
+            }
+            let result = EmbeddedEngine::start().await;
+            unsafe {
+                std::env::remove_var("CONFIG_PATH");
+            }
+
+            assert!(
+                result.is_err(),
+                "start() should reject /tmp/db in release mode with CONFIG_PATH"
+            );
+
+            if let Err(e) = result {
+                let err_msg = format!("{:?}", e);
+                assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
+            }
+        }
+
+        #[tokio::test]
+        #[cfg(debug_assertions)]
+        #[serial]
+        async fn test_start_without_config_path_env_allows_in_debug() {
+            // No CONFIG_PATH env var - uses default config with /tmp/db
+            unsafe {
+                std::env::remove_var("CONFIG_PATH");
+            }
+            let result = EmbeddedEngine::start().await;
+
+            assert!(
+                result.is_ok(),
+                "start() should allow default /tmp/db in debug mode without CONFIG_PATH"
+            );
+
+            if let Ok(engine) = result {
+                engine.stop().await.ok();
+            }
+        }
+
+        #[tokio::test]
+        #[cfg(not(debug_assertions))]
+        #[serial]
+        async fn test_start_without_config_path_env_rejects_in_release() {
+            // No CONFIG_PATH env var - should reject default /tmp/db in release
+            unsafe {
+                std::env::remove_var("CONFIG_PATH");
+            }
+            let result = EmbeddedEngine::start().await;
+
+            assert!(
+                result.is_err(),
+                "start() should reject default /tmp/db in release mode without CONFIG_PATH"
+            );
+
+            if let Err(e) = result {
+                let err_msg = format!("{:?}", e);
+                assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
+            }
+        }
+
+        // Tests for start_with() method (explicit config path)
+
+        #[tokio::test]
+        async fn test_start_with_valid_config() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = temp_dir.path().join("test_config.toml");
+            let data_dir = temp_dir.path().join("data");
+
+            // Create valid config with custom db_root_dir
+            let config_content = format!(
+                r#"
+[cluster]
+node_id = 1
+db_root_dir = "{}"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+
+[raft]
+heartbeat_interval_ms = 500
+election_timeout_min_ms = 1500
+election_timeout_max_ms = 3000
+"#,
+                data_dir.display()
+            );
+            std::fs::write(&config_path, config_content).expect("Failed to write config");
+
+            // Should succeed with valid config
+            let result = EmbeddedEngine::start_with(config_path.to_str().unwrap()).await;
+            assert!(
+                result.is_ok(),
+                "start_with() should succeed with valid config"
+            );
+
+            if let Ok(engine) = result {
+                engine.stop().await.ok();
+            }
+        }
+
+        #[tokio::test]
+        async fn test_start_with_nonexistent_config() {
+            let result = EmbeddedEngine::start_with("/nonexistent/config.toml").await;
+
+            assert!(
+                result.is_err(),
+                "start_with() should fail with nonexistent config"
+            );
+        }
+
+        #[tokio::test]
+        #[cfg(debug_assertions)]
+        #[serial]
+        async fn test_start_with_tmp_db_allows_in_debug() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = temp_dir.path().join("test_config.toml");
+
+            // Create config with /tmp/db
+            let config_content = r#"
+[cluster]
+node_id = 1
+db_root_dir = "/tmp/db"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+"#;
+            std::fs::write(&config_path, config_content).expect("Failed to write config");
+
+            // In debug mode, should succeed with warning
+            let result = EmbeddedEngine::start_with(config_path.to_str().unwrap()).await;
+            assert!(
+                result.is_ok(),
+                "start_with() should allow /tmp/db in debug mode"
+            );
+
+            if let Ok(engine) = result {
+                engine.stop().await.ok();
+            }
+        }
+
+        #[tokio::test]
+        #[cfg(not(debug_assertions))]
+        #[serial]
+        async fn test_start_with_tmp_db_rejects_in_release() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = temp_dir.path().join("test_config.toml");
+
+            // Create config with /tmp/db
+            let config_content = r#"
+[cluster]
+node_id = 1
+db_root_dir = "/tmp/db"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+"#;
+            std::fs::write(&config_path, config_content).expect("Failed to write config");
+
+            // In release mode, should reject
+            let result = EmbeddedEngine::start_with(config_path.to_str().unwrap()).await;
+            assert!(
+                result.is_err(),
+                "start_with() should reject /tmp/db in release mode"
+            );
+
+            if let Err(e) = result {
+                let err_msg = format!("{:?}", e);
+                assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
+            }
+        }
+
+        #[tokio::test]
+        async fn test_drop_without_stop_warning() {
+            let (storage, sm) = create_test_storage_and_sm().await;
+
+            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+                .await
+                .expect("Failed to start engine");
+
+            // Drop without calling stop() - should trigger warning in Drop impl
+            // Note: We can't easily capture the warning log in test, but this
+            // verifies the code path doesn't panic
+            drop(engine);
+        }
+    }
+
+    #[cfg(feature = "watch")]
+    mod watch_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_watch_registers_successfully() {
+            let (storage, sm) = create_test_storage_and_sm().await;
+
+            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+                .await
+                .expect("Failed to start engine");
+
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("Leader should be elected");
+
+            // Register watcher
+            let result = engine.watch(b"test_key");
+            assert!(
+                result.is_ok(),
+                "watch() should succeed when feature is enabled"
+            );
+
+            if let Ok(mut handle) = result {
+                // Trigger a change
+                let client = engine.client();
+                client
+                    .put(b"test_key".to_vec(), b"value1".to_vec())
+                    .await
+                    .expect("Put should succeed");
+
+                // Should receive watch event
+                let event =
+                    tokio::time::timeout(Duration::from_secs(1), handle.receiver_mut().recv())
+                        .await
+                        .expect("Should receive event within timeout");
+
+                assert!(event.is_some(), "Should receive watch event");
+            }
+
+            engine.stop().await.expect("Failed to stop engine");
+        }
     }
 }

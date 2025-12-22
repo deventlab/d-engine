@@ -956,8 +956,15 @@ impl Drop for FileStateMachine {
 
 #[async_trait]
 impl StateMachine for FileStateMachine {
-    fn start(&self) -> Result<(), Error> {
+    async fn start(&self) -> Result<(), Error> {
         self.running.store(true, Ordering::SeqCst);
+
+        // Load persisted lease data if configured
+        if self.lease.is_some() {
+            self.load_lease_data().await?;
+            debug!("Lease data loaded during state machine initialization");
+        }
+
         info!("File state machine started");
         Ok(())
     }
@@ -1438,14 +1445,6 @@ impl StateMachine for FileStateMachine {
         self.persist_data_async().await?;
         self.persist_metadata_async().await?;
         // self.clear_wal_async().await?;
-        Ok(())
-    }
-
-    async fn post_start_init(&self) -> Result<(), Error> {
-        if self.lease.is_some() {
-            self.load_lease_data().await?;
-            debug!("Lease data loaded during state machine initialization");
-        }
         Ok(())
     }
 

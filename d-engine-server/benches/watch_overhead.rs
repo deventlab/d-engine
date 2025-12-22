@@ -93,7 +93,8 @@ watcher_buffer_size = 100
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
     let engine =
-        EmbeddedEngine::start(Some(config_path.to_str().unwrap()), storage, state_machine).await?;
+        EmbeddedEngine::start_custom(Some(config_path.to_str().unwrap()), storage, state_machine)
+            .await?;
 
     // Wait for ready
     engine.wait_ready(Duration::from_secs(5)).await?;
@@ -286,136 +287,6 @@ fn bench_watcher_cleanup(c: &mut Criterion) {
 }
 
 //=============================================================================
-// Benchmark 5: Standalone Mode Performance Impact
-//=============================================================================
-
-fn bench_standalone_mode_with_watchers(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-
-    let mut group = c.benchmark_group("standalone_mode_put");
-    group.sample_size(10); // Reduce sample size due to slow cluster startup
-
-    for &watcher_count in &[0, 10] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
-            &watcher_count,
-            |b, &count| {
-                b.to_async(&runtime).iter(|| async {
-                    // Setup: Create 3-node standalone cluster
-                    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-                    let base_port = 60000 + (std::process::id() % 1000) * 10;
-
-                    // Create configs for 3 nodes
-                    let mut configs = Vec::new();
-                    for i in 0..3 {
-                        let node_id = i + 1;
-                        let port = base_port + i;
-                        let config_path = temp_dir.path().join(format!("node{node_id}.toml"));
-
-                        let peers: Vec<String> = (0..3)
-                            .filter(|&j| j != i)
-                            .map(|j| format!("{}@127.0.0.1:{}", j + 1, base_port + j))
-                            .collect();
-
-                        let config_content = format!(
-                            r#"
-[cluster]
-node_id = {}
-listen_address = "127.0.0.1:{}"
-initial_cluster = [
-    {}
-]
-
-[raft.watch]
-event_queue_size = 10000
-watcher_buffer_size = 100
-"#,
-                            node_id,
-                            port,
-                            peers
-                                .iter()
-                                .map(|p| format!("\"{p}\""))
-                                .collect::<Vec<_>>()
-                                .join(",\n    ")
-                        );
-
-                        std::fs::write(&config_path, config_content)
-                            .expect("Failed to write config");
-                        configs.push(config_path);
-                    }
-
-                    // Start 3 nodes
-                    let mut handles = Vec::new();
-                    for (i, config_path) in configs.iter().enumerate() {
-                        let db_path = temp_dir.path().join(format!("node{}", i + 1));
-                        tokio::fs::create_dir_all(&db_path).await.expect("Failed to create db dir");
-
-                        let storage_path = db_path.join("storage");
-                        let sm_path = db_path.join("state_machine");
-                        tokio::fs::create_dir_all(&storage_path).await.unwrap();
-                        tokio::fs::create_dir_all(&sm_path).await.unwrap();
-
-                        let storage = Arc::new(
-                            RocksDBStorageEngine::new(&storage_path)
-                                .expect("Failed to create storage"),
-                        );
-                        let state_machine = Arc::new(
-                            RocksDBStateMachine::new(&sm_path)
-                                .expect("Failed to create state machine"),
-                        );
-
-                        let engine = EmbeddedEngine::start(
-                            Some(config_path.to_str().unwrap()),
-                            storage,
-                            state_machine,
-                        )
-                        .await
-                        .expect("Failed to start engine");
-
-                        handles.push(engine);
-                    }
-
-                    // Wait for cluster ready (leader election)
-                    sleep(Duration::from_secs(3)).await;
-
-                    // Pick leader node (assume node 1 becomes leader)
-                    let leader = &handles[0];
-                    let client = leader.client();
-
-                    // Register watchers on leader
-                    let mut _watchers = Vec::new();
-                    for i in 0..count {
-                        let key = format!("watch_key_{i}").into_bytes();
-                        let watcher = leader.watch(&key).expect("Failed to register watcher");
-                        _watchers.push(watcher);
-                    }
-
-                    sleep(Duration::from_millis(100)).await;
-
-                    // Benchmark: 100 PUT operations through gRPC-like client
-                    let start = std::time::Instant::now();
-                    for i in 0..100 {
-                        let key = format!("key_{i}").into_bytes();
-                        let value = format!("value_{i}").into_bytes();
-                        client.put(&key, &value).await.expect("PUT failed");
-                    }
-                    let elapsed = start.elapsed();
-
-                    black_box(elapsed);
-
-                    // Cleanup
-                    for engine in handles {
-                        engine.stop().await.expect("Failed to stop engine");
-                    }
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-//=============================================================================
 // Benchmark 6: Apply Chunk Watch Overhead
 //=============================================================================
 //
@@ -461,7 +332,7 @@ criterion_group!(
     bench_watch_notification_latency,
     bench_multiple_watchers_same_key,
     bench_watcher_cleanup,
-    bench_standalone_mode_with_watchers,
+    // bench_standalone_mode_with_watchers, // Removed: duplicate of embedded_mode
     bench_apply_chunk_baseline,
 );
 
