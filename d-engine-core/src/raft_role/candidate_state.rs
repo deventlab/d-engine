@@ -544,6 +544,12 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 .into());
             }
 
+            RaftEvent::MembershipApplied => {
+                // Candidates don't maintain cluster metadata cache
+                // This event is only relevant for leaders
+                debug!("Candidate ignoring MembershipApplied event");
+            }
+
             RaftEvent::StepDownSelfRemoved => {
                 // Unreachable: handled at Raft level before reaching RoleState
                 unreachable!("StepDownSelfRemoved should be handled in Raft::run()");

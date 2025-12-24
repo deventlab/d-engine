@@ -1,4 +1,4 @@
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::EmbeddedEngine;
 use std::time::Duration;
 use tracing_test::traced_test;
 
@@ -7,7 +7,6 @@ const TEST_DIR: &str = "embedded/single_node";
 
 /// Test single-node EmbeddedEngine basic lifecycle
 #[tokio::test]
-#[cfg(feature = "rocksdb")]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = format!("./db/{TEST_DIR}");
 
@@ -80,7 +79,6 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
 /// Test leader notification mechanism
 #[tokio::test]
 #[traced_test]
-#[cfg(feature = "rocksdb")]
 async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = format!("./db/{TEST_DIR}_notify");
 
@@ -125,8 +123,11 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
 /// Test data persistence across restarts
 #[tokio::test]
 #[traced_test]
-#[cfg(feature = "rocksdb")]
 async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    use d_engine_server::EmbeddedEngine;
+
     let data_dir = format!("./db/{TEST_DIR}_persist");
 
     if tokio::fs::metadata(&data_dir).await.is_ok() {

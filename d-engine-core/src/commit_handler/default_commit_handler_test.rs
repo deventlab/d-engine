@@ -1279,4 +1279,301 @@ mod process_batch_test {
         assert_eq!(order.len(), 1);
         assert!(order[0].starts_with("command"));
     }
+
+    /// Test 1: MembershipApplied event MUST be sent after successful config change
+    ///
+    /// Verifies that when apply_config_change() succeeds, the commit handler
+    /// sends RaftEvent::MembershipApplied to notify Leader to refresh cache.
+    ///
+    /// Related: Bug fix #209 - cluster metadata cache timing issue
+    #[tokio::test]
+    async fn membership_applied_event_sent_on_success() {
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::AddNode(AddNode {
+                node_id: 2,
+                address: "127.0.0.1:8080".into(),
+            }))],
+            1,
+        );
+
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            || false, // Config succeeds
+            || false,
+            None,
+            100,
+            100,
+        );
+
+        let result = harness.process_batch_handler().await;
+        assert!(result.is_ok(), "Config change should succeed");
+
+        // Verify MembershipApplied event was sent
+        match tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await {
+            Ok(Some(RaftEvent::MembershipApplied)) => {
+                // Success - event received
+            }
+            Ok(Some(other)) => panic!("Expected MembershipApplied, got {other:?}"),
+            Ok(None) => panic!("Event channel closed unexpectedly"),
+            Err(_) => panic!("Timeout waiting for MembershipApplied event"),
+        }
+    }
+
+    /// Test 2: Event order - MembershipApplied sent AFTER apply_config_change
+    ///
+    /// Verifies the critical ordering guarantee:
+    /// 1. apply_config_change() updates membership state
+    /// 2. notify_config_applied() barrier
+    /// 3. MembershipApplied event sent
+    ///
+    /// This ensures Leader refreshes cache with up-to-date membership.
+    ///
+    /// Related: Bug fix #209
+    #[tokio::test]
+    async fn membership_applied_event_sent_after_apply() {
+        let apply_order = Arc::new(Mutex::new(Vec::new()));
+        let order_clone = apply_order.clone();
+
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::AddNode(AddNode {
+                node_id: 2,
+                address: "127.0.0.1:8080".into(),
+            }))],
+            1,
+        );
+
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            {
+                let order = order_clone.clone();
+                move || {
+                    order.lock().push("apply_config_change");
+                    false
+                }
+            },
+            || false,
+            None,
+            100,
+            100,
+        );
+
+        harness.process_batch_handler().await.unwrap();
+
+        // Verify event received
+        match tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await {
+            Ok(Some(RaftEvent::MembershipApplied)) => {
+                // Record event reception
+                apply_order.lock().push("MembershipApplied_event");
+            }
+            _ => panic!("Expected MembershipApplied event"),
+        }
+
+        // Verify ordering: apply first, then event
+        let order = apply_order.lock();
+        assert_eq!(
+            *order,
+            vec!["apply_config_change", "MembershipApplied_event"],
+            "Event must be sent AFTER apply_config_change"
+        );
+    }
+
+    /// Test 3: NO event sent when config change fails
+    ///
+    /// Verifies that when apply_config_change() returns an error,
+    /// MembershipApplied event is NOT sent (membership state is unchanged).
+    ///
+    /// Related: Bug fix #209
+    #[tokio::test]
+    async fn no_membership_applied_event_on_config_failure() {
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::AddNode(AddNode {
+                node_id: 2,
+                address: "127.0.0.1:8080".into(),
+            }))],
+            1,
+        );
+
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            || true, // Config fails
+            || false,
+            None,
+            100,
+            100,
+        );
+
+        let result = harness.process_batch_handler().await;
+        assert!(result.is_err(), "Config change should fail");
+
+        // Verify NO event was sent
+        match tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await {
+            Err(_) => {
+                // Timeout is expected - no event sent
+            }
+            Ok(Some(event)) => panic!("Expected no event, but received {event:?}"),
+            Ok(None) => {
+                // Channel closed is also acceptable
+            }
+        }
+    }
+
+    /// Test 5: All config change types trigger MembershipApplied event
+    ///
+    /// Verifies that AddNode, RemoveNode, and Promote all send the event.
+    ///
+    /// Related: Bug fix #209
+    #[tokio::test]
+    async fn all_config_change_types_send_membership_applied() {
+        use d_engine_proto::common::NodeStatus;
+        use d_engine_proto::common::PromoteLearner;
+
+        // Test AddNode
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::AddNode(AddNode {
+                node_id: 2,
+                address: "127.0.0.1:8080".into(),
+            }))],
+            1,
+        );
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            1,
+            || false,
+            || false,
+            None,
+            100,
+            100,
+        );
+        harness.process_batch_handler().await.unwrap();
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await,
+                Ok(Some(RaftEvent::MembershipApplied))
+            ),
+            "AddNode should send MembershipApplied"
+        );
+
+        // Test RemoveNode
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::RemoveNode(RemoveNode {
+                node_id: 2,
+            }))],
+            1,
+        );
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            1,
+            || false,
+            || false,
+            None,
+            100,
+            100,
+        );
+        harness.process_batch_handler().await.unwrap();
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await,
+                Ok(Some(RaftEvent::MembershipApplied))
+            ),
+            "RemoveNode should send MembershipApplied"
+        );
+
+        // Test PromoteLearner
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::Promote(
+                PromoteLearner {
+                    node_id: 2,
+                    status: NodeStatus::Active as i32,
+                },
+            ))],
+            1,
+        );
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            1,
+            || false,
+            || false,
+            None,
+            100,
+            100,
+        );
+        harness.process_batch_handler().await.unwrap();
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await,
+                Ok(Some(RaftEvent::MembershipApplied))
+            ),
+            "PromoteLearner should send MembershipApplied"
+        );
+    }
+
+    /// Test 6: Self-removal sends both MembershipApplied AND StepDownSelfRemoved
+    ///
+    /// Verifies that when Leader removes itself:
+    /// 1. MembershipApplied is sent (to refresh cache)
+    /// 2. StepDownSelfRemoved is sent (to trigger step down)
+    ///
+    /// Order: MembershipApplied should be sent before StepDownSelfRemoved
+    ///
+    /// Related: Bug fix #209, Issue #200 (self-removal)
+    #[tokio::test]
+    async fn self_removal_sends_both_events() {
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::RemoveNode(RemoveNode {
+                node_id: 1, // Remove self (node_id = 1)
+            }))],
+            1,
+        );
+
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            || false,
+            || false,
+            None,
+            100,
+            100,
+        );
+
+        harness.process_batch_handler().await.unwrap();
+
+        // First event should be MembershipApplied
+        match tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await {
+            Ok(Some(RaftEvent::MembershipApplied)) => {
+                // Correct first event
+            }
+            Ok(Some(other)) => panic!("Expected MembershipApplied first, got {other:?}"),
+            _ => panic!("Expected MembershipApplied event"),
+        }
+
+        // Second event should be StepDownSelfRemoved
+        match tokio::time::timeout(Duration::from_millis(50), harness.event_rx.recv()).await {
+            Ok(Some(RaftEvent::StepDownSelfRemoved)) => {
+                // Correct second event
+            }
+            Ok(Some(other)) => panic!("Expected StepDownSelfRemoved second, got {other:?}"),
+            _ => panic!("Expected StepDownSelfRemoved event"),
+        }
+    }
 }

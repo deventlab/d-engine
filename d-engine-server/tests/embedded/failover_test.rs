@@ -1,5 +1,4 @@
 use d_engine_server::api::EmbeddedEngine;
-#[cfg(feature = "rocksdb")]
 use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use serial_test::serial;
 use std::sync::Arc;
@@ -23,7 +22,6 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 #[tokio::test]
 #[traced_test]
 #[serial]
-#[cfg(feature = "rocksdb")]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     reset(TEST_DIR).await?;
 
@@ -191,7 +189,6 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 #[tokio::test]
 #[traced_test]
 #[serial]
-#[cfg(feature = "rocksdb")]
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_rejoin")).await?;
 
@@ -321,7 +318,6 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 /// Test minority failure (2/3 nodes down) causes cluster unavailability
 #[tokio::test]
 #[traced_test]
-#[cfg(feature = "rocksdb")]
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
     reset(&format!("{TEST_DIR}_minority")).await?;
 

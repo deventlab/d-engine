@@ -86,6 +86,7 @@ use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::JoinRequest;
 use d_engine_proto::server::cluster::JoinResponse;
 use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesResponse;
@@ -119,10 +120,12 @@ impl PendingPromotion {
 /// Caching avoids repeated async calls to membership queries in hot paths like append_entries.
 #[derive(Debug, Clone)]
 pub struct ClusterMetadata {
-    /// Whether this is a single-node cluster (immutable during leadership)
-    pub is_single_node: bool,
+    /// Single-voter cluster (quorum = 1, used for election and commit optimization)
+    pub single_voter: bool,
     /// Total number of voters including self (updated on membership changes)
     pub total_voters: usize,
+    /// Cached replication targets (voters + learners, excluding self)
+    pub replication_targets: Vec<NodeMeta>,
 }
 
 /// Leader node's state in Raft consensus algorithm.
@@ -503,18 +506,27 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         &mut self,
         membership: &Arc<T::M>,
     ) -> Result<()> {
-        let is_single_node = membership.is_single_node_cluster().await;
+        // Calculate current runtime voter count (excluding self)
         let voters = membership.voters().await;
-        let total_voters = voters.len() + 1; // Include self
+        let total_voters = voters.len() + 1; // +1 for self (leader)
+
+        // Get all replication targets (voters + learners, excluding self)
+        let replication_targets = membership.replication_peers().await;
+
+        // Single-voter cluster: only this node is a voter (quorum = 1)
+        let single_voter = total_voters == 1;
 
         self.cluster_metadata = ClusterMetadata {
-            is_single_node,
+            single_voter,
             total_voters,
+            replication_targets: replication_targets.clone(),
         };
 
         debug!(
-            "Initialized cluster metadata: is_single_node={}, total_voters={}",
-            is_single_node, total_voters
+            "Initialized cluster metadata: single_voter={}, total_voters={}, replication_targets={}",
+            single_voter,
+            total_voters,
+            replication_targets.len()
         );
         Ok(())
     }
@@ -1220,8 +1232,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::PromoteReadyLearners => {
                 // SAFETY: Called from main event loop, no reentrancy issues
-                info!("Promoting ready learners");
+                info!(
+                    "[Leader {}] ⚡ PromoteReadyLearners event received, pending_promotions: {:?}",
+                    self.node_id(),
+                    self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
+                );
                 self.process_pending_promotions(ctx, &role_tx).await?;
+            }
+
+            RaftEvent::MembershipApplied => {
+                // Refresh cluster metadata cache after membership change is applied
+                debug!("Refreshing cluster metadata cache after membership change");
+                if let Err(e) = self.update_cluster_metadata(&ctx.membership()).await {
+                    warn!("Failed to update cluster metadata: {:?}", e);
+                }
             }
 
             RaftEvent::StepDownSelfRemoved => {
@@ -1256,18 +1280,27 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         membership: &Arc<T::M>,
     ) -> Result<()> {
-        let is_single_node = membership.is_single_node_cluster().await;
+        // Calculate current runtime voter count (excluding self)
         let voters = membership.voters().await;
-        let total_voters = voters.len() + 1;
+        let total_voters = voters.len() + 1; // +1 for self (leader)
+
+        // Get all replication targets (voters + learners, excluding self)
+        let replication_targets = membership.replication_peers().await;
+
+        // Single-voter cluster: only this node is a voter (quorum = 1)
+        let single_voter = total_voters == 1;
 
         self.cluster_metadata = ClusterMetadata {
-            is_single_node,
+            single_voter,
             total_voters,
+            replication_targets: replication_targets.clone(),
         };
 
         debug!(
-            "Updated cluster metadata: is_single_node={}, total_voters={}",
-            is_single_node, total_voters
+            "Updated cluster metadata: single_voter={}, total_voters={}, replication_targets={}",
+            single_voter,
+            total_voters,
+            replication_targets.len()
         );
         Ok(())
     }
@@ -1405,9 +1438,9 @@ impl<T: TypeConfig> LeaderState<T> {
                 };
 
                 // 3. Update commit index
-                // Single-node cluster: commit index = last log index (quorum of 1)
-                // Multi-node cluster: calculate commit index based on majority quorum
-                let new_commit_index = if self.cluster_metadata.is_single_node {
+                // Single-voter cluster: commit index = last log index (quorum of 1)
+                // Multi-voter cluster: calculate commit index based on majority quorum
+                let new_commit_index = if self.cluster_metadata.single_voter {
                     let last_log_index = ctx.raft_log().last_entry_id();
                     if last_log_index > self.commit_index() {
                         Some(last_log_index)
@@ -1532,6 +1565,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         debug!(?learner_progress, "check_learner_progress");
+
         // Throttle checks to once per second
         if self.last_learner_check.elapsed() < Duration::from_secs(1) {
             return Ok(());
@@ -1599,21 +1633,40 @@ impl<T: TypeConfig> LeaderState<T> {
                 );
             }
 
-            // Add to pending queue
-            let promotions = ready_learners
+            // Add to pending queue (with deduplication)
+            // Check which learners are NOT already in the pending queue
+            let already_pending: std::collections::HashSet<u32> =
+                self.pending_promotions.iter().map(|p| p.node_id).collect();
+
+            let new_promotions: Vec<_> = ready_learners
                 .into_iter()
-                .map(|node_id| PendingPromotion::new(node_id, Instant::now()));
-            self.pending_promotions.extend(promotions);
+                .filter(|node_id| !already_pending.contains(node_id))
+                .map(|node_id| PendingPromotion::new(node_id, Instant::now()))
+                .collect();
 
-            // Create a PromoteReadyLearners event
-            let event = RaftEvent::PromoteReadyLearners;
+            // Only send event if we actually added new promotions
+            if !new_promotions.is_empty() {
+                let new_promotion_ids: Vec<_> = new_promotions.iter().map(|p| p.node_id).collect();
+                self.pending_promotions.extend(new_promotions);
 
-            // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back to
-            // the main event queue
-            if let Err(e) = role_tx.send(RoleEvent::ReprocessEvent(Box::new(event))) {
-                error!("Failed to send Promotion event via RoleEvent: {}", e);
+                // Create a PromoteReadyLearners event
+                let event = RaftEvent::PromoteReadyLearners;
+
+                trace!(
+                    "[Leader {}] 📤 Sending PromoteReadyLearners via ReprocessEvent, new_promotions: {:?}",
+                    self.node_id(),
+                    new_promotion_ids
+                );
+
+                // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back to
+                // the main event queue
+                if let Err(e) = role_tx.send(RoleEvent::ReprocessEvent(Box::new(event))) {
+                    error!("Failed to send Promotion event via RoleEvent: {}", e);
+                } else {
+                    trace!("Scheduled Promotion event via ReprocessEvent");
+                }
             } else {
-                trace!("Scheduled Promotion event via ReprocessEvent");
+                debug!("All ready learners are already pending promotion, skipping event");
             }
 
             // self.batch_promote_learners(ready_learners, ctx, role_tx).await?;
@@ -1919,10 +1972,8 @@ impl<T: TypeConfig> LeaderState<T> {
                     ctx.membership().replication_peers().await
                 );
 
-                // 4.5. Update cluster metadata cache
-                if let Err(e) = self.update_cluster_metadata(&ctx.membership()).await {
-                    warn!("Failed to update cluster metadata: {:?}", e);
-                }
+                // Note: Cluster metadata cache will be updated via MembershipApplied event
+                // after CommitHandler applies the config change to membership state
 
                 // 5. Send successful response
                 debug!("5. Send successful response");
@@ -2016,8 +2067,9 @@ impl<T: TypeConfig> LeaderState<T> {
 
         LeaderState {
             cluster_metadata: ClusterMetadata {
-                is_single_node: false,
+                single_voter: false,
                 total_voters: 0,
+                replication_targets: vec![],
             },
             shared_state: SharedState::new(node_id, None, None),
             timer: Box::new(ReplicationTimer::new(
@@ -2098,6 +2150,12 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
+        debug!(
+            "[Leader {}] 🔄 process_pending_promotions called, pending: {:?}",
+            self.node_id(),
+            self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
+        );
+
         // Get promotion configuration from the node config
         let config = &ctx.node_config().raft.membership.promotion;
 
@@ -2108,19 +2166,38 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         if self.pending_promotions.is_empty() {
+            debug!(
+                "[Leader {}] ❌ pending_promotions is empty after stale cleanup",
+                self.node_id()
+            );
             return Ok(());
         }
 
-        // Step 2: Get current voter count
+        // Step 2: Get current voter count (including self as leader)
         let membership = ctx.membership();
-        let current_voters = membership.voters().await.len();
+        let current_voters = membership.voters().await.len() + 1; // +1 for self (leader)
+        debug!(
+            "[Leader {}] 📊 current_voters: {}, pending: {}",
+            self.node_id(),
+            current_voters,
+            self.pending_promotions.len()
+        );
 
         // Step 3: Calculate the maximum batch size that preserves an odd total
         let max_batch_size =
             calculate_safe_batch_size(current_voters, self.pending_promotions.len());
+        debug!(
+            "[Leader {}] 🎯 max_batch_size: {}",
+            self.node_id(),
+            max_batch_size
+        );
 
         if max_batch_size == 0 {
             // Nothing we can safely promote now
+            debug!(
+                "[Leader {}] ⚠️ max_batch_size is 0, cannot promote now",
+                self.node_id()
+            );
             return Ok(());
         }
 
@@ -2154,10 +2231,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 "Promotion successful. Cluster members: {:?}",
                 membership.voters().await
             );
-            println!(
-                "[Cluster] Promotion successful. Members: {:?}",
-                membership.voters().await
-            );
         }
 
         trace!(
@@ -2166,6 +2239,11 @@ impl<T: TypeConfig> LeaderState<T> {
         );
         // Step 6: Reschedule if any pending promotions remain
         if !self.pending_promotions.is_empty() {
+            debug!(
+                "[Leader {}] 🔁 Re-sending PromoteReadyLearners for remaining pending: {:?}",
+                self.node_id(),
+                self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
+            );
             // Important: Re-send the event to trigger next cycle
             role_tx
                 .send(RoleEvent::ReprocessEvent(Box::new(
@@ -2458,8 +2536,9 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             cluster_metadata: ClusterMetadata {
-                is_single_node: false,
+                single_voter: false,
                 total_voters: 0,
+                replication_targets: vec![],
             },
 
             _marker: PhantomData,

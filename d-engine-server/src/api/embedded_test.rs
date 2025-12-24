@@ -9,7 +9,11 @@ mod embedded_engine_tests {
     use crate::storage::FileStateMachine;
     use crate::storage::FileStorageEngine;
 
-    async fn create_test_storage_and_sm() -> (Arc<FileStorageEngine>, Arc<FileStateMachine>) {
+    async fn create_test_storage_and_sm() -> (
+        Arc<FileStorageEngine>,
+        Arc<FileStateMachine>,
+        tempfile::TempDir,
+    ) {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let storage_path = temp_dir.path().join("storage");
         let sm_path = temp_dir.path().join("sm");
@@ -22,12 +26,12 @@ mod embedded_engine_tests {
         let sm =
             Arc::new(FileStateMachine::new(sm_path).await.expect("Failed to create state machine"));
 
-        (storage, sm)
+        (storage, sm, temp_dir)
     }
 
     #[tokio::test]
     async fn test_wait_ready_single_node_success() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
@@ -54,7 +58,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_timeout() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -73,8 +77,8 @@ mod embedded_engine_tests {
     }
 
     #[tokio::test]
-    async fn test_leader_change_notifier_subscription() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+    async fn test_leader_change_notifier_basic() {
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -108,7 +112,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_ready_and_wait_ready_sequence() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -137,7 +141,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_client_available_after_wait_ready() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -163,7 +167,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_multiple_leader_change_notifier_subscribers() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -200,7 +204,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_engine_stop_cleans_up() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -213,7 +217,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_race_condition_already_elected() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -247,7 +251,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_multiple_calls_concurrent() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
             EmbeddedEngine::start_custom(None, storage, sm)
@@ -294,7 +298,7 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_check_current_value_first() {
-        let (storage, sm) = create_test_storage_and_sm().await;
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = EmbeddedEngine::start_custom(None, storage, sm)
             .await
@@ -338,9 +342,9 @@ mod embedded_engine_tests {
         #[cfg(debug_assertions)]
         #[serial]
         async fn test_start_with_config_path_env_valid() {
-            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = temp_dir.path().join("test_config.toml");
-            let data_dir = temp_dir.path().join("data");
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = _temp_dir.path().join("test_config.toml");
+            let data_dir = _temp_dir.path().join("data");
 
             // Create valid config with custom db_root_dir
             let config_content = format!(
@@ -398,8 +402,8 @@ listen_addr = "127.0.0.1:0"
         #[cfg(debug_assertions)]
         #[serial]
         async fn test_start_with_config_path_env_tmp_db_allows_in_debug() {
-            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = temp_dir.path().join("test_config.toml");
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = _temp_dir.path().join("test_config.toml");
 
             // Create config with /tmp/db
             let config_content = r#"
@@ -435,8 +439,8 @@ listen_addr = "127.0.0.1:0"
         #[cfg(not(debug_assertions))]
         #[serial]
         async fn test_start_with_config_path_env_tmp_db_rejects_in_release() {
-            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = temp_dir.path().join("test_config.toml");
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = _temp_dir.path().join("test_config.toml");
 
             // Create config with /tmp/db
             let config_content = r#"
@@ -514,9 +518,9 @@ listen_addr = "127.0.0.1:0"
 
         #[tokio::test]
         async fn test_start_with_valid_config() {
-            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = temp_dir.path().join("test_config.toml");
-            let data_dir = temp_dir.path().join("data");
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = _temp_dir.path().join("test_config.toml");
+            let data_dir = _temp_dir.path().join("data");
 
             // Create valid config with custom db_root_dir
             let config_content = format!(
@@ -547,6 +551,7 @@ election_timeout_max_ms = 3000
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
+            // _temp_dir stays alive until here
         }
 
         #[tokio::test]
@@ -563,8 +568,8 @@ election_timeout_max_ms = 3000
         #[cfg(debug_assertions)]
         #[serial]
         async fn test_start_with_tmp_db_allows_in_debug() {
-            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = temp_dir.path().join("test_config.toml");
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = _temp_dir.path().join("test_config.toml");
 
             // Create config with /tmp/db
             let config_content = r#"
@@ -593,8 +598,8 @@ listen_addr = "127.0.0.1:0"
         #[cfg(not(debug_assertions))]
         #[serial]
         async fn test_start_with_tmp_db_rejects_in_release() {
-            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = temp_dir.path().join("test_config.toml");
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let config_path = _temp_dir.path().join("test_config.toml");
 
             // Create config with /tmp/db
             let config_content = r#"
@@ -622,7 +627,7 @@ listen_addr = "127.0.0.1:0"
 
         #[tokio::test]
         async fn test_drop_without_stop_warning() {
-            let (storage, sm) = create_test_storage_and_sm().await;
+            let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
             let engine = EmbeddedEngine::start_custom(None, storage, sm)
                 .await
@@ -641,7 +646,7 @@ listen_addr = "127.0.0.1:0"
 
         #[tokio::test]
         async fn test_watch_registers_successfully() {
-            let (storage, sm) = create_test_storage_and_sm().await;
+            let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
             let engine = EmbeddedEngine::start_custom(None, storage, sm)
                 .await
@@ -660,6 +665,9 @@ listen_addr = "127.0.0.1:0"
             );
 
             if let Ok(mut handle) = result {
+                // Give watcher time to register
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
                 // Trigger a change
                 let client = engine.client();
                 client
@@ -669,7 +677,7 @@ listen_addr = "127.0.0.1:0"
 
                 // Should receive watch event
                 let event =
-                    tokio::time::timeout(Duration::from_secs(1), handle.receiver_mut().recv())
+                    tokio::time::timeout(Duration::from_secs(2), handle.receiver_mut().recv())
                         .await
                         .expect("Should receive event within timeout");
 
@@ -677,6 +685,166 @@ listen_addr = "127.0.0.1:0"
             }
 
             engine.stop().await.expect("Failed to stop engine");
+        }
+    }
+
+    #[cfg(feature = "watch")]
+    mod watch_tempdir_tests {
+        use super::*;
+
+        /// Test to verify Watch fails when TempDir is dropped before engine usage
+        ///
+        /// This test directly demonstrates the root cause of watch test failures:
+        /// When TempDir is dropped, watch events cannot be delivered even though
+        /// basic operations like PUT still work.
+        #[tokio::test]
+        async fn test_watch_with_tempdir_dropped() {
+            println!("\n=== Testing Watch with TempDir DROPPED ===");
+
+            let (storage, sm) = {
+                let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+                let storage_path = temp_dir.path().join("storage");
+                let sm_path = temp_dir.path().join("sm");
+
+                std::fs::create_dir_all(&storage_path).unwrap();
+                std::fs::create_dir_all(&sm_path).unwrap();
+
+                let storage = Arc::new(
+                    FileStorageEngine::new(storage_path).expect("Failed to create storage"),
+                );
+                let sm = Arc::new(
+                    FileStateMachine::new(sm_path).await.expect("Failed to create state machine"),
+                );
+
+                println!("Created storage and SM, TempDir about to be dropped...");
+                (storage, sm)
+                // temp_dir dropped here!
+            };
+
+            println!("TempDir dropped, starting engine...");
+
+            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+                .await
+                .expect("Failed to start engine");
+
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("Leader should be elected");
+
+            println!("Engine started and leader elected");
+
+            // Register watcher
+            let result = engine.watch(b"test_key");
+            println!("Watch registration result: {:?}", result.is_ok());
+            assert!(result.is_ok(), "watch() should succeed");
+
+            if let Ok(mut handle) = result {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // Trigger a change
+                println!("Performing PUT operation...");
+                let client = engine.client();
+                client
+                    .put(b"test_key".to_vec(), b"value1".to_vec())
+                    .await
+                    .expect("Put should succeed");
+
+                println!("PUT succeeded, waiting for watch event...");
+
+                // Try to receive watch event with timeout
+                let event_result =
+                    tokio::time::timeout(Duration::from_secs(2), handle.receiver_mut().recv())
+                        .await;
+
+                match event_result {
+                    Ok(Some(_)) => {
+                        println!("✅ Watch event RECEIVED (unexpected!)");
+                        panic!("Watch should have failed with dropped TempDir");
+                    }
+                    Ok(None) => {
+                        println!("❌ Watch channel closed");
+                    }
+                    Err(_) => {
+                        println!("❌ Watch event TIMEOUT (expected - this is the bug!)");
+                    }
+                }
+            }
+
+            engine.stop().await.expect("Failed to stop engine");
+        }
+
+        /// Test to verify Watch works when TempDir is kept alive
+        #[tokio::test]
+        async fn test_watch_with_tempdir_alive() {
+            println!("\n=== Testing Watch with TempDir ALIVE ===");
+
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let storage_path = _temp_dir.path().join("storage");
+            let sm_path = _temp_dir.path().join("sm");
+
+            std::fs::create_dir_all(&storage_path).unwrap();
+            std::fs::create_dir_all(&sm_path).unwrap();
+
+            let storage =
+                Arc::new(FileStorageEngine::new(storage_path).expect("Failed to create storage"));
+            let sm = Arc::new(
+                FileStateMachine::new(sm_path).await.expect("Failed to create state machine"),
+            );
+
+            println!("Created storage and SM, TempDir kept alive");
+
+            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+                .await
+                .expect("Failed to start engine");
+
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("Leader should be elected");
+
+            println!("Engine started and leader elected");
+
+            // Register watcher
+            let result = engine.watch(b"test_key");
+            println!("Watch registration result: {:?}", result.is_ok());
+            assert!(result.is_ok(), "watch() should succeed");
+
+            if let Ok(mut handle) = result {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // Trigger a change
+                println!("Performing PUT operation...");
+                let client = engine.client();
+                client
+                    .put(b"test_key".to_vec(), b"value1".to_vec())
+                    .await
+                    .expect("Put should succeed");
+
+                println!("PUT succeeded, waiting for watch event...");
+
+                // Try to receive watch event
+                let event_result =
+                    tokio::time::timeout(Duration::from_secs(2), handle.receiver_mut().recv())
+                        .await;
+
+                match event_result {
+                    Ok(Some(_)) => {
+                        println!("✅ Watch event RECEIVED (expected!)");
+                    }
+                    Ok(None) => {
+                        println!("❌ Watch channel closed (unexpected)");
+                        panic!("Watch channel should not be closed");
+                    }
+                    Err(_) => {
+                        println!("❌ Watch event TIMEOUT (unexpected)");
+                        panic!("Watch event should have been received");
+                    }
+                }
+            }
+
+            engine.stop().await.expect("Failed to stop engine");
+            // _temp_dir stays alive until here
         }
     }
 }

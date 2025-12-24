@@ -913,7 +913,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1000,7 +1001,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1072,7 +1074,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1156,7 +1159,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1232,7 +1236,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1336,7 +1341,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1506,7 +1512,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1720,7 +1727,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1865,7 +1873,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -1999,7 +2008,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2124,7 +2134,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2226,7 +2237,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2331,7 +2343,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2441,7 +2454,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2550,7 +2564,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2651,7 +2666,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2720,7 +2736,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2838,7 +2855,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -2945,7 +2963,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -3038,7 +3057,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -3126,7 +3146,8 @@ mod handle_raft_request_in_batch_test {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -3202,7 +3223,8 @@ mod single_node_cluster_replication_tests {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: true,
+                    single_voter: true,
+                    replication_targets: vec![],
                     total_voters: 1,
                 },
                 &context,
@@ -3331,7 +3353,8 @@ mod single_node_cluster_replication_tests {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,
@@ -3412,7 +3435,8 @@ mod single_node_cluster_replication_tests {
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    is_single_node: false,
+                    single_voter: false,
+                    replication_targets: vec![],
                     total_voters: 3,
                 },
                 &context,

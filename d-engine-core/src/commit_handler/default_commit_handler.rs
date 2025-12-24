@@ -271,6 +271,12 @@ where
                 // 2. CRITICAL: Barrier point
                 self.membership.notify_config_applied(entry.index).await;
 
+                // 2.5. Notify leader to refresh cluster metadata cache
+                // This must happen AFTER membership is applied
+                if let Err(e) = self.event_tx.send(RaftEvent::MembershipApplied).await {
+                    warn!("Failed to send MembershipApplied event: {:?}", e);
+                }
+
                 // 3. Leader self-removal: Step down immediately per Raft protocol
                 if is_self_removal {
                     warn!(

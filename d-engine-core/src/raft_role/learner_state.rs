@@ -8,6 +8,8 @@ use tokio::time::Instant;
 use tonic::Status;
 use tonic::async_trait;
 use tracing::debug;
+
+use d_engine_proto::common::NodeRole;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
@@ -436,6 +438,42 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     ),
                 }
                 .into());
+            }
+
+            RaftEvent::MembershipApplied => {
+                // Check if this learner has been promoted to Voter
+                let my_id = self.node_id();
+                let node_meta = ctx.membership().retrieve_node_meta(my_id).await;
+
+                if let Some(meta) = node_meta {
+                    // Check if role is Voter (any role except LEARNER)
+                    // FOLLOWER=0, CANDIDATE=1, LEADER=2, LEARNER=3
+                    let is_voter = meta.role != NodeRole::Learner as i32;
+
+                    if is_voter {
+                        info!(
+                            "Learner {} detected promotion to Voter (role={}), transitioning to Follower",
+                            my_id, meta.role
+                        );
+
+                        // Transition to Follower role
+                        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+                            let error_str = format!("{e:?}");
+                            error!("Failed to send BecomeFollower event: {}", error_str);
+                            NetworkError::SingalSendFailed(error_str)
+                        })?;
+                    } else {
+                        debug!(
+                            "Learner {} still in Learner role (role={}) after MembershipApplied",
+                            my_id, meta.role
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Learner {} not found in membership after MembershipApplied",
+                        my_id
+                    );
+                }
             }
 
             RaftEvent::StepDownSelfRemoved => {

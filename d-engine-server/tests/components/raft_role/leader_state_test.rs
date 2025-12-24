@@ -2404,14 +2404,13 @@ mod process_batch_commit_index_tests {
     /// Setup helper for commit index tests with configurable cluster membership
     async fn setup_commit_index_test_context(
         path: &str,
-        is_single_node: bool,
+        _single_voter: bool,
     ) -> ProcessRaftRequestTestContext {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut context = mock_raft_context(path, graceful_rx, None);
 
         // Mock membership based on cluster topology
         let mut membership = MockMembership::new();
-        membership.expect_is_single_node_cluster().returning(move || is_single_node);
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_voters().returning(Vec::new);
         membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
