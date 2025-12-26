@@ -29,8 +29,8 @@ pub mod snapshot_module_design {
     #![doc = include_str!("snapshot-module-design.md")]
 }
 
-pub mod new_node_join_architecture {
-    #![doc = include_str!("new-node-join-architecture.md")]
+pub mod node_join_architecture {
+    #![doc = include_str!("node-join-architecture.md")]
 }
 
 pub mod election_design {

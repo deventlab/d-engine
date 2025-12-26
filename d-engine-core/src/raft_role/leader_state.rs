@@ -506,9 +506,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         &mut self,
         membership: &Arc<T::M>,
     ) -> Result<()> {
-        // Calculate current runtime voter count (excluding self)
+        // Calculate total voter count including self as leader
         let voters = membership.voters().await;
-        let total_voters = voters.len() + 1; // +1 for self (leader)
+        let total_voters = voters.len() + 1; // +1 for leader (self)
 
         // Get all replication targets (voters + learners, excluding self)
         let replication_targets = membership.replication_peers().await;
@@ -1280,9 +1280,9 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         membership: &Arc<T::M>,
     ) -> Result<()> {
-        // Calculate current runtime voter count (excluding self)
+        // Calculate total voter count including self as leader
         let voters = membership.voters().await;
-        let total_voters = voters.len() + 1; // +1 for self (leader)
+        let total_voters = voters.len() + 1; // +1 for leader (self)
 
         // Get all replication targets (voters + learners, excluding self)
         let replication_targets = membership.replication_peers().await;

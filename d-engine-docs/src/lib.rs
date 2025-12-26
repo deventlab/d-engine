@@ -105,7 +105,7 @@
 //!   - How log entries are persisted and recovered
 //! - [Snapshot Module Design](./docs/architecture/snapshot_module_design/index.html)
 //!   - Snapshots for recovery optimization
-//! - [New Node Join Architecture](./docs/architecture/new_node_join_architecture/index.html)
+//! - [Node Join Architecture](./docs/architecture/node_join_architecture/index.html)
 //!   - Dynamic cluster membership changes
 //! - [Error Handling Design Principles](./docs/architecture/error_handling_design_principles/index.html)
 //!   - How errors are categorized and handled

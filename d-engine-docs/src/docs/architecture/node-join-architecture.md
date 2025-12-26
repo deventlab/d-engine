@@ -93,6 +93,25 @@ See [Single-Node Expansion Example](../examples/single-node-expansion.md) for fu
 
 ---
 
+## Understanding Voter Count
+
+When d-engine calculates cluster size for quorum checks, **the leader always includes itself**:
+
+```
+total_voters = membership.voters().len() + 1  (for self/leader)
+```
+
+This is crucial for `calculate_safe_batch_size()`: it ensures the final cluster size remains odd after promotion.
+
+**Example**:
+
+- 1 existing voter (peer) + 1 leader (self) = 2 total
+- 2 pending promotions available
+- `calculate_safe_batch_size(2, 2)` → 1 (because 2+1=3 is odd)
+- After promoting 1: 3 total voters ✅
+
+---
+
 ## FAQ
 
 **Q: How long does sync take?**  

@@ -3685,14 +3685,12 @@ mod pending_promotion_tests {
                 .withf(|_id, status| *status == NodeStatus::StandBy)
                 .returning(|_, _| Ok(()));
             membership.expect_voters().returning(|| {
-                (2..=3)
-                    .map(|id| NodeMeta {
-                        id,
-                        address: "".to_string(),
-                        status: NodeStatus::Active as i32,
-                        role: Follower.into(),
-                    })
-                    .collect()
+                vec![NodeMeta {
+                    id: 2,
+                    address: "".to_string(),
+                    status: NodeStatus::Active as i32,
+                    role: Follower.into(),
+                }]
             });
             raft_context.membership = Arc::new(membership);
 
@@ -3872,19 +3870,18 @@ mod pending_promotion_tests {
     #[tokio::test]
     async fn test_partial_batch_promotion() {
         let mut fixture = TestFixture::new("test_partial_batch_promotion", true).await;
-        // Setup: 3 voters, 2 pending promotions -> max batch size=1
+        // Setup: 2 total voters (1 leader + 1 peer), 2 pending promotions
+        // -> (2 + 2) = 4 (even) -> max batch size = 1
         let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        // mock membership with 3 voters
+        // mock membership with 1 voter (excluding self/leader)
         membership.expect_voters().returning(|| {
-            (2..=3)
-                .map(|id| NodeMeta {
-                    id,
-                    address: "".to_string(),
-                    status: NodeStatus::Active as i32,
-                    role: Follower.into(),
-                })
-                .collect()
+            vec![NodeMeta {
+                id: 2,
+                address: "".to_string(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            }]
         });
         fixture.raft_context.membership = Arc::new(membership);
         fixture.leader_state.pending_promotions = vec![
