@@ -1819,7 +1819,8 @@ fn test_state_size() {
         "LeaderState size: {}",
         size_of::<LeaderState<MockTypeConfig>>()
     );
-    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 376);
+    // Increased from 376 to 392 due to cluster_metadata field (ClusterMetadata)
+    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 392);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus
@@ -2156,6 +2157,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
             },
         ]
     });
+    membership.expect_replication_peers().returning(Vec::new);
     context.raft_context.membership = Arc::new(membership);
 
     // Re-initialize cluster metadata after changing membership
@@ -2276,6 +2278,7 @@ async fn test_process_batch_case4_partial_timeouts() {
             },
         ]
     });
+    membership.expect_replication_peers().returning(Vec::new);
     context.raft_context.membership = Arc::new(membership);
 
     // Re-initialize cluster metadata after changing membership
@@ -2404,7 +2407,7 @@ mod process_batch_commit_index_tests {
     /// Setup helper for commit index tests with configurable cluster membership
     async fn setup_commit_index_test_context(
         path: &str,
-        _single_voter: bool,
+        single_voter: bool,
     ) -> ProcessRaftRequestTestContext {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut context = mock_raft_context(path, graceful_rx, None);
@@ -2412,7 +2415,31 @@ mod process_batch_commit_index_tests {
         // Mock membership based on cluster topology
         let mut membership = MockMembership::new();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(Vec::new);
+
+        // For multi-node tests, return peer voters (excluding self/leader)
+        // For single-voter tests, return empty (only self is voter)
+        if single_voter {
+            membership.expect_voters().returning(Vec::new);
+        } else {
+            // Multi-node: return 2 peer voters (node 2 and 3), so total = 2 + 1 (leader) = 3
+            membership.expect_voters().returning(|| {
+                vec![
+                    NodeMeta {
+                        id: 2,
+                        address: "".to_string(),
+                        status: NodeStatus::Active as i32,
+                        role: Follower.into(),
+                    },
+                    NodeMeta {
+                        id: 3,
+                        address: "".to_string(),
+                        status: NodeStatus::Active as i32,
+                        role: Follower.into(),
+                    },
+                ]
+            });
+        }
+
         membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
         membership.expect_members().returning(Vec::new);
         membership.expect_check_cluster_is_ready().returning(|| Ok(()));
@@ -2646,10 +2673,28 @@ async fn setup_process_batch_test_context(
 ) -> ProcessRaftRequestTestContext {
     let mut context = mock_raft_context(path, graceful_rx, None);
 
-    // Setup default membership mock with voters() support for init_cluster_metadata
+    // Setup default membership mock with voters() and replication_peers() support for init_cluster_metadata
+    // For process_batch tests, we need multi-node cluster (2+ peers) to avoid single_voter logic
     let mut membership = MockMembership::new();
     membership.expect_is_single_node_cluster().returning(|| false);
-    membership.expect_voters().returning(Vec::new); // Empty voters list by default
+    membership.expect_voters().returning(|| {
+        // Return 2 peer voters (node 2 and 3), so total = 2 + 1 (leader) = 3 (multi-node)
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".to_string(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".to_string(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    membership.expect_replication_peers().returning(Vec::new); // Empty replication peers by default
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2815,6 +2860,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
             },
         ]
     });
+    membership.expect_replication_peers().returning(Vec::new);
     raft_context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
