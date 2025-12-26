@@ -30,7 +30,6 @@ pub struct MockRpcService {
     pub expected_metadata_response:
         Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
 
-    pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
 }
 impl MockRpcService {
@@ -80,11 +79,10 @@ impl ClusterManagementService for MockRpcService {
         &self,
         _request: tonic::Request<JoinRequest>,
     ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
-        match &self.expected_join_cluster_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
-            Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock join_cluster response set")),
-        }
+        // join_cluster is no longer used by client API, but trait implementation required
+        Err(tonic::Status::unimplemented(
+            "join_cluster not supported in mock",
+        ))
     }
 
     async fn discover_leader(

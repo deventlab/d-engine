@@ -56,6 +56,11 @@ initial_cluster = [
 initial_cluster_size = 1  # Single-node mode
 ```
 
+**Config field reference**:
+
+- `role = 2`: Leader (NodeRole: 0=Follower, 1=Candidate, 2=Leader, 3=Learner)
+- `status = 2`: ACTIVE (NodeStatus: 0=JOINING, 1=SYNCING, 2=ACTIVE)
+
 **Start**:
 
 ```bash
@@ -92,7 +97,20 @@ initial_cluster_size = 1  # Must match Node 1
 **Key fields**:
 
 - `role = 3`: Learner (will auto-promote to Voter)
-- `status = 0`: Joining
+- `status = 0`: JOINING (new node catching up with logs)
+
+> **Note**: `status = 0` (JOINING) means this node is new and needs to sync data.  
+> `status = 2` (ACTIVE) means the node is already a formal member (like Node 1).
+
+**Why join as Learner (not Follower)?**
+
+| Join Method              | Safety                                     | Quorum Impact                           |
+| ------------------------ | ------------------------------------------ | --------------------------------------- |
+| **Learner** (role=3) ✅  | Safe - doesn't affect quorum during sync   | None - promotes after catching up       |
+| **Follower** (role=2) ⚠️ | Risky - immediately participates in quorum | High - can slow down writes if unstable |
+
+**IMPORTANT**: Always join new nodes as Learner. Joining as Follower can impact cluster availability if the new node is slow or unstable.  
+📖 Details: See [Cluster Scaling Best Practices](../../product-handbook/03-architecture/cluster-scaling-strategies.md)
 
 **Start**:
 
@@ -107,7 +125,7 @@ make join-node2
 Role: 🎓 Learner → Syncing data from Leader 1
 ```
 
-Node 2 syncs via AppendEntries, then auto-promotes to Voter.
+**Sync mechanism**: InstallSnapshot (bulk data) + AppendEntries (incremental logs), then auto-promotes to Voter.
 
 ---
 
@@ -122,14 +140,17 @@ Node 2 syncs via AppendEntries, then auto-promotes to Voter.
 node_id = 3
 listen_address = "0.0.0.0:9083"
 initial_cluster = [
-    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Leader
-    { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },  # Follower (promoted)
-    { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner
+    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Leader, ACTIVE
+    { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },  # Follower (promoted), ACTIVE
+    { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner, JOINING
 ]
 initial_cluster_size = 1
 ```
 
-**Key**: Node 2 listed as `role = 1` (Follower), assumes already promoted.
+**Key**: Node 2 listed as `role = 1, status = 2` assumes it's already promoted to Follower and ACTIVE.
+
+> **Alternative (safer)**: If unsure about Node 2's promotion status, use conservative config:  
+> `{ id = 2, ..., role = 3, status = 0 }` - System will auto-correct if Node 2 is already promoted.
 
 **Start**:
 
@@ -236,5 +257,5 @@ initial_cluster_size = 1
 ---
 
 **Created**: 2025-12-03  
-**Updated**: 2025-12-03  
+**Updated**: 2025-12-25  
 **Example**: `examples/single-node-expansion/`

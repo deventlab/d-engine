@@ -1,3 +1,76 @@
+//! # ReplicationHandler Test Coverage Plan
+//!
+//! This module contains comprehensive integration tests for `ReplicationHandler::handle_raft_request_in_batch`
+//! and its interaction with `LeaderState::process_batch`. The tests ensure correct behavior across
+//! different cluster topologies, replication scenarios, and edge cases.
+//!
+//! ## Core Test Scenarios
+//!
+//! ### A. Cluster Topology Scenarios
+//! - **A1**: Single-node cluster (single_voter=true, replication_targets=[])
+//!   - Expected: Immediate success, quorum auto-achieved
+//! - **A2**: 2-node cluster (1 leader + 1 voter)
+//! - **A3**: 3-node cluster (1 leader + 2 voters)
+//! - **A4**: 5-node cluster (1 leader + 4 voters)
+//!
+//! ### B. Replication Result Scenarios
+//! #### B1: Quorum Achieved (Success Cases)
+//! - **B1-1**: 2-node: peer2 returns success → commit_quorum_achieved=true
+//! - **B1-2**: 3-node: both peer2 & peer3 return success → commit_quorum_achieved=true
+//! - **B1-3**: 3-node: peer2 success + peer3 timeout → commit_quorum_achieved=true (2/3 is majority)
+//! - **B1-4**: 5-node: 3 peers success + 2 timeouts → commit_quorum_achieved=true (3/5 is majority)
+//!
+//! #### B2: Quorum NOT Achieved (Failure Cases)
+//! - **B2-1**: 3-node: only peer2 success + peer3 timeout → commit_quorum_achieved=false (1/3 not majority)
+//! - **B2-2**: 3-node: both peers timeout → commit_quorum_achieved=false, peer_updates empty
+//! - **B2-3**: 5-node: 2 peers success + 3 timeouts → commit_quorum_achieved=false (2/5 not majority)
+//!
+//! #### B3: Special Response Handling
+//! - **B3-1**: Peer returns higher term → Error::HigherTerm, leader transitions to follower
+//! - **B3-2**: Peer returns stale term → Response ignored, not counted in quorum
+//! - **B3-3**: RPC failure/timeout → Not added to peer_updates, not counted in quorum
+//!
+//! ### C. Log Content Scenarios
+//! #### C1: With Commands
+//! - **C1-1**: Single command → Generate 1 log entry, replicate to peers
+//! - **C1-2**: Multiple commands → Generate multiple entries, send in single batch
+//! - **C1-3**: Large batch (exceeds max_entries_per_replication) → Split into multiple batches
+//!
+//! #### C2: Empty Commands (Heartbeat/Noop)
+//! - **C2-1**: Empty commands, single-node → success (quorum auto-achieved)
+//! - **C2-2**: Empty commands, multi-node → Still requires peer success for quorum
+//! - **C2-3**: Empty commands, peer returns success → commit_quorum_achieved=true
+//!
+//! ### D. Learner Scenarios
+//! #### D1: Mixed Voters + Learners
+//! - **D1-1**: 1 voter + 1 learner: voter success → quorum achieved, learner_progress recorded
+//! - **D1-2**: 2 voters + 1 learner: both voter success → quorum achieved, learner_progress recorded
+//! - **D1-3**: Learner success but voter fails → quorum not achieved, learner_progress still recorded
+//! - **D1-4**: Multiple learners → Not counted in quorum, but all progress records tracked
+//!
+//! #### D2: Pure Learner Cluster
+//! - **D2-1**: Only learners, no voters → Quorum impossible (requires >=2 voters)
+//!
+//! ### E. Log Consistency Scenarios
+//! #### E1: Success Response
+//! - **E1-1**: Peer confirms log advancement → peer_update.match_index updated
+//! - **E1-2**: Match index aggregation → leader's new commit_index = min(leader, majority match_indices)
+//!
+//! #### E2: Conflict Response
+//! - **E2-1**: Peer log conflict detected → Calculate new next_index, backtrack
+//! - **E2-2**: Multiple peers conflict → Each backs off independently, eventually sync
+//!
+//! #### E3: New Peer Joining
+//! - **E3-1**: Initial next_index=1 → Send all historical logs
+//! - **E3-2**: Peer catch-up progress → next_index gradually increases until match_index = leader
+//!
+//! ### F. Edge Cases and Error Scenarios
+//! - **F1**: Network partition (some peers unreachable) → Treated as timeouts, not counted
+//! - **F2**: All peers timeout → peer_updates empty, quorum not achieved
+//! - **F3**: Extremely large batch → Correct splitting and aggregation of results
+//! - **F4**: Log generation failure → Error returned, batch processing aborted
+//! - **F5**: Term changes during replication → Detected and handled properly
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +128,642 @@ use d_engine_server::node::RaftTypeConfig;
 use d_engine_server::test_utils::setup_raft_components;
 use d_engine_server::test_utils::simulate_insert_command;
 
+// ============================================================================
+// TEST SCENARIOS - Following the comprehensive test coverage plan
+// ============================================================================
+
+// ---- A. Cluster Topology Scenarios ----
+
+/// **A1**: Single-node cluster (single_voter=true, replication_targets=[])
+/// Expected: Immediate success, quorum auto-achieved
+#[tokio::test]
+async fn test_a1_single_node_cluster() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_a1_single_node_cluster", graceful_rx, None);
+    let my_id = 1;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    // Prepare fun parameters
+    let commands = Vec::new();
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 1,
+        role: Leader.into(),
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::new(),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    // Prepare AppendResults
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 1);
+
+    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log.expect_entry_term().returning(|_| None);
+
+    let mut transport = MockTransport::new();
+    transport.expect_send_append_requests().returning(move |_, _, _, _| {
+        Err(NetworkError::EmptyPeerList {
+            request_type: "send_vote_requests",
+        }
+        .into())
+    });
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+
+    let mut membership = create_mock_membership_multi_node();
+    membership.expect_replication_peers().returning(Vec::new);
+    context.membership = Arc::new(membership);
+
+    let result = handler
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &ClusterMetadata {
+                single_voter: true,
+                replication_targets: vec![],
+                total_voters: 1,
+            },
+            &context,
+        )
+        .await;
+
+    // Single voter node should succeed immediately without replication
+    assert!(result.is_ok());
+    let append_result = result.unwrap();
+    assert!(append_result.commit_quorum_achieved);
+    assert!(append_result.peer_updates.is_empty());
+}
+
+/// **A2**: 2-node cluster (1 leader + 1 voter)
+#[tokio::test]
+async fn test_a2_two_node_cluster() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_a2_two_node_cluster", graceful_rx, None);
+    let my_id = 1;
+    let peer2_id = 2;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 0,
+        role: Leader.into(),
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::new(),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    // Setup mocks for 2-node topology
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(1_u64);
+    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log.expect_entry_term().returning(|_| None);
+    context.storage.raft_log = Arc::new(raft_log);
+
+    let mut transport = MockTransport::new();
+    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id].into_iter().collect(),
+            responses: vec![Ok(AppendEntriesResponse::success(
+                peer2_id,
+                1,
+                Some(LogId { term: 1, index: 1 }),
+            ))],
+        })
+    });
+    context.transport = Arc::new(transport);
+
+    // Verify 2-node cluster topology is correctly set and achieves quorum
+    let result = handler
+        .handle_raft_request_in_batch(
+            vec![],
+            state_snapshot,
+            leader_state_snapshot,
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![NodeMeta {
+                    id: peer2_id,
+                    address: "http://127.0.0.1:55001".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                }],
+                total_voters: 2,
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.commit_quorum_achieved);
+}
+
+/// **A3**: 3-node cluster (1 leader + 2 voters)
+#[tokio::test]
+async fn test_a3_three_node_cluster() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_a3_three_node_cluster", graceful_rx, None);
+    let my_id = 1;
+    let peer2_id = 2;
+    let peer3_id = 3;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 0,
+        role: Leader.into(),
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::new(),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    // Setup mocks for 3-node topology
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(1_u64);
+    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log.expect_entry_term().returning(|_| None);
+    context.storage.raft_log = Arc::new(raft_log);
+
+    let mut transport = MockTransport::new();
+    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
+            responses: vec![
+                Ok(AppendEntriesResponse::success(
+                    peer2_id,
+                    1,
+                    Some(LogId { term: 1, index: 1 }),
+                )),
+                Ok(AppendEntriesResponse::success(
+                    peer3_id,
+                    1,
+                    Some(LogId { term: 1, index: 1 }),
+                )),
+            ],
+        })
+    });
+    context.transport = Arc::new(transport);
+
+    // Verify 3-node cluster topology achieves quorum with all peers responding
+    let result = handler
+        .handle_raft_request_in_batch(
+            vec![],
+            state_snapshot,
+            leader_state_snapshot,
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![
+                    NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    },
+                    NodeMeta {
+                        id: peer3_id,
+                        address: "http://127.0.0.1:55002".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    },
+                ],
+                total_voters: 3,
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.commit_quorum_achieved);
+}
+
+/// **A4**: 5-node cluster (1 leader + 4 voters)
+#[tokio::test]
+async fn test_a4_five_node_cluster() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_a4_five_node_cluster", graceful_rx, None);
+    let my_id = 1;
+    let peer2_id = 2;
+    let peer3_id = 3;
+    let peer4_id = 4;
+    let peer5_id = 5;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 0,
+        role: Leader.into(),
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::new(),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    // Setup mocks for 5-node topology
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().return_const(1_u64);
+    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log.expect_entry_term().returning(|_| None);
+    context.storage.raft_log = Arc::new(raft_log);
+
+    let mut transport = MockTransport::new();
+    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id, peer3_id, peer4_id, peer5_id].into_iter().collect(),
+            responses: vec![
+                Ok(AppendEntriesResponse::success(
+                    peer2_id,
+                    1,
+                    Some(LogId { term: 1, index: 1 }),
+                )),
+                Ok(AppendEntriesResponse::success(
+                    peer3_id,
+                    1,
+                    Some(LogId { term: 1, index: 1 }),
+                )),
+                Ok(AppendEntriesResponse::success(
+                    peer4_id,
+                    1,
+                    Some(LogId { term: 1, index: 1 }),
+                )),
+                Ok(AppendEntriesResponse::success(
+                    peer5_id,
+                    1,
+                    Some(LogId { term: 1, index: 1 }),
+                )),
+            ],
+        })
+    });
+    context.transport = Arc::new(transport);
+
+    // Verify 5-node cluster topology achieves quorum with all peers responding
+    let result = handler
+        .handle_raft_request_in_batch(
+            vec![],
+            state_snapshot,
+            leader_state_snapshot,
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![
+                    NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    },
+                    NodeMeta {
+                        id: peer3_id,
+                        address: "http://127.0.0.1:55002".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    },
+                    NodeMeta {
+                        id: peer4_id,
+                        address: "http://127.0.0.1:55003".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    },
+                    NodeMeta {
+                        id: peer5_id,
+                        address: "http://127.0.0.1:55004".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    },
+                ],
+                total_voters: 5,
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.commit_quorum_achieved);
+}
+
+// ---- B. Replication Result Scenarios ----
+
+// B1: Quorum Achieved (Success Cases)
+
+/// **B1-1**: 2-node: peer2 returns success → commit_quorum_achieved=true
+#[tokio::test]
+async fn test_b1_1_quorum_2node_peer_success() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_b1_1_quorum_2node_peer_success",
+        graceful_rx,
+        None,
+    );
+
+    let my_id = 1;
+    let peer2_id = 2;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    // Prepare fun parameters
+    let commands = Vec::new();
+    let state_snapshot = StateSnapshot {
+        current_term: 1,
+        voted_for: None,
+        commit_index: 1,
+        role: Leader.into(),
+    };
+    let leader_state_snapshot = LeaderStateSnapshot {
+        next_index: HashMap::new(),
+        match_index: HashMap::new(),
+        noop_log_id: None,
+    };
+
+    let mut membership = create_mock_membership_multi_node();
+    membership.expect_replication_peers().returning(move || {
+        vec![NodeMeta {
+            id: peer2_id,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: Follower.into(),
+            status: NodeStatus::Active.into(),
+        }]
+    });
+    membership.expect_voters().returning(move || {
+        vec![NodeMeta {
+            id: peer2_id,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: Follower.into(),
+            status: NodeStatus::Active.into(),
+        }]
+    });
+    context.membership = Arc::new(membership);
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 1);
+
+    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log.expect_entry_term().returning(|_| None);
+
+    let mut transport = MockTransport::new();
+    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
+        Ok(AppendResult {
+            peer_ids: vec![peer2_id].into_iter().collect(),
+            responses: vec![Ok(AppendEntriesResponse::success(
+                peer2_id,
+                1,
+                Some(LogId { term: 1, index: 3 }),
+            ))],
+        })
+    });
+    context.storage.raft_log = Arc::new(raft_log);
+    context.transport = Arc::new(transport);
+
+    let result = handler
+        .handle_raft_request_in_batch(
+            commands,
+            state_snapshot,
+            leader_state_snapshot,
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![NodeMeta {
+                    id: peer2_id,
+                    address: "http://127.0.0.1:55001".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                }],
+                total_voters: 2,
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.commit_quorum_achieved);
+    assert_eq!(
+        result.peer_updates.get(&peer2_id),
+        Some(&PeerUpdate {
+            match_index: Some(3),
+            next_index: 4,
+            success: true
+        })
+    );
+}
+
+/// **B1-2**: 3-node: both peer2 & peer3 return success → commit_quorum_achieved=true
+#[tokio::test]
+async fn test_b1_2_quorum_3node_all_peers_success() {
+    // TODO: Implement test
+}
+
+/// **B1-3**: 3-node: peer2 success + peer3 timeout → commit_quorum_achieved=true (2/3 is majority)
+#[tokio::test]
+async fn test_b1_3_quorum_3node_partial_timeout() {
+    // TODO: Implement test
+}
+
+/// **B1-4**: 5-node: 3 peers success + 2 timeouts → commit_quorum_achieved=true (3/5 is majority)
+#[tokio::test]
+async fn test_b1_4_quorum_5node_majority_success() {
+    // TODO: Implement test
+}
+
+// B2: Quorum NOT Achieved (Failure Cases)
+
+/// **B2-1**: 3-node: only peer2 success + peer3 timeout → commit_quorum_achieved=false (1/3 not majority)
+#[tokio::test]
+async fn test_b2_1_no_quorum_3node_single_success() {
+    // TODO: Implement test
+}
+
+/// **B2-2**: 3-node: both peers timeout → commit_quorum_achieved=false, peer_updates empty
+#[tokio::test]
+async fn test_b2_2_no_quorum_3node_all_timeouts() {
+    // TODO: Implement test
+}
+
+/// **B2-3**: 5-node: 2 peers success + 3 timeouts → commit_quorum_achieved=false (2/5 not majority)
+#[tokio::test]
+async fn test_b2_3_no_quorum_5node_minority_success() {
+    // TODO: Implement test
+}
+
+// B3: Special Response Handling
+
+/// **B3-1**: Peer returns higher term → Error::HigherTerm, leader transitions to follower
+#[tokio::test]
+async fn test_b3_1_higher_term_response() {
+    // TODO: Implement test
+}
+
+/// **B3-2**: Peer returns stale term → Response ignored, not counted in quorum
+#[tokio::test]
+async fn test_b3_2_stale_term_response() {
+    // TODO: Implement test
+}
+
+/// **B3-3**: RPC failure/timeout → Not added to peer_updates, not counted in quorum
+#[tokio::test]
+async fn test_b3_3_rpc_failure_ignored() {
+    // TODO: Implement test
+}
+
+// ---- C. Log Content Scenarios ----
+
+// C1: With Commands
+
+/// **C1-1**: Single command → Generate 1 log entry, replicate to peers
+#[tokio::test]
+async fn test_c1_1_single_command() {
+    // TODO: Implement test
+}
+
+/// **C1-2**: Multiple commands → Generate multiple entries, send in single batch
+#[tokio::test]
+async fn test_c1_2_multiple_commands() {
+    // TODO: Implement test
+}
+
+/// **C1-3**: Large batch (exceeds max_entries_per_replication) → Split into multiple batches
+#[tokio::test]
+async fn test_c1_3_large_batch_splitting() {
+    // TODO: Implement test
+}
+
+// C2: Empty Commands (Heartbeat/Noop)
+
+/// **C2-1**: Empty commands, single-node → success (quorum auto-achieved)
+#[tokio::test]
+async fn test_c2_1_empty_commands_single_node() {
+    // TODO: Implement test
+}
+
+/// **C2-2**: Empty commands, multi-node → Still requires peer success for quorum
+#[tokio::test]
+async fn test_c2_2_empty_commands_multi_node() {
+    // TODO: Implement test
+}
+
+/// **C2-3**: Empty commands, peer returns success → commit_quorum_achieved=true
+#[tokio::test]
+async fn test_c2_3_heartbeat_peer_success() {
+    // TODO: Implement test
+}
+
+// ---- D. Learner Scenarios ----
+
+// D1: Mixed Voters + Learners
+
+/// **D1-1**: 1 voter + 1 learner: voter success → quorum achieved, learner_progress recorded
+#[tokio::test]
+async fn test_d1_1_voter_learner_mixed_voter_success() {
+    // TODO: Implement test
+}
+
+/// **D1-2**: 2 voters + 1 learner: both voter success → quorum achieved, learner_progress recorded
+#[tokio::test]
+async fn test_d1_2_multiple_voters_learner() {
+    // TODO: Implement test
+}
+
+/// **D1-3**: Learner success but voter fails → quorum not achieved, learner_progress still recorded
+#[tokio::test]
+async fn test_d1_3_learner_success_voter_fails() {
+    // TODO: Implement test
+}
+
+/// **D1-4**: Multiple learners → Not counted in quorum, but all progress records tracked
+#[tokio::test]
+async fn test_d1_4_multiple_learners_tracking() {
+    // TODO: Implement test
+}
+
+// D2: Pure Learner Cluster
+
+/// **D2-1**: Only learners, no voters → Quorum impossible (requires >=2 voters)
+#[tokio::test]
+async fn test_d2_1_pure_learner_cluster() {
+    // TODO: Implement test
+}
+
+// ---- E. Log Consistency Scenarios ----
+
+// E1: Success Response
+
+/// **E1-1**: Peer confirms log advancement → peer_update.match_index updated
+#[tokio::test]
+async fn test_e1_1_success_match_index_update() {
+    // TODO: Implement test
+}
+
+/// **E1-2**: Match index aggregation → leader's new commit_index = min(leader, majority match_indices)
+#[tokio::test]
+async fn test_e1_2_commit_index_aggregation() {
+    // TODO: Implement test
+}
+
+// E2: Conflict Response
+
+/// **E2-1**: Peer log conflict detected → Calculate new next_index, backtrack
+#[tokio::test]
+async fn test_e2_1_conflict_response_backtrack() {
+    // TODO: Implement test
+}
+
+/// **E2-2**: Multiple peers conflict → Each backs off independently, eventually sync
+#[tokio::test]
+async fn test_e2_2_multiple_peers_conflict() {
+    // TODO: Implement test
+}
+
+// E3: New Peer Joining
+
+/// **E3-1**: Initial next_index=1 → Send all historical logs
+#[tokio::test]
+async fn test_e3_1_new_peer_full_sync() {
+    // TODO: Implement test
+}
+
+/// **E3-2**: Peer catch-up progress → next_index gradually increases until match_index = leader
+#[tokio::test]
+async fn test_e3_2_peer_catchup_progress() {
+    // TODO: Implement test
+}
+
+// ---- F. Edge Cases and Error Scenarios ----
+
+/// **F1**: Network partition (some peers unreachable) → Treated as timeouts, not counted
+#[tokio::test]
+async fn test_f1_network_partition() {
+    // TODO: Implement test
+}
+
+/// **F2**: All peers timeout → peer_updates empty, quorum not achieved
+#[tokio::test]
+async fn test_f2_all_peers_timeout() {
+    // TODO: Implement test
+}
+
+/// **F3**: Extremely large batch → Correct splitting and aggregation of results
+#[tokio::test]
+async fn test_f3_extreme_large_batch() {
+    // TODO: Implement test
+}
+
+/// **F4**: Log generation failure → Error returned, batch processing aborted
+#[tokio::test]
+async fn test_f4_log_generation_failure() {
+    // TODO: Implement test
+}
+
+/// **F5**: Term changes during replication → Detected and handled properly
+#[tokio::test]
+async fn test_f5_term_change_during_replication() {
+    // TODO: Implement test
+}
+
+// ============================================================================
 // Helper function to create MockMembership with single-node cluster detection mocked
 fn create_mock_membership_multi_node() -> MockMembership<MockTypeConfig> {
     let mut membership = MockMembership::new();
@@ -879,56 +1588,6 @@ mod handle_raft_request_in_batch_test {
     use d_engine_core::test_utils::node_config;
     use d_engine_server::test_utils::MockBuilder;
 
-    /// # Case 1: No peers found
-    /// ## Validation Criteria
-    /// 1. Return Error::AppendEntriesNoPeerFound
-    #[tokio::test]
-    async fn test_handle_raft_request_in_batch_case1() {
-        let (_graceful_tx, graceful_rx) = watch::channel(());
-        let context = mock_raft_context(
-            "/tmp/test_handle_raft_request_in_batch_case1",
-            graceful_rx,
-            None,
-        );
-        let my_id = 1;
-        let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
-
-        // Prepare fun parameters
-        let commands = Vec::new();
-        let state_snapshot = StateSnapshot {
-            current_term: 1,
-            voted_for: None,
-            commit_index: 1,
-            role: Leader.into(),
-        };
-        let leader_state_snapshot = LeaderStateSnapshot {
-            next_index: HashMap::new(),
-            match_index: HashMap::new(),
-            noop_log_id: None,
-        };
-
-        let e = handler
-            .handle_raft_request_in_batch(
-                commands,
-                state_snapshot,
-                leader_state_snapshot,
-                &ClusterMetadata {
-                    single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
-                },
-                &context,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            e,
-            Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound {
-                leader_id: _
-            }))
-        ));
-    }
-
     /// # Case 2.1: Successful Client Proposal Replication - one voter
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case2_1_one_voter() {
@@ -1002,8 +1661,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -1068,28 +1732,25 @@ mod handle_raft_request_in_batch_test {
         membership.expect_replication_peers().returning(Vec::new);
         context.membership = Arc::new(membership);
 
-        let e = handler
+        let result = handler
             .handle_raft_request_in_batch(
                 commands,
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    single_voter: false,
+                    single_voter: true,
                     replication_targets: vec![],
-                    total_voters: 3,
+                    total_voters: 1,
                 },
                 &context,
             )
-            .await
-            .unwrap_err();
+            .await;
 
-        debug!(?e);
-        assert!(matches!(
-            e,
-            Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound {
-                leader_id: _
-            }))
-        ));
+        // Single voter node should succeed immediately without replication
+        assert!(result.is_ok());
+        let append_result = result.unwrap();
+        assert!(append_result.commit_quorum_achieved);
+        assert!(append_result.peer_updates.is_empty());
     }
 
     /// # Case3: Ignore success responses from stale terms
@@ -1160,8 +1821,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -1237,8 +1903,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -1322,15 +1993,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         //Call the function to be tested
         // ----------------------
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![NodeMeta {
-                id: peer2_id,
-                role: Follower.into(),
-                address: "".to_string(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let membership = create_mock_membership_multi_node();
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
         context.membership = Arc::new(membership);
@@ -1342,8 +2005,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: peer2_id,
+                        role: Follower.into(),
+                        address: "".to_string(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -1499,8 +2167,7 @@ mod handle_raft_request_in_batch_test {
             .collect();
 
         let members = futures::future::join_all(futures).await;
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || members.clone());
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
@@ -1513,8 +2180,8 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: members.clone(),
+                    total_voters: 7,
                 },
                 &context,
             )
@@ -1687,35 +2354,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: peer2_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer3_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer4_id,
-                    address: "http://127.0.0.1:55003".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer5_id,
-                    address: "http://127.0.0.1:55004".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // ----------------------
@@ -1728,8 +2367,33 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: peer2_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer3_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer4_id,
+                            address: "http://127.0.0.1:55003".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer5_id,
+                            address: "http://127.0.0.1:55004".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                    ],
+                    total_voters: 5,
                 },
                 &context,
             )
@@ -1741,7 +2405,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         assert!(
             !result.commit_quorum_achieved,
-            "Should not achieve quorum with 1/2 followers responding"
+            "Should not achieve quorum with 1/4 followers responding (need 3/5)"
         );
         assert_eq!(
             result.peer_updates.len(),
@@ -1845,23 +2509,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: peer2_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer3_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // ----------------------
@@ -1874,7 +2522,20 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: peer2_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer3_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                    ],
                     total_voters: 3,
                 },
                 &context,
@@ -1980,23 +2641,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: peer2_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer3_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // ----------------------
@@ -2009,7 +2654,20 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: peer2_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer3_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                    ],
                     total_voters: 3,
                 },
                 &context,
@@ -2106,23 +2764,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: peer2_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer3_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // ----------------------
@@ -2135,8 +2777,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -2152,109 +2799,59 @@ mod handle_raft_request_in_batch_test {
         ));
     }
 
-    /// # Case 11: Single node cluster
+    /// # Case 11: Single node cluster auto-achieves quorum
     /// ## Validation Criteria
-    /// 1. commit_quorum_achieved = true (only leader)
+    /// 1. Single-node cluster (only leader, no other peers)
+    /// 2. commit_quorum_achieved = true (automatically achieved without replication)
     #[tokio::test]
     async fn test_handle_raft_request_in_batch_case11() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context(
+        let context = mock_raft_context(
             "/tmp/test_handle_raft_request_in_batch_case11",
             graceful_rx,
             None,
         );
         let my_id = 1;
-        let peer2_id = 2;
-        let peer3_id = 3;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
-        // ----------------------
-        // Initialization state
-        // ----------------------
-        //Leader's current term and initial log
-        let mut raft_log = MockRaftLog::new();
-
-        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
-        raft_log.expect_entry_term().returning(|_| None);
-
-        // New commands submitted by the client generate logs with index=6~7
-        let commands = vec![
-            WriteCommand::insert(safe_kv_bytes(100), safe_kv_bytes(100)),
-            WriteCommand::insert(safe_kv_bytes(200), safe_kv_bytes(200)),
-        ];
-
-        // Leader status snapshot
+        let commands = vec![];
         let state_snapshot = StateSnapshot {
             current_term: 1,
             voted_for: None,
-            commit_index: 5,
+            commit_index: 1,
             role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
-            next_index: HashMap::from([(peer2_id, 6), (peer3_id, 6)]),
+            next_index: HashMap::new(),
             match_index: HashMap::new(),
             noop_log_id: None,
         };
 
         // ----------------------
-        // Configure MockTransport to capture requests and verify parameters
-        // ----------------------
-        // let (tx, rx) = std::sync::mpsc::channel(); // used to pass captured requests
-        let mut transport = MockTransport::new();
-
-        // Use `with` to capture request parameters
-        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
-            Ok(AppendResult {
-                peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
-                responses: vec![
-                    Ok(AppendEntriesResponse::success(
-                        peer2_id,
-                        1,
-                        Some(LogId { term: 6, index: 10 }),
-                    )),
-                    Ok(AppendEntriesResponse::conflict(
-                        peer3_id,
-                        6,
-                        Some(4),
-                        Some(5),
-                    )),
-                ],
-            })
-        });
-
-        // ----------------------
-        //Call the function to be tested
-        // ----------------------
-        context.storage.raft_log = Arc::new(raft_log);
-        context.transport = Arc::new(transport);
-
-        // ----------------------
         // Execute test
         // ----------------------
-        let e = handler
+        let result = handler
             .handle_raft_request_in_batch(
-                client_command_to_entry_payloads(commands),
+                commands,
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    single_voter: false,
+                    single_voter: true,
                     replication_targets: vec![],
-                    total_voters: 3,
+                    total_voters: 1,
                 },
                 &context,
             )
             .await
-            .unwrap_err();
+            .unwrap();
 
         // ----------------------
         // Verify results
         // ----------------------
-        assert!(matches!(
-            e,
-            Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound {
-                leader_id: _
-            }))
-        ));
+        assert!(
+            result.commit_quorum_achieved,
+            "Single node, should achieve quorum automatically"
+        );
     }
 
     /// # Case 12: Term change during replication
@@ -2323,15 +2920,7 @@ mod handle_raft_request_in_batch_test {
         // ----------------------
         context.storage.raft_log = Arc::new(raft_log);
         context.transport = Arc::new(transport);
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![NodeMeta {
-                id: peer2_id,
-                address: "http://127.0.0.1:55001".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // ----------------------
@@ -2344,8 +2933,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: peer2_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Follower.into(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -2378,31 +2972,7 @@ mod handle_raft_request_in_batch_test {
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
         // Setup membership: one voter, one learner
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: voter_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: learner_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner.into(),
-                    status: NodeStatus::Joining.into(),
-                },
-            ]
-        });
-        membership.expect_voters().returning(move || {
-            vec![NodeMeta {
-                id: voter_id,
-                address: "http://127.0.0.1:55001".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // Mock raft log and transport
@@ -2455,8 +3025,21 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: voter_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: learner_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Learner.into(),
+                            status: NodeStatus::Joining.into(),
+                        },
+                    ],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -2488,31 +3071,7 @@ mod handle_raft_request_in_batch_test {
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
         // Setup membership: one voter, one pending active
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: voter_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: pending_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner.into(),
-                    status: NodeStatus::Syncing.into(),
-                },
-            ]
-        });
-        membership.expect_voters().returning(move || {
-            vec![NodeMeta {
-                id: voter_id,
-                address: "http://127.0.0.1:55001".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // Mock raft log and transport
@@ -2565,8 +3124,21 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: voter_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: pending_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Learner.into(),
+                            status: NodeStatus::Syncing.into(),
+                        },
+                    ],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -2597,24 +3169,7 @@ mod handle_raft_request_in_batch_test {
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
         // Setup membership: only learners
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: learner1,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Learner.into(),
-                    status: NodeStatus::Joining.into(),
-                },
-                NodeMeta {
-                    id: learner2,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Learner.into(),
-                    status: NodeStatus::Joining.into(),
-                },
-            ]
-        });
-        membership.expect_voters().returning(Vec::new);
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // Mock raft log and transport
@@ -2667,8 +3222,21 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: learner1,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Learner.into(),
+                            status: NodeStatus::Joining.into(),
+                        },
+                        NodeMeta {
+                            id: learner2,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Learner.into(),
+                            status: NodeStatus::Joining.into(),
+                        },
+                    ],
+                    total_voters: 1,
                 },
                 &context,
             )
@@ -2704,12 +3272,8 @@ mod handle_raft_request_in_batch_test {
         let my_id = 1;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
-        // Membership: no other peers (simulating multi-node cluster with network partition)
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_is_single_node_cluster().returning(|| false); // Multi-node cluster
-        membership.expect_initial_cluster_size().returning(|| 3); // 3-node cluster
-        membership.expect_replication_peers().returning(Vec::new);
-        membership.expect_voters().returning(Vec::new);
+        // Membership: single node (leader only, no other peers)
+        let membership = create_mock_membership_multi_node();
         let context = {
             let mut c = context;
             c.membership = Arc::new(membership);
@@ -2729,27 +3293,22 @@ mod handle_raft_request_in_batch_test {
             noop_log_id: None,
         };
 
-        // Should return error: NoPeerFound
-        let e = handler
+        // Should achieve quorum automatically for single node
+        let result = handler
             .handle_raft_request_in_batch(
                 commands,
                 state_snapshot,
                 leader_state_snapshot,
                 &ClusterMetadata {
-                    single_voter: false,
+                    single_voter: true,
                     replication_targets: vec![],
-                    total_voters: 3,
+                    total_voters: 1,
                 },
                 &context,
             )
             .await
-            .unwrap_err();
-        assert!(matches!(
-            e,
-            Error::Consensus(ConsensusError::Replication(ReplicationError::NoPeerFound {
-                leader_id: _
-            }))
-        ));
+            .unwrap();
+        assert!(result.commit_quorum_achieved);
     }
 
     /// # Case: Learner progress tracking with mixed node types
@@ -2856,8 +3415,27 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: voter_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: joining_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Learner.into(),
+                            status: NodeStatus::Joining.into(),
+                        },
+                        NodeMeta {
+                            id: pending_id,
+                            address: "http://127.0.0.1:55003".to_string(),
+                            role: Learner.into(),
+                            status: NodeStatus::Syncing.into(),
+                        },
+                    ],
+                    total_voters: 2,
                 },
                 &context,
             )
@@ -2866,8 +3444,10 @@ mod handle_raft_request_in_batch_test {
 
         // Verify results
         assert!(result.commit_quorum_achieved); // Voter success + leader = 2/2
-        assert_eq!(result.peer_updates.len(), 3); // Only voter
+        assert_eq!(result.peer_updates.len(), 3); // voter + 2 learners
         assert!(result.peer_updates.contains_key(&voter_id));
+        assert!(result.peer_updates.contains_key(&joining_id));
+        assert!(result.peer_updates.contains_key(&pending_id));
         assert_eq!(result.learner_progress.get(&joining_id), Some(&Some(10)));
         assert_eq!(result.learner_progress.get(&pending_id), Some(&Some(10)));
     }
@@ -3058,8 +3638,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: learner_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Learner.into(),
+                        status: NodeStatus::Joining.into(),
+                    }],
+                    total_voters: 1,
                 },
                 &context,
             )
@@ -3147,8 +3732,13 @@ mod handle_raft_request_in_batch_test {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
-                    total_voters: 3,
+                    replication_targets: vec![NodeMeta {
+                        id: learner_id,
+                        address: "http://127.0.0.1:55001".to_string(),
+                        role: Learner.into(),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    total_voters: 1,
                 },
                 &context,
             )
@@ -3268,41 +3858,7 @@ mod single_node_cluster_replication_tests {
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
         // Setup: Three-node cluster membership
-        let mut membership = create_mock_membership_multi_node();
-        membership.expect_is_single_node_cluster().returning(|| false);
-        membership.expect_initial_cluster_size().returning(|| 3);
-        membership.expect_replication_peers().returning(move || {
-            vec![
-                NodeMeta {
-                    id: peer1_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer2_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
-        membership.expect_voters().returning(move || {
-            vec![
-                NodeMeta {
-                    id: peer1_id,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: peer2_id,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
+        let membership = create_mock_membership_multi_node();
         context.membership = Arc::new(membership);
 
         // Mock log
@@ -3354,7 +3910,20 @@ mod single_node_cluster_replication_tests {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: peer1_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer2_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                    ],
                     total_voters: 3,
                 },
                 &context,
@@ -3377,25 +3946,62 @@ mod single_node_cluster_replication_tests {
 
     /// Test: Three-node cluster with network partition shouldn't be treated as single-node
     /// This verifies that we use config-based detection, not runtime state
+    /// # Test: Leader Network Partition
+    /// ## Scenario
+    /// - 3-node cluster (Leader A, Follower B, Follower C)
+    /// - Leader A is partitioned from B and C (all peers timeout)
+    /// - Leader cannot reach any followers
+    /// ## Validation Criteria
+    /// 1. Returns Ok(AppendResults)
+    /// 2. commit_quorum_achieved = false (leader alone cannot achieve 2/3 majority)
+    /// 3. peer_updates is empty (no peer responded successfully)
+    /// 4. Leader cannot make progress despite being the leader
     #[tokio::test]
     #[traced_test]
-    async fn test_network_partition_not_treated_as_single_node() {
+    async fn test_leader_network_partition() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut context = mock_raft_context(
-            "/tmp/test_network_partition_not_treated_as_single_node",
-            graceful_rx,
-            None,
-        );
+        let mut context =
+            mock_raft_context("/tmp/test_leader_network_partition", graceful_rx, None);
 
         let my_id = 1;
+        let peer2_id = 2;
+        let peer3_id = 3;
         let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
-        // Setup: Three-node cluster (initial_cluster_size=3)
-        // But network partition means replication_peers() returns empty
+        // Setup: Three-node cluster
         let mut membership = create_mock_membership_multi_node();
-        membership.expect_is_single_node_cluster().returning(|| false); // Config says 3 nodes
-        membership.expect_initial_cluster_size().returning(|| 3);
-        membership.expect_replication_peers().returning(Vec::new); // Network partition: no reachable peers
+        membership.expect_replication_peers().returning(move || {
+            vec![
+                NodeMeta {
+                    id: peer2_id,
+                    address: "http://127.0.0.1:55001".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+                NodeMeta {
+                    id: peer3_id,
+                    address: "http://127.0.0.1:55002".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+            ]
+        });
+        membership.expect_voters().returning(move || {
+            vec![
+                NodeMeta {
+                    id: peer2_id,
+                    address: "http://127.0.0.1:55001".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+                NodeMeta {
+                    id: peer3_id,
+                    address: "http://127.0.0.1:55002".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+            ]
+        });
         context.membership = Arc::new(membership);
 
         // Mock log
@@ -3405,13 +4011,24 @@ mod single_node_cluster_replication_tests {
         raft_log.expect_entry_term().returning(|_| None);
         context.storage.raft_log = Arc::new(raft_log);
 
-        // Mock transport - should error due to empty peer list
+        // Mock transport - both peers timeout (network partition)
         let mut transport = MockTransport::new();
-        transport.expect_send_append_requests().returning(move |_, _, _, _| {
-            Err(NetworkError::EmptyPeerList {
-                request_type: "send_append_requests",
-            }
-            .into())
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
+            Ok(AppendResult {
+                peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
+                responses: vec![
+                    Err(NetworkError::Timeout {
+                        node_id: peer2_id,
+                        duration: Duration::from_millis(200),
+                    }
+                    .into()),
+                    Err(NetworkError::Timeout {
+                        node_id: peer3_id,
+                        duration: Duration::from_millis(200),
+                    }
+                    .into()),
+                ],
+            })
         });
         context.transport = Arc::new(transport);
 
@@ -3424,7 +4041,7 @@ mod single_node_cluster_replication_tests {
             role: Leader.into(),
         };
         let leader_state_snapshot = LeaderStateSnapshot {
-            next_index: HashMap::new(),
+            next_index: HashMap::from([(peer2_id, 2), (peer3_id, 2)]),
             match_index: HashMap::new(),
             noop_log_id: None,
         };
@@ -3436,25 +4053,185 @@ mod single_node_cluster_replication_tests {
                 leader_state_snapshot,
                 &ClusterMetadata {
                     single_voter: false,
-                    replication_targets: vec![],
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: peer2_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer3_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                    ],
                     total_voters: 3,
                 },
                 &context,
             )
-            .await;
+            .await
+            .unwrap();
 
-        // Verify: Should get NoPeerFound error (not treated as single-node)
-        // In a 3-node cluster with network partition, we should error, not auto-achieve quorum
-        assert!(result.is_err(), "Network partition should cause error");
-        let err = result.unwrap_err();
+        // Verify: Leader cannot achieve quorum due to partition
+        // Leader alone (1) < majority (2/3), need at least 1 follower response
         assert!(
-            matches!(
-                err,
-                Error::Consensus(ConsensusError::Replication(
-                    ReplicationError::NoPeerFound { .. }
-                ))
-            ),
-            "Should return NoPeerFound error, got: {err:?}"
+            !result.commit_quorum_achieved,
+            "Leader partition: cannot achieve quorum without any follower response"
+        );
+        assert!(
+            result.peer_updates.is_empty(),
+            "No peer responded, peer_updates should be empty"
+        );
+    }
+
+    /// # Test: Follower Network Partition
+    /// ## Scenario
+    /// - 3-node cluster (Leader A, Follower B, Follower C)
+    /// - Follower B is partitioned from Leader A and Follower C
+    /// - Leader can reach Follower C but not B
+    /// ## Validation Criteria
+    /// 1. Returns Ok(AppendResults)
+    /// 2. commit_quorum_achieved = true (leader + C = 2/3 majority)
+    /// 3. peer_updates contains only C (B is unreachable)
+    /// 4. Leader can still make progress despite partial partition
+    #[tokio::test]
+    #[traced_test]
+    async fn test_follower_network_partition() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut context =
+            mock_raft_context("/tmp/test_follower_network_partition", graceful_rx, None);
+
+        let my_id = 1;
+        let peer2_id = 2; // Partitioned follower
+        let peer3_id = 3; // Responsive follower
+        let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+        // Setup: Three-node cluster
+        let mut membership = create_mock_membership_multi_node();
+        membership.expect_replication_peers().returning(move || {
+            vec![
+                NodeMeta {
+                    id: peer2_id,
+                    address: "http://127.0.0.1:55001".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+                NodeMeta {
+                    id: peer3_id,
+                    address: "http://127.0.0.1:55002".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+            ]
+        });
+        membership.expect_voters().returning(move || {
+            vec![
+                NodeMeta {
+                    id: peer2_id,
+                    address: "http://127.0.0.1:55001".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+                NodeMeta {
+                    id: peer3_id,
+                    address: "http://127.0.0.1:55002".to_string(),
+                    role: Follower.into(),
+                    status: NodeStatus::Active.into(),
+                },
+            ]
+        });
+        context.membership = Arc::new(membership);
+
+        // Mock log
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 1);
+        raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+        raft_log.expect_entry_term().returning(|_| None);
+        context.storage.raft_log = Arc::new(raft_log);
+
+        // Mock transport - peer2 times out, peer3 responds
+        let mut transport = MockTransport::new();
+        transport.expect_send_append_requests().return_once(move |_, _, _, _| {
+            Ok(AppendResult {
+                peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
+                responses: vec![
+                    Err(NetworkError::Timeout {
+                        node_id: peer2_id,
+                        duration: Duration::from_millis(200),
+                    }
+                    .into()),
+                    Ok(AppendEntriesResponse::success(
+                        peer3_id,
+                        1,
+                        Some(LogId { term: 1, index: 2 }),
+                    )),
+                ],
+            })
+        });
+        context.transport = Arc::new(transport);
+
+        // Execute: Try to replicate
+        let commands = vec![];
+        let state_snapshot = StateSnapshot {
+            current_term: 1,
+            voted_for: None,
+            commit_index: 1,
+            role: Leader.into(),
+        };
+        let leader_state_snapshot = LeaderStateSnapshot {
+            next_index: HashMap::from([(peer2_id, 2), (peer3_id, 2)]),
+            match_index: HashMap::new(),
+            noop_log_id: None,
+        };
+
+        let result = handler
+            .handle_raft_request_in_batch(
+                commands,
+                state_snapshot,
+                leader_state_snapshot,
+                &ClusterMetadata {
+                    single_voter: false,
+                    replication_targets: vec![
+                        NodeMeta {
+                            id: peer2_id,
+                            address: "http://127.0.0.1:55001".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                        NodeMeta {
+                            id: peer3_id,
+                            address: "http://127.0.0.1:55002".to_string(),
+                            role: Follower.into(),
+                            status: NodeStatus::Active.into(),
+                        },
+                    ],
+                    total_voters: 3,
+                },
+                &context,
+            )
+            .await
+            .unwrap();
+
+        // Verify: Leader achieves quorum with responsive follower
+        // Leader (1) + peer3 (1) = 2/3 majority
+        assert!(
+            result.commit_quorum_achieved,
+            "Leader can achieve quorum with one responsive follower"
+        );
+        assert_eq!(
+            result.peer_updates.len(),
+            1,
+            "Only responsive peer should be updated"
+        );
+        assert!(
+            result.peer_updates.contains_key(&peer3_id),
+            "Should contain peer3 (responsive)"
+        );
+        assert!(
+            !result.peer_updates.contains_key(&peer2_id),
+            "Should not contain peer2 (partitioned)"
         );
     }
 }

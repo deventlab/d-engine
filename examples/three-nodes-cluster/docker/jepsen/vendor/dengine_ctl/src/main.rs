@@ -3,8 +3,7 @@ use clap::Parser;
 use clap::Subcommand;
 use d_engine::client::ClientApiError;
 use d_engine::proto::client::ClientResult;
-use d_engine::proto::cluster::NodeMeta;
-use d_engine::proto::common::NodeStatus;
+
 use d_engine::ClientBuilder;
 use d_engine::ConvertError;
 
@@ -19,29 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Put {
-        key: u64,
-        value: u64,
-    },
-    Delete {
-        key: u64,
-    },
-    Get {
-        key: u64,
-    },
-    Lget {
-        key: u64,
-    },
-    /// Join a new node to the cluster
-    Join {
-        /// Node ID for the new member
-        #[clap(long)]
-        node_id: u32,
-
-        /// Network address of the new node
-        #[clap(long)]
-        address: String,
-    },
+    Put { key: u64, value: u64 },
+    Delete { key: u64 },
+    Get { key: u64 },
+    Lget { key: u64 },
 }
 
 #[tokio::main]
@@ -61,9 +41,6 @@ async fn main() -> Result<()> {
         Commands::Delete { key } => handle_delete(&client, key).await,
         Commands::Get { key } => handle_read(&client, key, false).await,
         Commands::Lget { key } => handle_read(&client, key, true).await,
-        Commands::Join { node_id, address } => {
-            handle_cluster_command(&client, node_id, address).await
-        }
     }
 }
 
@@ -111,33 +88,6 @@ async fn handle_read(
             println!("{:?}", value);
         }
         None => println!("Key not found"),
-    }
-
-    Ok(())
-}
-
-async fn handle_cluster_command(
-    client: &d_engine::Client,
-    node_id: u32,
-    address: String,
-) -> crate::Result<()> {
-    let response = client
-        .cluster()
-        .join_cluster(NodeMeta {
-            id: node_id,
-            address,
-            role: 3,
-            status: NodeStatus::Joining as i32,
-        })
-        .await
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {:?}", e))?;
-
-    if response.success {
-        println!("Node joined successfully!");
-        println!("Cluster configuration version: {}", response.config_version);
-        println!("Leader ID: {}", response.leader_id);
-    } else {
-        eprintln!("Join failed: {}", response.error);
     }
 
     Ok(())

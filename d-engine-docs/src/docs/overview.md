@@ -8,6 +8,9 @@
 
 **d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that maximizes single CPU core performance while minimizing resource overhead. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
 
+> **New to d-engine?** Start here: [**30-Second Decision Guide: Embedded vs Standalone**](./integration-modes.md)  
+> Choose the right integration mode for your use case in under 30 seconds.
+
 ---
 
 ## Features
@@ -64,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(FileStorageEngine::new(path.join("storage"))?);
     let state_machine = Arc::new(FileStateMachine::new(path.join("sm")).await?);
 
-    let engine = EmbeddedEngine::start_custom(None, storage, state_machine).await?;
+    let engine = EmbeddedEngine::start_custom(storage, state_machine, None).await?;
 
     engine.wait_ready(std::time::Duration::from_secs(5)).await?;
 

@@ -72,9 +72,10 @@ help:
 	@echo "    make docs-crate CRATE=name  # Build docs for specific crate"
 	@echo ""
 	@echo "  $(YELLOW)Testing:$(NC)"
-	@echo "    make test           # Run unit + integration tests"
-	@echo "    make test-all       # Run all tests including benchmarks"
-	@echo "    make test-unit      # Run unit tests only"
+	@echo "    make test                  # Run unit + integration tests"
+	@echo "    make test-all              # Run all tests including benchmarks"
+	@echo "    make test-unit             # Run unit tests only"
+	@echo "    make test-integration      # Run integration tests only"
 	@echo ""
 	@echo "  $(YELLOW)Release:$(NC)"
 	@echo "    make pre-release    # Full pre-release validation"
@@ -238,6 +239,20 @@ test: install-tools check-workspace
 	@echo "$(GREEN)║  ✓ All tests passed!                  ║$(NC)"
 	@echo "$(GREEN)╚════════════════════════════════════════╝$(NC)"
 
+## test-sequential            Run unit tests which requires sequential
+test-sequential:
+	@echo "$(BLUE)Running sequential tests (environment-sensitive)...$(NC)"
+	@echo "$(CYAN)Debug mode sequential tests...$(NC)"
+	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+	$(CARGO) test -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
+	{ echo "$(RED)✗ Debug sequential tests failed$(NC)"; exit 1; }
+	@echo "$(CYAN)Release mode sequential tests...$(NC)"
+	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
+	{ echo "$(RED)✗ Release sequential tests failed$(NC)"; exit 1; }
+	@echo "$(GREEN)✓ Sequential tests passed (debug + release)$(NC)"
+	@echo ""
+
 ## test-unit            Run unit tests only (parallel, fast)
 test-unit:
 	@echo "$(BLUE)Running unit tests per crate (parallel)...$(NC)"
@@ -245,7 +260,7 @@ test-unit:
 		echo "$(CYAN)Unit testing crate: $$member$(NC)"; \
 		if [ "$$member" = "d-engine-server" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --features rocksdb,watch --no-fail-fast -- --nocapture || \
+			$(CARGO) test -p $$member --lib --features rocksdb,watch --no-fail-fast -- --skip embedded_env_test --nocapture || \
 			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
 		elif [ "$$member" = "d-engine-core" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
@@ -259,6 +274,7 @@ test-unit:
 		echo "$(GREEN)✓ Unit tests passed for crate: $$member$(NC)"; \
 		echo ""; \
 	done
+	@$(MAKE) test-sequential
 
 ## test-integration     Run integration tests only (serial, avoid port conflicts)
 test-integration:
@@ -307,7 +323,7 @@ test-release: install-tools check-workspace
 		echo "$(CYAN)Release mode testing crate: $$member$(NC)"; \
 		if [ "$$member" = "d-engine-server" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test --release -p $$member --lib --features rocksdb,watch --no-fail-fast -- --nocapture || \
+			$(CARGO) test --release -p $$member --lib --features rocksdb,watch --no-fail-fast -- --skip embedded_env_test --nocapture || \
 			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
 		elif [ "$$member" = "d-engine-core" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
@@ -320,6 +336,12 @@ test-release: install-tools check-workspace
 		fi; \
 	done
 	@echo "$(GREEN)✓ Release mode tests passed$(NC)"
+	@echo ""
+	@echo "$(BLUE)Running release mode sequential tests...$(NC)"
+	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
+	{ echo "$(RED)✗ Release sequential tests failed$(NC)"; exit 1; }
+	@echo "$(GREEN)✓ All release mode tests passed$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace

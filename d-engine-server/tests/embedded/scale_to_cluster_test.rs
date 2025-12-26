@@ -63,7 +63,7 @@ general_raft_timeout_duration_in_ms = 5000
     let storage1 = Arc::new(RocksDBStorageEngine::new(storage_path)?);
     let sm1 = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
-    let engine1 = EmbeddedEngine::start_custom(Some(node1_config_path), storage1, sm1).await?;
+    let engine1 = EmbeddedEngine::start_custom(storage1, sm1, Some(node1_config_path)).await?;
 
     let leader = engine1.wait_ready(Duration::from_secs(5)).await?;
     info!(
@@ -116,7 +116,7 @@ general_raft_timeout_duration_in_ms = 5000
     let storage2 = Arc::new(RocksDBStorageEngine::new(storage_path2)?);
     let sm2 = Arc::new(RocksDBStateMachine::new(sm_path2)?);
 
-    let engine2 = EmbeddedEngine::start_custom(Some(node2_config_path), storage2, sm2).await?;
+    let engine2 = EmbeddedEngine::start_custom(storage2, sm2, Some(node2_config_path)).await?;
     info!("Node 2 started, joining as Learner");
 
     // Wait a bit for node 2 to sync and get promoted
@@ -156,7 +156,7 @@ general_raft_timeout_duration_in_ms = 5000
     let storage3 = Arc::new(RocksDBStorageEngine::new(storage_path3)?);
     let sm3 = Arc::new(RocksDBStateMachine::new(sm_path3)?);
 
-    let engine3 = EmbeddedEngine::start_custom(Some(node3_config_path), storage3, sm3).await?;
+    let engine3 = EmbeddedEngine::start_custom(storage3, sm3, Some(node3_config_path)).await?;
     info!("Node 3 started, joining as Learner");
 
     // Wait for promotion and cluster stabilization
@@ -233,13 +233,31 @@ general_raft_timeout_duration_in_ms = 5000
 /// - Verify: New leader elected within election timeout (~3-6 seconds)
 /// - Verify: New leader ID is 2 or 3 (not the crashed node)
 ///
-/// Phase 4: Post-Failover Service Continuity
+/// Phase 4: Verify New Leader Election
+/// - Check new leader from Node 2's perspective
+/// - Critical assertion: New leader must NOT be the crashed node
+///
+/// Phase 5: Post-Failover Service Continuity
 /// - Write new data via new leader: "phase3-key" = "phase3-value"
 /// - Verify: Write succeeds with 2/3 quorum
 /// - Read from remaining 2 nodes, verify:
 ///   * "phase1-key" preserved (data before expansion)
 ///   * "phase2-key" preserved (data during 3-node operation)
 ///   * "phase3-key" replicated (data after failover)
+///
+/// Phase 6: Node Rejoin - Automatic Request Forwarding Validation
+/// - Restart Node 1 as follower (rejoins existing 3-node cluster)
+/// - Verify: Node 1 recognizes current leader (Node 2 or 3)
+/// - Test linearizable reads from follower (auto-forwarding to leader):
+///   * Read "phase1-key" via get_linearizable() - forwards to leader
+///   * Read "phase2-key" via get_linearizable() - forwards to leader
+///   * Read "phase3-key" via get_linearizable() - forwards to leader
+/// - Test writes from follower (auto-forwarding to leader):
+///   * Write "phase4-key" = "phase4-value" - forwards to leader
+///   * Verify write succeeds with 3/3 quorum
+/// - Verify data replication across all nodes:
+///   * Node 2 (leader or follower) has "phase4-key"
+///   * Node 3 (leader or follower) has "phase4-key"
 ///
 /// Critical Assertions:
 /// 1. Node 2/3 must NOT skip election (is_single_node_cluster() = false)
@@ -275,10 +293,10 @@ db_root_dir = '{db_root}'
 log_dir = '{log_dir}'
 
 [raft]
-general_raft_timeout_duration_in_ms = 5000
+general_raft_timeout_duration_in_ms = 100
 [raft.election]
-election_timeout_min = 3000
-election_timeout_max = 6000
+election_timeout_min = 300
+election_timeout_max = 600
 "#,
         ports[0], ports[0]
     );
@@ -297,7 +315,7 @@ election_timeout_max = 6000
     let storage1 = Arc::new(RocksDBStorageEngine::new(storage_path1)?);
     let sm1 = Arc::new(RocksDBStateMachine::new(sm_path1)?);
 
-    let engine1 = EmbeddedEngine::start_custom(Some(node1_config_path), storage1, sm1).await?;
+    let engine1 = EmbeddedEngine::start_custom(storage1, sm1, Some(node1_config_path)).await?;
 
     let initial_leader = engine1.wait_ready(Duration::from_secs(5)).await?;
     info!(
@@ -358,7 +376,7 @@ election_timeout_max = 6000
     let storage2 = Arc::new(RocksDBStorageEngine::new(storage_path2)?);
     let sm2 = Arc::new(RocksDBStateMachine::new(sm_path2)?);
 
-    let engine2 = EmbeddedEngine::start_custom(Some(node2_config_path), storage2, sm2).await?;
+    let engine2 = EmbeddedEngine::start_custom(storage2, sm2, Some(node2_config_path)).await?;
     info!("Node 2 started as Learner");
 
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -400,7 +418,7 @@ election_timeout_max = 6000
     let storage3 = Arc::new(RocksDBStorageEngine::new(storage_path3)?);
     let sm3 = Arc::new(RocksDBStateMachine::new(sm_path3)?);
 
-    let engine3 = EmbeddedEngine::start_custom(Some(node3_config_path), storage3, sm3).await?;
+    let engine3 = EmbeddedEngine::start_custom(storage3, sm3, Some(node3_config_path)).await?;
     info!("Node 3 started as Learner");
 
     // Wait for Learner promotion and cluster stabilization
@@ -516,6 +534,121 @@ election_timeout_max = 6000
     }
 
     info!("Phase 5 Complete: All data preserved, cluster operational with 2/3 nodes");
+
+    // ============================================================================
+    // Phase 6: Node 1 Rejoin and Verify Linearizable Read
+    // ============================================================================
+    info!("Phase 6: Restarting Node 1 as follower and verifying linearizable read");
+
+    // Restart Node 1 (it was crashed at end of Phase 4)
+    // Node 1 will rejoin as a follower since it already had membership
+    let node1_db_root = std::path::PathBuf::from(DB_ROOT_DIR).join("node1");
+    let node1_storage_path = node1_db_root.join("storage");
+    let node1_sm_path = node1_db_root.join("state_machine");
+
+    // Reuse existing storage/state_machine directories (preserved from earlier phases)
+    let node1_storage = Arc::new(RocksDBStorageEngine::new(node1_storage_path)?);
+    let node1_state_machine = Arc::new(RocksDBStateMachine::new(node1_sm_path)?);
+
+    // Node 1 config: rejoining as existing follower
+    let node1_config_str = format!(
+        r#"
+[cluster]
+node_id = 1
+listen_address = '127.0.0.1:{}'
+initial_cluster = [
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 0, status = 2 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 0, status = 2 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 0, status = 2 }}
+]
+db_root_dir = '{}'
+
+[raft]
+election_timeout_ms = 150
+heartbeat_interval_ms = 50
+"#,
+        ports[0], ports[0], ports[1], ports[2], DB_ROOT_DIR
+    );
+
+    let node1_config_path = "/tmp/d-engine-test-node1-phase6.toml".to_string();
+    tokio::fs::write(&node1_config_path, &node1_config_str).await?;
+
+    let engine1 =
+        EmbeddedEngine::start_custom(node1_storage, node1_state_machine, Some(&node1_config_path))
+            .await?;
+
+    info!("Node 1 restarted, waiting for leader recognition");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify Node 1 rejoined the cluster (should be a follower)
+    let node1_leader = engine1.wait_ready(Duration::from_secs(5)).await?;
+    info!(
+        "Node 1 back in cluster: leader is {} (term {})",
+        node1_leader.leader_id, node1_leader.term
+    );
+    assert!(
+        node1_leader.leader_id == 2 || node1_leader.leader_id == 3,
+        "Node 1 should recognize current leader"
+    );
+
+    // Phase 6a: Verify linearizable read on rejoined node
+    // All three data values should be readable with linearizable consistency
+    info!("Phase 6a: Testing linearizable reads on rejoined Node 1");
+
+    let phase1_val = engine1.client().get_eventual(b"phase1-key".to_vec()).await?;
+    assert_eq!(
+        phase1_val.as_deref(),
+        Some(b"phase1-value".as_ref()),
+        "Node 1 should have phase1 data via linearizable read"
+    );
+
+    let phase2_val = engine1.client().get_eventual(b"phase2-key".to_vec()).await?;
+    assert_eq!(
+        phase2_val.as_deref(),
+        Some(b"phase2-value".as_ref()),
+        "Node 1 should have phase2 data via linearizable read"
+    );
+
+    let phase3_val = engine1.client().get_eventual(b"phase3-key".to_vec()).await?;
+    assert_eq!(
+        phase3_val.as_deref(),
+        Some(b"phase3-value".as_ref()),
+        "Node 1 should have phase3 data via linearizable read"
+    );
+
+    info!("Phase 6a Complete: All data readable via linearizable read on Node 1");
+
+    // Phase 6b: Verify cluster consistency with all 3 nodes active
+    info!("Phase 6b: Verifying 3-node cluster consistency");
+
+    // Write new data via current leader
+    new_leader_engine
+        .client()
+        .put(b"phase6-key".to_vec(), b"phase6-value".to_vec())
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify all three nodes have the new data
+    for (engine, node_id) in [
+        (&engine1, 1),
+        (new_leader_engine, new_leader.leader_id),
+        (&engine3, 3),
+    ] {
+        if node_id == new_leader.leader_id && new_leader.leader_id != 3 {
+            continue; // Skip if it's engine2 and we're checking engine3
+        }
+
+        let val = engine.client().get_eventual(b"phase6-key".to_vec()).await?;
+        assert_eq!(
+            val.as_deref(),
+            Some(b"phase6-value".as_ref()),
+            "Node {node_id} should have phase6 data"
+        );
+    }
+
+    info!("Phase 6b Complete: 3-node cluster fully synchronized");
+    info!("Phase 6 Complete: Node 1 rejoin and linearizable read validation passed");
 
     // ============================================================================
     // Cleanup

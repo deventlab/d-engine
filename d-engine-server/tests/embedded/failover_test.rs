@@ -56,7 +56,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         configs.push((config_str, config_path));
 
         let engine =
-            EmbeddedEngine::start_custom(Some(&configs[i].1), storage, state_machine).await?;
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&configs[i].1)).await?;
         engines.push(engine);
     }
 
@@ -224,7 +224,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         configs.push((config_str, config_path));
 
         let engine =
-            EmbeddedEngine::start_custom(Some(&configs[i].1), storage, state_machine).await?;
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&configs[i].1)).await?;
         engines.push(engine);
     }
 
@@ -283,7 +283,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
     let restarted_engine =
-        EmbeddedEngine::start_custom(Some(&killed_config.1), storage, state_machine).await?;
+        EmbeddedEngine::start_custom(storage, state_machine, Some(&killed_config.1)).await?;
     restarted_engine.wait_ready(Duration::from_secs(30)).await?;
 
     // Wait for sync
@@ -350,7 +350,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         tokio::fs::write(&config_path, &config_str).await?;
 
         let engine =
-            EmbeddedEngine::start_custom(Some(&config_path), storage, state_machine).await?;
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
         engines.push(engine);
     }
 

@@ -195,9 +195,9 @@ EmbeddedEngine::start_with(config_path: &str) -> Result<Self>
 
 // Advanced (custom storage)
 EmbeddedEngine::start_custom(
-    config_path: Option<&str>,
     storage: Arc<impl StorageEngine>,
-    state_machine: Arc<impl StateMachine>
+    state_machine: Arc<impl StateMachine>,
+    config_path: Option<&str>
 ) -> Result<Self>
 
 // Wait for leader election (event-driven, no polling)

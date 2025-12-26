@@ -103,7 +103,7 @@ where
 {
     let (commit_tx, commit_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = watch::channel(());
-    let (event_tx, event_rx) = mpsc::channel(10);
+    let (event_tx, event_rx) = mpsc::channel(1000); // Large capacity to prevent blocking in tests
 
     // Mock state machine
     let mut mock_smh = MockStateMachineHandler::new();

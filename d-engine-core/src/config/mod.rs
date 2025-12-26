@@ -100,7 +100,7 @@ impl RaftNodeConfig {
 
         // 2. Conditionally add configuration files
         if let Ok(config_path) = env::var("CONFIG_PATH") {
-            builder = builder.add_source(File::with_name(&config_path));
+            builder = builder.add_source(File::with_name(&config_path).required(true));
         }
 
         // 3. Add environment variable source

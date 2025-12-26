@@ -22,6 +22,10 @@ pub mod quick_start_standalone {
     #![doc = include_str!("quick-start-standalone.md")]
 }
 
+pub mod integration_modes {
+    #![doc = include_str!("integration-modes.md")]
+}
+
 pub mod architecture;
 pub mod client_guide;
 pub mod performance;

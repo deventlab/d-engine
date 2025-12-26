@@ -76,7 +76,7 @@ impl StandaloneServer {
 
         let sm = Arc::new(sm);
 
-        Self::run_custom(config, storage, sm, shutdown_rx).await
+        Self::run_custom(storage, sm, shutdown_rx, None).await
     }
 
     /// Run server with explicit configuration file.
@@ -143,7 +143,7 @@ impl StandaloneServer {
 
         let sm = Arc::new(sm);
 
-        Self::run_custom(config, storage, sm, shutdown_rx).await
+        Self::run_custom(storage, sm, shutdown_rx, Some(config_path)).await
     }
 
     /// Run server with custom storage engine and state machine.
@@ -159,24 +159,29 @@ impl StandaloneServer {
     ///
     /// # Example
     /// ```ignore
-    /// let config = RaftNodeConfig::new()?.with_override_config("config.toml")?;
     /// let storage = Arc::new(MyCustomStorage::new()?);
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
     ///
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
-    /// StandaloneServer::run_custom(config, storage, sm, shutdown_rx).await?;
+    /// StandaloneServer::run_custom(storage, sm, shutdown_rx, Some("config.toml")).await?;
     /// ```
     pub async fn run_custom<SE, SM>(
-        config: d_engine_core::RaftNodeConfig,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
         shutdown_rx: watch::Receiver<()>,
+        config_path: Option<&str>,
     ) -> Result<()>
     where
         SE: StorageEngine + std::fmt::Debug + 'static,
         SM: StateMachine + std::fmt::Debug + 'static,
     {
-        let node = NodeBuilder::init(config, shutdown_rx)
+        let node_config = if let Some(path) = config_path {
+            d_engine_core::RaftNodeConfig::default().with_override_config(path)?
+        } else {
+            d_engine_core::RaftNodeConfig::new()?
+        };
+
+        let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .start()

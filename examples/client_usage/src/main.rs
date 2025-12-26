@@ -2,9 +2,8 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::{
-    cluster_types::{NodeMeta, NodeStatus},
-    protocol::{ClientResult, ReadConsistencyPolicy},
     Client, ClientApiError, ClientBuilder,
+    protocol::{ClientResult, ReadConsistencyPolicy},
 };
 
 #[derive(Parser)]
@@ -18,32 +17,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Put {
-        key: u64,
-        value: u64,
-    },
-    Delete {
-        key: u64,
-    },
-    Get {
-        key: u64,
-    },
-    Sget {
-        key: u64,
-    },
-    Lget {
-        key: u64,
-    },
-    /// Join a new node to the cluster
-    Join {
-        /// Node ID for the new member
-        #[clap(long)]
-        node_id: u32,
-
-        /// Network address of the new node
-        #[clap(long)]
-        address: String,
-    },
+    Put { key: u64, value: u64 },
+    Delete { key: u64 },
+    Get { key: u64 },
+    Sget { key: u64 },
+    Lget { key: u64 },
 }
 
 #[tokio::main]
@@ -64,9 +42,6 @@ async fn main() -> Result<()> {
         Commands::Get { key } => handle_read(&client, key, "e").await,
         Commands::Sget { key } => handle_read(&client, key, "s").await,
         Commands::Lget { key } => handle_read(&client, key, "l").await,
-        Commands::Join { node_id, address } => {
-            handle_cluster_command(&client, node_id, address).await
-        }
     }
 }
 
@@ -121,33 +96,6 @@ async fn handle_read(
             println!("{value:?}");
         }
         None => println!("Key not found"),
-    }
-
-    Ok(())
-}
-
-async fn handle_cluster_command(
-    client: &Client,
-    node_id: u32,
-    address: String,
-) -> crate::Result<()> {
-    let response = client
-        .cluster()
-        .join_cluster(NodeMeta {
-            id: node_id,
-            address,
-            role: 3,
-            status: NodeStatus::Joining as i32,
-        })
-        .await
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {e:?}"))?;
-
-    if response.success {
-        println!("Node joined successfully!");
-        println!("Cluster configuration version: {}", response.config_version);
-        println!("Leader ID: {}", response.leader_id);
-    } else {
-        eprintln!("Join failed: {}", response.error);
     }
 
     Ok(())

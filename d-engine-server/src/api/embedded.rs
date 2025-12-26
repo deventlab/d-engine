@@ -133,7 +133,7 @@ impl EmbeddedEngine {
 
         info!("Starting embedded engine with RocksDB at {:?}", base_dir);
 
-        Self::start_custom(None, storage, sm).await
+        Self::start_custom(storage, sm, None).await
     }
 
     /// Start engine with explicit configuration file.
@@ -195,7 +195,7 @@ impl EmbeddedEngine {
 
         info!("Starting embedded engine with RocksDB at {:?}", base_dir);
 
-        Self::start_custom(Some(config_path), storage, sm).await
+        Self::start_custom(storage, sm, Some(config_path)).await
     }
 
     /// Start engine with custom storage and state machine.
@@ -211,12 +211,12 @@ impl EmbeddedEngine {
     /// ```ignore
     /// let storage = Arc::new(MyCustomStorage::new()?);
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
-    /// let engine = EmbeddedEngine::start_custom(None, storage, sm).await?;
+    /// let engine = EmbeddedEngine::start_custom(storage, sm, None).await?;
     /// ```
     pub async fn start_custom<SE, SM>(
-        config_path: Option<&str>,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
+        config_path: Option<&str>,
     ) -> Result<Self>
     where
         SE: StorageEngine + std::fmt::Debug + 'static,
@@ -229,7 +229,7 @@ impl EmbeddedEngine {
 
         // Load config or use default
         let node_config = if let Some(path) = config_path {
-            d_engine_core::RaftNodeConfig::new()?.with_override_config(path)?
+            d_engine_core::RaftNodeConfig::default().with_override_config(path)?
         } else {
             d_engine_core::RaftNodeConfig::new()?
         };

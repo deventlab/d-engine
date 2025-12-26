@@ -40,7 +40,7 @@ watcher_buffer_size = 10
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
     let engine =
-        EmbeddedEngine::start_custom(Some(config_path.to_str().unwrap()), storage, state_machine)
+        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
             .await?;
 
     // Wait for leader election
@@ -123,7 +123,7 @@ listen_address = "127.0.0.1:{port}"
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
     let engine =
-        EmbeddedEngine::start_custom(Some(config_path.to_str().unwrap()), storage, state_machine)
+        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
             .await?;
 
     engine.wait_ready(Duration::from_secs(5)).await?;
@@ -353,7 +353,7 @@ watcher_buffer_size = 10
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
     let engine =
-        EmbeddedEngine::start_custom(Some(config_path.to_str().unwrap()), storage, state_machine)
+        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
             .await?;
 
     // Wait for leader election

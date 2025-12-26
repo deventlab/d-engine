@@ -14,6 +14,11 @@ mod embedded_engine_tests {
         Arc<FileStateMachine>,
         tempfile::TempDir,
     ) {
+        // Clear CONFIG_PATH to avoid external config interference
+        unsafe {
+            std::env::remove_var("CONFIG_PATH");
+        }
+
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let storage_path = temp_dir.path().join("storage");
         let sm_path = temp_dir.path().join("sm");
@@ -34,7 +39,7 @@ mod embedded_engine_tests {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -60,7 +65,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_timeout() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -80,7 +85,7 @@ mod embedded_engine_tests {
     async fn test_leader_change_notifier_basic() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -114,7 +119,7 @@ mod embedded_engine_tests {
     async fn test_ready_and_wait_ready_sequence() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -143,7 +148,7 @@ mod embedded_engine_tests {
     async fn test_client_available_after_wait_ready() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -169,7 +174,7 @@ mod embedded_engine_tests {
     async fn test_multiple_leader_change_notifier_subscribers() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -206,7 +211,7 @@ mod embedded_engine_tests {
     async fn test_engine_stop_cleans_up() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -219,7 +224,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_race_condition_already_elected() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -254,7 +259,7 @@ mod embedded_engine_tests {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            EmbeddedEngine::start_custom(None, storage, sm)
+            EmbeddedEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine"),
         );
@@ -300,7 +305,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_check_current_value_first() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(None, storage, sm)
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -336,142 +341,8 @@ mod embedded_engine_tests {
         use super::*;
         use serial_test::serial;
 
-        // Tests for start() method (reads CONFIG_PATH env var)
-
-        #[tokio::test]
-        #[cfg(debug_assertions)]
-        #[serial]
-        async fn test_start_with_config_path_env_valid() {
-            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = _temp_dir.path().join("test_config.toml");
-            let data_dir = _temp_dir.path().join("data");
-
-            // Create valid config with custom db_root_dir
-            let config_content = format!(
-                r#"
-[cluster]
-node_id = 1
-db_root_dir = "{}"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#,
-                data_dir.display()
-            );
-            std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-            // Set CONFIG_PATH env var and test
-            unsafe {
-                std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
-            }
-            let result = EmbeddedEngine::start().await;
-            unsafe {
-                std::env::remove_var("CONFIG_PATH");
-            }
-
-            assert!(
-                result.is_ok(),
-                "start() should succeed with valid CONFIG_PATH"
-            );
-
-            if let Ok(engine) = result {
-                engine.stop().await.ok();
-            }
-        }
-
-        #[tokio::test]
-        #[cfg(debug_assertions)]
-        #[serial]
-        async fn test_start_with_config_path_env_nonexistent() {
-            // Set CONFIG_PATH to nonexistent file
-            unsafe {
-                std::env::set_var("CONFIG_PATH", "/nonexistent/config.toml");
-            }
-            let result = EmbeddedEngine::start().await;
-            unsafe {
-                std::env::remove_var("CONFIG_PATH");
-            }
-
-            assert!(
-                result.is_err(),
-                "start() should fail with nonexistent CONFIG_PATH"
-            );
-        }
-
-        #[tokio::test]
-        #[cfg(debug_assertions)]
-        #[serial]
-        async fn test_start_with_config_path_env_tmp_db_allows_in_debug() {
-            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = _temp_dir.path().join("test_config.toml");
-
-            // Create config with /tmp/db
-            let config_content = r#"
-[cluster]
-node_id = 1
-db_root_dir = "/tmp/db"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#;
-            std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-            // In debug mode, should succeed with warning
-            unsafe {
-                std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
-            }
-            let result = EmbeddedEngine::start().await;
-            unsafe {
-                std::env::remove_var("CONFIG_PATH");
-            }
-
-            assert!(
-                result.is_ok(),
-                "start() should allow /tmp/db in debug mode with CONFIG_PATH"
-            );
-
-            if let Ok(engine) = result {
-                engine.stop().await.ok();
-            }
-        }
-
-        #[tokio::test]
-        #[cfg(not(debug_assertions))]
-        #[serial]
-        async fn test_start_with_config_path_env_tmp_db_rejects_in_release() {
-            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = _temp_dir.path().join("test_config.toml");
-
-            // Create config with /tmp/db
-            let config_content = r#"
-[cluster]
-node_id = 1
-db_root_dir = "/tmp/db"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#;
-            std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-            // In release mode, should reject
-            unsafe {
-                std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
-            }
-            let result = EmbeddedEngine::start().await;
-            unsafe {
-                std::env::remove_var("CONFIG_PATH");
-            }
-
-            assert!(
-                result.is_err(),
-                "start() should reject /tmp/db in release mode with CONFIG_PATH"
-            );
-
-            if let Err(e) = result {
-                let err_msg = format!("{:?}", e);
-                assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
-            }
-        }
+        // Tests for start() method with CONFIG_PATH have been moved to embedded_env_test.rs
+        // to run sequentially and avoid environment variable race conditions
 
         #[tokio::test]
         #[cfg(debug_assertions)]
@@ -629,7 +500,7 @@ listen_addr = "127.0.0.1:0"
         async fn test_drop_without_stop_warning() {
             let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            let engine = EmbeddedEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -643,12 +514,14 @@ listen_addr = "127.0.0.1:0"
     #[cfg(feature = "watch")]
     mod watch_tests {
         use super::*;
+        use serial_test::serial;
 
         #[tokio::test]
+        #[serial]
         async fn test_watch_registers_successfully() {
             let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            let engine = EmbeddedEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -723,7 +596,7 @@ listen_addr = "127.0.0.1:0"
 
             println!("TempDir dropped, starting engine...");
 
-            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            let engine = EmbeddedEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -794,7 +667,7 @@ listen_addr = "127.0.0.1:0"
 
             println!("Created storage and SM, TempDir kept alive");
 
-            let engine = EmbeddedEngine::start_custom(None, storage, sm)
+            let engine = EmbeddedEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
