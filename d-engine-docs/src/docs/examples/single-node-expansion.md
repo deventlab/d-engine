@@ -110,7 +110,7 @@ initial_cluster_size = 1  # Must match Node 1
 | **Follower** (role=2) ⚠️ | Risky - immediately participates in quorum | High - can slow down writes if unstable |
 
 **IMPORTANT**: Always join new nodes as Learner. Joining as Follower can impact cluster availability if the new node is slow or unstable.  
-📖 Details: See [Cluster Scaling Best Practices](../../product-handbook/03-architecture/cluster-scaling-strategies.md)
+📖 Details: See [Node Join & Learner Promotion Architecture](../../architecture/node-join-architecture.md)
 
 **Start**:
 
