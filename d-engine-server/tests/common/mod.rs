@@ -130,6 +130,44 @@ pub async fn create_node_config(
     )
 }
 
+/// Create node config with custom role for specific node
+/// Allows setting a node as LEARNER (role=3) instead of VOTER (role=1)
+pub async fn create_node_config_with_role(
+    node_id: u64,
+    port: u16,
+    cluster_ports: &[u16],
+    node_role: i32, // 1 = VOTER, 3 = LEARNER
+    db_root_dir: &str,
+    log_dir: &str,
+) -> String {
+    let initial_cluster_entries = cluster_ports
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let id = i as u64 + 1;
+            // Use custom role if this is the current node, otherwise default to VOTER
+            let role = if id == node_id { node_role } else { 1 };
+            format!(
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = {role}, status = 2 }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ");
+
+    format!(
+        r#"
+        [cluster]
+        node_id = {node_id}
+        listen_address = '127.0.0.1:{port}'
+        initial_cluster = [
+            {initial_cluster_entries}
+        ]
+        db_root_dir = '{db_root_dir}'
+        log_dir = '{log_dir}'
+        "#
+    )
+}
+
 pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     let base_config = RaftNodeConfig::default();
 
@@ -265,7 +303,12 @@ async fn build_node(
     let storage_engine = if let Some(s) = storage_engine {
         s
     } else {
-        let storage_path = config.cluster.db_root_dir.clone().join("storage_engine");
+        let storage_path = config
+            .cluster
+            .db_root_dir
+            .clone()
+            .join(config.cluster.node_id.to_string())
+            .join("storage_engine");
         Arc::new(
             FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
         )
@@ -277,7 +320,11 @@ async fn build_node(
     let state_machine = if let Some(sm) = state_machine {
         sm
     } else {
-        let state_machine_path = config.cluster.db_root_dir.join("state_machine");
+        let state_machine_path = config
+            .cluster
+            .db_root_dir
+            .join(config.cluster.node_id.to_string())
+            .join("state_machine");
         Arc::new(
             FileStateMachine::new(state_machine_path)
                 .await
