@@ -8,7 +8,7 @@ Choose your integration mode based on your primary programming language and late
 
 ## 30-Second Decision Guide
 
-```
+```text
 ┌─────────────────────────────────────┐
 │ Is your application written in Rust?│
 └──────────────┬──────────────────────┘
@@ -69,14 +69,14 @@ use d_engine::EmbeddedEngine;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start with config file
     let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
-    
+
     // Wait for leader election
     engine.wait_ready(Duration::from_secs(5)).await?;
-    
+
     // Get zero-overhead KV client
     let client = engine.client();
     client.put(b"key".to_vec(), b"value".to_vec()).await?;
-    
+
     engine.stop().await?;
     Ok(())
 }
@@ -127,6 +127,7 @@ d-engine-server --config d-engine.toml
 **2. Connect from any language:**
 
 **Rust Client:**
+
 ```rust,ignore
 use d_engine::{ClientBuilder, Client};
 
@@ -135,13 +136,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = ClientBuilder::new(vec!["http://127.0.0.1:9083".to_string()])
         .build()
         .await?;
-    
+
     client.kv().put(b"key".to_vec(), b"value".to_vec()).await?;
     Ok(())
 }
 ```
 
 **Go Client (coming soon):**
+
 ```go
 // Future: Go client library
 client := dengine.NewClient("127.0.0.1:9083")
@@ -149,6 +151,7 @@ client.Put([]byte("key"), []byte("value"))
 ```
 
 **Python Client (coming soon):**
+
 ```python
 # Future: Python client library
 client = dengine.Client("127.0.0.1:9083")
@@ -168,18 +171,18 @@ client.put(b"key", b"value")
 
 ## Comparison Table
 
-| Feature                  | Embedded Mode       | Standalone Mode        |
-| ------------------------ | ------------------- | ---------------------- |
-| **Language**             | Rust only           | Any (via gRPC)         |
-| **Deployment**           | In-process          | Separate server        |
-| **Latency (KV ops)**     | <0.1ms              | 1-2ms                  |
-| **Communication**        | Direct memory       | gRPC network           |
-| **Serialization**        | Zero                | Protocol Buffers       |
-| **Use Case**             | Ultra-low latency   | Polyglot microservices |
-| **Single Binary**        | ✅ Yes              | ❌ No (server + app)   |
-| **Cross-Language**       | ❌ No               | ✅ Yes                 |
-| **Overhead**             | Minimal             | Network + serialization|
-| **Complexity**           | Simple (1 process)  | Moderate (2+ processes)|
+| Feature              | Embedded Mode      | Standalone Mode         |
+| -------------------- | ------------------ | ----------------------- |
+| **Language**         | Rust only          | Any (via gRPC)          |
+| **Deployment**       | In-process         | Separate server         |
+| **Latency (KV ops)** | <0.1ms             | 1-2ms                   |
+| **Communication**    | Direct memory      | gRPC network            |
+| **Serialization**    | Zero               | Protocol Buffers        |
+| **Use Case**         | Ultra-low latency  | Polyglot microservices  |
+| **Single Binary**    | ✅ Yes             | ❌ No (server + app)    |
+| **Cross-Language**   | ❌ No              | ✅ Yes                  |
+| **Overhead**         | Minimal            | Network + serialization |
+| **Complexity**       | Simple (1 process) | Moderate (2+ processes) |
 
 ---
 
@@ -190,6 +193,7 @@ client.put(b"key", b"value")
 You can start with **Embedded Mode** for development and migrate to **Standalone Mode** for production if needed:
 
 **Development (Embedded):**
+
 ```rust,ignore
 // Single node, in-process
 let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
@@ -197,6 +201,7 @@ let client = engine.client();
 ```
 
 **Production (Standalone):**
+
 ```rust,ignore
 // 3-node cluster, separate servers
 let client = ClientBuilder::new(vec![
@@ -214,7 +219,7 @@ let client = ClientBuilder::new(vec![
 
 ### Embedded Mode Architecture
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │ Your Rust Application Process          │
 │                                         │
@@ -232,7 +237,7 @@ let client = ClientBuilder::new(vec![
 
 ### Standalone Mode Architecture
 
-```
+```text
 ┌────────────────────┐         ┌────────────────────┐
 │ Your Application   │         │ d-engine Server    │
 │ (Any Language)     │         │                    │
@@ -252,13 +257,13 @@ let client = ClientBuilder::new(vec![
 
 ### How does d-engine compare to etcd?
 
-| Feature                | d-engine Embedded   | d-engine Standalone | etcd Embedded      |
-| ---------------------- | ------------------- | ------------------- | ------------------ |
-| **Language**           | Rust only           | Any                 | Go only            |
-| **KV Latency**         | <0.1ms (memory)     | 1-2ms (gRPC)        | 1-2ms (gRPC)       |
-| **Communication**      | Direct memory       | gRPC                | gRPC (even embed!) |
-| **Serialization**      | Zero                | Protobuf            | Protobuf           |
-| **True Zero-Overhead** | ✅ Yes              | ❌ No               | ❌ No              |
+| Feature                | d-engine Embedded | d-engine Standalone | etcd Embedded      |
+| ---------------------- | ----------------- | ------------------- | ------------------ |
+| **Language**           | Rust only         | Any                 | Go only            |
+| **KV Latency**         | <0.1ms (memory)   | 1-2ms (gRPC)        | 1-2ms (gRPC)       |
+| **Communication**      | Direct memory     | gRPC                | gRPC (even embed!) |
+| **Serialization**      | Zero              | Protobuf            | Protobuf           |
+| **True Zero-Overhead** | ✅ Yes            | ❌ No               | ❌ No              |
 
 **d-engine's Unique Value:**
 

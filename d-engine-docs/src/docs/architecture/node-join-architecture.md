@@ -97,7 +97,7 @@ See [Single-Node Expansion Example](../examples/single-node-expansion.md) for fu
 
 When d-engine calculates cluster size for quorum checks, **the leader always includes itself**:
 
-```
+```text
 total_voters = membership.voters().len() + 1  (for self/leader)
 ```
 
