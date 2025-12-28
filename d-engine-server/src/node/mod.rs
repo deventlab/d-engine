@@ -162,7 +162,7 @@ where
         }
 
         // Start Raft main loop
-        self.start_raft_loop(&mut shutdown_signal).await
+        self.start_raft_loop().await
     }
 
     /// Learner bootstrap: skip cluster ready check, join after warmup.
@@ -225,17 +225,8 @@ where
         Ok(())
     }
 
-    /// Start Raft main loop with pre-check for shutdown signal.
-    async fn start_raft_loop(
-        &self,
-        shutdown: &mut watch::Receiver<()>,
-    ) -> Result<()> {
-        // Check shutdown before entering main loop
-        if shutdown.has_changed().unwrap_or(false) {
-            info!("Shutdown before Raft main loop");
-            return Ok(());
-        }
-
+    /// Start Raft main loop.
+    async fn start_raft_loop(&self) -> Result<()> {
         let mut raft = self.raft_core.lock().await;
         raft.run().await
     }

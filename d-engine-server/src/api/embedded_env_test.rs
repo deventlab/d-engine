@@ -4,6 +4,7 @@
 //! from concurrent modifications to process-level CONFIG_PATH environment variable.
 
 #[cfg(test)]
+#[cfg(feature = "rocksdb")]
 mod config_env_tests {
     use crate::api::EmbeddedEngine;
     use serial_test::serial;
@@ -77,6 +78,9 @@ listen_addr = "127.0.0.1:0"
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_path = _temp_dir.path().join("test_config.toml");
 
+        // Clean up /tmp/db before test
+        let _ = std::fs::remove_dir_all("/tmp/db");
+
         // Create config with /tmp/db
         let config_content = r#"
 [cluster]
@@ -105,6 +109,9 @@ listen_addr = "127.0.0.1:0"
         if let Ok(engine) = result {
             engine.stop().await.ok();
         }
+
+        // Clean up after test
+        let _ = std::fs::remove_dir_all("/tmp/db");
     }
 
     #[tokio::test]

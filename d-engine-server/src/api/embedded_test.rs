@@ -352,16 +352,24 @@ mod embedded_engine_tests {
             unsafe {
                 std::env::remove_var("CONFIG_PATH");
             }
+
+            // Clean up /tmp/db before test to avoid corruption from previous runs
+            let _ = std::fs::remove_dir_all("/tmp/db");
+
             let result = EmbeddedEngine::start().await;
 
             assert!(
                 result.is_ok(),
-                "start() should allow default /tmp/db in debug mode without CONFIG_PATH"
+                "start() should allow default /tmp/db in debug mode without CONFIG_PATH. Error: {:?}",
+                result.as_ref().err()
             );
 
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
+
+            // Clean up after test
+            let _ = std::fs::remove_dir_all("/tmp/db");
         }
 
         #[tokio::test]
@@ -442,6 +450,9 @@ election_timeout_max_ms = 3000
             let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
             let config_path = _temp_dir.path().join("test_config.toml");
 
+            // Clean up /tmp/db before test
+            let _ = std::fs::remove_dir_all("/tmp/db");
+
             // Create config with /tmp/db
             let config_content = r#"
 [cluster]
@@ -463,6 +474,9 @@ listen_addr = "127.0.0.1:0"
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
+
+            // Clean up after test
+            let _ = std::fs::remove_dir_all("/tmp/db");
         }
 
         #[tokio::test]

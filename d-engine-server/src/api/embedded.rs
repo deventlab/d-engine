@@ -90,29 +90,8 @@ impl EmbeddedEngine {
     #[cfg(feature = "rocksdb")]
     pub async fn start() -> Result<Self> {
         let config = d_engine_core::RaftNodeConfig::new()?;
-
-        // Hybrid validation: strict in release, permissive in debug
-        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
-        if base_dir == std::path::PathBuf::from("/tmp/db") {
-            #[cfg(not(debug_assertions))]
-            {
-                return Err(crate::Error::Fatal(
-                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
-                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
-                     in your config file.".into()
-                ));
-            }
-
-            #[cfg(debug_assertions)]
-            {
-                tracing::warn!(
-                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
-                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
-                );
-            }
-        }
-
-        tokio::fs::create_dir_all(&base_dir)
+        let base_dir = &config.cluster.db_root_dir;
+        tokio::fs::create_dir_all(base_dir)
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
@@ -153,26 +132,6 @@ impl EmbeddedEngine {
     pub async fn start_with(config_path: &str) -> Result<Self> {
         let config = d_engine_core::RaftNodeConfig::new()?.with_override_config(config_path)?;
         let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
-
-        // Hybrid validation: strict in release, permissive in debug
-        if base_dir == std::path::PathBuf::from("/tmp/db") {
-            #[cfg(not(debug_assertions))]
-            {
-                return Err(crate::Error::Fatal(
-                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
-                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
-                     in your config file.".into()
-                ));
-            }
-
-            #[cfg(debug_assertions)]
-            {
-                tracing::warn!(
-                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
-                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
-                );
-            }
-        }
 
         tokio::fs::create_dir_all(&base_dir)
             .await

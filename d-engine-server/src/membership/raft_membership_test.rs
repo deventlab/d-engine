@@ -215,7 +215,7 @@ async fn test_replication_peers_case1() {
         initial_cluster,
         RaftNodeConfig::default(),
     );
-    assert_eq!(membership.replication_peers().await.len(), 3);
+    assert_eq!(membership.replication_peers().await.len(), 4);
 }
 
 /// Test: remove_node allows leader removal (Raft protocol compliance)

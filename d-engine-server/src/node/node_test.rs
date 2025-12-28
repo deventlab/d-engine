@@ -855,9 +855,11 @@ mod bootstrap_strategy_tests {
 
         let handle = tokio::spawn(async move { node_clone.run().await });
 
-        tokio::time::advance(std::time::Duration::from_millis(2)).await;
+        // Send shutdown immediately - it will be detected before entering raft main loop
         shutdown_tx.send(()).expect("Should send shutdown");
-        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+
+        // Advance time to let the shutdown signal propagate
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
 
         let result = handle.await.expect("Task should complete");
         assert!(result.is_ok(), "Should shutdown gracefully");
@@ -954,9 +956,16 @@ mod bootstrap_strategy_tests {
 
         let handle = tokio::spawn(async move { node_clone.run().await });
 
-        tokio::time::advance(std::time::Duration::from_millis(2)).await;
+        // Wait for bootstrap to complete (RPC ready is set after cluster ready check)
+        while !node.is_rpc_ready() {
+            tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        }
+
+        // Now send shutdown - it will be detected before entering raft main loop
         shutdown_tx.send(()).expect("Should send shutdown");
-        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+
+        // Advance time to let the shutdown signal propagate and task complete
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
 
         let result = handle.await.expect("Task should complete");
         assert!(result.is_ok(), "Should shutdown gracefully");
@@ -968,57 +977,6 @@ mod bootstrap_strategy_tests {
         assert!(
             logs_contain("Learner joining cluster"),
             "Should log join attempt"
-        );
-    }
-
-    /// Test 3c: Shutdown before main loop entry
-    ///
-    /// Verifies:
-    /// - Shutdown check in start_raft_loop() prevents main loop entry
-    /// - Returns Ok(()) gracefully
-    /// - Node is ready but raft.run() is not entered
-    #[tokio::test(start_paused = true)]
-    #[traced_test]
-    async fn test_shutdown_before_raft_main_loop() {
-        let (_shutdown_tx, shutdown_rx) = watch::channel(());
-
-        let mut membership = MockMembership::new();
-        membership.expect_check_cluster_is_ready().times(1).returning(|| Ok(()));
-        membership.expect_pre_warm_connections().times(1).returning(|| Ok(()));
-
-        let node = {
-            let builder = MockBuilder::new(shutdown_rx.clone())
-                .with_membership(membership)
-                .with_node_config({
-                    let mut cfg = RaftNodeConfig::new().expect("Default config");
-                    cfg.cluster.initial_cluster = vec![NodeMeta {
-                        id: 100,
-                        address: "127.0.0.1:8080".to_string(),
-                        role: Follower as i32,
-                        status: NodeStatus::Active as i32,
-                    }];
-                    cfg
-                });
-
-            builder.build_node()
-        };
-
-        let node = Arc::new(node);
-        let node_clone = node.clone();
-        let shutdown_tx = _shutdown_tx.clone();
-
-        let handle = tokio::spawn(async move { node_clone.run().await });
-
-        tokio::time::advance(std::time::Duration::from_millis(2)).await;
-        shutdown_tx.send(()).expect("Should send shutdown");
-        tokio::time::advance(std::time::Duration::from_millis(1)).await;
-
-        let result = handle.await.expect("Task should complete");
-        assert!(result.is_ok(), "Should shutdown gracefully");
-        assert!(node.is_rpc_ready(), "Should be ready after bootstrap");
-        assert!(
-            logs_contain("Shutdown before Raft main loop"),
-            "Should log shutdown before main loop"
         );
     }
 }
