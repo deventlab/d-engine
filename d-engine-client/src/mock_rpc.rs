@@ -79,9 +79,8 @@ impl ClusterManagementService for MockRpcService {
         &self,
         _request: tonic::Request<JoinRequest>,
     ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
-        // join_cluster is no longer used by client API, but trait implementation required
         Err(tonic::Status::unimplemented(
-            "join_cluster not supported in mock",
+            "join_cluster removed from client API",
         ))
     }
 
