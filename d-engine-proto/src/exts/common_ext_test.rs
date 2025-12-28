@@ -41,6 +41,7 @@ fn test_entry_payload_config_with_add_node() {
     let add_node = AddNode {
         node_id: 1,
         address: "127.0.0.1:5000".to_string(),
+        status: crate::common::NodeStatus::Promotable as i32,
     };
     let change = Change::AddNode(add_node.clone());
     let payload = EntryPayload::config(change);

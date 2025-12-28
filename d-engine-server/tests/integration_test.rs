@@ -9,4 +9,5 @@ mod common;
 mod election;
 mod embedded;
 mod join_cluster;
+mod readonly_mode;
 mod snapshot;

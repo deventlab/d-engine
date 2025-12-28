@@ -211,6 +211,12 @@ where
                                         current_next_index,
                                     )?;
 
+                                    // Record Learner progress
+                                    if learners.iter().any(|n| n.id == append_response.node_id) {
+                                        learner_progress
+                                            .insert(append_response.node_id, update.match_index);
+                                    }
+
                                     peer_updates.insert(append_response.node_id, update);
                                 }
 

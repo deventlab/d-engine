@@ -254,7 +254,7 @@
 //! Reference: Raft paper §6 (Cluster membership changes)
 //!
 //! #### H1. New Node Snapshot Initialization
-//! - **H1.1**: is_joining() flag indicates bootstrap phase
+//! - **H1.1**: is_learner() flag indicates bootstrap phase
 //! - **H1.2**: fetch_initial_snapshot() called in Raft::run() before main loop
 //! - **H1.3**: Snapshot fetch success - node has log prefix from snapshot
 //! - **H1.4**: Snapshot fetch failure - node falls back to append_entries sync
@@ -270,7 +270,7 @@
 //!
 //! #### H3. Bootstrap Timing and Ordering
 //! - **H3.1**: Snapshot initialization happens BEFORE main event loop starts
-//! - **H3.2**: is_joining() flag checked once per node startup
+//! - **H3.2**: is_learner() flag checked once per node startup
 //! - **H3.3**: No role transitions or elections during bootstrap phase
 //! - **H3.4**: join_cluster() vs run() method sequencing
 //!
@@ -988,7 +988,7 @@ mod raft_comprehensive_tests {
     async fn test_candidate_become_votes_for_self() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut raft = MockBuilder::new(graceful_rx).build_raft();
-        let node_id = raft.ctx.node_id;
+        let _node_id = raft.ctx.node_id;
 
         // Transition to candidate
         raft.handle_role_event(RoleEvent::BecomeCandidate)
@@ -1283,7 +1283,7 @@ mod raft_comprehensive_tests {
         let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
         // Register a leader change listener
-        let (leader_tx, mut leader_rx) = watch::channel(None);
+        let (leader_tx, _leader_rx) = watch::channel(None);
         raft.register_leader_change_listener(leader_tx);
 
         // First become candidate
@@ -1315,7 +1315,7 @@ mod raft_comprehensive_tests {
         let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
         // Register a leader change listener
-        let (leader_tx, mut leader_rx) = watch::channel(None);
+        let (leader_tx, _leader_rx) = watch::channel(None);
         raft.register_leader_change_listener(leader_tx);
 
         // Become candidate (no leader in this state)
@@ -1342,7 +1342,7 @@ mod raft_comprehensive_tests {
         raft.ctx.handlers.replication_handler = replication_core;
 
         // Register a leader change listener
-        let (leader_tx, mut leader_rx) = watch::channel(None);
+        let (leader_tx, _leader_rx) = watch::channel(None);
         raft.register_leader_change_listener(leader_tx);
 
         // Become candidate then leader
@@ -1371,7 +1371,7 @@ mod raft_comprehensive_tests {
         let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
         // Register a leader change listener
-        let (leader_tx, mut leader_rx) = watch::channel(None);
+        let (leader_tx, _leader_rx) = watch::channel(None);
         raft.register_leader_change_listener(leader_tx);
 
         // Become learner (no leader in this state)
@@ -1451,7 +1451,7 @@ mod raft_comprehensive_tests {
     #[tokio::test]
     async fn test_reprocess_event_requeues() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut raft = MockBuilder::new(graceful_rx).build_raft();
+        let raft = MockBuilder::new(graceful_rx).build_raft();
 
         // ReprocessEvent is used internally to re-queue events
         // This test verifies the mechanism works correctly
@@ -1883,7 +1883,7 @@ mod raft_comprehensive_tests {
         raft.ctx.handlers.replication_handler = replication_core;
 
         // Register listeners
-        let (leader_tx, mut leader_rx) = watch::channel(None);
+        let (leader_tx, _leader_rx) = watch::channel(None);
         raft.register_leader_change_listener(leader_tx);
 
         // Become candidate then leader
@@ -2291,7 +2291,7 @@ mod raft_comprehensive_tests {
 
     // H1. New Node Snapshot Initialization
 
-    /// Test: is_joining() flag indicates bootstrap phase
+    /// Test: is_learner() flag indicates bootstrap phase
     ///
     /// Verifies new node is marked as joining.
     /// See H1.1 in test scenarios.

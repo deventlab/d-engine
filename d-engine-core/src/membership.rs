@@ -138,6 +138,7 @@ where
         &self,
         node_id: u32,
         address: String,
+        status: NodeStatus,
     ) -> Result<()>;
 
     /// Activate node

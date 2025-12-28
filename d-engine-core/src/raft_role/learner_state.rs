@@ -18,6 +18,7 @@ use tracing::warn;
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
+use super::can_serve_read_locally;
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -39,6 +40,7 @@ use crate::alias::MOF;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Learner;
 
+use d_engine_proto::client::ClientResponse;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::JoinRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
@@ -273,16 +275,33 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 })?;
             }
 
-            RaftEvent::ClientReadRequest(_client_read_request, sender) => {
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Learner can not process client read request",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+            RaftEvent::ClientReadRequest(client_read_request, sender) => {
+                match can_serve_read_locally(&client_read_request, ctx) {
+                    Some(_policy) => {
+                        // Only EventualConsistency will reach here - safe to serve locally
+                        let results = ctx
+                            .handlers
+                            .state_machine_handler
+                            .read_from_state_machine(client_read_request.keys)
+                            .unwrap_or_default();
+                        let response = ClientResponse::read_results(results);
+                        debug!("Learner serving local read: {:?}", response);
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send local read response: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
+                        })?;
+                    }
+                    None => {
+                        // Policy requires leader access - reject
+                        let error = tonic::Status::permission_denied(
+                            "Read consistency policy requires leader access. Current node is learner.",
+                        );
+                        sender.send(Err(error)).map_err(|e| {
+                            error!("Failed to send policy rejection: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
+                        })?;
+                    }
+                }
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
@@ -503,6 +522,17 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
         // 3. Continue the original Join process
         let node_config = ctx.node_config();
+
+        // Get this node's configured status from initial_cluster
+        // Node MUST be defined in initial_cluster with explicit status
+        let node_status = node_config
+            .cluster
+            .initial_cluster
+            .iter()
+            .find(|n| n.id == node_config.cluster.node_id)
+            .map(|n| n.status)
+            .ok_or_else(|| MembershipError::JoinClusterFailed(node_config.cluster.node_id))?;
+
         let response = ctx
             .transport()
             .join_cluster(
@@ -511,6 +541,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     node_id: node_config.cluster.node_id,
                     node_role: Learner as i32,
                     address: node_config.cluster.listen_address.to_string(),
+                    status: node_status,
                 },
                 node_config.retry.join_cluster,
                 membership.clone(),

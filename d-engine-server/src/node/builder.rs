@@ -354,12 +354,12 @@ where
 
         // Construct my role
         // Role initialization flow:
-        // 1. Check joining status from node config
+        // 1. Check if node is learner from config
         // 2. Load persisted hard state from storage
         // 3. Determine initial role based on cluster state
         // 4. Inject dependencies to role state
         let last_applied_index = Some(state_machine.last_applied().index);
-        let my_role = if node_config_arc.is_joining() {
+        let my_role = if node_config_arc.is_learner() {
             RaftRole::Learner(Box::new(LearnerState::new(
                 node_id,
                 node_config_arc.clone(),

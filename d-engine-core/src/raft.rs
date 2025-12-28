@@ -210,9 +210,9 @@ where
 
     pub async fn run(&mut self) -> Result<()> {
         // Add snapshot handler before main loop
-        if self.ctx.node_config.is_joining() {
+        if self.ctx.node_config.is_learner() {
             info!(
-                "Node({}) is joining and needs to fetch initial snapshot.",
+                "Node({}) is learner and needs to fetch initial snapshot.",
                 self.node_id
             );
             if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {

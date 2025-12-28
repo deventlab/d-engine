@@ -58,13 +58,13 @@ pub fn create_test_membership()
             id: 4,
             address: "127.0.0.1:10000".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Joining.into(),
+            status: NodeStatus::Promotable.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Joining.into(),
+            status: NodeStatus::Promotable.into(),
         },
     ];
     RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
@@ -81,7 +81,7 @@ async fn test_update_single_node_case1() {
 
     // Test updating an existing node
     let node_id = 4; //Learner 4
-    let new_status = NodeStatus::Syncing;
+    let new_status = NodeStatus::Promotable;
     let result = membership
         .update_single_node(node_id, |node| {
             node.status = new_status as i32;
@@ -95,7 +95,7 @@ async fn test_update_single_node_case1() {
     let node_status = membership.get_node_status(node_id).await.unwrap();
     assert_eq!(
         node_status,
-        NodeStatus::Syncing,
+        NodeStatus::Promotable,
         "Node status should be updated"
     );
 }
@@ -107,7 +107,7 @@ async fn test_update_single_node_case2() {
 
     // Test updating a non-existing node
     let node_id = 10; //none existent node
-    let new_status = NodeStatus::Syncing;
+    let new_status = NodeStatus::Promotable;
     let result = membership
         .update_single_node(node_id, |node| {
             node.status = new_status as i32;
@@ -127,7 +127,7 @@ async fn test_update_multiple_nodes_case1() {
     let membership = create_test_membership();
     let nodes = vec![4, 5];
 
-    let new_status = NodeStatus::Syncing;
+    let new_status = NodeStatus::Promotable;
     let result = membership
         .update_multiple_nodes(&nodes, |node| {
             node.status = new_status as i32;
@@ -141,8 +141,8 @@ async fn test_update_multiple_nodes_case1() {
         let node_status = membership.get_node_status(node_id).await.unwrap();
         assert_eq!(
             node_status,
-            NodeStatus::Syncing,
-            "All nodes should be Syncing"
+            NodeStatus::Promotable,
+            "All nodes should be Promotable"
         );
     }
 }
@@ -153,7 +153,7 @@ async fn test_update_multiple_nodes_case2() {
     let membership = create_test_membership();
     let nodes = vec![4, 13];
 
-    let new_status = NodeStatus::Syncing;
+    let new_status = NodeStatus::Promotable;
     let result = membership
         .update_multiple_nodes(&nodes, |node| {
             node.status = new_status as i32;
@@ -166,7 +166,7 @@ async fn test_update_multiple_nodes_case2() {
     let node4_status = membership.get_node_status(4).await.unwrap();
     assert_eq!(
         node4_status,
-        NodeStatus::Syncing,
+        NodeStatus::Promotable,
         "Existing node should be updated"
     );
 
@@ -201,13 +201,13 @@ async fn test_replication_peers_case1() {
             id: 4,
             address: "127.0.0.1:10000".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Syncing.into(),
+            status: NodeStatus::Promotable.into(),
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10000".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Joining.into(),
+            status: NodeStatus::Promotable.into(),
         },
     ];
     let membership = RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
@@ -336,6 +336,7 @@ async fn test_update_cluster_conf_from_leader_case1() {
             change: Some(Change::AddNode(AddNode {
                 node_id: 3,
                 address: "127.0.0.1:8080".to_string(),
+                status: NodeStatus::Promotable as i32,
             })),
         }),
     };
@@ -416,7 +417,7 @@ async fn test_update_cluster_conf_from_leader_case3() {
         change: Some(MembershipChange {
             change: Some(Change::Promote(PromoteLearner {
                 node_id: 3,
-                status: NodeStatus::Syncing.into(),
+                status: NodeStatus::Promotable.into(),
             })),
         }),
     };
@@ -461,7 +462,7 @@ async fn test_update_cluster_conf_from_leader_case4_conf_invalid_promotion() {
         change: Some(MembershipChange {
             change: Some(Change::Promote(PromoteLearner {
                 node_id: 3,
-                status: NodeStatus::Syncing.into(),
+                status: NodeStatus::Promotable.into(),
             })),
         }),
     };
@@ -532,6 +533,7 @@ async fn test_update_cluster_conf_from_leader_case6_conf_version_mismatch() {
             change: Some(Change::AddNode(AddNode {
                 node_id: 3,
                 address: "127.0.0.1:8080".to_string(),
+                status: NodeStatus::Promotable as i32,
             })),
         }),
     };
@@ -572,13 +574,13 @@ async fn test_batch_remove_nodes() {
             id: 4,
             address: "127.0.0.1:10003".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Syncing as i32,
+            status: NodeStatus::Promotable as i32,
         },
         NodeMeta {
             id: 5,
             address: "127.0.0.1:10004".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Joining as i32,
+            status: NodeStatus::Promotable as i32,
         },
     ];
 
@@ -681,7 +683,7 @@ async fn test_apply_batch_remove_config_change() {
                 id: 3,
                 address: "127.0.0.1:10002".to_string(),
                 role: Learner as i32,
-                status: NodeStatus::Syncing as i32,
+                status: NodeStatus::Promotable as i32,
             },
             NodeMeta {
                 id: 4,
@@ -728,7 +730,7 @@ async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
             id: 3,
             address: "127.0.0.1:10002".to_string(),
             role: Learner as i32,
-            status: NodeStatus::Syncing as i32,
+            status: NodeStatus::Promotable as i32,
         },
         NodeMeta {
             id: 4,
@@ -1031,7 +1033,9 @@ mod add_learner_test {
             RaftNodeConfig::default(),
         );
 
-        let result = membership.add_learner(2, "127.0.0.1:1234".to_string()).await;
+        let result = membership
+            .add_learner(2, "127.0.0.1:1234".to_string(), NodeStatus::Promotable)
+            .await;
         assert!(result.is_ok(), "Should add learner successfully");
 
         let replication_members = membership.members().await;
@@ -1039,7 +1043,7 @@ mod add_learner_test {
         assert_eq!(replication_members[0].id, 2);
         assert_eq!(replication_members[0].address, "127.0.0.1:1234");
         assert_eq!(replication_members[0].role, Learner as i32);
-        assert_eq!(replication_members[0].status, NodeStatus::Syncing as i32);
+        assert_eq!(replication_members[0].status, NodeStatus::Promotable as i32);
     }
 
     #[tokio::test]
@@ -1055,7 +1059,9 @@ mod add_learner_test {
             RaftNodeConfig::default(),
         );
 
-        let result = membership.add_learner(1, "127.0.0.1:1234".to_string()).await;
+        let result = membership
+            .add_learner(1, "127.0.0.1:1234".to_string(), NodeStatus::Promotable)
+            .await;
         assert!(result.is_err(), "Node is follower");
 
         let replication_members = membership.members().await;
@@ -1087,7 +1093,10 @@ async fn test_health_monitoring_integration() {
     let membership = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
 
     // Add test node
-    membership.add_learner(100, "invalid.address".to_string()).await.unwrap();
+    membership
+        .add_learner(100, "invalid.address".to_string(), NodeStatus::Promotable)
+        .await
+        .unwrap();
 
     // Test 1: Record connection failure
     let channel = membership.get_peer_channel(100, ConnectionType::Control).await;
@@ -1384,7 +1393,7 @@ mod single_node_tests {
 
         // Add a learner (simulate cluster expansion)
         membership
-            .add_learner(4, "127.0.0.1:9084".to_string())
+            .add_learner(4, "127.0.0.1:9084".to_string(), NodeStatus::Promotable)
             .await
             .expect("Should succeed");
 

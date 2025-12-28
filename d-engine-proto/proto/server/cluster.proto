@@ -70,6 +70,9 @@ message JoinRequest {
 
   // Network address of the new node
   string address = 3;
+
+  // Desired status of the node (PROMOTABLE or READ_ONLY)
+  d_engine.common.NodeStatus status = 4;
 }
 
 enum ConfigState {

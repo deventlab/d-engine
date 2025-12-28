@@ -1241,10 +1241,41 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::MembershipApplied => {
+                // Save old membership for comparison
+                let old_replication_targets = self.cluster_metadata.replication_targets.clone();
+
                 // Refresh cluster metadata cache after membership change is applied
                 debug!("Refreshing cluster metadata cache after membership change");
                 if let Err(e) = self.update_cluster_metadata(&ctx.membership()).await {
                     warn!("Failed to update cluster metadata: {:?}", e);
+                }
+
+                // CRITICAL FIX #218: Initialize replication state for newly added peers
+                // Per Raft protocol: When new members join, Leader must initialize their next_index
+                let newly_added: Vec<u32> = self
+                    .cluster_metadata
+                    .replication_targets
+                    .iter()
+                    .filter(|new_peer| {
+                        !old_replication_targets.iter().any(|old_peer| old_peer.id == new_peer.id)
+                    })
+                    .map(|peer| peer.id)
+                    .collect();
+
+                if !newly_added.is_empty() {
+                    debug!(
+                        "Initializing replication state for {} new peer(s): {:?}",
+                        newly_added.len(),
+                        newly_added
+                    );
+                    let last_entry_id = ctx.raft_log().last_entry_id();
+                    if let Err(e) =
+                        self.init_peers_next_index_and_match_index(last_entry_id, newly_added)
+                    {
+                        warn!("Failed to initialize next_index for new peers: {:?}", e);
+                        // Non-fatal: next_index will use default value of 1,
+                        // replication will still work but may be less efficient
+                    }
                 }
             }
 
@@ -1592,7 +1623,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
             // Skip non-promotable nodes early
             if !node_status.is_promotable() {
-                debug!("Node {} is not promotable", node_id);
+                debug!("Node {node_id} is not promotable");
                 continue;
             }
 
@@ -1927,6 +1958,7 @@ impl<T: TypeConfig> LeaderState<T> {
         let node_id = join_request.node_id;
         let node_role = join_request.node_role;
         let address = join_request.address;
+        let status = join_request.status;
         let membership = ctx.membership();
 
         // 1. Validate join request
@@ -1950,6 +1982,7 @@ impl<T: TypeConfig> LeaderState<T> {
         let config_change = Change::AddNode(AddNode {
             node_id,
             address: address.clone(),
+            status,
         });
 
         // 3. Submit config change, and wait for quorum confirmation
@@ -2303,7 +2336,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        if let Err(e) = self.conditionally_purge_stale_learners(ctx).await {
+        if let Err(e) = self.conditionally_purge_stale_learners(role_tx, ctx).await {
             error!("Stale learner purge failed: {}", e);
         }
 
@@ -2324,6 +2357,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// is inversely proportional to system load.
     pub async fn conditionally_purge_stale_learners(
         &mut self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         let config = &ctx.node_config.raft.membership.promotion;
@@ -2368,7 +2402,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Process collected stale entries
         for entry in stale_entries {
-            if let Err(e) = self.handle_stale_learner(entry.node_id, ctx).await {
+            if let Err(e) = self.handle_stale_learner(entry.node_id, role_tx, ctx).await {
                 error!("Failed to handle stale learner: {}", e);
             }
         }
@@ -2436,19 +2470,42 @@ impl<T: TypeConfig> LeaderState<T> {
         self.next_membership_maintenance_check = Instant::now() + membership_maintenance_interval;
     }
 
-    /// FINRA Rule 4370-approved remediation
+    /// Remove stalled learner via membership change consensus
     pub async fn handle_stale_learner(
         &mut self,
         node_id: u32,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        // Step 1: Automated downgrade
-        ctx.membership().update_node_status(node_id, NodeStatus::StandBy).await?;
+        // Stalled learner detected - remove via membership change (requires consensus)
+        warn!(
+            "Learner {} is stalled, removing from cluster via consensus",
+            node_id
+        );
 
-        // Step 2: Trigger operator notification
-        // ctx.ops_tx().send(OpsEvent::LearnerStalled(node_id));
-        info!("Learner {} is stalled", node_id);
-        println!("[Cluster] Learner {node_id} is stalled");
+        let change = Change::BatchRemove(BatchRemove {
+            node_ids: vec![node_id],
+        });
+
+        // Submit removal through membership change entry (requires quorum consensus)
+        match self
+            .verify_leadership_limited_retry(vec![EntryPayload::config(change)], true, ctx, role_tx)
+            .await
+        {
+            Ok(true) => {
+                info!(
+                    "Stalled learner {} successfully removed from cluster",
+                    node_id
+                );
+            }
+            Ok(false) => {
+                warn!("Failed to commit removal of stalled learner {}", node_id);
+            }
+            Err(e) => {
+                error!("Error removing stalled learner {}: {:?}", node_id, e);
+                return Err(e);
+            }
+        }
 
         Ok(())
     }

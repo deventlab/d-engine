@@ -167,7 +167,7 @@ pub async fn print_node_startup_banner<T: TypeConfig, M: Membership<T>>(
 /// 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
 ///   ✅ NODE 2 SUCCESSFULLY JOINED CLUSTER
 ///   Role: 🎓 Learner → Syncing data from Leader 1
-///   Next: Will auto-promote to Voter when caught up
+///   Next: Will auto-promote to Voter when caught up (if Promotable status)"
 /// 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
 /// ```
 pub fn print_learner_join_success(
@@ -180,7 +180,7 @@ pub fn print_learner_join_success(
         "  Role: {} Learner → Syncing data from Leader {leader_id}",
         role_emoji(NodeRole::Learner as i32)
     );
-    println!("  Next: Will auto-promote to Voter when caught up");
+    println!("  Next: Will auto-promote to Voter when caught up (if Promotable status)");
     println!("{}\n", "🎉".repeat(40));
 }
 

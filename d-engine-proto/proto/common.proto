@@ -42,6 +42,7 @@ message MembershipChange {
 message AddNode {
   uint32 node_id = 1;
   string address = 2;
+  NodeStatus status = 3;  // Status of the node being added (PROMOTABLE or READ_ONLY)
 }
 
 
@@ -64,19 +65,12 @@ message BatchRemove {
 }
 
 enum NodeStatus {
-    // Initial joining process
-    JOINING = 0;        // New node, catching up with logs
-    SYNCING = 1;        // Start syncing with leader committed logs
+    // Learner states
+    PROMOTABLE = 0;     // Learner that CAN be promoted to voter
+    READ_ONLY = 1;      // Learner that will NEVER be promoted (permanent analytics node)
 
-    // Running status
-    ACTIVE = 2;         // Formal voting member
-    STAND_BY = 3;       // Disaster recovery ready node (data has been synchronized)
-
-    // Offline process
-    DRAINING = 4;       // Prepare to go offline (not accepting new requests, transfer data)
-    RETIRING = 5;       // Retiring (data migration completed)
-
-    ZOMBIE = 6;         // Zombie node (removed from cluster)
+    // Voter state
+    ACTIVE = 2;         // Voting member (Follower, Candidate, or Leader)
 }
 
 message SnapshotEntry {

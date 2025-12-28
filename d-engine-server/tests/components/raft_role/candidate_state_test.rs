@@ -678,6 +678,7 @@ async fn test_handle_raft_event_case10() {
 
     // Step 2: Prepare the event
     let request = JoinRequest {
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
         node_id: 2,
         node_role: Learner.into(),
         address: "127.0.0.1:9090".to_string(),

@@ -3056,7 +3056,7 @@ async fn test_handle_join_cluster_case1_success() {
     });
     membership.expect_contains_node().returning(|_| false);
     membership.expect_replication_peers().returning(Vec::new);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|_current_leader_id| ClusterMembership::default());
@@ -3112,6 +3112,7 @@ async fn test_handle_join_cluster_case1_success() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: address.clone(),
@@ -3154,6 +3155,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
@@ -3186,7 +3188,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership.expect_voters().returning(Vec::new); // Empty voting members will cause quorum failure
     context.membership = Arc::new(membership);
 
@@ -3210,6 +3212,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
@@ -3242,7 +3245,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
 
     membership.expect_voters().returning(move || {
         vec![NodeMeta {
@@ -3267,6 +3270,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
@@ -3300,7 +3304,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_replication_peers().returning(Vec::new);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|_current_leader_id| ClusterMembership::default());
@@ -3367,6 +3371,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address,
@@ -3579,7 +3584,7 @@ mod batch_promote_learners_test {
             membership
                 .expect_get_node_status()
                 .with(eq(*learner_id))
-                .return_const(Some(NodeStatus::Syncing));
+                .return_const(Some(NodeStatus::Promotable));
         }
 
         raft_context.membership = Arc::new(membership);
@@ -3728,7 +3733,8 @@ mod pending_promotion_tests {
             membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
             membership
                 .expect_update_node_status()
-                .withf(|_id, status| *status == NodeStatus::StandBy)
+                .times(1)
+                .withf(|_id, status| *status == NodeStatus::ReadOnly)
                 .returning(|_, _| Ok(()));
             membership.expect_voters().returning(|| {
                 vec![NodeMeta {
@@ -3904,10 +3910,11 @@ mod pending_promotion_tests {
     #[tokio::test]
     async fn test_handle_stale_learner() {
         let mut fixture = TestFixture::new("test_handle_stale_learner", true).await;
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
         assert!(
             fixture
                 .leader_state
-                .handle_stale_learner(1, &fixture.raft_context)
+                .handle_stale_learner(1, &role_tx, &fixture.raft_context)
                 .await
                 .is_ok()
         );
@@ -4131,9 +4138,10 @@ mod stale_learner_tests {
             Arc::new(membership),
             Some(Arc::new(node_config)),
         );
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
         // Should only check first 100 entries (out of 200)
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
 
         // Should purge exactly 2 entries (1% of 200 = 2)
         assert_eq!(leader.pending_promotions.len(), 198);
@@ -4153,8 +4161,9 @@ mod stale_learner_tests {
         membership.expect_update_node_status().never();
 
         let ctx = mock_raft_context("test_no_purge_when_fresh", Arc::new(membership), None);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
         assert_eq!(leader.pending_promotions.len(), 2);
     }
 
@@ -4204,10 +4213,11 @@ mod stale_learner_tests {
         let (mut leader, membership) =
             create_test_leader_state("test_performance_large_queue", nodes);
         let ctx = mock_raft_context("test_performance_large_queue", Arc::new(membership), None);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
         // Time the staleness check
         let start = Instant::now();
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
         let elapsed = start.elapsed();
 
         // Should take <1ms even for large queues
@@ -4236,8 +4246,9 @@ mod stale_learner_tests {
             Arc::new(membership),
             Some(Arc::new(node_config)),
         );
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 2);
         assert!(leader.pending_promotions.iter().any(|p| p.node_id == 103));
@@ -4259,8 +4270,9 @@ mod stale_learner_tests {
             Arc::new(membership),
             None,
         );
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        assert!(leader.handle_stale_learner(101, &ctx).await.is_ok());
+        assert!(leader.handle_stale_learner(101, &role_tx, &ctx).await.is_ok());
 
         // Verify replication was stopped for this node
         assert!(!leader.next_index.contains_key(&101));

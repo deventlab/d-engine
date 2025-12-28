@@ -103,10 +103,10 @@ impl ClusterConfUpdateResponse {
 
 impl NodeStatus {
     pub fn is_promotable(&self) -> bool {
-        matches!(self, NodeStatus::Syncing)
+        matches!(self, NodeStatus::Promotable)
     }
 
     pub fn is_i32_promotable(value: i32) -> bool {
-        matches!(value, v if v == (NodeStatus::Syncing as i32))
+        matches!(value, v if v == (NodeStatus::Promotable as i32))
     }
 }

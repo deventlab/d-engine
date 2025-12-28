@@ -95,7 +95,8 @@ where
                     .filter(|node| {
                         node.id != self.node_id
                             && (node.status == NodeStatus::Active as i32
-                                || node.status == NodeStatus::Syncing as i32)
+                                || node.status == NodeStatus::Promotable as i32
+                                || node.status == NodeStatus::ReadOnly as i32)
                     })
                     .cloned()
                     .collect()
@@ -334,7 +335,9 @@ where
         if let Some(membership_change) = &req.change {
             match &membership_change.change {
                 Some(Change::AddNode(add)) => {
-                    self.add_learner(add.node_id, add.address.clone()).await?;
+                    println!("Adding node {} with status {:?}", add.node_id, add.status);
+                    let status = NodeStatus::try_from(add.status).unwrap_or(NodeStatus::Promotable);
+                    self.add_learner(add.node_id, add.address.clone(), status).await?;
                 }
                 Some(Change::RemoveNode(remove)) => {
                     self.remove_node(remove.node_id).await?;
@@ -429,8 +432,9 @@ where
         &self,
         node_id: u32,
         address: String,
+        status: NodeStatus,
     ) -> Result<()> {
-        info!("Adding learner node: {}", node_id);
+        info!("Adding learner node: {} with status: {:?}", node_id, status);
         self.membership
             .blocking_write(|guard| {
                 if guard.nodes.contains_key(&node_id) {
@@ -447,12 +451,12 @@ where
                         id: node_id,
                         address,
                         role: Learner as i32,
-                        status: NodeStatus::Syncing as i32,
+                        status: status as i32,
                     },
                 );
                 info!(
-                    "[node-{}] Adding a learner node successed: {}",
-                    self.node_id, node_id
+                    "[node-{}] Adding a learner node successed: {} (status={:?})",
+                    self.node_id, node_id, status
                 );
 
                 Ok(())
@@ -616,7 +620,10 @@ where
     ) -> Result<()> {
         info!("Applying membership change: {:?}", membership_change);
         match membership_change.change {
-            Some(Change::AddNode(add)) => self.add_learner(add.node_id, add.address).await,
+            Some(Change::AddNode(add)) => {
+                let status = NodeStatus::try_from(add.status).unwrap_or(NodeStatus::Promotable);
+                self.add_learner(add.node_id, add.address, status).await
+            }
             Some(Change::RemoveNode(remove)) => self.remove_node(remove.node_id).await,
             Some(Change::Promote(promote)) => {
                 self.membership
@@ -710,10 +717,8 @@ where
             return Ok(());
         }
 
-        match self.get_node_status(node_id).await {
-            Some(NodeStatus::Zombie) => Ok(()),
-            _ => Err(MembershipError::NodeAlreadyExists(node_id).into()),
-        }
+        // Node already exists in membership - cannot rejoin unless it was removed
+        Err(MembershipError::NodeAlreadyExists(node_id).into())
     }
 }
 

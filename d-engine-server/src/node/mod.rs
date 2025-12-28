@@ -28,7 +28,6 @@ pub(crate) use leader_notifier::*;
 
 #[doc(hidden)]
 mod type_config;
-use tracing::debug;
 use tracing::info;
 #[doc(hidden)]
 pub use type_config::*;
@@ -135,18 +134,14 @@ where
     /// Starts and runs the Raft node's main execution loop.
     ///
     /// # Workflow
-    /// 1. Establishes network connections with cluster peers
-    /// 2. Performs cluster health check
-    /// 3. Marks node as ready for operation
-    /// 4. Joins the Raft cluster
-    /// 5. Executes the core Raft event processing loop
+    /// Strategy-based bootstrap depending on node type:
+    /// - **Learner**: Skip cluster ready check, join cluster after warmup
+    /// - **Voter**: Wait for cluster ready, then warmup connections
+    ///
+    /// Both paths converge to the Raft event processing loop.
     ///
     /// # Errors
-    /// Returns `Err` if any of these operations fail:
-    /// - Peer connection establishment
-    /// - Cluster health check
-    /// - Raft core initialization
-    /// - Event processing failures
+    /// Returns `Err` if any bootstrap step or Raft execution fails.
     ///
     /// # Example
     /// ```ignore
@@ -156,45 +151,93 @@ where
     /// });
     /// ```
     pub async fn run(&self) -> Result<()> {
-        // 1. Connect with other peers
-        // let peer_channels = Self::connect_with_peers(self.node_id,
-        // self.node_config.clone()).await?;
-
-        // 2. Healthcheck if all server is start serving
         let mut shutdown_signal = self.shutdown_signal.clone();
-        shutdown_signal.borrow_and_update(); // Mark current value as seen
+        shutdown_signal.borrow_and_update();
+
+        // Strategy pattern: bootstrap based on node type
+        if self.node_config.is_learner() {
+            self.run_as_learner(&mut shutdown_signal).await?;
+        } else {
+            self.run_as_voter(&mut shutdown_signal).await?;
+        }
+
+        // Start Raft main loop
+        self.start_raft_loop(&mut shutdown_signal).await
+    }
+
+    /// Learner bootstrap: skip cluster ready check, join after warmup.
+    async fn run_as_learner(
+        &self,
+        shutdown: &mut watch::Receiver<()>,
+    ) -> Result<()> {
+        info!("Learner node bootstrap initiated");
+
+        // Set RPC ready immediately (no cluster wait needed)
+        self.set_rpc_ready(true);
+
+        // Warm up connections
+        self.warmup_with_shutdown(shutdown).await?;
+
+        // Join cluster as learner
+        let raft = self.raft_core.lock().await;
+        info!(%self.node_config.cluster.node_id, "Learner joining cluster");
+        raft.join_cluster().await?;
+        drop(raft); // Release lock before entering main loop
+
+        Ok(())
+    }
+
+    /// Voter bootstrap: wait for cluster ready, then warmup.
+    async fn run_as_voter(
+        &self,
+        shutdown: &mut watch::Receiver<()>,
+    ) -> Result<()> {
+        info!("Voter node bootstrap initiated");
+
+        // Wait for cluster ready
         tokio::select! {
             result = self.membership.check_cluster_is_ready() => result?,
-            _ = shutdown_signal.changed() => {
-                info!("Shutdown signal received during cluster ready check");
+            _ = shutdown.changed() => {
+                info!("Shutdown during cluster ready check");
                 return Ok(());
             }
         }
 
-        // 3. Set node RPC server is ready
+        // Set RPC ready after cluster is healthy
         self.set_rpc_ready(true);
 
-        // 4. Warm up connections with peers
+        // Warm up connections
+        self.warmup_with_shutdown(shutdown).await
+    }
+
+    /// Warm up peer connections with shutdown handling.
+    async fn warmup_with_shutdown(
+        &self,
+        shutdown: &mut watch::Receiver<()>,
+    ) -> Result<()> {
         tokio::select! {
             result = self.membership.pre_warm_connections() => result?,
-            _ = shutdown_signal.changed() => {
-                info!("Shutdown signal received during connection warmup");
+            _ = shutdown.changed() => {
+                info!("Shutdown during connection warmup");
                 return Ok(());
             }
+        }
+        Ok(())
+    }
+
+    /// Start Raft main loop with pre-check for shutdown signal.
+    async fn start_raft_loop(
+        &self,
+        shutdown: &mut watch::Receiver<()>,
+    ) -> Result<()> {
+        // Check shutdown before entering main loop
+        if shutdown.has_changed().unwrap_or(false) {
+            info!("Shutdown before Raft main loop");
+            return Ok(());
         }
 
         let mut raft = self.raft_core.lock().await;
-        // 5. if join as a new node
-        debug!(%self.node_config.cluster.node_id);
-        if self.node_config.is_joining() {
-            info!(%self.node_config.cluster.node_id, "Node is joining...");
-            raft.join_cluster().await?;
-        }
-
-        // 6. Run the main event processing loop
-        raft.run().await?;
-
-        Ok(())
+        raft.run().await
     }
 
     /// Marks the node's RPC server as ready to accept requests.

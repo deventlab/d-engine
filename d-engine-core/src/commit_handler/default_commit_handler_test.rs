@@ -425,6 +425,7 @@ mod run_test {
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
+                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 })),
                 CommandType::Noop,
                 CommandType::Command(Bytes::from(b"cmd2".to_vec())),
@@ -556,6 +557,7 @@ mod run_test {
             change: Some(Change::AddNode(AddNode {
                 node_id: 1,
                 address: "127.0.0.1:8080".to_string(),
+                status: 1,
             })),
         };
         assert!(
@@ -948,6 +950,7 @@ mod process_batch_test {
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
+                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 })),
                 CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
@@ -1019,6 +1022,7 @@ mod process_batch_test {
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
+                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 })),
                 CommandType::Command(Bytes::from(b"cmd1".to_vec())),
             ],
@@ -1128,6 +1132,7 @@ mod process_batch_test {
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
+                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 })),
                 CommandType::Noop,
                 CommandType::Command(Bytes::from(b"cmd2".to_vec())),
@@ -1188,6 +1193,7 @@ mod process_batch_test {
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
+                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 })),
                 CommandType::Command(Bytes::from(b"cmd2".to_vec())),
             ],
@@ -1235,6 +1241,7 @@ mod process_batch_test {
                 CommandType::Configuration(Change::AddNode(AddNode {
                     node_id: 1,
                     address: "addr".into(),
+                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 })),
                 CommandType::Command(Bytes::from(b"cmd1".to_vec())),
                 CommandType::Configuration(Change::RemoveNode(RemoveNode { node_id: 1 })),
@@ -1292,6 +1299,7 @@ mod process_batch_test {
             vec![CommandType::Configuration(Change::AddNode(AddNode {
                 node_id: 2,
                 address: "127.0.0.1:8080".into(),
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
             }))],
             1,
         );
@@ -1342,6 +1350,7 @@ mod process_batch_test {
             vec![CommandType::Configuration(Change::AddNode(AddNode {
                 node_id: 2,
                 address: "127.0.0.1:8080".into(),
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
             }))],
             1,
         );
@@ -1397,6 +1406,7 @@ mod process_batch_test {
             vec![CommandType::Configuration(Change::AddNode(AddNode {
                 node_id: 2,
                 address: "127.0.0.1:8080".into(),
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
             }))],
             1,
         );
@@ -1444,6 +1454,7 @@ mod process_batch_test {
             vec![CommandType::Configuration(Change::AddNode(AddNode {
                 node_id: 2,
                 address: "127.0.0.1:8080".into(),
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
             }))],
             1,
         );

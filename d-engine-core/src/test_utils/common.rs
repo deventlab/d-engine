@@ -19,6 +19,7 @@ pub fn create_mixed_entries() -> Vec<Entry> {
         payload: Some(EntryPayload::config(Change::AddNode(AddNode {
             node_id: 7,
             address: "127.0.0.1:8080".into(),
+            status: d_engine_proto::common::NodeStatus::Promotable as i32,
         }))),
     };
 
@@ -38,6 +39,7 @@ pub fn create_config_entries() -> Vec<Entry> {
         payload: Some(EntryPayload::config(Change::AddNode(AddNode {
             node_id: 8,
             address: "127.0.0.1:8080".into(),
+            status: d_engine_proto::common::NodeStatus::Promotable as i32,
         }))),
     };
     vec![entry]

@@ -507,6 +507,7 @@ async fn test_handle_raft_event_case10() {
 
     // Step 2: Prepare the event
     let request = JoinRequest {
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
         node_id: 2,
         node_role: Learner.into(),
         address: "127.0.0.1:9090".to_string(),
@@ -1078,7 +1079,7 @@ async fn test_learner_stays_learner_on_membership_applied() {
         id: 3,
         address: "127.0.0.1:8003".to_string(),
         role: NodeRole::Learner as i32,
-        status: NodeStatus::Syncing as i32,
+        status: NodeStatus::Promotable as i32,
     };
 
     mock_membership

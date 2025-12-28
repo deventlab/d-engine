@@ -48,3 +48,4 @@ lcov.info
 CONTEXT
 *.bak*
 .claudeignore
+safe-split-commits.sh

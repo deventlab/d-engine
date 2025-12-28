@@ -40,7 +40,6 @@ use serde::Serialize;
 
 use crate::Error;
 use crate::Result;
-use d_engine_proto::common::NodeStatus;
 
 /// Main configuration container for Raft consensus engine components
 ///
@@ -173,12 +172,21 @@ impl RaftNodeConfig {
         Ok(())
     }
 
-    pub fn is_joining(&self) -> bool {
+    /// Checks if this node is configured as a learner (not a voter)
+    ///
+    /// A learner node has role=Learner. Only learners can join via JoinCluster RPC.
+    /// Voters have role=Follower/Candidate/Leader and are added via config change (AddNode).
+    ///
+    /// Note: Status (Promotable/ReadOnly/Active) is separate from role.
+    /// This method checks **role only**.
+    pub fn is_learner(&self) -> bool {
+        use d_engine_proto::common::NodeRole;
+
         self.cluster
             .initial_cluster
             .iter()
             .find(|n| n.id == self.cluster.node_id)
-            .map(|n| n.status == NodeStatus::Joining as i32)
+            .map(|n| n.role == NodeRole::Learner as i32)
             .unwrap_or(false)
     }
 }

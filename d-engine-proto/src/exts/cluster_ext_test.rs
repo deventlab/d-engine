@@ -95,27 +95,23 @@ fn test_cluster_conf_update_response_all_error_types() {
 }
 
 #[test]
-fn test_node_status_is_promotable_syncing() {
-    // Syncing is the only promotable status according to is_promotable implementation
-    assert!(NodeStatus::Syncing.is_promotable());
+fn test_node_status_is_promotable_promotable() {
+    // Promotable is the only promotable status according to is_promotable implementation
+    assert!(NodeStatus::Promotable.is_promotable());
 }
 
 #[test]
 fn test_node_status_is_promotable_other_variants() {
     // Other variants should not be promotable
-    assert!(!NodeStatus::Joining.is_promotable());
+    assert!(!NodeStatus::ReadOnly.is_promotable());
     assert!(!NodeStatus::Active.is_promotable());
-    assert!(!NodeStatus::StandBy.is_promotable());
-    assert!(!NodeStatus::Draining.is_promotable());
 }
 
 #[test]
 fn test_node_status_is_i32_promotable() {
-    assert!(NodeStatus::is_i32_promotable(NodeStatus::Syncing as i32));
-    assert!(!NodeStatus::is_i32_promotable(NodeStatus::Joining as i32));
+    assert!(NodeStatus::is_i32_promotable(NodeStatus::Promotable as i32));
+    assert!(!NodeStatus::is_i32_promotable(NodeStatus::ReadOnly as i32));
     assert!(!NodeStatus::is_i32_promotable(NodeStatus::Active as i32));
-    assert!(!NodeStatus::is_i32_promotable(NodeStatus::StandBy as i32));
-    assert!(!NodeStatus::is_i32_promotable(NodeStatus::Draining as i32));
 }
 
 #[test]

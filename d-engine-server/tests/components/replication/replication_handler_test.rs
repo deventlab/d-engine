@@ -3036,7 +3036,7 @@ mod handle_raft_request_in_batch_test {
                             id: learner_id,
                             address: "http://127.0.0.1:55002".to_string(),
                             role: Learner.into(),
-                            status: NodeStatus::Joining.into(),
+                            status: NodeStatus::Promotable.into(),
                         },
                     ],
                     total_voters: 2,
@@ -3135,7 +3135,7 @@ mod handle_raft_request_in_batch_test {
                             id: pending_id,
                             address: "http://127.0.0.1:55002".to_string(),
                             role: Learner.into(),
-                            status: NodeStatus::Syncing.into(),
+                            status: NodeStatus::Promotable.into(),
                         },
                     ],
                     total_voters: 2,
@@ -3227,13 +3227,13 @@ mod handle_raft_request_in_batch_test {
                             id: learner1,
                             address: "http://127.0.0.1:55001".to_string(),
                             role: Learner.into(),
-                            status: NodeStatus::Joining.into(),
+                            status: NodeStatus::Promotable.into(),
                         },
                         NodeMeta {
                             id: learner2,
                             address: "http://127.0.0.1:55002".to_string(),
                             role: Learner.into(),
-                            status: NodeStatus::Joining.into(),
+                            status: NodeStatus::Promotable.into(),
                         },
                     ],
                     total_voters: 1,
@@ -3340,13 +3340,13 @@ mod handle_raft_request_in_batch_test {
                     id: joining_id,
                     address: "http://127.0.0.1:55002".to_string(),
                     role: Learner.into(),
-                    status: NodeStatus::Joining as i32,
+                    status: NodeStatus::Promotable as i32,
                 },
                 NodeMeta {
                     id: pending_id,
                     address: "http://127.0.0.1:55003".to_string(),
                     role: Learner.into(),
-                    status: NodeStatus::Syncing as i32,
+                    status: NodeStatus::Promotable as i32,
                 },
             ]
         });
@@ -3426,13 +3426,13 @@ mod handle_raft_request_in_batch_test {
                             id: joining_id,
                             address: "http://127.0.0.1:55002".to_string(),
                             role: Learner.into(),
-                            status: NodeStatus::Joining.into(),
+                            status: NodeStatus::Promotable.into(),
                         },
                         NodeMeta {
                             id: pending_id,
                             address: "http://127.0.0.1:55003".to_string(),
                             role: Learner.into(),
-                            status: NodeStatus::Syncing.into(),
+                            status: NodeStatus::Promotable.into(),
                         },
                     ],
                     total_voters: 2,
@@ -3478,7 +3478,7 @@ mod handle_raft_request_in_batch_test {
                 },
                 NodeMeta {
                     id: pending_id,
-                    status: NodeStatus::Joining as i32,
+                    status: NodeStatus::Promotable as i32,
                     role: Learner.into(),
                     ..Default::default()
                 },
@@ -3581,7 +3581,7 @@ mod handle_raft_request_in_batch_test {
         membership.expect_replication_peers().returning(move || {
             vec![NodeMeta {
                 id: learner_id,
-                status: NodeStatus::Joining as i32,
+                status: NodeStatus::Promotable as i32,
                 ..Default::default()
             }]
         });
@@ -3642,7 +3642,7 @@ mod handle_raft_request_in_batch_test {
                         id: learner_id,
                         address: "http://127.0.0.1:55001".to_string(),
                         role: Learner.into(),
-                        status: NodeStatus::Joining.into(),
+                        status: NodeStatus::Promotable.into(),
                     }],
                     total_voters: 1,
                 },
@@ -3678,7 +3678,7 @@ mod handle_raft_request_in_batch_test {
                 id: learner_id,
                 address: "http://127.0.0.1:55001".to_string(),
                 role: Learner.into(),
-                status: NodeStatus::Syncing.into(),
+                status: NodeStatus::Promotable.into(),
             }]
         });
         membership.expect_voters().returning(Vec::new);
