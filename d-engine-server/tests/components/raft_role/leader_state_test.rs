@@ -3731,11 +3731,6 @@ mod pending_promotion_tests {
             membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
-            membership
-                .expect_update_node_status()
-                .times(1)
-                .withf(|_id, status| *status == NodeStatus::ReadOnly)
-                .returning(|_, _| Ok(()));
             membership.expect_voters().returning(|| {
                 vec![NodeMeta {
                     id: 2,
@@ -4118,6 +4113,29 @@ mod stale_learner_tests {
         ctx.membership = membership.clone();
         ctx.node_config =
             config.unwrap_or_else(|| Arc::new(node_config(&format!("/tmp/{test_name}",))));
+
+        // Mock raft_log for calculate_majority_matched_index
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 0);
+        raft_log.expect_last_log_id().returning(|| None);
+        raft_log.expect_flush().returning(|| Ok(()));
+        raft_log.expect_load_hard_state().returning(|| Ok(None));
+        raft_log.expect_save_hard_state().returning(|_| Ok(()));
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(0));
+        ctx.storage.raft_log = Arc::new(raft_log);
+
+        // Mock replication handler to handle BatchRemove operations
+        ctx.handlers
+            .replication_handler
+            .expect_handle_raft_request_in_batch()
+            .returning(|_, _, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    peer_updates: HashMap::new(),
+                    learner_progress: HashMap::new(),
+                })
+            });
+
         ctx
     }
 
