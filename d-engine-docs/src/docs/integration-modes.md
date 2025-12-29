@@ -186,35 +186,6 @@ client.put(b"key", b"value")
 
 ---
 
-## Migration Path
-
-### Start Simple, Scale Later
-
-You can start with **Embedded Mode** for development and migrate to **Standalone Mode** for production if needed:
-
-**Development (Embedded):**
-
-```rust,ignore
-// Single node, in-process
-let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
-let client = engine.client();
-```
-
-**Production (Standalone):**
-
-```rust,ignore
-// 3-node cluster, separate servers
-let client = ClientBuilder::new(vec![
-    "http://node1:9083".to_string(),
-    "http://node2:9083".to_string(),
-    "http://node3:9083".to_string(),
-]).build().await?;
-```
-
-**Zero code changes** to your business logic - only configuration changes.
-
----
-
 ## Architecture Differences
 
 ### Embedded Mode Architecture
@@ -253,30 +224,21 @@ let client = ClientBuilder::new(vec![
 
 ---
 
-## Industry Comparison
-
-### How does d-engine compare to etcd?
-
-| Feature                | d-engine Embedded | d-engine Standalone | etcd Embedded      |
-| ---------------------- | ----------------- | ------------------- | ------------------ |
-| **Language**           | Rust only         | Any                 | Go only            |
-| **KV Latency**         | <0.1ms (memory)   | 1-2ms (gRPC)        | 1-2ms (gRPC)       |
-| **Communication**      | Direct memory     | gRPC                | gRPC (even embed!) |
-| **Serialization**      | Zero              | Protobuf            | Protobuf           |
-| **True Zero-Overhead** | ✅ Yes            | ❌ No               | ❌ No              |
-
-**d-engine's Unique Value:**
-
-- **Embedded Mode**: True zero-overhead integration (etcd embedded mode still uses gRPC)
-- **Standalone Mode**: Same polyglot capabilities as etcd
-
----
-
 ## FAQ
 
-### Q: Can I use both modes simultaneously?
+### Q: When should I consider switching modes?
 
-**A:** No, but you can migrate between them without code changes (only config changes).
+**Switch to Standalone if:**
+
+- You need to support non-Rust applications
+- Multiple services need to share one cluster
+
+**Switch to Embedded if:**
+
+- You're building a Rust-only application
+- You need <0.1ms KV latency
+
+**Note**: Migration only requires changing client initialization, business logic stays the same.
 
 ### Q: Which mode is more production-ready?
 
@@ -289,10 +251,6 @@ let client = ClientBuilder::new(vec![
 ### Q: Can I switch modes later?
 
 **A:** Yes. Your business logic code remains the same, only connection setup changes.
-
-### Q: Why is d-engine Embedded Mode faster than etcd embedded?
-
-**A:** etcd embedded mode still uses gRPC for KV operations. d-engine Embedded provides direct memory access via `LocalKvClient`.
 
 ---
 

@@ -10,10 +10,6 @@
 //! - [Performance](self::performance) - Optimization techniques and benchmarking
 //! - [Server Guide](self::server_guide) - Server deployment and customization
 
-pub mod overview {
-    #![doc = include_str!("overview.md")]
-}
-
 pub mod quick_start_5min {
     #![doc = include_str!("quick-start-5min.md")]
 }
@@ -26,7 +22,12 @@ pub mod integration_modes {
     #![doc = include_str!("integration-modes.md")]
 }
 
+pub mod real_world_examples {
+    #![doc = include_str!("real-world-examples.md")]
+}
+
 pub mod architecture;
 pub mod client_guide;
+pub mod examples;
 pub mod performance;
 pub mod server_guide;

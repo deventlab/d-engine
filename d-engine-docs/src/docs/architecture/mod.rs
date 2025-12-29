@@ -5,7 +5,8 @@
 //!
 //! ## Topics
 //!
-//! - [Single Responsibility Principle](self::single_responsibility_principle) - Core design philosophy
+//! - [Single Responsibility Principle](self::single_responsibility_principle) - Core design
+//!   philosophy
 //! - [Error Handling Design](self::error_handling_design_principles) - Error management approach
 //! - [Raft Role Implementation](self::raft_role) - Leader, follower and candidate behaviors
 //! - [Snapshot Design](self::snapshot_module_design) - State transfer and recovery

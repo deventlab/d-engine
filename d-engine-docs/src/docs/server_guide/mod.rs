@@ -6,7 +6,8 @@
 //! ## Topics
 //!
 //! - [Custom Storage Engines](self::customize_storage_engine) - Implementing storage backends
-//! - [Custom State Machines](self::customize_state_machine) - Building application-specific state machines
+//! - [Custom State Machines](self::customize_state_machine) - Building application-specific state
+//!   machines
 //! - [Watch Feature](self::watch_feature) - Real-time key change notifications
 
 pub mod customize_storage_engine {
