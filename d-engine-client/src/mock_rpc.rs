@@ -1,3 +1,6 @@
+use std::pin::Pin;
+use std::sync::Arc;
+
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -14,8 +17,6 @@ use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementService;
 use futures::Stream;
-use std::pin::Pin;
-use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub struct MockRpcService {

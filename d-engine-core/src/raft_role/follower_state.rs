@@ -2,6 +2,15 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotResponse;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -38,15 +47,6 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::utils::cluster::error;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::storage::PurgeLogResponse;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotResponse;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 
 /// Follower node's state in Raft consensus.
 ///

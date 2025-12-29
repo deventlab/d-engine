@@ -377,9 +377,12 @@ mod leader_change_tests {
 
 #[cfg(test)]
 mod leader_discovered_tests {
-    use super::super::{Raft, RoleEvent};
-    use crate::test_utils::{MockBuilder, MockTypeConfig};
     use tokio::sync::watch;
+
+    use super::super::Raft;
+    use super::super::RoleEvent;
+    use crate::test_utils::MockBuilder;
+    use crate::test_utils::MockTypeConfig;
 
     #[tokio::test]
     async fn test_leader_discovered_event_handling() {
@@ -512,11 +515,16 @@ mod leader_discovered_tests {
 
 #[cfg(test)]
 mod raft_comprehensive_tests {
-    use super::super::{NewCommitData, RoleEvent};
-    use crate::test_utils::{MockBuilder, MockTypeConfig};
-    use d_engine_proto::common::NodeRole::Follower;
     use std::sync::Arc;
-    use tokio::sync::{mpsc, watch};
+
+    use d_engine_proto::common::NodeRole::Follower;
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
+
+    use super::super::NewCommitData;
+    use super::super::RoleEvent;
+    use crate::test_utils::MockBuilder;
+    use crate::test_utils::MockTypeConfig;
 
     // Helper functions to check role state
     fn is_follower(role_i32: i32) -> bool {

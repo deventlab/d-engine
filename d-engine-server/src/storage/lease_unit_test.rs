@@ -8,12 +8,13 @@
 //! - Edge cases and error conditions
 
 use std::thread::sleep;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+use std::time::SystemTime;
 
 use bytes::Bytes;
+use d_engine_core::Lease;
 
 use crate::storage::lease::DefaultLease;
-use d_engine_core::Lease;
 
 fn default_config() -> d_engine_core::config::LeaseConfig {
     d_engine_core::config::LeaseConfig {

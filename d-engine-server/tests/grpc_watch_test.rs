@@ -7,17 +7,21 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::TempDir;
-use tokio::time::sleep;
 
 use d_engine_client::ClientBuilder;
 use d_engine_proto::client::WatchResponse;
-use d_engine_server::{FileStateMachine, FileStorageEngine};
+use d_engine_server::FileStateMachine;
+use d_engine_server::FileStorageEngine;
 use futures::StreamExt;
+use tempfile::TempDir;
+use tokio::time::sleep;
 
 mod client_manager;
 mod common;
-use common::{TestContext, create_node_config, node_config, start_node};
+use common::TestContext;
+use common::create_node_config;
+use common::node_config;
+use common::start_node;
 
 /// Helper function to create a 3-node standalone cluster with watch enabled
 async fn setup_standalone_cluster()

@@ -46,10 +46,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-
 use d_engine_core::Membership;
 use d_engine_core::Raft;
 use d_engine_core::RaftEvent;
@@ -59,6 +55,9 @@ use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 /// Raft consensus node
 ///
@@ -234,8 +233,8 @@ where
     /// Marks the node's RPC server as ready to accept requests.
     ///
     /// # Parameters
-    /// - `is_ready`: When `true`, marks RPC server as ready. When `false`,
-    ///   marks server as temporarily unavailable.
+    /// - `is_ready`: When `true`, marks RPC server as ready. When `false`, marks server as
+    ///   temporarily unavailable.
     ///
     /// # Note
     /// This indicates the RPC server is listening, NOT that leader election is complete.

@@ -5,13 +5,14 @@
 
 mod mock_node_builder;
 
+use d_engine_core::MockTypeConfig;
+use d_engine_core::Raft;
+use d_engine_core::node_config;
+use d_engine_proto::server::cluster::NodeMeta;
 pub use mock_node_builder::*;
+use tokio::sync::watch;
 
 use crate::Node;
-use d_engine_core::node_config;
-use d_engine_core::{MockTypeConfig, Raft};
-use d_engine_proto::server::cluster::NodeMeta;
-use tokio::sync::watch;
 
 /// Create a mock Raft node for testing
 ///

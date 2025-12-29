@@ -5,6 +5,17 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::BytesMut;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
 use dashmap::DashMap;
 use prost::Message;
 use tonic::async_trait;
@@ -30,17 +41,6 @@ use crate::TypeConfig;
 use crate::alias::ROF;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::is_majority;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::ConflictResult;
-use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
@@ -646,17 +646,14 @@ where
             entries.len()
         );
 
-        (
-            peer_id,
-            AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
-            },
-        )
+        (peer_id, AppendEntriesRequest {
+            term: data.current_term,
+            leader_id: self.my_id,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit_index: data.commit_index,
+        })
     }
 }
 

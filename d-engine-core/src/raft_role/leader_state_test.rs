@@ -1,11 +1,13 @@
+use std::sync::Arc;
+
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::server::cluster::NodeMeta;
+
 use crate::MockMembership;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::server::cluster::NodeMeta;
-use std::sync::Arc;
 
 /// Test: init_cluster_metadata single-node
 #[tokio::test]

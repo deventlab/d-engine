@@ -5,11 +5,9 @@ use std::time::Duration;
 use d_engine_client::Client;
 use d_engine_client::ClientApiError;
 use d_engine_client::ClientBuilder;
-
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_core::convert::safe_vk;
 use d_engine_proto::client::ReadConsistencyPolicy;
-
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::time::sleep;

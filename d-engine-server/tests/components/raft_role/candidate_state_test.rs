@@ -1,11 +1,6 @@
-use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::ConsensusError;
 use d_engine_core::ElectionError;
 use d_engine_core::Error;
@@ -45,6 +40,11 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_server::test_utils::*;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tracing_test::traced_test;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
@@ -791,12 +791,13 @@ mod role_violation_tests {
 
 #[cfg(test)]
 mod handle_client_read_request {
-    use super::*;
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
     use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
     use d_engine_server::test_utils::MockBuilder;
+
+    use super::*;
 
     /// # Case 6.1: test ClientReadRequest with linear request
     #[tokio::test]

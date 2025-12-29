@@ -19,9 +19,12 @@
 //! interval_ms = 1000  # Optional, default 1 second
 //! ```
 
-use crate::errors::{Error, Result};
 use config::ConfigError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::errors::Error;
+use crate::errors::Result;
 
 /// Lease configuration for TTL-based key expiration
 ///

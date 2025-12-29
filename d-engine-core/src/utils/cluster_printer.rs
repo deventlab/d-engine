@@ -12,8 +12,10 @@
 // - The data structures used here match what the CLI will need to query
 // - Emoji and color codes can be made configurable for different terminals
 
-use crate::{Membership, TypeConfig};
 use d_engine_proto::common::NodeRole;
+
+use crate::Membership;
+use crate::TypeConfig;
 
 /// Get emoji representation for node role
 ///

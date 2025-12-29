@@ -214,9 +214,10 @@ fn type_mismatch_in_config_should_fail_gracefully() {
 
 /// Tests for node join status detection
 mod join_status_tests {
-    use super::*;
     use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
+
+    use super::*;
 
     /// # Case 1: Node is a learner with promotable status
     #[test]

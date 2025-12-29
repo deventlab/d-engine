@@ -1,6 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_core::BackoffPolicy;
+use d_engine_core::NetworkError;
+use d_engine_core::Result;
+use d_engine_core::convert::abs_ceil;
+use d_engine_core::convert::safe_kv;
+use d_engine_core::convert::safe_vk;
 use dashmap::DashSet;
 use tokio::time::sleep;
 use tracing_test::traced_test;
@@ -8,12 +14,6 @@ use tracing_test::traced_test;
 use super::async_task::*;
 use super::cluster::find_nearest_lower_number;
 use crate::utils::cluster::is_majority;
-use d_engine_core::BackoffPolicy;
-use d_engine_core::NetworkError;
-use d_engine_core::Result;
-use d_engine_core::convert::abs_ceil;
-use d_engine_core::convert::safe_kv;
-use d_engine_core::convert::safe_vk;
 
 #[test]
 fn test_kv_1() {

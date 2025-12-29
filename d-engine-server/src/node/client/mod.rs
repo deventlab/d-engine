@@ -4,4 +4,5 @@ mod local_kv;
 #[cfg(test)]
 mod local_kv_test;
 
-pub use local_kv::{LocalClientError, LocalKvClient};
+pub use local_kv::LocalClientError;
+pub use local_kv::LocalKvClient;

@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+use d_engine_core::NetworkConfig;
+use d_engine_core::NetworkError;
+use d_engine_core::Result;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 #[cfg(any(test, feature = "test-utils"))]
@@ -13,9 +16,6 @@ use tonic_health::pb::health_client::HealthClient;
 use tracing::error;
 
 use crate::utils::net::address_str;
-use d_engine_core::NetworkConfig;
-use d_engine_core::NetworkError;
-use d_engine_core::Result;
 
 #[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]

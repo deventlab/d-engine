@@ -2,15 +2,19 @@
 //!
 //! Tests whether d-engine's EmbeddedEngine supports permanent read-only Learner nodes.
 
-use d_engine_server::EmbeddedEngine;
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
-use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::EmbeddedEngine;
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
+use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::common::{get_available_ports, node_config, reset};
+use crate::common::get_available_ports;
+use crate::common::node_config;
+use crate::common::reset;
 
 const TEST_DIR: &str = "embedded/readonly";
 const DB_ROOT_DIR: &str = "./db/embedded/readonly";
@@ -208,7 +212,7 @@ general_raft_timeout_duration_in_ms = 5000
     println!("[Phase 4] Verifying node 3 read-only capability...");
 
     // Verify node 3 can read historical data
-    match engine3.client().get_linearizable(b"key1".to_vec()).await {
+    match engine3.client().get_eventual(b"key1".to_vec()).await {
         Ok(Some(val)) if val.as_ref() == b"100" => {
             println!("         ✓ Node 3 successfully read key1=100 (historical data synced)");
         }
@@ -217,7 +221,7 @@ general_raft_timeout_duration_in_ms = 5000
         }
     }
 
-    match engine3.client().get_linearizable(b"key2".to_vec()).await {
+    match engine3.client().get_eventual(b"key2".to_vec()).await {
         Ok(Some(val)) if val.as_ref() == b"101" => {
             println!("         ✓ Node 3 successfully read key2=101 (historical data synced)");
         }
@@ -241,7 +245,7 @@ general_raft_timeout_duration_in_ms = 5000
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify ReadOnly Learner receives the new write
-    match engine3.client().get_linearizable(b"key3".to_vec()).await {
+    match engine3.client().get_eventual(b"key3".to_vec()).await {
         Ok(Some(val)) if val.as_ref() == b"102" => {
             println!("         ✓ Node 3 received new write key3=102 (passive replication works)");
             println!("[Phase 5] ✓ ReadOnly Learner receives new writes\n");

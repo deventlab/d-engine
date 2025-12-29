@@ -1,5 +1,6 @@
-use d_engine_server::EmbeddedEngine;
 use std::time::Duration;
+
+use d_engine_server::EmbeddedEngine;
 use tracing_test::traced_test;
 
 #[allow(dead_code)]

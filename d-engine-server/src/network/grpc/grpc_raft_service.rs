@@ -6,24 +6,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use futures::Stream;
-#[cfg(feature = "watch")]
-use futures::StreamExt;
-use tokio::select;
-use tokio::time::timeout;
-
-use tokio_util::sync::CancellationToken;
-use tonic::Request;
-use tonic::Response;
-use tonic::Status;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-#[cfg(feature = "watch")]
-use tracing::info;
-use tracing::warn;
-
-use crate::Node;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
@@ -33,7 +15,6 @@ use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::WatchRequest;
-
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -56,6 +37,23 @@ use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
+use futures::Stream;
+#[cfg(feature = "watch")]
+use futures::StreamExt;
+use tokio::select;
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
+use tonic::Request;
+use tonic::Response;
+use tonic::Status;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+#[cfg(feature = "watch")]
+use tracing::info;
+use tracing::warn;
+
+use crate::Node;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>

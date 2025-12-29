@@ -6,6 +6,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::debug;
@@ -17,7 +18,6 @@ use crate::SnapshotError;
 use crate::SnapshotPathManager;
 use crate::StorageError;
 use crate::file_io::create_parent_dir_if_not_exist;
-use d_engine_proto::server::storage::SnapshotMetadata;
 
 pub(crate) struct SnapshotAssembler {
     temp_file: File,

@@ -15,7 +15,22 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
+use d_engine_core::ConnectionType;
+use d_engine_core::Membership;
+use d_engine_core::MembershipError;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::Result;
+use d_engine_core::TypeConfig;
 use d_engine_core::ensure_safe_join;
+use d_engine_proto::common::MembershipChange;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::server::cluster::ClusterConfChangeRequest;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::NodeMeta;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -35,22 +50,6 @@ use crate::network::HealthMonitor;
 use crate::network::RaftHealthMonitor;
 use crate::utils::async_task::task_with_timeout_and_exponential_backoff;
 use crate::utils::net::address_str;
-use d_engine_core::ConnectionType;
-use d_engine_core::Membership;
-use d_engine_core::MembershipError;
-use d_engine_core::RaftNodeConfig;
-use d_engine_core::Result;
-use d_engine_core::TypeConfig;
-use d_engine_proto::common::MembershipChange;
-use d_engine_proto::common::NodeRole::Follower;
-
-use d_engine_proto::common::NodeRole::Learner;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::server::cluster::ClusterConfChangeRequest;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::NodeMeta;
 
 pub struct RaftMembership<T>
 where
@@ -445,15 +444,12 @@ where
                     return Err(MembershipError::NodeAlreadyExists(node_id).into());
                     // return  Ok(());
                 }
-                guard.nodes.insert(
-                    node_id,
-                    NodeMeta {
-                        id: node_id,
-                        address,
-                        role: Learner as i32,
-                        status: status as i32,
-                    },
-                );
+                guard.nodes.insert(node_id, NodeMeta {
+                    id: node_id,
+                    address,
+                    role: Learner as i32,
+                    status: status as i32,
+                });
                 info!(
                     "[node-{}] Adding a learner node successed: {} (status={:?})",
                     self.node_id, node_id, status

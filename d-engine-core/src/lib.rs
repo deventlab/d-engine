@@ -20,37 +20,33 @@ mod utils;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use commit_handler::*;
 pub use config::*;
+pub use election::*;
 pub use errors::*;
 pub use event::*;
+pub use maybe_clone_oneshot::*;
 pub use membership::*;
 pub use network::*;
-pub use raft::*;
-pub use storage::*;
-
-#[cfg(feature = "watch")]
-pub use watch::*;
-
-pub use commit_handler::*;
-pub use election::*;
-pub use maybe_clone_oneshot::*;
 pub use purge::*;
+pub use raft::*;
 pub use raft_context::*;
 pub use replication::*;
 pub use state_machine_handler::*;
+pub use storage::*;
+#[cfg(feature = "watch")]
+pub use watch::*;
 
 #[cfg(test)]
 mod raft_test;
 
 #[doc(hidden)]
 pub use raft_role::*;
-
-#[doc(hidden)]
-pub use utils::*;
-
 pub(crate) use timer::*;
 #[doc(hidden)]
 pub use type_config::*;
+#[doc(hidden)]
+pub use utils::*;
 
 #[cfg(test)]
 mod maybe_clone_oneshot_test;

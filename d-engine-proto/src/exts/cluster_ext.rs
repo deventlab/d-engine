@@ -1,7 +1,6 @@
-use crate::{
-    common::NodeStatus, server::cluster::ClusterConfUpdateResponse,
-    server::cluster::cluster_conf_update_response::ErrorCode,
-};
+use crate::common::NodeStatus;
+use crate::server::cluster::ClusterConfUpdateResponse;
+use crate::server::cluster::cluster_conf_update_response::ErrorCode;
 
 impl ClusterConfUpdateResponse {
     /// Generate a successful response (full success)

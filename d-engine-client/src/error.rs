@@ -1,12 +1,11 @@
 use std::error::Error;
 
+use d_engine_proto::error::ErrorCode;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;
-
-use d_engine_proto::error::ErrorCode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientApiError {

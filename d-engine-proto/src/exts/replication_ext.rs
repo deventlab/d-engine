@@ -1,9 +1,8 @@
-use crate::{
-    common::LogId,
-    server::replication::{
-        AppendEntriesResponse, ConflictResult, SuccessResult, append_entries_response,
-    },
-};
+use crate::common::LogId;
+use crate::server::replication::AppendEntriesResponse;
+use crate::server::replication::ConflictResult;
+use crate::server::replication::SuccessResult;
+use crate::server::replication::append_entries_response;
 
 impl AppendEntriesResponse {
     /// Generate a successful response (full success)

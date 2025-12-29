@@ -1,15 +1,14 @@
 #![doc = include_str!("../../../d-engine-docs/src/docs/server_guide/customize-state-machine.md")]
 
 use bytes::Bytes;
-
-#[cfg(any(test, feature = "test-utils"))]
-use mockall::automock;
-
-use crate::Error;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
+#[cfg(any(test, feature = "test-utils"))]
+use mockall::automock;
 use tonic::async_trait;
+
+use crate::Error;
 
 /// State machine trait for Raft consensus
 ///

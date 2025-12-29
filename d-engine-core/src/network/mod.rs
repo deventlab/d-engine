@@ -11,16 +11,6 @@ mod background_snapshot_transfer;
 #[cfg(test)]
 mod background_snapshot_transfer_test;
 pub(crate) use background_snapshot_transfer::*;
-
-#[cfg(any(test, feature = "test-utils"))]
-use mockall::automock;
-use tonic::async_trait;
-
-use crate::BackoffPolicy;
-use crate::NetworkError;
-use crate::Result;
-use crate::RetryPolicies;
-use crate::TypeConfig;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::election::VoteRequest;
@@ -30,6 +20,15 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
+#[cfg(any(test, feature = "test-utils"))]
+use mockall::automock;
+use tonic::async_trait;
+
+use crate::BackoffPolicy;
+use crate::NetworkError;
+use crate::Result;
+use crate::RetryPolicies;
+use crate::TypeConfig;
 
 // Define a structured return value
 #[derive(Debug, Clone)]

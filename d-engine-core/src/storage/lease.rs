@@ -11,7 +11,8 @@
 //! # Architecture
 //!
 //! - **Trait-based**: `Lease` trait defines the interface
-//! - **Implementation**: d-engine-server provides `DefaultLease` with high-performance dual-index design
+//! - **Implementation**: d-engine-server provides `DefaultLease` with high-performance dual-index
+//!   design
 //! - **Zero overhead**: Completely disabled when not used
 //! - **Snapshot support**: Full persistence through Raft snapshots
 //!

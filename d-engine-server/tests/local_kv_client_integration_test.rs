@@ -10,8 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_server::FileStateMachine;
+use d_engine_server::FileStorageEngine;
+use d_engine_server::NodeBuilder;
 use d_engine_server::node::RaftTypeConfig;
-use d_engine_server::{FileStateMachine, FileStorageEngine, NodeBuilder};
 use tokio::sync::watch;
 
 /// Type alias for our test node
@@ -20,7 +22,8 @@ type TestNode = Arc<d_engine_server::Node<RaftTypeConfig<FileStorageEngine, File
 /// Helper to create a test node with LocalKvClient
 async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sender<()>) {
     use d_engine_core::ClusterConfig;
-    use d_engine_proto::common::{NodeRole, NodeStatus};
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let db_path = PathBuf::from(format!("/tmp/d-engine-test-local-client-{test_name}"));

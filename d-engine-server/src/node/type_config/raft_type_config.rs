@@ -1,8 +1,5 @@
 use std::fmt::Debug;
 
-use crate::membership::RaftMembership;
-use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::storage::BufferedRaftLog;
 use d_engine_core::DefaultCommitHandler;
 use d_engine_core::DefaultPurgeExecutor;
 use d_engine_core::DefaultStateMachineHandler;
@@ -12,6 +9,10 @@ use d_engine_core::ReplicationHandler;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::TypeConfig;
+
+use crate::membership::RaftMembership;
+use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::storage::BufferedRaftLog;
 
 #[derive(Debug)]
 pub struct RaftTypeConfig<SE, SM>

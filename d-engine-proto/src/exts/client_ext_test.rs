@@ -1,9 +1,12 @@
-use crate::client::{
-    ClientReadRequest, ClientResponse, ClientResult, ReadConsistencyPolicy, WriteCommand,
-    client_response::SuccessResult,
-};
-use crate::error::ErrorCode;
 use bytes::Bytes;
+
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ClientResult;
+use crate::client::ReadConsistencyPolicy;
+use crate::client::WriteCommand;
+use crate::client::client_response::SuccessResult;
+use crate::error::ErrorCode;
 
 #[test]
 fn test_client_read_request_has_consistency_policy_false() {

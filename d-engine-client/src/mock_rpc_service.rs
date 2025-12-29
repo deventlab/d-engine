@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientServiceServer;
 use d_engine_proto::common::NodeRole;
@@ -5,8 +8,6 @@ use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementServiceServer;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;

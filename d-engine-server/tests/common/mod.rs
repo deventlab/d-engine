@@ -12,7 +12,6 @@ use d_engine_client::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
 use d_engine_core::config::BackoffPolicy;
-
 use d_engine_core::config::CommitHandlerConfig;
 use d_engine_core::config::ElectionConfig;
 use d_engine_core::config::FlushPolicy;

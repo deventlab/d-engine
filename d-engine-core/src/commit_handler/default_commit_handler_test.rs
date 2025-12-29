@@ -3,6 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tokio::sync::mpsc::{self};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -24,12 +30,6 @@ use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::Result;
 use crate::test_utils::generate_insert_commands;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::server::storage::SnapshotMetadata;
 
 const TEST_TERM: u64 = 1;
 
@@ -407,14 +407,14 @@ async fn test_dynamic_interval_case2() {
 
 #[cfg(test)]
 mod run_test {
-    use tokio::time;
-
-    use super::*;
     use d_engine_proto::common::AddNode;
     use d_engine_proto::common::NodeRole::Follower;
     use d_engine_proto::common::NodeRole::Leader;
     use d_engine_proto::common::RemoveNode;
     use d_engine_proto::common::membership_change::Change;
+    use tokio::time;
+
+    use super::*;
 
     /// 1. Test happy path with all entry types
     #[tokio::test]
@@ -531,8 +531,10 @@ mod run_test {
     /// Related: Issue #200
     #[test]
     fn test_is_self_removal_config() {
+        use d_engine_proto::common::AddNode;
+        use d_engine_proto::common::MembershipChange;
+        use d_engine_proto::common::RemoveNode;
         use d_engine_proto::common::membership_change::Change;
-        use d_engine_proto::common::{AddNode, MembershipChange, RemoveNode};
 
         // Case 1: Self-removal (my_id matches remove node_id)
         let self_removal = MembershipChange {
@@ -819,13 +821,13 @@ mod run_test {
 
 #[cfg(test)]
 mod process_batch_test {
+    use d_engine_proto::common::AddNode;
+    use d_engine_proto::common::RemoveNode;
+    use d_engine_proto::common::membership_change::Change;
     use parking_lot::Mutex;
 
     use super::*;
     use crate::test_utils::*;
-    use d_engine_proto::common::AddNode;
-    use d_engine_proto::common::RemoveNode;
-    use d_engine_proto::common::membership_change::Change;
 
     // Test helper setup with configurable mocks
     // fn setup_test_handler<F, G>(

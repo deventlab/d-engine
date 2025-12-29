@@ -7,11 +7,15 @@
 //! - Key isolation
 //! - Dispatcher event distribution
 
-use super::*;
-use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
-use tokio::time::{Duration, timeout};
+
+use bytes::Bytes;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+use tokio::time::Duration;
+use tokio::time::timeout;
+
+use super::*;
 
 /// Helper to create test watch system components
 fn setup_watch_system(

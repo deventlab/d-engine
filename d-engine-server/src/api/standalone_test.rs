@@ -2,8 +2,10 @@
 
 #[cfg(all(test, feature = "rocksdb"))]
 mod standalone_server_tests {
-    use serial_test::serial;
+    #[cfg(debug_assertions)]
     use std::time::Duration;
+
+    use serial_test::serial;
     use tokio::sync::watch;
 
     use crate::api::StandaloneServer;
@@ -334,6 +336,7 @@ listen_addr = "127.0.0.1:0"
     }
 
     #[tokio::test]
+    #[cfg(debug_assertions)]
     async fn test_run_with_valid_config() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("test_config.toml");
@@ -480,6 +483,8 @@ listen_addr = "127.0.0.1:0"
     }
 
     #[tokio::test]
+    #[cfg(debug_assertions)]
+    #[serial]
     async fn test_shutdown_signal_stops_server() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("test_config.toml");

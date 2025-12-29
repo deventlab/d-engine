@@ -11,6 +11,15 @@ use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use bytes::Bytes;
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::stream::BoxStream;
 use memmap2::Mmap;
 use memmap2::MmapOptions;
@@ -57,15 +66,6 @@ use crate::convert::classify_error;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
-use d_engine_proto::client::ClientResult;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -165,10 +165,10 @@ where
         let start = Instant::now();
         let chunk_size = chunk.len();
 
-        metrics::counter!(
-            "state_machine.apply_chunk.count",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::counter!("state_machine.apply_chunk.count", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .increment(1);
 
         let last_index = chunk.last().map(|entry| entry.index);
@@ -192,16 +192,16 @@ where
 
         // Record latency and chunk size histogram *after* the operation
         let duration_ms = start.elapsed().as_millis() as f64;
-        metrics::histogram!(
-            "state_machine.apply_chunk.duration_ms",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::histogram!("state_machine.apply_chunk.duration_ms", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .record(duration_ms);
 
-        metrics::histogram!(
-            "state_machine.apply_chunk.batch_size",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::histogram!("state_machine.apply_chunk.batch_size", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .record(chunk_size as f64);
 
         // Track result
@@ -212,21 +212,18 @@ where
                     self.last_applied.store(idx, Ordering::Release);
                 }
 
-                metrics::counter!(
-                    "state_machine.apply_chunk.success",
-                    &[("node_id", self.node_id.to_string())]
-                )
+                metrics::counter!("state_machine.apply_chunk.success", &[(
+                    "node_id",
+                    self.node_id.to_string()
+                )])
                 .increment(1);
             }
             Err(e) => {
                 let error_type = classify_error(e);
-                metrics::counter!(
-                    "state_machine.apply_chunk.error",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("error_type", error_type)
-                    ]
-                )
+                metrics::counter!("state_machine.apply_chunk.error", &[
+                    ("node_id", self.node_id.to_string()),
+                    ("error_type", error_type)
+                ])
                 .increment(1);
             }
         }
@@ -711,9 +708,10 @@ where
         chunk: &[Entry],
         tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
     ) {
-        use d_engine_proto::client::{
-            WatchEventType, WatchResponse, WriteCommand, write_command::Operation,
-        };
+        use d_engine_proto::client::WatchEventType;
+        use d_engine_proto::client::WatchResponse;
+        use d_engine_proto::client::WriteCommand;
+        use d_engine_proto::client::write_command::Operation;
         use d_engine_proto::common::entry_payload::Payload;
         use prost::Message;
 

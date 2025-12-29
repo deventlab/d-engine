@@ -1,15 +1,9 @@
-use d_engine_core::MockStateMachine;
-use tokio::sync::oneshot;
-use tracing_test::traced_test;
-
-use super::RaftMembership;
 use d_engine_core::ConnectionType;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
-
-use crate::node::RaftTypeConfig;
 use d_engine_core::Membership;
 use d_engine_core::MembershipError;
+use d_engine_core::MockStateMachine;
 use d_engine_core::MockStorageEngine;
 use d_engine_core::MockTypeConfig;
 use d_engine_core::RaftNodeConfig;
@@ -30,6 +24,11 @@ use d_engine_proto::common::membership_change::Change;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::cluster::cluster_conf_update_response::ErrorCode;
+use tokio::sync::oneshot;
+use tracing_test::traced_test;
+
+use super::RaftMembership;
+use crate::node::RaftTypeConfig;
 
 // Helper function to create a test instance
 pub fn create_test_membership()
@@ -874,13 +873,13 @@ async fn test_get_peers_id_with_condition() {
 
 #[cfg(test)]
 mod check_cluster_is_ready_test {
-    use tokio::sync::oneshot;
-
-    use super::*;
     use d_engine_core::MockStateMachine;
     use d_engine_core::MockStorageEngine;
     use d_engine_core::test_utils::MockNode;
     use d_engine_core::test_utils::MockRpcService;
+    use tokio::sync::oneshot;
+
+    use super::*;
 
     /// Case 1: Test all peers are healthy
     #[tokio::test]
@@ -1123,13 +1122,12 @@ async fn test_health_monitoring_integration() {
 
 #[cfg(test)]
 mod pre_warm_connections_tests {
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
     use tracing_test::traced_test;
 
     use super::*;
     use crate::utils::net::address_str;
-
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::NodeMeta;
 
     #[derive(Clone, Copy)]
     pub enum AddressType {

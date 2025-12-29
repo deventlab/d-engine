@@ -1,16 +1,15 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use d_engine_core::ConnectionType;
+use d_engine_core::NetworkConfig;
+use d_engine_core::NetworkError;
+use d_engine_core::Result;
 use dashmap::DashMap;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tracing::debug;
 use tracing::trace;
-
-use d_engine_core::ConnectionType;
-use d_engine_core::NetworkConfig;
-use d_engine_core::NetworkError;
-use d_engine_core::Result;
 
 /// Cached gRPC channel with metadata
 #[derive(Clone)]
@@ -63,14 +62,11 @@ impl ConnectionCache {
         let channel = self.create_channel(current_address.clone(), conn_type).await?;
 
         trace!(?key, "Cache updated: address: {}", current_address.clone());
-        self.cache.insert(
-            key,
-            CachedChannel {
-                channel: channel.clone(),
-                address: current_address,
-                last_used: Instant::now(),
-            },
-        );
+        self.cache.insert(key, CachedChannel {
+            channel: channel.clone(),
+            address: current_address,
+            last_used: Instant::now(),
+        });
 
         Ok(channel)
     }

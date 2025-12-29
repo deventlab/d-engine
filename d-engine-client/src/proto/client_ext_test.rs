@@ -1,10 +1,12 @@
+use bytes::Bytes;
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::client::ReadResults;
+use d_engine_proto::client::client_response::SuccessResult;
+use d_engine_proto::error::ErrorCode;
+
 use super::*;
 use crate::ClientApiError;
-use bytes::Bytes;
-use d_engine_proto::{
-    client::{ClientResponse, ClientResult, ReadResults, client_response::SuccessResult},
-    error::ErrorCode,
-};
 
 #[test]
 fn test_into_read_results_success() {

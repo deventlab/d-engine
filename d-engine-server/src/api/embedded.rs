@@ -27,21 +27,28 @@
 //! - **EmbeddedEngine**: Application developers who want simplicity
 //! - **Node**: Framework developers who need fine-grained control
 
+use std::sync::Arc;
+
 #[cfg(feature = "watch")]
 use bytes::Bytes;
-use std::sync::Arc;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchRegistry;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatcherHandle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::error;
+use tracing::info;
 
-use crate::node::{LocalKvClient, NodeBuilder};
-use crate::{Result, StateMachine, StorageEngine};
-
-#[cfg(feature = "watch")]
-use d_engine_core::watch::{WatchRegistry, WatcherHandle};
-
+use crate::Result;
 #[cfg(feature = "rocksdb")]
-use crate::{RocksDBStateMachine, RocksDBStorageEngine};
+use crate::RocksDBStateMachine;
+#[cfg(feature = "rocksdb")]
+use crate::RocksDBStorageEngine;
+use crate::StateMachine;
+use crate::StorageEngine;
+use crate::node::LocalKvClient;
+use crate::node::NodeBuilder;
 
 /// Embedded d-engine with automatic lifecycle management.
 ///

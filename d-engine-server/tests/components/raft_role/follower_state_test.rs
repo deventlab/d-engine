@@ -1,13 +1,6 @@
-use bytes::Bytes;
-use d_engine_server::test_utils::setup_raft_components;
 use std::sync::Arc;
-use tempfile::tempdir;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
@@ -53,6 +46,13 @@ use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_server::test_utils::setup_raft_components;
+use tempfile::tempdir;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tracing_test::traced_test;
 
 /// # Case 1: assume it is fresh cluster start
 ///
@@ -1504,19 +1504,20 @@ fn test_can_purge_logs_case1() {
     ));
 
     // Edge case: 99 == commit_index - 1 (per gap rule)
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 
     // Violate gap rule: 100 not < 100
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId {
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
             index: 100,
             term: 1
-        }
-    ));
+        })
+    );
 }
 
 // # Case 2: Reject uncommitted index (Raft §5.4.2)
@@ -1535,10 +1536,12 @@ fn test_can_purge_logs_case2() {
     ));
 
     // Boundary check: 50 == commit_index (violates <)
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 40, term: 1 }),
-        LogId { index: 50, term: 1 }
-    ));
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId {
+            index: 50,
+            term: 1
+        })
+    );
 }
 
 /// # Case 3: Ensure purge monotonicity (Raft §7.2)
@@ -1668,11 +1671,12 @@ mod role_violation_tests {
 
 #[cfg(test)]
 mod handle_client_read_request {
-    use super::*;
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
     use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
+
+    use super::*;
 
     /// Test that follower rejects LeaseRead policy
     #[tokio::test]

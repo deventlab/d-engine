@@ -1,20 +1,9 @@
-use d_engine_server::test_utils::*;
-
-use bytes::Bytes;
-use futures::StreamExt;
-use mockall::predicate::eq;
-use nanoid::nanoid;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-use tonic::transport::Endpoint;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::AppendResults;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
@@ -72,6 +61,16 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_server::test_utils::*;
+use futures::StreamExt;
+use mockall::predicate::eq;
+use nanoid::nanoid;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tonic::transport::Endpoint;
+use tracing_test::traced_test;
 
 struct ProcessRaftRequestTestContext {
     state: LeaderState<MockTypeConfig>,
@@ -105,22 +104,16 @@ async fn setup_process_raft_request_test_context(
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -861,22 +854,16 @@ async fn test_handle_raft_event_case6_2() {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(3),
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(4),
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(3),
+                        next_index: 4,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(4),
+                        next_index: 5,
+                        success: true,
+                    }),
                 ]),
                 learner_progress: HashMap::new(),
             })
@@ -1296,13 +1283,10 @@ mod snapshot_created_event_tests {
         let event = role_rx.try_recv().expect("Should receive LogPurgeCompleted event");
         if let RoleEvent::ReprocessEvent(inner) = event {
             if let RaftEvent::LogPurgeCompleted(purged_id) = *inner {
-                assert_eq!(
-                    purged_id,
-                    LogId {
-                        term: 3,
-                        index: 100
-                    }
-                );
+                assert_eq!(purged_id, LogId {
+                    term: 3,
+                    index: 100
+                });
             } else {
                 panic!("Expected LogPurgeCompleted event");
             }
@@ -1840,19 +1824,20 @@ fn test_can_purge_logs_case1() {
     ));
 
     // Boundary check: 99 == commit_index - 1 (valid gap)
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 
     // Violate gap rule: 100 not < 100
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId {
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
             index: 100,
             term: 1
-        }
-    ));
+        })
+    );
 }
 
 /// # Case 2: Reject uncommitted purge (Raft §5.4.2)
@@ -1871,10 +1856,12 @@ fn test_can_purge_logs_case2() {
     ));
 
     // Boundary violation: 50 == commit_index (requires <)
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 40, term: 1 }),
-        LogId { index: 50, term: 1 }
-    ));
+    assert!(
+        !state.can_purge_logs(Some(LogId { index: 40, term: 1 }), LogId {
+            index: 50,
+            term: 1
+        })
+    );
 }
 
 /// # Case 3: Enforce purge sequence monotonicity (Raft §7.2)
@@ -1935,17 +1922,21 @@ fn test_can_purge_logs_case4() {
     // Single lagging peer (index 99 < 100)
     state.peer_purge_progress.insert(2, 99);
     state.peer_purge_progress.insert(3, 100);
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 
     // All peers at required index
     state.peer_purge_progress.insert(2, 100);
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
+    assert!(
+        state.can_purge_logs(Some(LogId { index: 90, term: 1 }), LogId {
+            index: 99,
+            term: 1
+        })
+    );
 }
 
 /// # Case 5: Initial purge state validation
@@ -1997,22 +1988,16 @@ async fn test_process_batch_case1_quorum_achieved() {
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(6),
-                            next_index: 7,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(6),
-                            next_index: 7,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(6),
+                        next_index: 7,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(6),
+                        next_index: 7,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -2067,22 +2052,16 @@ async fn test_process_batch_case2_quorum_failed() {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: None,
-                            next_index: 1,
-                            success: false,
-                        },
-                    ), // Failed
+                    (2, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: None,
+                        next_index: 1,
+                        success: false,
+                    }), // Failed
                 ]),
             })
         });
@@ -2127,14 +2106,11 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
         .returning(move |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(
-                    peer2_id,
-                    PeerUpdate {
-                        match_index: Some(5),
-                        next_index: 6,
-                        success: true,
-                    },
-                )]),
+                peer_updates: HashMap::from([(peer2_id, PeerUpdate {
+                    match_index: Some(5),
+                    next_index: 6,
+                    success: true,
+                })]),
                 learner_progress: HashMap::new(),
             })
         });
@@ -2248,14 +2224,11 @@ async fn test_process_batch_case4_partial_timeouts() {
             Ok(AppendResults {
                 commit_quorum_achieved: false,
                 learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(
-                    2,
-                    PeerUpdate {
-                        match_index: Some(6),
-                        next_index: 7,
-                        success: true,
-                    },
-                )]),
+                peer_updates: HashMap::from([(2, PeerUpdate {
+                    match_index: Some(6),
+                    next_index: 7,
+                    success: true,
+                })]),
             })
         });
 
@@ -2472,7 +2445,8 @@ mod process_batch_commit_index_tests {
     /// When cluster has only one node, commit_index should advance to last_log_index immediately.
     /// This is correct because quorum of 1 = the single node itself.
     /// Bug detection: Uses different mock values to verify correct code path is executed:
-    /// - If bug exists (peer_updates.is_empty): calls calculate_majority_matched_index() -> returns 8 (wrong)
+    /// - If bug exists (peer_updates.is_empty): calls calculate_majority_matched_index() -> returns
+    ///   8 (wrong)
     /// - If fixed (next_index.is_empty()): calls last_entry_id() -> returns 7 (correct)
     #[tokio::test]
     #[traced_test]
@@ -2531,10 +2505,11 @@ mod process_batch_commit_index_tests {
     /// This is the critical bug fix: Leader must not use single-node logic just because
     /// peer_updates is empty. Empty peer_updates means no responses yet, not single-node cluster.
     ///
-    /// Scenario: 3-node cluster, Leader has initialized next_index for peers (even if no responses yet).
-    /// Bug detection: Uses different mock values to verify correct code path is executed:
+    /// Scenario: 3-node cluster, Leader has initialized next_index for peers (even if no responses
+    /// yet). Bug detection: Uses different mock values to verify correct code path is executed:
     /// - If bug exists (peer_updates.is_empty): calls last_entry_id() -> returns 9 (wrong)
-    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6 (correct)
+    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6
+    ///   (correct)
     #[tokio::test]
     #[traced_test]
     async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
@@ -2554,7 +2529,8 @@ mod process_batch_commit_index_tests {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     learner_progress: HashMap::new(),
-                    peer_updates: HashMap::new(), // BUG #186: Empty peer_updates should NOT trigger single-node logic
+                    peer_updates: HashMap::new(), /* BUG #186: Empty peer_updates should NOT
+                                                   * trigger single-node logic */
                 })
             });
 
@@ -2593,7 +2569,8 @@ mod process_batch_commit_index_tests {
     /// based on quorum (majority of nodes have replicated the log).
     /// Bug detection: Uses different mock values to verify correct code path is executed:
     /// - If bug exists (peer_updates.is_empty): calls last_entry_id() -> returns 10 (wrong)
-    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6 (correct)
+    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6
+    ///   (correct)
     #[tokio::test]
     #[traced_test]
     async fn test_multi_node_cluster_with_peer_updates_commit_index() {
@@ -2614,29 +2591,24 @@ mod process_batch_commit_index_tests {
                     commit_quorum_achieved: true,
                     learner_progress: HashMap::new(),
                     peer_updates: HashMap::from([
-                        (
-                            2,
-                            PeerUpdate {
-                                match_index: Some(6),
-                                next_index: 7,
-                                success: true,
-                            },
-                        ),
-                        (
-                            3,
-                            PeerUpdate {
-                                match_index: Some(6),
-                                next_index: 7,
-                                success: true,
-                            },
-                        ),
+                        (2, PeerUpdate {
+                            match_index: Some(6),
+                            next_index: 7,
+                            success: true,
+                        }),
+                        (3, PeerUpdate {
+                            match_index: Some(6),
+                            next_index: 7,
+                            success: true,
+                        }),
                     ]),
                 })
             });
 
         let mut raft_log = MockRaftLog::new();
         // Different return values to detect which code path executes:
-        // - Fixed code (is_single_node_cluster check fails): calls calculate_majority_matched_index() -> 6
+        // - Fixed code (is_single_node_cluster check fails): calls
+        //   calculate_majority_matched_index() -> 6
         // - Buggy code (peer_updates.is_empty): calls last_entry_id() -> 10
         raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
@@ -2673,8 +2645,9 @@ async fn setup_process_batch_test_context(
 ) -> ProcessRaftRequestTestContext {
     let mut context = mock_raft_context(path, graceful_rx, None);
 
-    // Setup default membership mock with voters() and replication_peers() support for init_cluster_metadata
-    // For process_batch tests, we need multi-node cluster (2+ peers) to avoid single_voter logic
+    // Setup default membership mock with voters() and replication_peers() support for
+    // init_cluster_metadata For process_batch tests, we need multi-node cluster (2+ peers) to
+    // avoid single_voter logic
     let mut membership = MockMembership::new();
     membership.expect_is_single_node_cluster().returning(|| false);
     membership.expect_voters().returning(|| {
@@ -3389,14 +3362,15 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
 
 #[cfg(test)]
 mod trigger_background_snapshot_test {
-    use futures::stream;
     use std::sync::Arc;
 
-    use super::*;
     use d_engine_core::SnapshotConfig;
     use d_engine_core::leader_state::LeaderState;
     use d_engine_proto::server::storage::SnapshotChunk;
     use d_engine_proto::server::storage::SnapshotMetadata;
+    use futures::stream;
+
+    use super::*;
 
     fn mock_membership(should_fail: bool) -> MockMembership<MockTypeConfig> {
         let mut membership = MockMembership::<MockTypeConfig>::new();
@@ -3495,14 +3469,13 @@ mod trigger_background_snapshot_test {
 mod batch_promote_learners_test {
     use std::sync::Arc;
 
-    use mockall::predicate::*;
-
-    use super::*;
-
     use d_engine_core::RaftContext;
     use d_engine_core::RoleEvent;
     use d_engine_core::leader_state::LeaderState;
     use d_engine_proto::common::NodeStatus;
+    use mockall::predicate::*;
+
+    use super::*;
 
     enum VerifyInternalQuorumWithRetrySuccess {
         Success,
@@ -3697,13 +3670,13 @@ mod pending_promotion_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use d_engine_core::leader_state::PendingPromotion;
+    use d_engine_core::leader_state::calculate_safe_batch_size;
     use parking_lot::Mutex;
     use tokio::time::Instant;
     use tokio::time::timeout;
 
     use super::*;
-    use d_engine_core::leader_state::PendingPromotion;
-    use d_engine_core::leader_state::calculate_safe_batch_size;
 
     // Test fixture
     struct TestFixture {
@@ -4067,12 +4040,13 @@ mod pending_promotion_tests {
 mod stale_learner_tests {
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::time::Instant;
 
-    use super::*;
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::leader_state::PendingPromotion;
     use d_engine_core::test_utils;
+    use tokio::time::Instant;
+
+    use super::*;
 
     // Setup helper
     fn create_test_leader_state(
@@ -4168,13 +4142,11 @@ mod stale_learner_tests {
     /// Test no purge when not expired
     #[tokio::test]
     async fn test_no_purge_when_fresh() {
-        let (mut leader, mut membership) = create_test_leader_state(
-            "test_no_purge_when_fresh",
-            vec![
+        let (mut leader, mut membership) =
+            create_test_leader_state("test_no_purge_when_fresh", vec![
                 (101, Duration::from_secs(15)),
                 (102, Duration::from_secs(20)),
-            ],
-        );
+            ]);
         // Should do nothing
         membership.expect_update_node_status().never();
 
@@ -4248,14 +4220,11 @@ mod stale_learner_tests {
 
     #[tokio::test]
     async fn test_promotion_timeout_threshold() {
-        let (mut leader, membership) = create_test_leader_state(
-            "test",
-            vec![
-                (101, Duration::from_secs(31)), // 1s over threshold
-                (102, Duration::from_secs(30)), // exactly at threshold
-                (103, Duration::from_secs(29)), // 1s under threshold
-            ],
-        );
+        let (mut leader, membership) = create_test_leader_state("test", vec![
+            (101, Duration::from_secs(31)), // 1s over threshold
+            (102, Duration::from_secs(30)), // exactly at threshold
+            (103, Duration::from_secs(29)), // 1s under threshold
+        ]);
         leader.next_membership_maintenance_check = Instant::now() - Duration::from_secs(1);
         let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
         node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
@@ -4274,14 +4243,11 @@ mod stale_learner_tests {
 
     #[tokio::test]
     async fn test_downgrade_affects_replication() {
-        let (mut leader, mut membership) = create_test_leader_state(
-            "test",
-            vec![
-                (101, Duration::from_secs(29)), // 1s under threshold
-                (102, Duration::from_secs(30)), // exactly at threshold
-                (103, Duration::from_secs(31)), // 1s over threshold
-            ],
-        );
+        let (mut leader, mut membership) = create_test_leader_state("test", vec![
+            (101, Duration::from_secs(29)), // 1s under threshold
+            (102, Duration::from_secs(30)), // exactly at threshold
+            (103, Duration::from_secs(31)), // 1s over threshold
+        ]);
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
         let ctx = mock_raft_context(
             "test_downgrade_affects_replication",
@@ -4298,10 +4264,11 @@ mod stale_learner_tests {
 }
 #[cfg(test)]
 mod handle_client_read_request {
-    use super::*;
     use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
     use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
+
+    use super::*;
 
     /// Test LeaseRead policy with valid lease
     #[tokio::test]
@@ -4533,12 +4500,15 @@ mod handle_client_read_request {
 /// Tests for is_lease_valid function
 #[cfg(test)]
 mod lease_validity_tests {
-    use super::*;
+    use std::sync::Arc;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::test_utils::MockBuilder;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::watch;
+
+    use super::*;
 
     /// Test with a valid lease (timestamp within the lease duration)
     #[test]

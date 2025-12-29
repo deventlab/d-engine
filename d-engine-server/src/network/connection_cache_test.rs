@@ -1,15 +1,15 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use d_engine_core::ConnectionParams;
+use d_engine_core::ConnectionType;
+use d_engine_core::NetworkConfig;
+use d_engine_core::test_utils::MockRpcService;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
 use super::*;
 use crate::utils::net::address_str;
-use d_engine_core::ConnectionParams;
-use d_engine_core::ConnectionType;
-use d_engine_core::NetworkConfig;
-use d_engine_core::test_utils::MockRpcService;
 
 // Helper to create test config
 fn test_config() -> NetworkConfig {

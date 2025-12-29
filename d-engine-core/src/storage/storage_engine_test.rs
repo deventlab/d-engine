@@ -2,6 +2,10 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::election::VotedFor;
 use prost::Message;
 use tonic::async_trait;
 
@@ -10,10 +14,6 @@ use crate::HardState;
 use crate::LogStore;
 use crate::MetaStore;
 use crate::storage::StorageEngine;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::election::VotedFor;
 
 /// Test suite for StorageEngine implementations
 ///

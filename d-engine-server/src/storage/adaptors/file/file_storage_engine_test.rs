@@ -1,10 +1,7 @@
-use bytes::Bytes;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use tempfile::TempDir;
-use tracing_test::traced_test;
 
-use super::*;
+use bytes::Bytes;
 use d_engine_core::HardState;
 use d_engine_core::LogStore;
 use d_engine_core::MetaStore;
@@ -13,6 +10,10 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
+use tempfile::TempDir;
+use tracing_test::traced_test;
+
+use super::*;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
@@ -346,9 +347,11 @@ async fn test_large_entry_persistence() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::Noop;
     use d_engine_proto::common::entry_payload::Payload;
-    use d_engine_proto::common::{EntryPayload, Noop};
+
+    use super::*;
 
     /// Test to demonstrate TempDir drop race condition
     ///

@@ -6,12 +6,12 @@ mod log_size;
 mod time_based;
 #[allow(unused)]
 pub(crate) use composite::*;
+use d_engine_proto::common::LogId;
 pub use log_size::*;
 #[allow(unused)]
 pub(crate) use time_based::*;
 
 use crate::cluster::is_leader;
-use d_engine_proto::common::LogId;
 
 #[cfg(test)]
 mod composite_test;

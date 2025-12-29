@@ -242,14 +242,22 @@ test: install-tools check-workspace
 ## test-sequential            Run unit tests which requires sequential
 test-sequential:
 	@echo "$(BLUE)Running sequential tests (environment-sensitive)...$(NC)"
-	@echo "$(CYAN)Debug mode sequential tests...$(NC)"
+	@echo "$(CYAN)Debug mode embedded_env_test (sequential)...$(NC)"
 	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 	$(CARGO) test -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Debug sequential tests failed$(NC)"; exit 1; }
-	@echo "$(CYAN)Release mode sequential tests...$(NC)"
+	{ echo "$(RED)✗ Debug embedded_env_test failed$(NC)"; exit 1; }
+	@echo "$(CYAN)Debug mode standalone_test (sequential)...$(NC)"
+	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+	$(CARGO) test -p d-engine-server --lib --features rocksdb,watch standalone_test -- --test-threads=1 --nocapture || \
+	{ echo "$(RED)✗ Debug standalone_test failed$(NC)"; exit 1; }
+	@echo "$(CYAN)Release mode embedded_env_test (sequential)...$(NC)"
 	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Release sequential tests failed$(NC)"; exit 1; }
+	{ echo "$(RED)✗ Release embedded_env_test failed$(NC)"; exit 1; }
+	@echo "$(CYAN)Release mode standalone_test (sequential)...$(NC)"
+	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch standalone_test -- --test-threads=1 --nocapture || \
+	{ echo "$(RED)✗ Release standalone_test failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Sequential tests passed (debug + release)$(NC)"
 	@echo ""
 
@@ -260,7 +268,7 @@ test-unit:
 		echo "$(CYAN)Unit testing crate: $$member$(NC)"; \
 		if [ "$$member" = "d-engine-server" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --features rocksdb,watch --no-fail-fast -- --skip embedded_env_test --nocapture || \
+			$(CARGO) test -p $$member --lib --features rocksdb,watch --no-fail-fast -- --skip embedded_env_test --skip standalone_test --nocapture || \
 			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
 		elif [ "$$member" = "d-engine-core" ]; then \
 			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \

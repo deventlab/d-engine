@@ -2,13 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::watch;
-use tracing::debug;
-use tracing_test::traced_test;
-
-use crate::test_utils::MockBuilder;
-use crate::test_utils::mock_membership;
-use crate::test_utils::mock_node;
 use d_engine_core::AppendResults;
 use d_engine_core::Error;
 use d_engine_core::MockMembership;
@@ -25,6 +18,13 @@ use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::JoinResponse;
 use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::watch;
+use tracing::debug;
+use tracing_test::traced_test;
+
+use crate::test_utils::MockBuilder;
+use crate::test_utils::mock_membership;
+use crate::test_utils::mock_node;
 
 #[tokio::test]
 #[traced_test]
@@ -61,22 +61,16 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
                 commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
+                    (2, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
+                    (3, PeerUpdate {
+                        match_index: Some(5),
+                        next_index: 6,
+                        success: true,
+                    }),
                 ]),
             })
         });
@@ -585,10 +579,7 @@ mod node_id_tests {
 #[cfg(test)]
 mod bootstrap_strategy_tests {
     use std::sync::Arc;
-    use tokio::sync::watch;
-    use tracing_test::traced_test;
 
-    use crate::test_utils::MockBuilder;
     use d_engine_core::MockMembership;
     use d_engine_core::MockRaftLog;
     use d_engine_core::MockReplicationCore;
@@ -597,9 +588,15 @@ mod bootstrap_strategy_tests {
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::RaftRole;
     use d_engine_core::learner_state::LearnerState;
-    use d_engine_proto::common::NodeRole::{Follower, Learner};
+    use d_engine_proto::common::NodeRole::Follower;
+    use d_engine_proto::common::NodeRole::Learner;
     use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::{JoinResponse, NodeMeta};
+    use d_engine_proto::server::cluster::JoinResponse;
+    use d_engine_proto::server::cluster::NodeMeta;
+    use tokio::sync::watch;
+    use tracing_test::traced_test;
+
+    use crate::test_utils::MockBuilder;
 
     fn prepare_mock_raft_log() -> MockRaftLog {
         let mut raft_log = MockRaftLog::new();

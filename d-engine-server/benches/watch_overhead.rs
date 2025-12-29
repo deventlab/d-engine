@@ -15,16 +15,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::BenchmarkId;
+use criterion::Criterion;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
 use d_engine_core::StateMachine;
 use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::{Insert, Operation};
-use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use prost::Message;
 use tempfile::TempDir;
-
 use tokio::time::sleep;
 
 //=============================================================================

@@ -3,6 +3,7 @@ use std::vec;
 
 use arc_swap::ArcSwap;
 use d_engine_proto::common::NodeRole;
+use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -11,7 +12,6 @@ use crate::ClientInner;
 use crate::ClusterClient;
 use crate::ConnectionPool;
 use crate::mock_rpc_service::MockNode;
-use d_engine_proto::server::cluster::ClusterMembership;
 
 #[tokio::test]
 #[traced_test]

@@ -2,10 +2,10 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use d_engine_proto::server::cluster::NodeMeta;
 
 use super::ClientInner;
 use crate::ClientApiError;
-use d_engine_proto::server::cluster::NodeMeta;
 
 /// Cluster administration interface
 ///

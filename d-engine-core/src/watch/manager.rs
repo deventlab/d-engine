@@ -21,15 +21,18 @@
 //! - **Composable**: Registry and Dispatcher are independent, composed in Builder
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
-use dashmap::DashMap;
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, trace, warn};
-
 // Re-export protobuf types for watch events
 pub use d_engine_proto::client::{WatchEventType, WatchResponse as WatchEvent};
+use dashmap::DashMap;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+use tracing::debug;
+use tracing::trace;
+use tracing::warn;
 
 /// Handle for a registered watcher
 ///

@@ -1,6 +1,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use d_engine_core::Error;
+use d_engine_core::FlushPolicy;
+use d_engine_core::LogStore;
+use d_engine_core::MockStateMachine;
+use d_engine_core::MockStorageEngine;
+use d_engine_core::PersistenceConfig;
+use d_engine_core::PersistenceStrategy;
+use d_engine_core::RaftNodeConfig;
+use d_engine_core::StateMachine;
+use d_engine_core::StorageEngine;
 use serial_test::serial;
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -14,16 +24,6 @@ use crate::node::RaftTypeConfig;
 use crate::storage::BufferedRaftLog;
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
-use d_engine_core::Error;
-use d_engine_core::FlushPolicy;
-use d_engine_core::LogStore;
-use d_engine_core::MockStateMachine;
-use d_engine_core::MockStorageEngine;
-use d_engine_core::PersistenceConfig;
-use d_engine_core::PersistenceStrategy;
-use d_engine_core::RaftNodeConfig;
-use d_engine_core::StateMachine;
-use d_engine_core::StorageEngine;
 
 /// These components should not be initialized during builder setup; developers should have the
 /// highest priority to customize them first.
@@ -103,7 +103,8 @@ async fn test_build_creates_node() {
     let temp_dir = tempdir().unwrap();
 
     // Use FileStateMachine instead of MockStateMachine to properly test try_inject_lease
-    // MockStateMachine has issues with mockall not generating proper expectations for &mut self methods
+    // MockStateMachine has issues with mockall not generating proper expectations for &mut self
+    // methods
     let file_sm = FileStateMachine::new(temp_dir.path().join("sm")).await.expect("create file sm");
 
     let builder = NodeBuilder::<MockStorageEngine, FileStateMachine>::new_from_db_path(

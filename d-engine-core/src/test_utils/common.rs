@@ -1,5 +1,7 @@
-use crate::SnapshotConfig;
-use crate::convert::safe_kv_bytes;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::time::Duration;
+
 use bytes::Bytes;
 use bytes::BytesMut;
 use d_engine_proto::client::WriteCommand;
@@ -8,9 +10,9 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::membership_change::Change;
 use prost::Message;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::time::Duration;
+
+use crate::SnapshotConfig;
+use crate::convert::safe_kv_bytes;
 
 pub fn create_mixed_entries() -> Vec<Entry> {
     let config_entry = Entry {

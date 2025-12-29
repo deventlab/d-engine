@@ -1,5 +1,3 @@
-use bytes::Bytes;
-use futures::future::join_all;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,17 +5,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::vec;
-use tempfile::tempdir;
-use tokio::time::Instant;
-use tokio::time::sleep;
-use tracing::debug;
-use tracing_test::traced_test;
 
-use super::*;
-use crate::FileStorageEngine;
-use crate::node::RaftTypeConfig;
-use crate::storage::BufferedRaftLog;
-use crate::test_utils::{self};
+use bytes::Bytes;
 use d_engine_core::FlushPolicy;
 use d_engine_core::LogStore;
 use d_engine_core::MockLogStore;
@@ -34,6 +23,18 @@ use d_engine_core::test_utils::generate_insert_commands;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
+use futures::future::join_all;
+use tempfile::tempdir;
+use tokio::time::Instant;
+use tokio::time::sleep;
+use tracing::debug;
+use tracing_test::traced_test;
+
+use super::*;
+use crate::FileStorageEngine;
+use crate::node::RaftTypeConfig;
+use crate::storage::BufferedRaftLog;
+use crate::test_utils::{self};
 
 // Test utilities
 struct TestContext {
@@ -949,14 +950,11 @@ async fn test_insert_batch_logs_case2() {
     // }
 
     // 7. Validate final log state
-    validate_log_continuity(
-        &old_leader,
-        &[
-            (7, 1),  // Original term 1 entry
-            (8, 2),  // Overwritten entry
-            (10, 2), // New highest entry
-        ],
-    )
+    validate_log_continuity(&old_leader, &[
+        (7, 1),  // Original term 1 entry
+        (8, 2),  // Overwritten entry
+        (10, 2), // New highest entry
+    ])
     .await;
 }
 
@@ -2080,9 +2078,10 @@ mod disk_first_tests {
 
 mod mem_first_tests {
 
-    use super::*;
     use d_engine_core::LogStore;
     use d_engine_core::StorageEngine;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
@@ -2534,13 +2533,13 @@ mod filter_out_conflicts_and_append_performance_tests {
 mod performance_tests {
     use std::sync::Arc;
 
+    use d_engine_core::MockLogStore;
+    use d_engine_core::MockMetaStore;
+    use d_engine_core::MockStorageEngine;
     use tokio::sync::Barrier;
     use tokio::time::Duration;
 
     use super::*;
-    use d_engine_core::MockLogStore;
-    use d_engine_core::MockMetaStore;
-    use d_engine_core::MockStorageEngine;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2568,13 +2567,10 @@ mod performance_tests {
         let max_reset_duration_ms = if is_ci { 500 } else { 50 };
 
         let test_cases = vec![
-            (
-                PersistenceStrategy::MemFirst,
-                FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms: 1000,
-                },
-            ),
+            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+                threshold: 1000,
+                interval_ms: 1000,
+            }),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2676,15 +2672,11 @@ mod performance_tests {
             // Measure performance during active flush
             let start = Instant::now();
             log_arc
-                .filter_out_conflicts_and_append(
-                    500,
-                    1,
-                    vec![Entry {
-                        index: 501,
-                        term: 1,
-                        payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
-                    }],
-                )
+                .filter_out_conflicts_and_append(500, 1, vec![Entry {
+                    index: 501,
+                    term: 1,
+                    payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
+                }])
                 .await
                 .unwrap();
 
@@ -2706,13 +2698,10 @@ mod performance_tests {
         let max_duration_ms = if is_ci { 50 } else { 5 };
 
         let test_cases = vec![
-            (
-                PersistenceStrategy::MemFirst,
-                FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms: 1000,
-                },
-            ),
+            (PersistenceStrategy::MemFirst, FlushPolicy::Batch {
+                threshold: 1000,
+                interval_ms: 1000,
+            }),
             (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
         ];
 
@@ -2951,13 +2940,14 @@ mod batch_processor_tests {
 }
 
 mod save_load_hard_state_tests {
-    use super::*;
-    use crate::FileStorageEngine;
     use d_engine_core::HardState;
     use d_engine_core::LogStore;
     use d_engine_core::MetaStore;
     use d_engine_core::StorageEngine;
     use d_engine_proto::server::election::VotedFor;
+
+    use super::*;
+    use crate::FileStorageEngine;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]
@@ -4014,15 +4004,11 @@ async fn test_log_matching_property() {
     // Conflict resolution: new leader with [1,1] [2,1] [3,2] [4,3]
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(
-            3,
-            2,
-            vec![Entry {
-                index: 4,
-                term: 3,
-                payload: None,
-            }],
-        )
+        .filter_out_conflicts_and_append(3, 2, vec![Entry {
+            index: 4,
+            term: 3,
+            payload: None,
+        }])
         .await
         .unwrap();
 
@@ -4518,13 +4504,15 @@ async fn test_shutdown_with_multiple_flushes() {
 
 #[cfg(test)]
 mod durable_index_test {
+    use std::sync::atomic::Ordering;
+
+    use d_engine_core::FlushPolicy;
+    use d_engine_core::PersistenceConfig;
+    use d_engine_core::PersistenceStrategy;
     use tempfile::tempdir;
     use tokio::sync::oneshot;
 
-    use d_engine_core::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
-
     use super::*;
-    use std::sync::atomic::Ordering;
 
     #[tokio::test]
     async fn test_durable_index_with_non_contiguous_entries() {

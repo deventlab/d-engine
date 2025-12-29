@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use d_engine_proto::common::EntryPayload;
+// Re-export LeaderInfo from proto (application layer use)
+pub use d_engine_proto::common::LeaderInfo;
+use d_engine_proto::server::election::VotedFor;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;
@@ -26,11 +30,6 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::server::election::VotedFor;
-
-// Re-export LeaderInfo from proto (application layer use)
-pub use d_engine_proto::common::LeaderInfo;
 
 pub struct Raft<T>
 where

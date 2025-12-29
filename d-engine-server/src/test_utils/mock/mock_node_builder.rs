@@ -5,16 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tracing::error;
-use tracing::trace;
-
-use super::MockTypeConfig;
-use crate::Node;
-use crate::network::grpc;
-use crate::node::LeaderNotifier;
 use d_engine_core::ElectionConfig;
 use d_engine_core::MockElectionCore;
 use d_engine_core::MockMembership;
@@ -40,6 +30,16 @@ use d_engine_core::follower_state::FollowerState;
 use d_engine_core::mock_membership as mock_membership_fn;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tracing::error;
+use tracing::trace;
+
+use super::MockTypeConfig;
+use crate::Node;
+use crate::network::grpc;
+use crate::node::LeaderNotifier;
 
 /// Builder for constructing mock Raft components with customizable defaults
 ///

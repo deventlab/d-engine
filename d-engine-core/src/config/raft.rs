@@ -747,8 +747,8 @@ fn default_stale_check_interval() -> Duration {
 pub enum PersistenceStrategy {
     /// Disk-first persistence strategy.
     ///
-    /// - **Write path**: On append, the log entry is first written to disk. Only after a
-    ///   successful disk write is it acknowledged and stored in the in-memory `SkipMap`.
+    /// - **Write path**: On append, the log entry is first written to disk. Only after a successful
+    ///   disk write is it acknowledged and stored in the in-memory `SkipMap`.
     ///
     /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///

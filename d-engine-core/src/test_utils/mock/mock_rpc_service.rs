@@ -1,17 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
-use tonic::Status;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-use tonic_health::server::health_reporter;
-use tracing::debug;
-use tracing::info;
 
-use super::MockRpcService;
-use crate::Result;
-use crate::StorageError;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientServiceServer;
 use d_engine_proto::common::NodeRole::Leader;
@@ -27,6 +16,18 @@ use d_engine_proto::server::replication::raft_replication_service_server::RaftRe
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceServer;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tonic::Status;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+use tonic_health::server::health_reporter;
+use tracing::debug;
+use tracing::info;
+
+use super::MockRpcService;
+use crate::Result;
+use crate::StorageError;
 
 pub struct MockNode;
 

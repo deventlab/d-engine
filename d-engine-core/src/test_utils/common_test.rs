@@ -1,8 +1,11 @@
-use crate::test_utils::{
-    create_config_entries, create_mixed_entries, generate_delete_commands,
-    generate_insert_commands, node_config, snapshot_config,
-};
 use std::path::PathBuf;
+
+use crate::test_utils::create_config_entries;
+use crate::test_utils::create_mixed_entries;
+use crate::test_utils::generate_delete_commands;
+use crate::test_utils::generate_insert_commands;
+use crate::test_utils::node_config;
+use crate::test_utils::snapshot_config;
 
 #[test]
 fn test_create_mixed_entries_structure() {

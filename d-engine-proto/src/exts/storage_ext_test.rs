@@ -1,5 +1,6 @@
-use crate::server::storage::SnapshotMetadata;
 use bytes::Bytes;
+
+use crate::server::storage::SnapshotMetadata;
 
 #[test]
 fn test_snapshot_metadata_checksum_array_valid() {

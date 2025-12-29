@@ -26,14 +26,18 @@
 //! - Cleanup: O(N) with read locks → no write blocking, rare execution
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
 
 use bytes::Bytes;
-use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
-
 use d_engine_core::Lease;
+use dashmap::DashMap;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::Result;
 
@@ -180,12 +184,12 @@ impl Lease for DefaultLease {
     ///
     /// # TTL Semantics
     ///
-    /// - **Absolute expiration time**: The expiration time is calculated as
-    ///   `expire_at = SystemTime::now() + Duration::from_secs(ttl_secs)` and stored internally.
+    /// - **Absolute expiration time**: The expiration time is calculated as `expire_at =
+    ///   SystemTime::now() + Duration::from_secs(ttl_secs)` and stored internally.
     /// - **Crash-safe**: The absolute expiration time survives node restarts. After crash recovery,
     ///   expired keys remain expired (no TTL reset).
-    /// - **Persistent**: The expiration time is persisted to disk during snapshot generation
-    ///   and graceful shutdown.
+    /// - **Persistent**: The expiration time is persisted to disk during snapshot generation and
+    ///   graceful shutdown.
     ///
     /// # Example
     ///

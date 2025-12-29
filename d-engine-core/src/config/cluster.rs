@@ -2,16 +2,17 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use config::ConfigError;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
 use serde::Deserialize;
 use serde::Serialize;
+#[cfg(debug_assertions)]
 use tracing::warn;
 
 use super::validate_directory;
 use crate::Error;
 use crate::Result;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
 
 /// Cluster node configuration parameters
 ///

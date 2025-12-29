@@ -6,6 +6,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
+use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
 use futures::Stream;
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -27,10 +31,6 @@ use crate::Result;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
 use crate::TypeConfig;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
 
 pub(crate) struct BackgroundSnapshotTransfer<T> {
     _marker: PhantomData<T>,

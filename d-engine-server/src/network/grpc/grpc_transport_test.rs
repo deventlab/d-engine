@@ -1,17 +1,6 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use futures::StreamExt;
-use futures::stream;
-use futures::stream::BoxStream;
-use tokio::sync::oneshot;
-use tonic::Status;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tracing_test::traced_test;
-
-use super::*;
-use crate::network::grpc::grpc_transport::GrpcTransport;
 use d_engine_core::ConnectionType;
 use d_engine_core::Error;
 use d_engine_core::MockMembership;
@@ -41,6 +30,17 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
+use futures::StreamExt;
+use futures::stream;
+use futures::stream::BoxStream;
+use tokio::sync::oneshot;
+use tonic::Status;
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
+use tracing_test::traced_test;
+
+use super::*;
+use crate::network::grpc::grpc_transport::GrpcTransport;
 
 fn mock_membership(
     peers: Vec<(u32, i32)>, //(node_id, role_i32)

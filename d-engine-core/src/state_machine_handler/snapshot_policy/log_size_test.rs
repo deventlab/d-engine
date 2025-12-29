@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
 use serial_test::serial;
 
 use super::SnapshotContext;
 use crate::LogSizePolicy;
 use crate::SnapshotPolicy;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeRole::Leader;
 
 // Test context builder for better test readability
 fn test_context(

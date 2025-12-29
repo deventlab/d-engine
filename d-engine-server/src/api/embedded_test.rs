@@ -338,8 +338,9 @@ mod embedded_engine_tests {
     /// Tests for configuration validation (start/start_with with various configs)
     #[cfg(feature = "rocksdb")]
     mod config_validation_tests {
-        use super::*;
         use serial_test::serial;
+
+        use super::*;
 
         // Tests for start() method with CONFIG_PATH have been moved to embedded_env_test.rs
         // to run sequentially and avoid environment variable race conditions
@@ -527,8 +528,9 @@ listen_addr = "127.0.0.1:0"
 
     #[cfg(feature = "watch")]
     mod watch_tests {
-        use super::*;
         use serial_test::serial;
+
+        use super::*;
 
         #[tokio::test]
         #[serial]

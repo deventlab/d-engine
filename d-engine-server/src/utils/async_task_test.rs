@@ -1,12 +1,13 @@
-use super::async_task::*;
-
-use d_engine_core::BackoffPolicy;
-use d_engine_core::Error;
-use futures::future::join_all;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use d_engine_core::BackoffPolicy;
+use d_engine_core::Error;
+use futures::future::join_all;
+
+use super::async_task::*;
 
 #[tokio::test]
 async fn test_task_with_timeout_and_exponential_backoff_success() {

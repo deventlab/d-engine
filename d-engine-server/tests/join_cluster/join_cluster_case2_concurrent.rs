@@ -12,7 +12,8 @@ use bytes::Bytes;
 use d_engine_client::ClientApiError;
 use d_engine_core::convert::safe_kv;
 use d_engine_proto::common::NodeStatus;
-use d_engine_server::{FileStateMachine, StateMachine};
+use d_engine_server::FileStateMachine;
+use d_engine_server::StateMachine;
 use serial_test::serial;
 use tokio::time::sleep;
 use tracing_test::traced_test;
@@ -45,22 +46,22 @@ const JOIN_CLUSTER_CASE2_LOG_DIR: &str = "./logs/join_cluster/case2";
 /// This integration test validates the complete workflow of adding multiple new nodes
 /// to an existing Raft cluster concurrently, focusing on:
 ///
-/// 1. **Snapshot Generation**: Initial 3-node cluster (with 10 log entries) automatically
-///    generates snapshots based on log size policy (max_log_entries_before_snapshot=10).
+/// 1. **Snapshot Generation**: Initial 3-node cluster (with 10 log entries) automatically generates
+///    snapshots based on log size policy (max_log_entries_before_snapshot=10).
 ///
-/// 2. **Concurrent Node Addition**: Two new nodes (node 4 and node 5) join the cluster
-///    sequentially while the cluster is operational, testing the system's ability to
-///    handle membership changes without disrupting ongoing operations.
+/// 2. **Concurrent Node Addition**: Two new nodes (node 4 and node 5) join the cluster sequentially
+///    while the cluster is operational, testing the system's ability to handle membership changes
+///    without disrupting ongoing operations.
 ///
-/// 3. **Snapshot Transfer & Installation**: New nodes receive snapshots from the leader
-///    via chunked InstallSnapshot RPCs, validating:
+/// 3. **Snapshot Transfer & Installation**: New nodes receive snapshots from the leader via chunked
+///    InstallSnapshot RPCs, validating:
 ///    - Snapshot chunking (chunk_size=100 bytes)
 ///    - Snapshot reassembly on receiving nodes
 ///    - Snapshot application to state machine
 ///
-/// 4. **Data Persistence Verification**: After all nodes join, the test writes a new
-///    entry (entry 11) and verifies that all nodes, including the newly joined ones,
-///    successfully replicate and persist the data to disk. This ensures:
+/// 4. **Data Persistence Verification**: After all nodes join, the test writes a new entry (entry
+///    11) and verifies that all nodes, including the newly joined ones, successfully replicate and
+///    persist the data to disk. This ensures:
 ///    - Raft log replication across all 5 nodes
 ///    - Commit handler processing on all nodes
 ///    - State machine persistence (FileStateMachine.persist_data_async())
@@ -89,7 +90,8 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     let new_node_port5 = ports.pop().unwrap(); // Fifth port for second new node
     let initial_ports = ports; // First three ports for initial cluster
 
-    // Prepare state machine directories for all nodes (do not pre-allocate Arc to avoid ownership issues)
+    // Prepare state machine directories for all nodes (do not pre-allocate Arc to avoid ownership
+    // issues)
     prepare_state_machine(1, &format!("{JOIN_CLUSTER_CASE2_DB_ROOT_DIR}/cs/1")).await;
     prepare_state_machine(2, &format!("{JOIN_CLUSTER_CASE2_DB_ROOT_DIR}/cs/2")).await;
     prepare_state_machine(3, &format!("{JOIN_CLUSTER_CASE2_DB_ROOT_DIR}/cs/3")).await;

@@ -6,8 +6,9 @@
 #[cfg(test)]
 #[cfg(feature = "rocksdb")]
 mod config_env_tests {
-    use crate::api::EmbeddedEngine;
     use serial_test::serial;
+
+    use crate::api::EmbeddedEngine;
 
     // Tests for start() method with CONFIG_PATH environment variable
 

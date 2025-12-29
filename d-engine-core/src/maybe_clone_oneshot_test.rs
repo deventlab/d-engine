@@ -1,6 +1,9 @@
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use std::sync::Arc;
+
 use tokio::sync::Mutex;
+
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 
 #[tokio::test]
 async fn test_oneshot_basic_send_recv() {

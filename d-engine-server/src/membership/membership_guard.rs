@@ -2,12 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tokio::sync::Mutex;
-use tracing::info;
-
 use d_engine_core::MembershipError;
 use d_engine_core::Result;
 use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::Mutex;
+use tracing::info;
 
 pub struct MembershipGuard {
     // Atomic state pointer for lock-free reads

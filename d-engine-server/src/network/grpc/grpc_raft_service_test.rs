@@ -2,14 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tokio::sync::watch;
-use tokio::time;
-use tonic::Code;
-use tonic::Request;
-use tracing_test::traced_test;
-
-use crate::test_utils::MockBuilder;
-use crate::test_utils::mock_node;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::AppendResults;
 use d_engine_core::MockElectionCore;
@@ -35,6 +27,14 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
+use tokio::sync::watch;
+use tokio::time;
+use tonic::Code;
+use tonic::Request;
+use tracing_test::traced_test;
+
+use crate::test_utils::MockBuilder;
+use crate::test_utils::mock_node;
 
 /// # Case: Test RPC services timeout
 #[tokio::test]

@@ -1,3 +1,8 @@
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -26,11 +31,6 @@ use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
 
 #[async_trait]
 pub trait RaftRoleState: Send + Sync + 'static {

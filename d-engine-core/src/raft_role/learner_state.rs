@@ -3,13 +3,24 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotResponse;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::Status;
 use tonic::async_trait;
 use tracing::debug;
-
-use d_engine_proto::common::NodeRole;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
@@ -37,19 +48,6 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Learner;
-
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotResponse;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 
 /// Learner node's state in Raft cluster.
 ///

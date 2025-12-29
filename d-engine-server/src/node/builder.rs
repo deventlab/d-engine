@@ -32,20 +32,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use tokio::sync::Mutex;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-
-use super::LeaderNotifier;
-use super::RaftTypeConfig;
-use crate::Node;
-use crate::membership::RaftMembership;
-use crate::network::grpc;
-use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::storage::BufferedRaftLog;
 use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
@@ -68,15 +54,30 @@ use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
-#[cfg(feature = "watch")]
-use d_engine_core::watch::{WatchDispatcher, WatchRegistry};
-
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::SMHOF;
 use d_engine_core::alias::SNP;
 use d_engine_core::alias::TROF;
 use d_engine_core::follower_state::FollowerState;
 use d_engine_core::learner_state::LearnerState;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchDispatcher;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchRegistry;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+
+use super::LeaderNotifier;
+use super::RaftTypeConfig;
+use crate::Node;
+use crate::membership::RaftMembership;
+use crate::network::grpc;
+use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::storage::BufferedRaftLog;
 
 /// Builder for creating a Raft node
 ///

@@ -11,12 +11,12 @@ pub use default_executor::*;
 #[cfg(test)]
 mod default_executor_test;
 
+use d_engine_proto::common::LogId;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
 use crate::Result;
-use d_engine_proto::common::LogId;
 
 /// Defines the behavior for log entry compaction and physical deletion.
 ///

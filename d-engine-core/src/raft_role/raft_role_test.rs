@@ -1,5 +1,6 @@
-use super::super::*;
 use d_engine_proto::server::election::VotedFor;
+
+use super::super::*;
 
 #[test]
 fn test_voted_for_backward_compatibility() {

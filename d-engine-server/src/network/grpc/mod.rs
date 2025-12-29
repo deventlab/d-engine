@@ -16,7 +16,11 @@ mod grpc_raft_service_test;
 #[cfg(test)]
 mod grpc_transport_test;
 
-use crate::Node;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::Result;
 use d_engine_core::SystemError;
@@ -30,10 +34,6 @@ use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceSer
 use futures::FutureExt;
 use rcgen::CertifiedKey;
 use rcgen::generate_simple_self_signed;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::watch;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Certificate;
@@ -44,6 +44,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
+use crate::Node;
 
 /// RPC server works for RAFT protocol
 /// It mainly listens on two request: Vote RPC Request and Append Entries RPC

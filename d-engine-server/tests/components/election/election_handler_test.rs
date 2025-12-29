@@ -1,9 +1,4 @@
-use d_engine_server::test_utils::*;
-
 use std::sync::Arc;
-use tokio::sync::watch;
-use tracing::debug;
-use tracing_test::traced_test;
 
 use d_engine_core::ConsensusError;
 use d_engine_core::ElectionCore;
@@ -25,6 +20,10 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
+use d_engine_server::test_utils::*;
+use tokio::sync::watch;
+use tracing::debug;
+use tracing_test::traced_test;
 
 struct TestConext {
     election_handler: ElectionHandler<MockTypeConfig>,

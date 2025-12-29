@@ -1,13 +1,21 @@
-use bytes::Bytes;
-use futures::StreamExt;
-use mockall::Sequence;
-use mockall::predicate::eq;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use bytes::Bytes;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
+use futures::StreamExt;
+use mockall::Sequence;
+use mockall::predicate::eq;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use tokio::fs::File;
@@ -31,13 +39,6 @@ use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::snapshot_config;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 
 // Case 1: normal update
 #[test]
@@ -709,9 +710,10 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     assert!(handler_result.unwrap().is_ok());
 }
 mod create_snapshot_tests {
+    use d_engine_proto::common::NodeRole::Leader;
+
     use super::*;
     use crate::NewCommitData;
-    use d_engine_proto::common::NodeRole::Leader;
     /// # Case 1: Basic creation flow
     #[tokio::test]
     async fn test_create_snapshot_case1() {
@@ -1936,11 +1938,12 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
 
 #[cfg(test)]
 mod mmap_tests {
-    use crate::SystemError;
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
 
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+    use crate::SystemError;
 
     /// Test that load_chunk_via_mmap works correctly with std::fs::File
     /// after the migration from tokio::fs::File

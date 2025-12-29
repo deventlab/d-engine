@@ -1,12 +1,17 @@
-use d_engine_server::api::EmbeddedEngine;
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
-use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
+use d_engine_server::api::EmbeddedEngine;
+use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::common::{create_node_config, get_available_ports, node_config, reset};
+use crate::common::create_node_config;
+use crate::common::get_available_ports;
+use crate::common::node_config;
+use crate::common::reset;
 
 const TEST_DIR: &str = "embedded/failover";
 const DB_ROOT_DIR: &str = "./db/embedded/failover";

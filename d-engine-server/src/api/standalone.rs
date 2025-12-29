@@ -1,13 +1,17 @@
 //! Standalone mode for d-engine - independent server deployment
 
 use std::sync::Arc;
+
 use tokio::sync::watch;
 
-use crate::node::NodeBuilder;
-use crate::{Result, StateMachine, StorageEngine};
-
+use crate::Result;
 #[cfg(feature = "rocksdb")]
-use crate::{RocksDBStateMachine, RocksDBStorageEngine};
+use crate::RocksDBStateMachine;
+#[cfg(feature = "rocksdb")]
+use crate::RocksDBStorageEngine;
+use crate::StateMachine;
+use crate::StorageEngine;
+use crate::node::NodeBuilder;
 
 /// Standalone d-engine server for independent deployment
 pub struct StandaloneServer;

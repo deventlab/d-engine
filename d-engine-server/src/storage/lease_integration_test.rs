@@ -9,11 +9,13 @@
 //! - RocksDBStateMachine Lease integration tests
 
 mod lease_tests {
-    use crate::storage::DefaultLease;
-    use bytes::Bytes;
-    use d_engine_core::Lease;
     use std::thread::sleep;
     use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_core::Lease;
+
+    use crate::storage::DefaultLease;
 
     #[test]
     fn test_register_and_get_expired() {
@@ -99,19 +101,22 @@ mod lease_tests {
 }
 
 mod file_state_machine_tests {
-    use bytes::Bytes;
-    use prost::Message;
     use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_core::StateMachine;
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::entry_payload::Payload;
+    use prost::Message;
     use tempfile::TempDir;
     use tokio::time::sleep;
 
-    use crate::storage::{DefaultLease, FileStateMachine};
-    use d_engine_core::StateMachine;
-    use d_engine_proto::client::{
-        WriteCommand,
-        write_command::{Insert, Operation},
-    };
-    use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
+    use crate::storage::DefaultLease;
+    use crate::storage::FileStateMachine;
 
     /// Helper to create a FileStateMachine with lease injected for testing
     async fn create_file_state_machine_with_lease(
@@ -202,10 +207,10 @@ mod file_state_machine_tests {
 
         // Create snapshot
         let snapshot_dir = temp_dir.path().join("snapshot");
-        sm.generate_snapshot_data(
-            snapshot_dir.clone(),
-            d_engine_proto::common::LogId { index: 1, term: 1 },
-        )
+        sm.generate_snapshot_data(snapshot_dir.clone(), d_engine_proto::common::LogId {
+            index: 1,
+            term: 1,
+        })
         .await
         .unwrap();
 
@@ -690,19 +695,22 @@ mod file_state_machine_tests {
 
 #[cfg(all(test, feature = "rocksdb"))]
 mod rocksdb_state_machine_tests {
-    use bytes::Bytes;
-    use prost::Message;
     use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_core::StateMachine;
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::Delete;
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::entry_payload::Payload;
+    use prost::Message;
     use tempfile::TempDir;
     use tokio::time::sleep;
 
     use crate::storage::RocksDBStateMachine;
-    use d_engine_core::StateMachine;
-    use d_engine_proto::client::{
-        WriteCommand,
-        write_command::{Delete, Insert, Operation},
-    };
-    use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
 
     /// Helper to create a RocksDBStateMachine with lease injected for testing
     async fn create_rocksdb_state_machine_with_lease(
@@ -818,10 +826,10 @@ mod rocksdb_state_machine_tests {
 
         // Create snapshot
         let snapshot_dir = temp_dir.path().join("snapshot");
-        sm.generate_snapshot_data(
-            snapshot_dir.clone(),
-            d_engine_proto::common::LogId { index: 1, term: 1 },
-        )
+        sm.generate_snapshot_data(snapshot_dir.clone(), d_engine_proto::common::LogId {
+            index: 1,
+            term: 1,
+        })
         .await
         .unwrap();
 
@@ -1072,8 +1080,8 @@ mod rocksdb_state_machine_tests {
     //             max_cleanup_duration_ms: 1,
     //         };
     //         let sm =
-    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
-    //                 .await;
+    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"),
+    // ttl_config)                 .await;
     //
     //         // Insert key with 1 second TTL
     //         let entry = create_insert_entry(1, 1, b"passive_key", b"passive_value", 1);
@@ -1101,8 +1109,8 @@ mod rocksdb_state_machine_tests {
     //         let mut ttl_config = d_engine_core::config::LeaseConfig::default();
     //         ttl_config.cleanup_strategy = "piggyback".to_string();
     //         let sm =
-    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
-    //                 .await;
+    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"),
+    // ttl_config)                 .await;
     //
     //         // Insert keys WITHOUT TTL
     //         for i in 0..10 {

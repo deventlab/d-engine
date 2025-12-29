@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use d_engine_proto::common::LogId;
 use tonic::async_trait;
 
 use crate::PurgeExecutor;
@@ -7,7 +8,6 @@ use crate::RaftLog;
 use crate::Result;
 use crate::TypeConfig;
 use crate::alias::ROF;
-use d_engine_proto::common::LogId;
 
 /// Default implementation using the configured log storage
 pub struct DefaultPurgeExecutor<T: TypeConfig> {

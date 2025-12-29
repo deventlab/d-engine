@@ -8,6 +8,29 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+use d_engine_proto::common::AddNode;
+use d_engine_proto::common::BatchPromote;
+use d_engine_proto::common::BatchRemove;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::error::ErrorCode;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::JoinResponse;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use nanoid::nanoid;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -71,29 +94,6 @@ use crate::ensure_safe_join;
 use crate::scoped_timer::ScopedTimer;
 use crate::stream::create_production_snapshot_stream;
 use crate::utils::cluster::error;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
-use d_engine_proto::common::AddNode;
-use d_engine_proto::common::BatchPromote;
-use d_engine_proto::common::BatchRemove;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::error::ErrorCode;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::JoinResponse;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
 
 // Supporting data structures
 #[derive(Debug, Clone)]
@@ -1689,8 +1689,8 @@ impl<T: TypeConfig> LeaderState<T> {
                     new_promotion_ids
                 );
 
-                // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back to
-                // the main event queue
+                // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back
+                // to the main event queue
                 if let Err(e) = role_tx.send(RoleEvent::ReprocessEvent(Box::new(event))) {
                     error!("Failed to send Promotion event via RoleEvent: {}", e);
                 } else {

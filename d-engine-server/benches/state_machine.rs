@@ -16,18 +16,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::BenchmarkId;
+use criterion::Criterion;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
 use d_engine_core::StateMachine;
-use d_engine_core::watch::{WatchDispatcher, WatchRegistry, WatcherHandle};
-use d_engine_proto::client::{
-    WriteCommand,
-    write_command::{Insert, Operation},
-};
-use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
+use d_engine_core::watch::WatchDispatcher;
+use d_engine_core::watch::WatchRegistry;
+use d_engine_core::watch::WatcherHandle;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::entry_payload::Payload;
 use d_engine_server::storage::FileStateMachine;
 use prost::Message;
 use tempfile::TempDir;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 /// Helper to create a temporary state machine for benchmarking
 async fn create_test_state_machine() -> (FileStateMachine, TempDir) {

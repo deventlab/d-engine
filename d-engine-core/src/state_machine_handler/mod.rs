@@ -37,32 +37,32 @@ mod snapshot_guard;
 mod snapshot_policy;
 
 pub use default_state_machine_handler::*;
-pub use snapshot_policy::*;
-
 pub(crate) use snapshot_assembler::*;
 pub(crate) use snapshot_guard::*;
+pub use snapshot_policy::*;
 
 #[cfg(test)]
 mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;
 
-use futures::stream::BoxStream;
-#[cfg(any(test, feature = "test-utils"))]
-use mockall::automock;
 use std::sync::Arc;
-use tonic::async_trait;
 
-use super::NewCommitData;
-use crate::Result;
-use crate::TypeConfig;
-use crate::alias::ROF;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use futures::stream::BoxStream;
+#[cfg(any(test, feature = "test-utils"))]
+use mockall::automock;
+use tonic::async_trait;
+
+use super::NewCommitData;
+use crate::Result;
+use crate::TypeConfig;
+use crate::alias::ROF;
 
 #[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]

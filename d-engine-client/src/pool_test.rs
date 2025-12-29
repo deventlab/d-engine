@@ -1,6 +1,10 @@
 use std::time::Duration;
 use std::vec;
 
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::error::ErrorCode;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::NodeMeta;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -8,10 +12,6 @@ use crate::ClientConfig;
 use crate::ConnectionPool;
 use crate::mock_rpc_service::MockNode;
 use crate::utils::get_now_as_u32;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::error::ErrorCode;
-use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::NodeMeta;
 
 #[tokio::test]
 #[traced_test]

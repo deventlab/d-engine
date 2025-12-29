@@ -1,14 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::oneshot;
-use tracing_test::traced_test;
-
-use super::*;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
 use d_engine_core::MembershipError;
 use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::oneshot;
+use tracing_test::traced_test;
+
+use super::*;
 
 fn create_test_node(id: u32) -> NodeMeta {
     NodeMeta {

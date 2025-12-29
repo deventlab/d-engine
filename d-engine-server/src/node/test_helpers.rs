@@ -5,14 +5,15 @@
 
 #[cfg(test)]
 use std::sync::Arc;
-use tokio::sync::watch;
 
-use crate::node::Node;
-use crate::test_utils::MockBuilder;
 use d_engine_core::RaftNodeConfig;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::watch;
+
+use crate::node::Node;
+use crate::test_utils::MockBuilder;
 
 /// Creates a test Node with minimal setup for unit testing
 ///

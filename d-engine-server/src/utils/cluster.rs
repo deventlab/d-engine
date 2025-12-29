@@ -2,15 +2,14 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use dashmap::DashSet;
-use metrics::gauge;
-use tracing::error;
-
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeRole::Learner;
+use dashmap::DashSet;
+use metrics::gauge;
+use tracing::error;
 
 pub(crate) fn collect_ids(entries: &[Entry]) -> Vec<u64> {
     entries.iter().map(|e| e.index).collect()

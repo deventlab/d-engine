@@ -3,7 +3,8 @@
 //! This test enforces performance thresholds for the watch mechanism.
 //! It will FAIL if watch overhead exceeds acceptable limits.
 //!
-//! Run with: cargo test --release --test watch_performance_gate --features rocksdb,watch -- --ignored
+//! Run with: cargo test --release --test watch_performance_gate --features rocksdb,watch --
+//! --ignored
 //!
 //! Performance Thresholds:
 //! - 100 watchers: < 10% overhead on PUT operations
@@ -12,10 +13,12 @@
 #![cfg(all(feature = "watch", feature = "rocksdb"))]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 use tempfile::TempDir;
 
 /// Helper: Create a test engine

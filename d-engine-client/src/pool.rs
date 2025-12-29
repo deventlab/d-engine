@@ -1,3 +1,8 @@
+use d_engine_proto::error::ErrorCode;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::MetadataRequest;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
@@ -8,11 +13,6 @@ use tracing::info;
 use super::ClientApiError;
 use crate::ClientConfig;
 use crate::utils::address_str;
-use d_engine_proto::error::ErrorCode;
-use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::MetadataRequest;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 
 /// Manages connections to cluster nodes
 ///

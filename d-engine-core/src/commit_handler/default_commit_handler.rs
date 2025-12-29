@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::entry_payload::Payload;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
@@ -23,8 +25,6 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::scoped_timer::ScopedTimer;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::entry_payload::Payload;
 
 // Dependencies container
 pub struct CommitHandlerDependencies<T: TypeConfig> {

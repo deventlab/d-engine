@@ -1,18 +1,12 @@
-use bytes::Bytes;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tracing::debug;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
 use d_engine_core::MaybeCloneOneshot;
-
 use d_engine_core::MembershipError;
 use d_engine_core::MockMembership;
 use d_engine_core::MockReplicationCore;
@@ -46,6 +40,11 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tracing::debug;
+use tracing_test::traced_test;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]

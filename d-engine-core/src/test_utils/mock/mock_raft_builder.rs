@@ -1,6 +1,9 @@
-use bytes::Bytes;
 use std::path::Path;
 use std::sync::Arc;
+
+use bytes::Bytes;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::trace;
@@ -28,8 +31,6 @@ use crate::RoleEvent;
 use crate::SignalParams;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::cluster::ClusterMembership;
 
 pub struct MockBuilder {
     pub id: Option<u32>,

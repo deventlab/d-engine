@@ -17,12 +17,11 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+use d_engine_proto::server::storage::SnapshotChunk;
 #[cfg(any(test, feature = "test-utils"))]
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tonic::Status;
-
-use d_engine_proto::server::storage::SnapshotChunk;
 
 pub trait RaftOneshot<T: Send> {
     type Sender: Send + Sync;

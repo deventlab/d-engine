@@ -122,7 +122,11 @@ mod manager;
 #[cfg(test)]
 mod manager_test;
 
-pub use manager::{WatchDispatcher, WatchEvent, WatchEventType, WatchRegistry, WatcherHandle};
+pub use manager::WatchDispatcher;
+pub use manager::WatchEvent;
+pub use manager::WatchEventType;
+pub use manager::WatchRegistry;
+pub use manager::WatcherHandle;
 
 // Re-export WatchConfig from the unified config system
 pub use crate::config::WatchConfig;

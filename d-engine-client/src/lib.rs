@@ -73,10 +73,12 @@ pub use utils::*;
 /// - `ReadConsistencyPolicy`: Consistency guarantees for reads
 /// - `WriteCommand`: Write operation specifications
 pub mod protocol {
-    pub use d_engine_proto::client::{
-        ClientResult, ReadConsistencyPolicy, WatchEventType, WatchRequest, WatchResponse,
-        WriteCommand,
-    };
+    pub use d_engine_proto::client::ClientResult;
+    pub use d_engine_proto::client::ReadConsistencyPolicy;
+    pub use d_engine_proto::client::WatchEventType;
+    pub use d_engine_proto::client::WatchRequest;
+    pub use d_engine_proto::client::WatchResponse;
+    pub use d_engine_proto::client::WriteCommand;
 }
 
 /// Cluster management protocol types

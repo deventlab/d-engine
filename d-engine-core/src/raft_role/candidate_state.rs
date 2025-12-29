@@ -2,6 +2,12 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Candidate;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -35,13 +41,6 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Candidate;
-
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
 
 /// Candidate node's volatile state during leader election.
 ///

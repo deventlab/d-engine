@@ -1,5 +1,6 @@
 use crate::common::NodeStatus;
-use crate::server::cluster::{ClusterConfUpdateResponse, cluster_conf_update_response::ErrorCode};
+use crate::server::cluster::ClusterConfUpdateResponse;
+use crate::server::cluster::cluster_conf_update_response::ErrorCode;
 
 #[test]
 fn test_cluster_conf_update_response_success() {
