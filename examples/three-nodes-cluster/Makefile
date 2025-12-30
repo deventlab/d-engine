@@ -1,7 +1,7 @@
 # Makefile for DEngine cluster operations
 
 .PHONY: build start-cluster clean clean-log-db help \
-        start-node1 start-node2 start-node3 join-node4 join-node5 \
+        start-node1 start-node2 start-node3 \
         perf-node1 perf-node2 perf-node3 perf-cluster \
         tokio-console-node1 tokio-console-node2 tokio-console-node3 tokio-console-cluster
 .DEFAULT_GOAL := help
@@ -49,23 +49,6 @@ start-node3:
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	./target/release/demo
 
-join-node4:
-	@echo "Joining Learner 4..."
-	CONFIG_PATH=config/n4 \
-	DB_PATH="./db/4" \
-	LOG_DIR="./logs/4" \
-	METRICS_PORT=8084 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	./target/release/demo
-
-join-node5:
-	@echo "Joining Learner 5..."
-	CONFIG_PATH=config/n5 \
-	DB_PATH="./db/5" \
-	LOG_DIR="./logs/5" \
-	METRICS_PORT=8085 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	./target/release/demo
 
 start-cluster: clean build
 	@echo "Starting 3-node cluster in parallel..."
@@ -175,7 +158,6 @@ help:
 	@echo "DEngine Cluster Management Commands:"
 	@echo "  build                           - Build release binary"
 	@echo "  start-node1..3                  - Start individual cluster nodes"
-	@echo "  join-node4..5                   - Join learner nodes to cluster"
 	@echo "  start-cluster                   - Start all 3 nodes in parallel"
 	@echo "  perf-node1..3                   - Run individual nodes under samply profiler"
 	@echo "  perf-cluster                    - Run full 3-node cluster under samply profiling"

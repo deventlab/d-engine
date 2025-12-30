@@ -1129,28 +1129,34 @@ async fn test_build_append_request_case() {
         ReplicationHandler::<RaftTypeConfig<FileStorageEngine, MockStateMachine>>::new(my_id);
     // Prepare entries to be replicated for each peer
     let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
-    entries_per_peer.insert(peer2_id, vec![Entry {
-        index: 3,
-        term: 1,
-        payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-    }]);
-    entries_per_peer.insert(peer3_id, vec![
-        Entry {
-            index: 1,
-            term: 1,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        },
-        Entry {
-            index: 2,
-            term: 1,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        },
-        Entry {
+    entries_per_peer.insert(
+        peer2_id,
+        vec![Entry {
             index: 3,
             term: 1,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        },
-    ]);
+        }],
+    );
+    entries_per_peer.insert(
+        peer3_id,
+        vec![
+            Entry {
+                index: 1,
+                term: 1,
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
+            },
+            Entry {
+                index: 2,
+                term: 1,
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
+            },
+            Entry {
+                index: 3,
+                term: 1,
+                payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
+            },
+        ],
+    );
 
     let data = ReplicationData {
         leader_last_index_before: 3,
@@ -2190,42 +2196,57 @@ mod handle_raft_request_in_batch_test {
                 let updates = &append_result.peer_updates;
 
                 // follower_a (success)
-                assert_eq!(updates[&2], PeerUpdate {
-                    match_index: Some(10),
-                    next_index: 11,
-                    success: true
-                });
+                assert_eq!(
+                    updates[&2],
+                    PeerUpdate {
+                        match_index: Some(10),
+                        next_index: 11,
+                        success: true
+                    }
+                );
 
                 // follower_b (conflict at term 4 index 5)
-                assert_eq!(updates[&3], PeerUpdate {
-                    match_index: None,
-                    next_index: last_index_for_term + 1,
-                    success: false
-                });
+                assert_eq!(
+                    updates[&3],
+                    PeerUpdate {
+                        match_index: None,
+                        next_index: last_index_for_term + 1,
+                        success: false
+                    }
+                );
 
                 // follower_c (success)
-                assert_eq!(updates[&4], PeerUpdate {
-                    match_index: Some(10),
-                    next_index: 11,
-                    success: true
-                });
+                assert_eq!(
+                    updates[&4],
+                    PeerUpdate {
+                        match_index: Some(10),
+                        next_index: 11,
+                        success: true
+                    }
+                );
 
                 // follower_d (higher term) - no update (error handled)
                 assert!(!updates.contains_key(&5));
 
                 // follower_e (conflict at term 4 index 6)
-                assert_eq!(updates[&6], PeerUpdate {
-                    match_index: None,
-                    next_index: last_index_for_term + 1,
-                    success: false
-                });
+                assert_eq!(
+                    updates[&6],
+                    PeerUpdate {
+                        match_index: None,
+                        next_index: last_index_for_term + 1,
+                        success: false
+                    }
+                );
 
                 // follower_f (conflict at term 2 index 4)
-                assert_eq!(updates[&7], PeerUpdate {
-                    match_index: None,
-                    next_index: last_index_for_term + 1,
-                    success: false
-                });
+                assert_eq!(
+                    updates[&7],
+                    PeerUpdate {
+                        match_index: None,
+                        next_index: last_index_for_term + 1,
+                        success: false
+                    }
+                );
             }
             Err(e) => {
                 // Verify higher term error from follower_d
@@ -3729,11 +3750,14 @@ mod handle_raft_request_in_batch_test {
             "Single node, should still achieve quorum even with 0 voters"
         );
         assert_eq!(result.peer_updates.len(), 1, "Should update learner");
-        assert_eq!(result.peer_updates.get(&learner_id).unwrap(), &PeerUpdate {
-            match_index: None, // 5-1
-            next_index: last_index_for_term + 1,
-            success: false
-        });
+        assert_eq!(
+            result.peer_updates.get(&learner_id).unwrap(),
+            &PeerUpdate {
+                match_index: None, // 5-1
+                next_index: last_index_for_term + 1,
+                success: false
+            }
+        );
     }
 }
 

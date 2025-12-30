@@ -2,6 +2,8 @@
 
 **Goal**: Start 3-node d-engine cluster and verify it works with gRPC.
 
+> d-engine uses **standard gRPC** - works with any language (Go, Python, Java, Node.js, Rust, etc.)
+
 ---
 
 ## Prerequisites
@@ -138,16 +140,30 @@ Value: world
 
 ---
 
-## Other Languages
+## What's Next?
 
-d-engine uses **standard gRPC** - works with Python, Java, Node.js, Rust, etc.
+**Try other languages:**
 
-**Proto files**: `d-engine-proto/proto/*.proto`  
-**Language guides**: https://grpc.io/docs/languages/
+- Proto files: `d-engine-proto/proto/*.proto`
+- Language guides: https://grpc.io/docs/languages/
+
+**Advanced topics:**
+
+- [Monitor cluster and test failover](#monitor-cluster)
+- [Embedded vs Standalone comparison](#embedded-vs-standalone)
+- [Production deployment](../../examples/three-nodes-cluster/README.md)
+
+**Clean up:**
+
+```bash
+make stop-cluster && make clean
+```
 
 ---
 
-## Monitor Cluster
+## Advanced Topics
+
+### Monitor Cluster
 
 ```bash
 # Watch node 1 logs
@@ -158,9 +174,7 @@ pkill -f "demo.*node-id=1"
 tail -f logs/2/demo.log  # Watch new leader election
 ```
 
----
-
-## Key Differences: Embedded vs Standalone
+### Embedded vs Standalone
 
 | Feature           | Embedded (Rust)                | Standalone (gRPC)      |
 | ----------------- | ------------------------------ | ---------------------- |
@@ -169,23 +183,6 @@ tail -f logs/2/demo.log  # Watch new leader election
 | **Language**      | Rust only                      | Any (Go, Python, Java) |
 | **Deployment**    | 1 binary                       | 3 server processes     |
 | **Setup**         | `EmbeddedEngine::start_with()` | `make start-cluster`   |
-
----
-
-## Next Steps
-
-- **Production setup**: See `examples/three-nodes-cluster/README.md`
-- **Add node**: `make join-node4` (learner auto-promotion)
-- **Metrics**: Prometheus endpoints on ports 8081-8083
-
----
-
-## Cleanup
-
-```bash
-make stop-cluster  # Stop all nodes
-make clean         # Remove db/ and logs/
-```
 
 ---
 

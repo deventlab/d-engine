@@ -184,9 +184,10 @@ fn test_entry_builder_multiple_commands() {
     let (builder, e3) = builder.command(b"cmd3");
     let (_, e4) = builder.command(b"cmd4");
 
-    assert_eq!(vec![e1.index, e2.index, e3.index, e4.index], vec![
-        1, 2, 3, 4
-    ]);
+    assert_eq!(
+        vec![e1.index, e2.index, e3.index, e4.index],
+        vec![1, 2, 3, 4]
+    );
 }
 
 #[test]

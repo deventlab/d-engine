@@ -444,12 +444,15 @@ where
                     return Err(MembershipError::NodeAlreadyExists(node_id).into());
                     // return  Ok(());
                 }
-                guard.nodes.insert(node_id, NodeMeta {
-                    id: node_id,
-                    address,
-                    role: Learner as i32,
-                    status: status as i32,
-                });
+                guard.nodes.insert(
+                    node_id,
+                    NodeMeta {
+                        id: node_id,
+                        address,
+                        role: Learner as i32,
+                        status: status as i32,
+                    },
+                );
                 info!(
                     "[node-{}] Adding a learner node successed: {} (status={:?})",
                     self.node_id, node_id, status

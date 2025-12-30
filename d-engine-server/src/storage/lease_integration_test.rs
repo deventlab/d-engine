@@ -207,10 +207,10 @@ mod file_state_machine_tests {
 
         // Create snapshot
         let snapshot_dir = temp_dir.path().join("snapshot");
-        sm.generate_snapshot_data(snapshot_dir.clone(), d_engine_proto::common::LogId {
-            index: 1,
-            term: 1,
-        })
+        sm.generate_snapshot_data(
+            snapshot_dir.clone(),
+            d_engine_proto::common::LogId { index: 1, term: 1 },
+        )
         .await
         .unwrap();
 
@@ -826,10 +826,10 @@ mod rocksdb_state_machine_tests {
 
         // Create snapshot
         let snapshot_dir = temp_dir.path().join("snapshot");
-        sm.generate_snapshot_data(snapshot_dir.clone(), d_engine_proto::common::LogId {
-            index: 1,
-            term: 1,
-        })
+        sm.generate_snapshot_data(
+            snapshot_dir.clone(),
+            d_engine_proto::common::LogId { index: 1, term: 1 },
+        )
         .await
         .unwrap();
 
