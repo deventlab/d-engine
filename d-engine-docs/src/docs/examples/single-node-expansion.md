@@ -71,7 +71,7 @@ make start-node1
 
 **Expected log**:
 
-```
+```text
 [1<2>] >>> switch to Leader now.
 ```
 
@@ -83,7 +83,7 @@ Node 1 is now leader, accepting writes.
 
 **Node 2 config** (`config/n2.toml`):
 
-```toml
+```toml,ignore
 [cluster]
 node_id = 2
 listen_address = "0.0.0.0:9082"
@@ -120,7 +120,7 @@ make join-node2
 
 **Expected log**:
 
-```
+```text
 ✅ NODE 2 SUCCESSFULLY JOINED CLUSTER
 Role: 🎓 Learner → Syncing data from Leader 1
 ```
@@ -135,7 +135,7 @@ Role: 🎓 Learner → Syncing data from Leader 1
 
 **Node 3 config** (`config/n3.toml`):
 
-```toml
+```toml,ignore
 [cluster]
 node_id = 3
 listen_address = "0.0.0.0:9083"

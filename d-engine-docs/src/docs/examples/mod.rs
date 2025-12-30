@@ -1,3 +1,7 @@
+//! # Examples
+//!
+//! Real-world deployment examples and tutorials.
+
 pub mod single_node_expansion {
     #![doc = include_str!("single-node-expansion.md")]
 }

@@ -22,7 +22,7 @@ Applications that coordinate distributed systems: database HA managers, distribu
 
 ### Architecture Pattern
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │    Frontend (multi-region/global)       │
 │  Dashboard/CLI/API Clients (anywhere)   │
@@ -86,7 +86,7 @@ d-engine = "0.2"  # default = server + rocksdb
 
 **Example Code**:
 
-```rust
+```rust,ignore
 use d_engine::prelude::*;
 use std::time::Duration;
 
@@ -127,7 +127,7 @@ DNS servers, service registries, configuration centers that serve read-heavy wor
 
 ### Architecture Pattern
 
-```
+```text
 ┌──────────────────────────────────────────┐
 │  Clients (Pods/Apps in cluster)          │
 │         ↓ DNS queries                    │
@@ -189,7 +189,7 @@ d-engine = "0.2"
 
 **Code**:
 
-```rust
+```rust,ignore
 use d_engine::prelude::*;
 
 // DNS server with embedded d-engine
@@ -242,7 +242,7 @@ Kubernetes Operators, storage orchestrators, task schedulers that require leader
 
 ### Architecture Pattern
 
-```
+```text
 ┌──────────────────────────────────────────┐
 │  Operator Replicas (Leader Election)     │
 │  ┌──────┐  ┌──────┐  ┌──────┐           │
@@ -288,7 +288,7 @@ Kubernetes Operators, storage orchestrators, task schedulers that require leader
 
 **Recommended**: Embedded Mode
 
-```rust
+```rust,ignore
 use d_engine::prelude::*;
 use std::time::Duration;
 
@@ -344,7 +344,7 @@ tokio::spawn(async move {
 
 ### Decision Tree
 
-```
+```text
 Is your application written in Rust?
 ├─ YES → Use Embedded Mode
 │         - Zero overhead (<0.1ms)

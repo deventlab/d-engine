@@ -6,7 +6,7 @@
 
 ## Quick Decision (30 seconds)
 
-```rust
+```rust,ignore
 // Most applications (balanced performance + consistency)
 let value = client.get_lease(b"key").await?;
 
@@ -19,7 +19,7 @@ let stats = client.get_eventual(b"metrics").await?;
 
 **Decision tree**:
 
-```
+```text
 Need absolute latest value?
 ├─ YES → get_linearizable() (strongest consistency)
 │
@@ -42,7 +42,7 @@ Need absolute latest value?
 
 **Use when**: Critical operations requiring strongest consistency (e.g., financial transactions, inventory updates)
 
-```rust
+```rust,ignore
 let value = client.get_linearizable(b"critical_data").await?;
 ```
 
@@ -63,7 +63,7 @@ let value = client.get_linearizable(b"critical_data").await?;
 
 **Requirements**: NTP(Network Time Protocol) must be configured on all nodes.
 
-```rust
+```rust,ignore
 let user = client.get_lease(b"user:123").await?;
 ```
 
@@ -85,7 +85,7 @@ let user = client.get_lease(b"user:123").await?;
 
 **Bonus**: Can read from **any node** (leader/follower), not just leader.
 
-```rust
+```rust,ignore
 let stats = client.get_eventual(b"dashboard_stats").await?;
 ```
 
@@ -95,7 +95,7 @@ let stats = client.get_eventual(b"dashboard_stats").await?;
 
 If you use `client.get(key)` without specifying a policy, the server's default is used:
 
-```rust
+```rust,ignore
 // Uses server's default policy (configured in server's d-engine.toml)
 let value = client.get(b"key").await?;
 ```
@@ -140,7 +140,7 @@ _Measured on 3-node cluster, AWS same-region_
 
 ### Mixed Consistency
 
-```rust
+```rust,ignore
 // Strongest consistency (latest value required)
 let critical = client.get_linearizable(b"critical_key").await?;
 
@@ -153,7 +153,7 @@ let stats = client.get_eventual(b"metrics").await?;
 
 ### Fallback on Timeout
 
-```rust
+```rust,ignore
 use tokio::time::{timeout, Duration};
 
 // Try linearizable first, fallback to lease on timeout
