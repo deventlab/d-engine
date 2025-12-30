@@ -77,7 +77,6 @@
 //! #### Client Developers
 //! - [Read Consistency](docs::client_guide::read_consistency) - Choosing consistency policies
 //! - [Error Handling](docs::client_guide::error_handling)
-//! - [Service Discovery](docs::client_guide::service_discovery_pattern)
 //!
 //! #### Server Operators
 //! - [Customize Storage Engine](docs::server_guide::customize_storage_engine)

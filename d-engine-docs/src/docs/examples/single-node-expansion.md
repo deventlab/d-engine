@@ -53,7 +53,7 @@ listen_address = "0.0.0.0:9081"
 initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 }
 ]
-initial_cluster_size = 1  # Single-node mode
+db_root_dir = "./db"
 ```
 
 **Config field reference**:
@@ -72,7 +72,8 @@ make start-node1
 **Expected log**:
 
 ```text
-[1<2>] >>> switch to Leader now.
+[Node 1] Follower → Candidate (term 1)
+[Node 1] Candidate → Leader (term 2)
 ```
 
 Node 1 is now leader, accepting writes.
@@ -91,7 +92,7 @@ initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Existing leader
     { id = 2, address = "0.0.0.0:9082", role = 3, status = 0 },  # Self: Learner
 ]
-initial_cluster_size = 1  # Must match Node 1
+db_root_dir = "./db"
 ```
 
 **Key fields**:
@@ -121,8 +122,8 @@ make join-node2
 **Expected log**:
 
 ```text
-✅ NODE 2 SUCCESSFULLY JOINED CLUSTER
-Role: 🎓 Learner → Syncing data from Leader 1
+[Node 2] Learner → Follower (term 2)
+🎊 NODE 2 PROMOTED TO VOTER!
 ```
 
 **Sync mechanism**: InstallSnapshot (bulk data) + AppendEntries (incremental logs), then auto-promotes to Voter.
@@ -144,7 +145,7 @@ initial_cluster = [
     { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },  # Follower (promoted), ACTIVE
     { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner, JOINING
 ]
-initial_cluster_size = 1
+db_root_dir = "./db"
 ```
 
 **Key**: Node 2 listed as `role = 1, status = 2` assumes it's already promoted to Follower and ACTIVE.
@@ -212,9 +213,9 @@ Node rejoins as follower, syncs missing data from new leader.
 
 **"Node won't join"**:
 
-- Check `initial_cluster_size = 1` matches across all configs
-- Verify Node 1 is running and leader
+- Verify Node 1 is running and is leader
 - Check network connectivity: `nc -zv 0.0.0.0 9081`
+- Check logs for errors
 
 **"No leader elected"**:
 
@@ -237,7 +238,7 @@ initial_cluster = [
     { id = 1, address = "192.168.1.10:9081", role = 2, status = 2 },
     { id = 2, address = "192.168.1.11:9082", role = 3, status = 0 },
 ]
-initial_cluster_size = 1
+db_root_dir = "./db"
 ```
 
 **Network requirements**:
