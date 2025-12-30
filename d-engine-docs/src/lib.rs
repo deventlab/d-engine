@@ -11,18 +11,18 @@
 //! Follow this learning path to get started quickly:
 //!
 //! ```text
-//! 1. Choose Integration Mode (2 minutes)
+//! 1. Is d-engine Right for You? (1 minute)
 //!    ↓
-//! 2a. Quick Start - Embedded (5 minutes)
+//! 2. Choose Integration Mode (1 minute)
+//!    ↓
+//! 3a. Quick Start - Embedded (5 minutes)
 //!    OR
-//! 2b. Quick Start - Standalone (5 minutes)
+//! 3b. Quick Start - Standalone (5 minutes)
 //!    ↓
-//! 3. Scale to Cluster (optional)
-//!    ↓
-//! 4. Real-World Examples
+//! 4. Scale to Cluster (optional)
 //! ```
 //!
-//! **→ Start: [Integration Modes Guide](docs::integration_modes)**
+//! **→ Start: [Is d-engine Right for You?](docs::use_cases)**
 //!
 //! ## Crate Organization
 //!
@@ -67,10 +67,10 @@
 //! ## Documentation Index
 //!
 //! ### Getting Started
+//! - [Is d-engine Right for You?](docs::use_cases) - Common use cases
 //! - [Integration Modes](docs::integration_modes) - Embedded vs Standalone
 //! - [Quick Start - Embedded](docs::quick_start_5min)
 //! - [Quick Start - Standalone](docs::quick_start_standalone)
-//! - [Real-World Examples](docs::real_world_examples)
 //!
 //! ### Guides by Role
 //!

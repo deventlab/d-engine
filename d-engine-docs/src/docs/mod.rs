@@ -22,8 +22,8 @@ pub mod integration_modes {
     #![doc = include_str!("integration-modes.md")]
 }
 
-pub mod real_world_examples {
-    #![doc = include_str!("real-world-examples.md")]
+pub mod use_cases {
+    #![doc = include_str!("use-cases.md")]
 }
 
 pub mod architecture;
