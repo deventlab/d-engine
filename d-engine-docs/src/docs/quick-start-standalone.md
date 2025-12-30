@@ -7,8 +7,7 @@
 ## Prerequisites
 
 - Rust stable (to build d-engine)
-- `grpcurl` (for testing: `brew install grpcurl` or `go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest`)
-- Go 1.20+ (optional, for client example)
+- Go 1.20+ (for client example)
 - 5 minutes
 
 ---
@@ -43,65 +42,29 @@ tail -f logs/1/demo.log  # Look for ">>> switch to Leader"
 
 ---
 
-## Step 2: Quick Test with grpcurl (1 minute)
-
-```bash
-# List available services
-grpcurl -plaintext 127.0.0.1:9081 list
-```
-
-Expected output:
-
-```text
-RaftClientService
-ClusterManagementService
-```
-
-**Write data** (Put):
-
-```bash
-grpcurl -plaintext -d '{
-  "requests": [{"put": {"key": "aGVsbG8=", "value": "d29ybGQ="}}]
-}' 127.0.0.1:9081 RaftClientService.Write
-```
-
-**Read data** (Get):
-
-```bash
-grpcurl -plaintext -d '{
-  "requests": [{"get": {"key": "aGVsbG8="}}]
-}' 127.0.0.1:9081 RaftClientService.Read
-```
-
-Expected output:
-
-```json,ignore
-{
-  "results": [
-    {
-      "value": "d29ybGQ=" // "world" in base64
-    }
-  ]
-}
-```
-
----
-
-## Step 3: Go Client Example (Optional, 2 minutes)
+## Step 2: Go Client Example (1 minute)
 
 > **Note**: This example uses raw gRPC. Official Go SDK coming soon.
 
-**Install dependencies**:
+### 2.1 Setup Project
 
 ```bash
-go mod init myapp
-go get google.golang.org/grpc
-# Copy proto files from d-engine-proto/proto/ and generate Go code
+# Create project directory
+mkdir my-d-engine-client && cd my-d-engine-client
+go mod init my-d-engine-client
+
+# For local testing (before d-engine is published)
+export D_ENGINE_REPO="/path/to/d-engine"  # ← Replace with actual path
+echo "replace github.com/deventlab/d-engine/proto => $D_ENGINE_REPO/d-engine-proto/go" >> go.mod
 ```
 
-**Simple client** (`main.go`):
+> **Note**: After d-engine is published to GitHub, remove the `replace` directive and use `go get github.com/deventlab/d-engine/proto/client` directly.
 
-```go,ignore
+### 2.2 Write Client Code
+
+Create `main.go`:
+
+```go
 package main
 
 import (
@@ -112,12 +75,10 @@ import (
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials/insecure"
 
-    // TODO: Replace with your generated proto package
-    pb "path/to/generated/proto"
+    pb "github.com/deventlab/d-engine/proto/client"
 )
 
 func main() {
-    // Connect to any cluster node
     conn, err := grpc.NewClient(
         "127.0.0.1:9081",
         grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -130,36 +91,49 @@ func main() {
     client := pb.NewRaftClientServiceClient(conn)
 
     // Write
-    _, err = client.Write(context.Background(), &pb.ClientWriteRequest{
-        Requests: []*pb.WriteCommand{{
-            Put: &pb.PutCommand{
-                Key:   []byte("hello"),
-                Value: []byte("world"),
+    writeResp, err := client.HandleClientWrite(context.Background(), &pb.ClientWriteRequest{
+        Commands: []*pb.WriteCommand{{
+            Operation: &pb.WriteCommand_Insert_{
+                Insert: &pb.WriteCommand_Insert{
+                    Key:   []byte("hello"),
+                    Value: []byte("world"),
+                },
             },
         }},
     })
     if err != nil {
-        log.Fatal(err)
+        log.Fatalf("Write failed: %v", err)
     }
+    fmt.Printf("Write success: %v\n", writeResp.GetWriteAck())
 
     // Read
-    resp, err := client.Read(context.Background(), &pb.ClientReadRequest{
-        Requests: []*pb.ReadRequest{{
-            Get: &pb.GetRequest{Key: []byte("hello")},
-        }},
+    resp, err := client.HandleClientRead(context.Background(), &pb.ClientReadRequest{
+        Keys: [][]byte{[]byte("hello")},
     })
     if err != nil {
-        log.Fatal(err)
+        log.Fatalf("Read failed: %v", err)
     }
 
-    fmt.Printf("Value: %s\n", resp.Results[0].GetValue())
+    if len(resp.GetReadData().GetResults()) == 0 {
+        log.Fatal("Key not found")
+    }
+
+    fmt.Printf("Value: %s\n", resp.GetReadData().Results[0].Value)
 }
 ```
 
-**Run**:
+**Install dependencies and run**:
 
 ```bash
-go run main.go  # Output: Value: world
+go mod tidy
+go run main.go
+```
+
+**Expected output**:
+
+```
+Write success: true
+Value: world
 ```
 
 ---
@@ -178,9 +152,6 @@ d-engine uses **standard gRPC** - works with Python, Java, Node.js, Rust, etc.
 ```bash
 # Watch node 1 logs
 tail -f logs/1/demo.log
-
-# Check cluster status
-grpcurl -plaintext 127.0.0.1:9081 ClusterManagementService.GetMetadata
 
 # Test failover (kill leader, observe re-election)
 pkill -f "demo.*node-id=1"
