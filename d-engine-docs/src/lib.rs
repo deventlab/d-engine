@@ -78,7 +78,6 @@
 //! - [Read Consistency](docs::client_guide::read_consistency) - Choosing consistency policies
 //! - [Error Handling](docs::client_guide::error_handling)
 //! - [Service Discovery](docs::client_guide::service_discovery_pattern)
-//! - [Go Client](docs::client_guide::go_client)
 //!
 //! #### Server Operators
 //! - [Customize Storage Engine](docs::server_guide::customize_storage_engine)

@@ -44,99 +44,32 @@ tail -f logs/1/demo.log  # Look for ">>> switch to Leader"
 
 ---
 
-## Step 2: Go Client Example (1 minute)
-
-> **Note**: This example uses raw gRPC. Official Go SDK coming soon.
-
-### 2.1 Setup Project
+## Step 2: Run Go Client (1 minute)
 
 ```bash
-# Create project directory
-mkdir my-d-engine-client && cd my-d-engine-client
-go mod init my-d-engine-client
-
-# For local testing (before d-engine is published)
-export D_ENGINE_REPO="/path/to/d-engine"  # ← Replace with actual path
-echo "replace github.com/deventlab/d-engine/proto => $D_ENGINE_REPO/d-engine-proto/go" >> go.mod
+cd examples/quick-start-standalone
+make run
 ```
 
-> **Note**: After d-engine is published to GitHub, remove the `replace` directive and use `go get github.com/deventlab/d-engine/proto/client` directly.
+**What this does:**
 
-### 2.2 Write Client Code
-
-Create `main.go`:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/credentials/insecure"
-
-    pb "github.com/deventlab/d-engine/proto/client"
-)
-
-func main() {
-    conn, err := grpc.NewClient(
-        "127.0.0.1:9081",
-        grpc.WithTransportCredentials(insecure.NewCredentials()),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer conn.Close()
-
-    client := pb.NewRaftClientServiceClient(conn)
-
-    // Write
-    writeResp, err := client.HandleClientWrite(context.Background(), &pb.ClientWriteRequest{
-        Commands: []*pb.WriteCommand{{
-            Operation: &pb.WriteCommand_Insert_{
-                Insert: &pb.WriteCommand_Insert{
-                    Key:   []byte("hello"),
-                    Value: []byte("world"),
-                },
-            },
-        }},
-    })
-    if err != nil {
-        log.Fatalf("Write failed: %v", err)
-    }
-    fmt.Printf("Write success: %v\n", writeResp.GetWriteAck())
-
-    // Read
-    resp, err := client.HandleClientRead(context.Background(), &pb.ClientReadRequest{
-        Keys: [][]byte{[]byte("hello")},
-    })
-    if err != nil {
-        log.Fatalf("Read failed: %v", err)
-    }
-
-    if len(resp.GetReadData().GetResults()) == 0 {
-        log.Fatal("Key not found")
-    }
-
-    fmt.Printf("Value: %s\n", resp.GetReadData().Results[0].Value)
-}
-```
-
-**Install dependencies and run**:
-
-```bash
-go mod tidy
-go run main.go
-```
+1. Connects to any node (tries 127.0.0.1:9081 first)
+2. Sends write request
+3. If `NOT_LEADER` error, follows `metadata.LeaderAddress` to redirect
+4. Writes `hello=world` to leader
+5. Reads back with LinearizableRead consistency
 
 **Expected output**:
 
 ```
-Write success: true
+Not leader, redirecting to 0.0.0.0:9082
+Write success (leader at 0.0.0.0:9082)
 Value: world
 ```
+
+> **Note**: Leader may be at any node. The client uses Leader Hint from error response to redirect automatically.
+
+**Want to see the code?** Check [examples/quick-start-standalone/main.go](../../examples/quick-start-standalone/main.go)
 
 ---
 

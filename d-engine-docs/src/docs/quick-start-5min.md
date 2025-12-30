@@ -379,7 +379,7 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 **This is what "embedded distributed engine" means**: complexity hidden, power exposed.
 
-For a complete working example, see [examples/quick-start](https://github.com/deventlab/d-engine/tree/main/examples/quick-start).
+For a complete working example, see [examples/quick-start-embedded](../../examples/quick-start-embedded).
 
 ---
 
