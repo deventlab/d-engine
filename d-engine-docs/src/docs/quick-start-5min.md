@@ -18,7 +18,6 @@ d-engine runs **inside your Rust application process**:
 ## Prerequisites
 
 - **Rust**: stable ([install](https://rustup.rs/))
-- **Disk**: ~50MB free space
 - **Time**: 5 minutes
 
 ---
