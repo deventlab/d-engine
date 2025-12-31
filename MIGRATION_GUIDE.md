@@ -114,8 +114,7 @@ grep "WAL" /var/log/d-engine.log
 | After Restart        | TTL resets 🔄               | TTL preserved ✅           |
 | WAL Replay           | All entries loaded          | Expired entries skipped ✅ |
 | Expiration Semantics | Relative TTL                | Absolute timestamp ✅      |
-| Crash Safe           | ❌ No                       |
-| ✅ Yes               |
+| Crash Safe           | ❌ No                       | ✅ Yes                     |
 
 ---
 

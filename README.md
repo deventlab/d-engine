@@ -253,5 +253,5 @@ Core Raft engine is production-grade (1000+ tests, Jepsen validated). API is sta
 
 ## License
 
-d-eninge is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
+d-engine is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
 or the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your choosing.
