@@ -1,0 +1,14 @@
+[package]
+name = "quick-start"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+d-engine = { path = "../../d-engine", features = ["rocksdb"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "quick-start"
+path = "src/main.rs"

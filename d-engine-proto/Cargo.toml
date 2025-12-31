@@ -1,0 +1,29 @@
+[package]
+name = "d-engine-proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Protocol definitions and message types for d-engine using Prost"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["raft", "protobuf", "grpc"]
+categories = ["encoding", "network-programming"]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+# prost = { workspace = true }
+prost = { version = "0.13", features = ["derive"] }
+tonic = { workspace = true }
+serde = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+
+
+[build-dependencies]
+tonic-build = "0.12"
+vergen = { version = "8.1", features = ["git", "gitcl"] }

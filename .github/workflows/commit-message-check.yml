@@ -1,11 +1,16 @@
 name: Validate Commit Messages
 
+permissions:
+  contents: read
+
 on:
   pull_request:
 
 jobs:
   validate-commits:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v3
         with:
@@ -16,7 +21,7 @@ jobs:
           BASE_SHA=${{ github.event.pull_request.base.sha }}
           HEAD_SHA=${{ github.event.pull_request.head.sha }}
 
-          ALLOWED_TYPES="feat|fix|refs|doc|perf|refactor|chore"
+          ALLOWED_TYPES="feat|fix|refs|doc|docs|perf|refactor|style|test|chore|ci|revert"
           SCOPE_PATTERN="([a-z][a-z0-9-]*)"
           TICKET_PATTERN="#[0-9]+:"
           FULL_PATTERN="^($ALLOWED_TYPES)(\($SCOPE_PATTERN\))? $TICKET_PATTERN.+$"
@@ -24,8 +29,8 @@ jobs:
           # Validate the format of all new submissions
           for commit in $(git rev-list $BASE_SHA..$HEAD_SHA); do
             msg=$(git show -s --format=%s $commit)
-            
-            # skip merge 
+
+            # skip merge
             if [[ "$msg" =~ ^Merge ]]; then
               continue
             fi

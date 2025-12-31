@@ -1,0 +1,19 @@
+[package]
+name = "d-engine-docs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Documentation and guides for d-engine Raft consensus engine"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["raft", "consensus", "documentation"]
+categories = ["documentation"]
+publish = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+# No dependencies needed - this is a pure documentation crate

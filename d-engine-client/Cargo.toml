@@ -1,0 +1,39 @@
+[package]
+name = "d-engine-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Client library for connecting to d-engine Raft consensus servers"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["raft", "consensus", "client", "async"]
+categories = ["asynchronous", "network-programming"]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+watch = ["d-engine-core/watch"]
+
+[dependencies]
+d-engine-proto = { workspace = true }
+d-engine-core = { workspace = true }
+
+tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-health = { workspace = true }
+bytes =  { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+rand = { workspace = true }
+arc-swap = "1.7.1"
+futures = { workspace = true }
+tokio-stream = "0.1.16"
+async-trait = "0.1"
+
+[dev-dependencies]
+mockall = "0.12.1"
+tracing-test = "0.2"

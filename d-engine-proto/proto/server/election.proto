@@ -1,0 +1,28 @@
+syntax = "proto3";
+package d_engine.server.election;
+
+option go_package = "github.com/deventlab/d-engine/proto/server/election";
+
+message VoteRequest {
+  uint64 term = 1;
+  uint32 candidateId = 2;
+  uint64 lastLogIndex = 3;
+  uint64 lastLogTerm = 4;
+}
+
+message VoteResponse {
+  uint64 term = 1;
+  bool voteGranted = 2;
+  uint64 lastLogIndex = 3;
+  uint64 lastLogTerm = 4;
+}
+
+message VotedFor {
+  uint32 voted_for_id = 1;
+  uint64 voted_for_term = 2;
+  bool committed = 3;
+}
+
+service RaftElectionService {
+  rpc RequestVote (VoteRequest) returns (VoteResponse);
+}

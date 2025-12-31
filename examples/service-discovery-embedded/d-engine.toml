@@ -1,0 +1,10 @@
+# Embedded Service Discovery Configuration
+
+[cluster]
+# Use a different port to avoid conflict with standalone example (50051-50053)
+listen_address = "127.0.0.1:50054"
+
+# Watch feature enabled via 'watch' feature flag in Cargo.toml
+# [raft.watch]
+# event_queue_size = 1000
+# watcher_buffer_size = 10

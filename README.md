@@ -7,18 +7,50 @@
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/deventlab/d-engine)
 
-**d-engine** is a lightweight and strongly consistent Raft consensus engine written in Rust. It is a base to build reliable and scalable distributed systems. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that maximizes single CPU core performance while minimizing resource overhead. It plans to provide a production-ready implementation of the Raft consensus algorithm, with support for pluggable storage backends, observability, and runtime flexibility.
+**d-engine** is a lightweight distributed coordination engine written in Rust, designed for embedding into applications that need strong consistency—the consensus layer for building reliable distributed systems. Start with a single node and scale to a cluster when you need high availability. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that minimizes resource overhead while maintaining high performance. It provides a production-ready implementation of the Raft consensus algorithm,
+with pluggable storage backends, built-in observability, and tokio runtime support.
+
+---
+
+## 🚧 Project Status
+
+d-engine is in **active development** (pre-1.0).
+
+**For Production Use**:
+
+- ✅ Core Raft consensus is stable (1000+ integration tests, Jepsen validated)
+- ✅ API surface is stabilizing (v0.2.0 focuses on developer experience)
+- ⚠️ Pre-1.0: Breaking changes may occur between minor versions (e.g., v0.2 → v0.3)
+- 📋 [Semantic Versioning](https://semver.org/) will strictly apply after v1.0
+
+**Compatibility Promise**:
+
+- **Before v1.0**: Breaking changes documented in [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md)
+- **After v1.0**: Breaking changes only in major versions (v1.x → v2.0)
+
+**Current Focus**: API stabilization for v1.0 release (Q2 2026)
 
 ---
 
 ## Features
 
-- **Strong Consistency**: Full implementation of the Raft protocol for distributed consensus.
-- **Flexible Read Consistency**: Three-tier read model (Linearizable/Lease-Based/Eventual) balancing consistency and performance.
-- **Pluggable Storage**: Supports custom storage backends (e.g., RocksDB, Sled, Raw File).
-- **Observability**: Built-in metrics, structured logging, and distributed tracing.
-- **Runtime Agnostic**: Works seamlessly with `tokio`.
-- **Extensible Design**: Decouples business logic from the protocol layer for easy customization.
+### New in v0.2.0 🎉
+
+- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
+- **TTL/Lease**: Automatic key expiration for distributed locks and session management
+- **Watch API**: Real-time key change notifications (config updates, service discovery)
+- **EmbeddedEngine**: Single-node start, one-line scale to 3-node cluster
+- **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
+
+### Core Capabilities
+
+- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
+- **Strong Consistency**: Full Raft protocol implementation for distributed consensus
+- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
+- **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual)
+- **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
+- **Observability**: Built-in metrics, structured logging, distributed tracing
+- **Extensible Design**: Business logic decoupled from protocol layer
 
 ---
 
@@ -29,68 +61,98 @@
 Add d-engine to your `Cargo.toml`:
 
 ```toml
-[dependencies]
-d-engine = "0.1.4"
+# Default: Embedded mode with RocksDB (recommended for most use cases)
+d-engine = "0.2"
 
-# or with RocksDB support:
-d-engine = { version = "0.1.4", features = ["rocksdb"] }
+# Standalone mode: Connect to existing d-engine cluster
+d-engine = { version = "0.2", features = ["client"], default-features = false }
+
+# Custom storage backend (disable RocksDB)
+d-engine = { version = "0.2", features = ["server"], default-features = false }
 ```
+
+### When to Use
+
+#### Embedded Mode (Default) - Rust Applications
+
+```toml
+d-engine = "0.2"
+```
+
+**Use when**: Building Rust services needing distributed coordination  
+**Examples**: Database HA coordinators, distributed schedulers, control plane services  
+**Why**: Zero-overhead (<0.1ms), single binary, type-safe
+
+❌ **Don't use**: For non-Rust applications (use Standalone mode instead)
+
+---
+
+#### Standalone Mode - Non-Rust Applications
+
+```toml
+d-engine = { version = "0.2", features = ["client"], default-features = false }
+```
+
+**Use when**: Go/Python/Java apps need distributed KV  
+**Examples**: Microservices requiring distributed KV, multi-language deployments  
+**Why**: Language-agnostic gRPC API, optimized for write-heavy workloads
+
+\*Benchmarks show 51% higher write throughput vs etcd in test environments. Production results vary by hardware. See benches/ for methodology.
+
+❌ **Don't use**: For Rust apps (embedded mode has zero overhead)
+
+---
+
+#### Custom Storage - Advanced Use Cases
+
+```toml
+d-engine = { version = "0.2", features = ["server"], default-features = false }
+```
+
+**Use when**: Specific storage requirements (Sled, memory-only, cloud storage)  
+**Examples**: Embedded devices, testing environments  
+**See**: [Custom Storage Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines) | [Sled Example](examples/sled-cluster)
+
+---
 
 ## Basic Usage (Single-Node Mode)
 
-use d-engine::{RaftCore, MemoryStorage, Config};
-
 ```rust
-use d_engine::{NodeBuilder, FileStorageEngine, FileStateMachine};
-use tokio::sync::watch;
-use std::sync::Arc;
-use std::path::PathBuf;
+use d_engine::prelude::*;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize graceful shutdown channel
-    let (graceful_tx, graceful_rx) = watch::channel(());
+    // Start embedded engine with RocksDB (auto-creates directories)
+    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 
-    // Configure storage
-    let path = PathBuf::from("/tmp/db");
-    let storage_engine = Arc::new(FileStorageEngine::new(path.join("storage"))?);
-    let state_machine = Arc::new(FileStateMachine::new(path.join("state_machine"))?);
+    // Wait for leader election (single-node: instant)
+    engine.wait_ready(Duration::from_secs(5)).await?;
 
-    // Build and start node
-    let node = NodeBuilder::new(None, graceful_rx)
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .build()
-        .start_rpc_server()
-        .await
-        .ready()
-        .expect("Failed to start node");
+    // Get KV client (zero-overhead, in-process)
+    let client = engine.client();
 
-    // Run node (blocks until shutdown)
-    node.run().await?;
+    // Store and retrieve data
+    client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+
+    if let Some(value) = client.get(b"hello".to_vec()).await? {
+        println!("Retrieved: hello = {}", String::from_utf8_lossy(&value));
+    }
+
+    // Graceful shutdown
+    engine.stop().await?;
     Ok(())
 }
-```
-
-### **Using RocksDB Storage**
-
-Enable the **`rocksdb`** feature and use the RocksDB implementations:
-
-```rust
-use d_engine::{NodeBuilder, RocksDBStorageEngine, RocksDBStateMachine};
-// ... same setup as above
-let storage_engine = Arc::new(RocksDBStorageEngine::new(path.join("storage"))?);
-let state_machine = Arc::new(RocksDBStateMachine::new(path.join("state_machine"))?);
 ```
 
 ## **Custom Storage Implementations**
 
 d-engine provides flexible storage abstraction layers. Implement your own storage engines and state machines by implementing the respective traits:
 
-- **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
-- **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
+- **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
+- **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
 
-Note: For production use, a minimum of 3 nodes is required to ensure fault tolerance.
+Note: Single-node deployment is supported for development and low-traffic production. For high availability, you can dynamically expand to a 3-node cluster with zero downtime.
 
 ---
 
@@ -127,9 +189,9 @@ sequenceDiagram
 
 ---
 
-## Performance Comparison (d-engine v0.1.4 vs etcd 3.5)
+## Performance Comparison (d-engine v0.2.0 vs etcd 3.5)
 
-![d-engine vs etcd comparison](./benches/d-engine-bench/reports/v0.1.4/dengine_comparison_v0.1.4.png)
+![d-engine vs etcd comparison](./benches/d-engine-bench/reports/v0.2.0/dengine_comparison_v0.2.0.png)
 
 ### View Benchmarks Detailed Reports
 
@@ -172,14 +234,17 @@ Write unit tests for all new features.
 
 ## FAQ
 
-**Why are 3 nodes required?**
-Raft requires a majority quorum (N/2 + 1) to achieve consensus. A 3-node cluster can tolerate 1 node failure.
+**Why 3 nodes for HA?**  
+Raft requires majority quorum (N/2 + 1). 3-node cluster tolerates 1 failure.
 
-**How do I customize storage?**
-Implement the Storage trait and pass it to RaftCore::new.
+**Can I start with 1 node?**  
+Yes. Scale to 3 nodes later with zero downtime (see `examples/single-node-expansion/`).
 
-**Is d-engine production-ready?**
-The current release (v0.0.1) focuses on correctness and reliability. Performance optimizations are planned for future releases.
+**How do I customize storage?**  
+Implement `StorageEngine` and `StateMachine` traits (see Custom Storage Implementations section).
+
+**Production-ready?**  
+Core Raft engine is production-grade (1000+ tests, Jepsen validated). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md)).
 
 ## Supported Platforms
 
@@ -188,5 +253,5 @@ The current release (v0.0.1) focuses on correctness and reliability. Performance
 
 ## License
 
-d-eninge is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
+d-engine is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
 or the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your choosing.

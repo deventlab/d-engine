@@ -1,0 +1,1135 @@
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::uninlined_format_args)]
+
+//! Integration tests for Lease functionality across the full stack
+//!
+//! This module contains comprehensive tests for:
+//! - DefaultLease unit tests (moved from ttl_manager.rs)
+//! - FileStateMachine Lease integration tests
+//! - RocksDBStateMachine Lease integration tests
+
+mod lease_tests {
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_core::Lease;
+
+    use crate::storage::DefaultLease;
+
+    #[test]
+    fn test_register_and_get_expired() {
+        let config = d_engine_core::config::LeaseConfig::default();
+        let manager = DefaultLease::new(config);
+
+        // Register keys with 1 second TTL
+        manager.register(Bytes::from("key1"), 1);
+        manager.register(Bytes::from("key2"), 1);
+
+        assert_eq!(manager.len(), 2);
+
+        // No keys expired yet
+        let expired = manager.get_expired_keys(std::time::SystemTime::now());
+        assert_eq!(expired.len(), 0);
+
+        // Wait for expiration
+        sleep(Duration::from_secs(2));
+
+        let expired = manager.get_expired_keys(std::time::SystemTime::now());
+        assert_eq!(expired.len(), 2);
+        assert_eq!(manager.len(), 0);
+    }
+
+    #[test]
+    fn test_unregister() {
+        let config = d_engine_core::config::LeaseConfig::default();
+        let manager = DefaultLease::new(config);
+
+        manager.register(Bytes::from("key1"), 10);
+        assert_eq!(manager.len(), 1);
+
+        manager.unregister(b"key1");
+        assert_eq!(manager.len(), 0);
+    }
+
+    #[test]
+    fn test_update_ttl() {
+        let config = d_engine_core::config::LeaseConfig::default();
+        let manager = DefaultLease::new(config);
+
+        // Register with 10 seconds
+        manager.register(Bytes::from("key1"), 10);
+
+        // Update to 20 seconds
+        manager.register(Bytes::from("key1"), 20);
+
+        // Should only have one TTL entry (old one replaced)
+        assert_eq!(manager.len(), 1);
+    }
+
+    #[test]
+    fn test_snapshot_roundtrip() {
+        let config = d_engine_core::config::LeaseConfig::default();
+        let manager = DefaultLease::new(config.clone());
+
+        manager.register(Bytes::from("key1"), 3600);
+        manager.register(Bytes::from("key2"), 7200);
+
+        let snapshot = manager.to_snapshot();
+        let restored = DefaultLease::from_snapshot(&snapshot, config);
+
+        assert_eq!(restored.len(), 2);
+    }
+
+    #[test]
+    fn test_snapshot_filters_expired() {
+        let config = d_engine_core::config::LeaseConfig::default();
+        let manager = DefaultLease::new(config.clone());
+
+        // Register key with 1 second TTL
+        manager.register(Bytes::from("key1"), 1);
+        manager.register(Bytes::from("key2"), 3600);
+
+        sleep(Duration::from_secs(2));
+
+        let snapshot = manager.to_snapshot();
+        let restored = DefaultLease::from_snapshot(&snapshot, config);
+
+        // Only key2 should be restored
+        assert_eq!(restored.len(), 1);
+    }
+}
+
+mod file_state_machine_tests {
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_core::StateMachine;
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::entry_payload::Payload;
+    use prost::Message;
+    use tempfile::TempDir;
+    use tokio::time::sleep;
+
+    use crate::storage::DefaultLease;
+    use crate::storage::FileStateMachine;
+
+    /// Helper to create a FileStateMachine with lease injected for testing
+    async fn create_file_state_machine_with_lease(
+        path: std::path::PathBuf,
+        lease_config: d_engine_core::config::LeaseConfig,
+    ) -> FileStateMachine {
+        let mut sm = FileStateMachine::new(path).await.unwrap();
+        let lease = std::sync::Arc::new(DefaultLease::new(lease_config));
+        sm.set_lease(lease);
+        sm.load_lease_data().await.unwrap();
+        sm
+    }
+
+    /// Helper to create an entry with Insert command
+    fn create_insert_entry(
+        index: u64,
+        term: u64,
+        key: &[u8],
+        value: &[u8],
+        ttl_secs: u64,
+    ) -> Entry {
+        let insert = Insert {
+            key: Bytes::from(key.to_vec()),
+            value: Bytes::from(value.to_vec()),
+            ttl_secs,
+        };
+        let write_cmd = WriteCommand {
+            operation: Some(Operation::Insert(insert)),
+        };
+        let payload = Payload::Command(write_cmd.encode_to_vec().into());
+
+        Entry {
+            index,
+            term,
+            payload: Some(EntryPayload {
+                payload: Some(payload),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ttl_expiration_after_apply() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
+
+        // Insert key with 2 second TTL
+        let entry = create_insert_entry(1, 1, b"ttl_key", b"ttl_value", 2);
+        sm.apply_chunk(vec![entry]).await.unwrap();
+
+        // Key should exist immediately
+        let value = sm.get(b"ttl_key").unwrap();
+        assert_eq!(value, Some(Bytes::from("ttl_value")));
+
+        // Wait for expiration
+        sleep(Duration::from_secs(3)).await;
+
+        // Background strategy: manually trigger cleanup (simulates background worker)
+        sm.lease_background_cleanup().await.unwrap();
+
+        // Key should be deleted by background cleanup
+        let value = sm.get(b"ttl_key").unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[tokio::test]
+    async fn test_ttl_snapshot_persistence() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm = create_file_state_machine_with_lease(
+            temp_dir.path().to_path_buf(),
+            lease_config.clone(),
+        )
+        .await;
+
+        // Insert key with 3600 second TTL (won't expire during test)
+        let entry = create_insert_entry(1, 1, b"persistent_key", b"persistent_value", 3600);
+        sm.apply_chunk(vec![entry]).await.unwrap();
+
+        // Create snapshot
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        sm.generate_snapshot_data(
+            snapshot_dir.clone(),
+            d_engine_proto::common::LogId { index: 1, term: 1 },
+        )
+        .await
+        .unwrap();
+
+        // Create new state machine with lease config and restore snapshot
+        let temp_dir2 = TempDir::new().unwrap();
+        let sm2 =
+            create_file_state_machine_with_lease(temp_dir2.path().to_path_buf(), lease_config)
+                .await;
+
+        sm2.apply_snapshot_from_file(
+            &d_engine_proto::server::storage::SnapshotMetadata {
+                last_included: Some(d_engine_proto::common::LogId { index: 1, term: 1 }),
+                checksum: Bytes::new(),
+            },
+            snapshot_dir,
+        )
+        .await
+        .unwrap();
+
+        // Key should exist in restored state machine
+        let value = sm2.get(b"persistent_key").unwrap();
+        assert_eq!(value, Some(Bytes::from("persistent_value")));
+    }
+
+    #[tokio::test]
+    async fn test_file_state_machine_ttl_persistence_across_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+
+        // Phase 1: Create state machine and insert keys with TTL
+        {
+            let sm = create_file_state_machine_with_lease(
+                state_machine_path.clone(),
+                lease_config.clone(),
+            )
+            .await;
+
+            let entry1 = create_insert_entry(1, 1, b"short_ttl_key", b"value1", 2);
+            let entry2 = create_insert_entry(2, 1, b"long_ttl_key", b"value2", 3600);
+            let entry3 = create_insert_entry(3, 1, b"no_ttl_key", b"value3", 0);
+
+            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+
+            // Verify all keys exist
+            assert_eq!(
+                sm.get(b"short_ttl_key").unwrap(),
+                Some(Bytes::from("value1"))
+            );
+            assert_eq!(
+                sm.get(b"long_ttl_key").unwrap(),
+                Some(Bytes::from("value2"))
+            );
+            assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
+
+            // Gracefully stop state machine to persist TTL data
+            sm.stop().unwrap();
+            // State machine drops here
+        }
+
+        // Phase 2: Restart - create new state machine from same directory
+        {
+            let sm = create_file_state_machine_with_lease(state_machine_path.clone(), lease_config)
+                .await;
+
+            // Verify all keys still exist after restart
+            assert_eq!(
+                sm.get(b"short_ttl_key").unwrap(),
+                Some(Bytes::from("value1"))
+            );
+            assert_eq!(
+                sm.get(b"long_ttl_key").unwrap(),
+                Some(Bytes::from("value2"))
+            );
+            assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
+
+            // Wait for short TTL to expire
+            sleep(Duration::from_secs(3)).await;
+
+            // Manually trigger background cleanup
+            sm.lease_background_cleanup().await.unwrap();
+
+            // short_ttl_key should be expired
+            assert_eq!(sm.get(b"short_ttl_key").unwrap(), None);
+            // long_ttl_key should still exist
+            assert_eq!(
+                sm.get(b"long_ttl_key").unwrap(),
+                Some(Bytes::from("value2"))
+            );
+            // no_ttl_key should still exist
+            assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ttl_update_cancels_previous() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
+
+        // Insert key with 2 second TTL
+        let entry1 = create_insert_entry(1, 1, b"update_key", b"value1", 2);
+        sm.apply_chunk(vec![entry1]).await.unwrap();
+
+        // Immediately update with longer TTL
+        let entry2 = create_insert_entry(2, 1, b"update_key", b"value2", 10);
+        sm.apply_chunk(vec![entry2]).await.unwrap();
+
+        // Wait past original TTL
+        sleep(Duration::from_secs(3)).await;
+
+        // Manually trigger cleanup
+        sm.lease_background_cleanup().await.unwrap();
+
+        // Key should still exist (new TTL not expired)
+        let value = sm.get(b"update_key").unwrap();
+        assert_eq!(value, Some(Bytes::from("value2")));
+    }
+    /// expiration times in the past are NOT restored to the state machine.
+    #[tokio::test]
+    async fn test_crash_safe_ttl_wal_replay_skips_expired() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+
+        // Phase 1: Write keys with TTL to WAL (without persisting to state.data)
+        {
+            let sm = create_file_state_machine_with_lease(
+                state_machine_path.clone(),
+                lease_config.clone(),
+            )
+            .await;
+
+            // Insert key with 1 second TTL (will expire quickly)
+            let entry1 = create_insert_entry(1, 1, b"expired_key", b"value1", 1);
+            // Insert key with long TTL (won't expire during test)
+            let entry2 = create_insert_entry(2, 1, b"valid_key", b"value2", 3600);
+            // Insert key with no TTL
+            let entry3 = create_insert_entry(3, 1, b"permanent_key", b"value3", 0);
+
+            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+
+            // Verify all keys exist immediately after write
+            assert_eq!(sm.get(b"expired_key").unwrap(), Some(Bytes::from("value1")));
+            assert_eq!(sm.get(b"valid_key").unwrap(), Some(Bytes::from("value2")));
+            assert_eq!(
+                sm.get(b"permanent_key").unwrap(),
+                Some(Bytes::from("value3"))
+            );
+
+            // Wait for expired_key TTL to expire
+            sleep(Duration::from_secs(2)).await;
+
+            // Manually trigger background cleanup
+            sm.lease_background_cleanup().await.unwrap();
+
+            // Verify expired_key is now expired
+            assert_eq!(
+                sm.get(b"expired_key").unwrap(),
+                None,
+                "Key should be expired after background cleanup"
+            );
+
+            // Now manually delete state.data to force WAL replay on next startup
+            // This simulates a crash where state.data was not synced to disk
+            let data_path = state_machine_path.join("state.data");
+            if data_path.exists() {
+                std::fs::remove_file(&data_path).unwrap();
+            }
+
+            // Also clear TTL state to force clean replay
+            let ttl_path = state_machine_path.join("ttl_state.bin");
+            if ttl_path.exists() {
+                std::fs::remove_file(&ttl_path).unwrap();
+            }
+
+            // Drop state machine (WAL remains with absolute expiration times)
+            drop(sm);
+        }
+
+        // Phase 2: Restart and replay WAL
+        {
+            let sm = create_file_state_machine_with_lease(state_machine_path.clone(), lease_config)
+                .await;
+
+            // WAL replay should skip expired_key (crash-safe behavior)
+            // The absolute expiration time in WAL is in the past, so it should not be restored
+            assert_eq!(
+                sm.get(b"expired_key").unwrap(),
+                None,
+                "Expired key should NOT be restored from WAL"
+            );
+
+            // Valid key should be restored with remaining TTL
+            assert_eq!(
+                sm.get(b"valid_key").unwrap(),
+                Some(Bytes::from("value2")),
+                "Valid key should be restored from WAL"
+            );
+
+            // Permanent key should be restored
+            assert_eq!(
+                sm.get(b"permanent_key").unwrap(),
+                Some(Bytes::from("value3")),
+                "Permanent key should be restored from WAL"
+            );
+
+            sm.stop().unwrap();
+        }
+    }
+
+    /// Test: WAL replay handles incomplete entries gracefully
+    ///
+    /// Verifies that if WAL file is corrupted or has incomplete entries (e.g., missing
+    /// expiration field), the system doesn't crash and treats the entry as permanent (no TTL).
+    #[tokio::test]
+    async fn test_wal_replay_handles_incomplete_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+
+        // Manually create a WAL file with incomplete entry (missing expire_at field)
+        // Format: [op_code(1), term(8), key_len(8), key, value_len(8), value, (missing expire_at)]
+        let wal_path = state_machine_path.join("wal.log");
+        let mut wal_data = Vec::new();
+
+        // Complete entry first
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&8u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"complete"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value1"); // value
+        wal_data.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0 (no TTL)
+
+        // Incomplete entry (missing expire_at field)
+        wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&10u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"incomplete"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value2"); // value
+        // Missing expire_at field (should be 8 bytes)
+
+        std::fs::write(&wal_path, wal_data).unwrap();
+
+        // Create new state machine instance to trigger WAL replay
+        let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
+
+        // Should have loaded the complete entry
+        let result = sm.get(b"complete").unwrap();
+        assert_eq!(result, Some(Bytes::from("value1")));
+
+        // Incomplete entry should be loaded as permanent (no TTL) rather than being skipped
+        let result = sm.get(b"incomplete").unwrap();
+        assert_eq!(result, Some(Bytes::from("value2")));
+    }
+
+    /// Test: WAL replay with only expired entries results in empty state
+    #[tokio::test]
+    async fn test_wal_replay_all_expired_empty_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+
+        // Create entries that are all expired (use very old timestamp)
+        let now = std::time::SystemTime::now();
+        let expired_time = now - std::time::Duration::from_secs(100);
+        let expire_at_secs = expired_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        // Manually create WAL with old expire_at times
+        let wal_path = state_machine_path.join("wal.log");
+        let mut wal_data = Vec::new();
+
+        // Entry 1 - expired
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&4u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"key1"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value1"); // value
+        wal_data.extend_from_slice(&expire_at_secs.to_be_bytes()); // expired timestamp
+
+        // Entry 2 - expired
+        wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&4u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"key2"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value2"); // value
+        wal_data.extend_from_slice(&expire_at_secs.to_be_bytes()); // expired timestamp
+
+        std::fs::write(&wal_path, wal_data).unwrap();
+
+        // Create new state machine to trigger replay
+        let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
+
+        // Both keys should be skipped (expired)
+        assert_eq!(sm.get(b"key1").unwrap(), None);
+        assert_eq!(sm.get(b"key2").unwrap(), None);
+    }
+
+    /// Test: WAL replay with mixed expired and valid entries
+    #[tokio::test]
+    async fn test_wal_replay_mixed_expired_and_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().to_path_buf();
+
+        let now = std::time::SystemTime::now();
+        let expired_time = now - std::time::Duration::from_secs(100);
+        let future_time = now + std::time::Duration::from_secs(3600);
+
+        let expire_at_expired =
+            expired_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let expire_at_future = future_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        // Manually create WAL with mixed entries
+        let wal_path = state_machine_path.join("wal.log");
+        let mut wal_data = Vec::new();
+
+        // Entry 1 - expired
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&11u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"expired_key"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value1"); // value
+        wal_data.extend_from_slice(&expire_at_expired.to_be_bytes()); // expire_at
+
+        // Entry 2 - valid with future TTL
+        wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&9u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"valid_key"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value2"); // value
+        wal_data.extend_from_slice(&expire_at_future.to_be_bytes()); // expire_at
+
+        // Entry 3 - permanent (no TTL)
+        wal_data.extend_from_slice(&3u64.to_be_bytes()); // index
+        wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
+        wal_data.push(1u8); // Insert
+        wal_data.extend_from_slice(&13u64.to_be_bytes()); // key_len
+        wal_data.extend_from_slice(b"permanent_key"); // key
+        wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
+        wal_data.extend_from_slice(b"value3"); // value
+        wal_data.extend_from_slice(&0u64.to_be_bytes()); // no TTL
+
+        std::fs::write(&wal_path, wal_data).unwrap();
+
+        // Create state machine to trigger replay
+        let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
+
+        // Expired key should not be loaded
+        assert_eq!(sm.get(b"expired_key").unwrap(), None);
+
+        // Valid key with future TTL should be loaded
+        assert_eq!(sm.get(b"valid_key").unwrap(), Some(Bytes::from("value2")));
+
+        // Permanent key should be loaded
+        assert_eq!(
+            sm.get(b"permanent_key").unwrap(),
+            Some(Bytes::from("value3"))
+        );
+    }
+
+    /// Test: Background strategy manual cleanup
+    ///
+    /// Verifies that Background strategy can clean expired keys via manual trigger.
+    /// This simulates what the background worker task does periodically.
+    #[tokio::test]
+    async fn test_background_strategy_manual_cleanup() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 50,
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
+
+        // Insert 20 keys with 1 second TTL
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
+            sm.apply_chunk(vec![entry]).await.unwrap();
+        }
+
+        // All keys should exist immediately
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            assert_eq!(sm.get(key.as_bytes()).unwrap(), Some(Bytes::from("value")));
+        }
+
+        // Wait for expiration
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // In Background mode, get() should NOT clean expired keys
+        // (they remain until background task runs)
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            // Keys still exist because Background strategy doesn't check in get()
+            assert_eq!(sm.get(key.as_bytes()).unwrap(), Some(Bytes::from("value")));
+        }
+
+        // Manually trigger background cleanup (simulates what NodeBuilder's worker does)
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        assert_eq!(
+            cleaned.len(),
+            20,
+            "Background cleanup should remove all 20 expired keys"
+        );
+
+        // Now all keys should be gone
+        for i in 0..20 {
+            let key = format!("bg_key_{}", i);
+            assert_eq!(sm.get(key.as_bytes()).unwrap(), None);
+        }
+    }
+
+    /// Test: Background cleanup respects max_cleanup_duration_ms
+    ///
+    /// Verifies that cleanup cycle doesn't exceed configured time limit.
+    #[tokio::test]
+    async fn test_background_cleanup_respects_max_duration() {
+        let temp_dir = TempDir::new().unwrap();
+        let lease_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1, // Very short limit
+        };
+        let sm =
+            create_file_state_machine_with_lease(temp_dir.path().to_path_buf(), lease_config).await;
+
+        // Insert 100 keys with 1 second TTL (intentionally more than can be cleaned in 1ms)
+        for i in 0..100 {
+            let key = format!("duration_key_{}", i);
+            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
+            sm.apply_chunk(vec![entry]).await.unwrap();
+        }
+
+        // Wait for expiration
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Manually trigger cleanup with time limit
+        let start = std::time::Instant::now();
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        let duration = start.elapsed();
+
+        // Should have cleaned some keys (partial cleanup due to time limit)
+        assert!(
+            !cleaned.is_empty(),
+            "Background cleanup should clean at least some expired keys"
+        );
+
+        // With max_cleanup_duration_ms=1, cleanup should be fast
+        // Allow some tolerance for test environment variance
+        assert!(
+            duration < Duration::from_millis(100),
+            "Cleanup should respect max duration (took {:?})",
+            duration
+        );
+    }
+}
+
+#[cfg(all(test, feature = "rocksdb"))]
+mod rocksdb_state_machine_tests {
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_core::StateMachine;
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::Delete;
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::entry_payload::Payload;
+    use prost::Message;
+    use tempfile::TempDir;
+    use tokio::time::sleep;
+
+    use crate::storage::RocksDBStateMachine;
+
+    /// Helper to create a RocksDBStateMachine with lease injected for testing
+    async fn create_rocksdb_state_machine_with_lease(
+        path: std::path::PathBuf,
+        lease_config: d_engine_core::config::LeaseConfig,
+    ) -> RocksDBStateMachine {
+        let mut sm = RocksDBStateMachine::new(path).unwrap();
+        let lease = std::sync::Arc::new(crate::storage::DefaultLease::new(lease_config));
+        sm.set_lease(lease);
+        sm.load_lease_data().await.unwrap();
+        sm
+    }
+
+    /// Helper to create an entry with Insert command
+    fn create_insert_entry(
+        index: u64,
+        term: u64,
+        key: &[u8],
+        value: &[u8],
+        ttl_secs: u64,
+    ) -> Entry {
+        let insert = Insert {
+            key: Bytes::from(key.to_vec()),
+            value: Bytes::from(value.to_vec()),
+            ttl_secs,
+        };
+        let write_cmd = WriteCommand {
+            operation: Some(Operation::Insert(insert)),
+        };
+        let payload = Payload::Command(write_cmd.encode_to_vec().into());
+
+        Entry {
+            index,
+            term,
+            payload: Some(EntryPayload {
+                payload: Some(payload),
+            }),
+        }
+    }
+
+    /// Helper to create an entry with Delete command
+    fn create_delete_entry(
+        index: u64,
+        term: u64,
+        key: &[u8],
+    ) -> Entry {
+        let delete = Delete {
+            key: Bytes::from(key.to_vec()),
+        };
+        let write_cmd = WriteCommand {
+            operation: Some(Operation::Delete(delete)),
+        };
+        let payload = Payload::Command(write_cmd.encode_to_vec().into());
+
+        Entry {
+            index,
+            term,
+            payload: Some(EntryPayload {
+                payload: Some(payload),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_ttl_expiration_after_apply() {
+        let temp_dir = TempDir::new().unwrap();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+                .await;
+
+        // Insert key with 2 second TTL
+        let entry = create_insert_entry(1, 1, b"ttl_key", b"ttl_value", 2);
+        sm.apply_chunk(vec![entry]).await.unwrap();
+
+        // Key should exist immediately
+        let value = sm.get(b"ttl_key").unwrap();
+        assert_eq!(value, Some(Bytes::from("ttl_value")));
+
+        // Wait for expiration
+        sleep(Duration::from_secs(3)).await;
+
+        // Manually trigger background cleanup
+        sm.lease_background_cleanup().await.unwrap();
+
+        // Key should be expired after cleanup
+        let value = sm.get(b"ttl_key").unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[tokio::test]
+    #[ignore] // TODO: Fix RocksDB lock contention in snapshot restoration
+    async fn test_rocksdb_ttl_snapshot_persistence() {
+        let temp_dir = TempDir::new().unwrap();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm = create_rocksdb_state_machine_with_lease(
+            temp_dir.path().join("rocksdb"),
+            ttl_config.clone(),
+        )
+        .await;
+
+        // Insert key with 3600 second TTL (won't expire during test)
+        let entry = create_insert_entry(1, 1, b"persistent_key", b"persistent_value", 3600);
+        sm.apply_chunk(vec![entry]).await.unwrap();
+
+        // Create snapshot
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        sm.generate_snapshot_data(
+            snapshot_dir.clone(),
+            d_engine_proto::common::LogId { index: 1, term: 1 },
+        )
+        .await
+        .unwrap();
+
+        // Verify TTL state file exists
+        let ttl_file = snapshot_dir.join("ttl_state.bin");
+        assert!(
+            ttl_file.exists(),
+            "TTL state file should be created in snapshot"
+        );
+
+        // Create new state machine and restore snapshot
+        let temp_dir2 = TempDir::new().unwrap();
+        let sm2 =
+            create_rocksdb_state_machine_with_lease(temp_dir2.path().join("rocksdb"), ttl_config)
+                .await;
+
+        sm2.apply_snapshot_from_file(
+            &d_engine_proto::server::storage::SnapshotMetadata {
+                last_included: Some(d_engine_proto::common::LogId { index: 1, term: 1 }),
+                checksum: Bytes::new(),
+            },
+            snapshot_dir,
+        )
+        .await
+        .unwrap();
+
+        // TTL manager should be restored (we can't directly check the key in RocksDB
+        // since the checkpoint restoration is not fully implemented, but TTL state is restored)
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_ttl_update_cancels_previous() {
+        let temp_dir = TempDir::new().unwrap();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+                .await;
+
+        // Insert key with 2 second TTL
+        let entry1 = create_insert_entry(1, 1, b"update_key", b"value1", 2);
+        sm.apply_chunk(vec![entry1]).await.unwrap();
+
+        // Immediately update with longer TTL
+        let entry2 = create_insert_entry(2, 1, b"update_key", b"value2", 10);
+        sm.apply_chunk(vec![entry2]).await.unwrap();
+
+        // Wait past original TTL
+        sleep(Duration::from_secs(3)).await;
+
+        // Trigger expiration check
+        let entry3 = create_insert_entry(3, 1, b"trigger", b"trigger", 0);
+        sm.apply_chunk(vec![entry3]).await.unwrap();
+
+        // Key should still exist (new TTL not expired)
+        let value = sm.get(b"update_key").unwrap();
+        assert_eq!(value, Some(Bytes::from("value2")));
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_ttl_delete_unregisters() {
+        let temp_dir = TempDir::new().unwrap();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+                .await;
+
+        // Insert key with TTL
+        let entry1 = create_insert_entry(1, 1, b"delete_key", b"delete_value", 3600);
+        sm.apply_chunk(vec![entry1]).await.unwrap();
+
+        // Delete the key
+        let entry2 = create_delete_entry(2, 1, b"delete_key");
+        sm.apply_chunk(vec![entry2]).await.unwrap();
+
+        // Key should not exist
+        let value = sm.get(b"delete_key").unwrap();
+        assert_eq!(value, None);
+
+        // Even after waiting, no expiration should occur (TTL was unregistered)
+        sleep(Duration::from_secs(2)).await;
+        let entry3 = create_insert_entry(3, 1, b"trigger", b"trigger", 0);
+        sm.apply_chunk(vec![entry3]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_multiple_keys_with_different_ttls() {
+        let temp_dir = TempDir::new().unwrap();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+                .await;
+
+        // Insert multiple keys with different TTLs
+        let entry1 = create_insert_entry(1, 1, b"key_1sec", b"value1", 1);
+        let entry2 = create_insert_entry(2, 1, b"key_5sec", b"value2", 5);
+        let entry3 = create_insert_entry(3, 1, b"key_no_ttl", b"value3", 0);
+
+        sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+
+        // All keys should exist initially
+        assert_eq!(sm.get(b"key_1sec").unwrap(), Some(Bytes::from("value1")));
+        assert_eq!(sm.get(b"key_5sec").unwrap(), Some(Bytes::from("value2")));
+        assert_eq!(sm.get(b"key_no_ttl").unwrap(), Some(Bytes::from("value3")));
+
+        // Wait 2 seconds
+        sleep(Duration::from_secs(2)).await;
+
+        // Manually trigger background cleanup
+        sm.lease_background_cleanup().await.unwrap();
+
+        // key_1sec should be expired
+        assert_eq!(sm.get(b"key_1sec").unwrap(), None);
+        // key_5sec and key_no_ttl should still exist
+        assert_eq!(sm.get(b"key_5sec").unwrap(), Some(Bytes::from("value2")));
+        assert_eq!(sm.get(b"key_no_ttl").unwrap(), Some(Bytes::from("value3")));
+
+        // Wait another 4 seconds (total 6 seconds)
+        sleep(Duration::from_secs(4)).await;
+
+        // Manually trigger background cleanup again
+        sm.lease_background_cleanup().await.unwrap();
+
+        // key_5sec should now be expired too
+        assert_eq!(sm.get(b"key_5sec").unwrap(), None);
+        // key_no_ttl should still exist
+        assert_eq!(sm.get(b"key_no_ttl").unwrap(), Some(Bytes::from("value3")));
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_ttl_persistence_across_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_machine_path = temp_dir.path().join("rocksdb");
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+
+        // Phase 1: Create state machine and insert keys with TTL
+        {
+            let sm = create_rocksdb_state_machine_with_lease(
+                state_machine_path.clone(),
+                ttl_config.clone(),
+            )
+            .await;
+
+            let entry1 = create_insert_entry(1, 1, b"short_ttl_key", b"value1", 2);
+            let entry2 = create_insert_entry(2, 1, b"long_ttl_key", b"value2", 3600);
+            let entry3 = create_insert_entry(3, 1, b"no_ttl_key", b"value3", 0);
+
+            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+
+            // Verify all keys exist
+            assert_eq!(
+                sm.get(b"short_ttl_key").unwrap(),
+                Some(Bytes::from("value1"))
+            );
+            assert_eq!(
+                sm.get(b"long_ttl_key").unwrap(),
+                Some(Bytes::from("value2"))
+            );
+            assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
+
+            // Gracefully stop state machine to persist TTL data
+            sm.stop().unwrap();
+            // State machine drops here
+        }
+
+        // Phase 2: Restart - create new state machine from same directory
+        {
+            let sm =
+                create_rocksdb_state_machine_with_lease(state_machine_path.clone(), ttl_config)
+                    .await;
+
+            // Verify all keys still exist after restart
+            assert_eq!(
+                sm.get(b"short_ttl_key").unwrap(),
+                Some(Bytes::from("value1"))
+            );
+            assert_eq!(
+                sm.get(b"long_ttl_key").unwrap(),
+                Some(Bytes::from("value2"))
+            );
+            assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
+
+            // Wait for short TTL to expire
+            sleep(Duration::from_secs(3)).await;
+
+            // Manually trigger background cleanup
+            sm.lease_background_cleanup().await.unwrap();
+
+            // short_ttl_key should be expired
+            assert_eq!(sm.get(b"short_ttl_key").unwrap(), None);
+            // long_ttl_key should still exist
+            assert_eq!(
+                sm.get(b"long_ttl_key").unwrap(),
+                Some(Bytes::from("value2"))
+            );
+            // no_ttl_key should still exist
+            assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_reset_clears_ttl_manager() {
+        let temp_dir = TempDir::new().unwrap();
+        let ttl_config = d_engine_core::config::LeaseConfig {
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
+        };
+        let sm =
+            create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
+                .await;
+
+        // Insert keys with TTL
+        let entry1 = create_insert_entry(1, 1, b"key1", b"value1", 3600);
+        let entry2 = create_insert_entry(2, 1, b"key2", b"value2", 7200);
+        sm.apply_chunk(vec![entry1, entry2]).await.unwrap();
+
+        // Reset the state machine
+        sm.reset().await.unwrap();
+
+        // All data should be cleared
+        assert_eq!(sm.get(b"key1").unwrap(), None);
+        assert_eq!(sm.get(b"key2").unwrap(), None);
+        assert_eq!(sm.len(), 0);
+    }
+
+    //     #[tokio::test]
+    //     async fn test_rocksdb_passive_deletion_on_get() {
+    //         let temp_dir = TempDir::new().unwrap();
+    //         let ttl_config = d_engine_core::config::LeaseConfig {
+    //             enabled: true,
+    //             interval_ms: 1000,
+    //             max_cleanup_duration_ms: 1,
+    //         };
+    //         let sm =
+    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"),
+    // ttl_config)                 .await;
+    //
+    //         // Insert key with 1 second TTL
+    //         let entry = create_insert_entry(1, 1, b"passive_key", b"passive_value", 1);
+    //         sm.apply_chunk(vec![entry]).await.unwrap();
+    //
+    //         // Key should exist immediately
+    //         let value = sm.get(b"passive_key").unwrap();
+    //         assert_eq!(value, Some(Bytes::from("passive_value")));
+    //
+    //         // Wait for expiration
+    //         sleep(Duration::from_secs(2)).await;
+    //
+    //         // Passive deletion: key should be deleted on get() without apply_chunk
+    //         let value = sm.get(b"passive_key").unwrap();
+    //         assert_eq!(value, None);
+    //
+    //         // Verify key is truly deleted (not just hidden)
+    //         let value = sm.get(b"passive_key").unwrap();
+    //         assert_eq!(value, None);
+    // //     }
+    // //
+    // //     #[tokio::test]
+    //     async fn test_rocksdb_lazy_activation_no_ttl_overhead() {
+    //         let temp_dir = TempDir::new().unwrap();
+    //         let mut ttl_config = d_engine_core::config::LeaseConfig::default();
+    //         ttl_config.cleanup_strategy = "piggyback".to_string();
+    //         let sm =
+    //             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"),
+    // ttl_config)                 .await;
+    //
+    //         // Insert keys WITHOUT TTL
+    //         for i in 0..10 {
+    //             let key = format!("no_ttl_key_{i}");
+    //             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 0);
+    //             sm.apply_chunk(vec![entry]).await.unwrap();
+    //         }
+    //
+    //         // Apply 150 more entries (should trigger piggyback cleanup check)
+    //         for i in 10..160 {
+    //             let entry = create_insert_entry(i + 1, 1, b"dummy", b"dummy", 0);
+    //             sm.apply_chunk(vec![entry]).await.unwrap();
+    //         }
+    //
+    //         // All keys should still exist (no TTL, lazy activation should skip cleanup)
+    //         for i in 0..10 {
+    //             let key = format!("no_ttl_key_{i}");
+    //             let value = sm.get(key.as_bytes()).unwrap();
+    //             assert_eq!(value, Some(Bytes::from("value")));
+    //         }
+    //     }
+}

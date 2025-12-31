@@ -52,7 +52,7 @@ sender_yield_every_n_chunks = 1
 receiver_yield_every_n_chunks = 1
 
 [raft.membership]
-cluster_healthcheck_probe_service_name = "raft.cluster.ClusterManagementService"
+cluster_healthcheck_probe_service_name = "d_engine.server.cluster.ClusterManagementService"
 
 [raft.auto_join]
 rpc_enable_compression = true
@@ -101,3 +101,28 @@ cluster_response = true
 
 # Client responses - disabling improves performance in VPC/LAN environments
 client_response = false
+
+# Watch mechanism configuration for monitoring key changes
+# Provides lock-free event notification with minimal write path overhead
+# Controlled by 'watch' feature flag at compile time
+[raft.watch]
+
+# Global event queue buffer size (shared across all watchers)
+# Tuning guidelines:
+#   - Low traffic (< 1K writes/sec): 500-1000
+#   - Medium traffic (1K-10K writes/sec): 1000-2000
+#   - High traffic (> 10K writes/sec): 2000-5000
+# Memory impact: ~24 bytes per slot, default 1000 ≈ 24KB
+event_queue_size = 1000
+
+# Per-watcher channel buffer size
+# Tuning guidelines:
+#   - Fast consumers (< 1ms processing): 5-10
+#   - Normal consumers (1-10ms processing): 10-20
+#   - Slow consumers (> 10ms processing): 20-50
+# Memory impact: ~240 bytes per slot per watcher
+watcher_buffer_size = 10
+
+# Enable detailed metrics and logging for watch operations
+# Useful for debugging but adds ~0.001% overhead
+enable_metrics = false

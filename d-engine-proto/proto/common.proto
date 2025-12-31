@@ -1,0 +1,119 @@
+syntax = "proto3";
+package d_engine.common;
+
+option go_package = "github.com/deventlab/d-engine/proto/common";
+
+// Basic definitions shared across modules
+message LogId {
+  uint64 term = 1;
+  uint64 index = 2;
+}
+
+// Raft log entry
+message Entry {
+  uint64 index = 1;
+  uint64 term = 2;
+  EntryPayload payload = 3;
+}
+
+// Log entry payload
+message EntryPayload {
+  oneof payload {
+    Noop noop = 1;       // No operation (internal to the protocol)
+    bytes command = 2;    // Business write operation
+    MembershipChange config = 3;  // Cluster configuration change
+  }
+}
+
+// Internal operation of the protocol
+message Noop {} // Empty structure
+
+// Cluster configuration change
+message MembershipChange {
+  oneof change {
+    AddNode add_node = 1;
+    RemoveNode remove_node = 2;
+    PromoteLearner promote = 3;
+    BatchPromote batch_promote = 4;
+    BatchRemove batch_remove = 5;
+  }
+}
+
+message AddNode {
+  uint32 node_id = 1;
+  string address = 2;
+  NodeStatus status = 3;  // Status of the node being added (PROMOTABLE or READ_ONLY)
+}
+
+
+message RemoveNode {
+  uint32 node_id = 1;
+}
+
+message PromoteLearner {
+  uint32 node_id = 1;
+  NodeStatus status = 2;
+}
+
+message BatchPromote{
+  repeated uint32 node_ids = 1;
+  NodeStatus new_status = 2;
+}
+
+message BatchRemove {
+  repeated uint32 node_ids = 1;
+}
+
+enum NodeStatus {
+    // Learner states
+    PROMOTABLE = 0;     // Learner that CAN be promoted to voter
+    READ_ONLY = 1;      // Learner that will NEVER be promoted (permanent analytics node)
+
+    // Voter state
+    ACTIVE = 2;         // Voting member (Follower, Candidate, or Leader)
+}
+
+message SnapshotEntry {
+    bytes key = 1;
+    bytes value = 2;
+}
+
+message SnapshotMeta {
+    uint64 versionHigh = 1;
+    uint64 versionLow = 2;
+    uint64 createdAtHigh = 3;
+    uint64 createdAtLow = 4;
+    uint32 authorId = 5;
+    LogId lastIncluded = 6;
+}
+
+message Snapshot {
+    SnapshotMeta meta = 1;
+    repeated SnapshotEntry data = 2;
+}
+
+
+enum NodeRole {
+    FOLLOWER = 0;
+    CANDIDATE = 1;
+    LEADER = 2;
+    LEARNER = 3;
+}
+
+// Leader election information
+// Used at: Application layer (internal Raft protocol notifications)
+// Purpose: Notify applications about leader changes via watch channel
+// Fields: Minimal - only what Raft protocol needs
+message LeaderInfo {
+    uint32 leader_id = 1;  // Current leader node ID
+    uint64 term = 2;       // Current Raft term
+}
+
+// Leader hint for client redirection
+// Used at: Network layer (gRPC error responses)
+// Purpose: Help clients redirect requests to the current leader
+// Fields: Includes network address for immediate retry
+message LeaderHint {
+    uint32 leader_id = 1;  // Current leader node ID
+    string address = 2;    // Leader's network address (e.g., "127.0.0.1:5001")
+}

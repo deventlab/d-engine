@@ -1,9 +1,11 @@
-## Starting a Three-Node Cluster
+## Quick Start Guide
 
-### Quick Start with Makefile (Recommended)
+### Three-Node Cluster Mode
 
-```bash
-# First build (ensure cargo is installed)
+Production-ready setup with automatic failover and data replication.
+
+````bash
+# Build (ensure cargo is installed)
 make build
 
 # Start full cluster (automatically in parallel)
@@ -19,7 +21,7 @@ make clean        # Clean all build artifacts and logs
 
 For manual control, run these in separate terminal sessions:
 
-### Node 1
+**Node 1:**
 
 ```bash
 CONFIG_PATH=config/n1 \
@@ -27,9 +29,9 @@ LOG_DIR="./logs/1" \
 RUST_LOG=demo=debug,d_engine=debug \
 RUST_BACKTRACE=1 \
 target/release/demo
-```
+````
 
-### Node 2
+**Node 2:**
 
 ```bash
 CONFIG_PATH=config/n2 \
@@ -38,7 +40,7 @@ RUST_LOG=demo=debug,d_engine=debug \
 target/release/demo
 ```
 
-### Node 3
+**Node 3:**
 
 ```bash
 CONFIG_PATH=config/n3 \
@@ -72,13 +74,15 @@ config/
 
 ### Key Makefile Commands
 
-| **Command**          | **Description**                 |
-| -------------------- | ------------------------------- |
-| `make build`         | Build release binary            |
-| `make start-cluster` | Start 3-node cluster (parallel) |
-| `make start-nodeN`   | Start individual node (N=1,2,3) |
-| `make clean`         | Clean build artifacts & logs    |
-| `make help`          | Show all available commands     |
+| **Command**          | **Description**                    |
+| -------------------- | ---------------------------------- |
+| `make build`         | Build release binary               |
+| `make start-cluster` | Start 3-node cluster (parallel)    |
+| `make start-nodeN`   | Start individual node (N=1,2,3)    |
+| `make join-nodeN`    | Join learner node (N=4,5)          |
+| `make clean`         | Clean build artifacts & logs       |
+| `make clean-log-db`  | Clean only logs and database files |
+| `make help`          | Show all available commands        |
 
 ### Log Monitoring
 
@@ -96,8 +100,10 @@ tail -f logs/1/demo.log# Watch node 1 logstail -f logs/2/demo.log# Watch node 2 
    - Auto-creates log directories
    - Verifies binary existence
    - Use Ctrl+C to terminate all nodes
-4. Cluster requires all 3 nodes to be operational
+4. Cluster requires majority (2/3) nodes to be operational
 5. Nodes must run on different ports (pre-configured in example)
+6. **High availability**: Automatic failover on node failure
+7. **Data safety**: Replicated across all nodes
 
 ## Recommended Directory Structure
 

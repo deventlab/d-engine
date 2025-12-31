@@ -1,13 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
-use d_engine::client::ClientApiError;
-use d_engine::config::ReadConsistencyPolicy;
-use d_engine::proto::client::ClientResult;
-use d_engine::proto::cluster::NodeMeta;
-use d_engine::proto::common::NodeStatus;
-use d_engine::ClientBuilder;
-use d_engine::ConvertError;
+use d_engine::{
+    Client, ClientApiError, ClientBuilder,
+    protocol::{ClientResult, ReadConsistencyPolicy},
+};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -20,32 +17,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Put {
-        key: u64,
-        value: u64,
-    },
-    Delete {
-        key: u64,
-    },
-    Get {
-        key: u64,
-    },
-    Sget {
-        key: u64,
-    },
-    Lget {
-        key: u64,
-    },
-    /// Join a new node to the cluster
-    Join {
-        /// Node ID for the new member
-        #[clap(long)]
-        node_id: u32,
-
-        /// Network address of the new node
-        #[clap(long)]
-        address: String,
-    },
+    Put { key: u64, value: u64 },
+    Delete { key: u64 },
+    Get { key: u64 },
+    Sget { key: u64 },
+    Lget { key: u64 },
 }
 
 #[tokio::main]
@@ -66,14 +42,11 @@ async fn main() -> Result<()> {
         Commands::Get { key } => handle_read(&client, key, "e").await,
         Commands::Sget { key } => handle_read(&client, key, "s").await,
         Commands::Lget { key } => handle_read(&client, key, "l").await,
-        Commands::Join { node_id, address } => {
-            handle_cluster_command(&client, node_id, address).await
-        }
     }
 }
 
 async fn handle_write(
-    client: &d_engine::Client,
+    client: &Client,
     key: u64,
     value: u64,
 ) -> Result<()> {
@@ -87,7 +60,7 @@ async fn handle_write(
 }
 
 async fn handle_delete(
-    client: &d_engine::Client,
+    client: &Client,
     key: u64,
 ) -> Result<()> {
     println!("Deleting key({key})");
@@ -100,7 +73,7 @@ async fn handle_delete(
 }
 
 async fn handle_read(
-    client: &d_engine::Client,
+    client: &Client,
     key: u64,
     consistency: &str,
 ) -> Result<()> {
@@ -113,7 +86,7 @@ async fn handle_read(
 
     let result = client
         .kv()
-        .get_with_policy(safe_kv(key), Some(policy.into()))
+        .get_with_policy(safe_kv(key), Some(policy))
         .await
         .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {e:?}"))?;
 
@@ -128,39 +101,16 @@ async fn handle_read(
     Ok(())
 }
 
-async fn handle_cluster_command(
-    client: &d_engine::Client,
-    node_id: u32,
-    address: String,
-) -> crate::Result<()> {
-    let response = client
-        .cluster()
-        .join_cluster(NodeMeta {
-            id: node_id,
-            address,
-            role: 3,
-            status: NodeStatus::Joining as i32,
-        })
-        .await
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Join cluster error: {e:?}"))?;
-
-    if response.success {
-        println!("Node joined successfully!");
-        println!("Cluster configuration version: {}", response.config_version);
-        println!("Leader ID: {}", response.leader_id);
-    } else {
-        eprintln!("Join failed: {}", response.error);
-    }
-
-    Ok(())
-}
-
 pub fn safe_vk<K: AsRef<[u8]>>(bytes: K) -> crate::Result<u64> {
     let bytes = bytes.as_ref();
     let expected_len = 8;
 
     if bytes.len() != expected_len {
-        return Err(ConvertError::InvalidLength(bytes.len()).into());
+        return Err(anyhow::anyhow!(
+            "Invalid length for value key conversion: expected {}, got {}",
+            expected_len,
+            bytes.len()
+        ));
     }
     let array: [u8; 8] = bytes.try_into().expect("Guaranteed safe after length check");
     Ok(u64::from_be_bytes(array))
@@ -170,7 +120,7 @@ pub fn safe_vk<K: AsRef<[u8]>>(bytes: K) -> crate::Result<u64> {
 ///
 /// # Examples
 /// ```
-/// use d_engine::convert::safe_kv;
+/// use convert::safe_kv;
 ///
 /// let bytes = safe_kv(0x1234_5678_9ABC_DEF0);
 /// assert_eq!(bytes, [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);

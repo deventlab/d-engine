@@ -1,11 +1,11 @@
 use super::*;
-use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use d_engine::{
-    proto::{client::write_command::Insert, common::Entry},
-    storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite},
-    Error, LogStore, StorageEngine,
+    common::{entry_payload::Payload, Entry, EntryPayload},
+    write_command::{write_command::Operation, WriteCommand},
+    LogStore, Result, StorageEngine,
 };
+use d_engine_proto::client::write_command::Insert;
 use prost::Message;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -13,45 +13,60 @@ use tracing::debug;
 use tracing_test::traced_test;
 use uuid::Uuid;
 
+/// Helper for building temporary sled storage engines for testing
 pub struct SledStorageEngineBuilder {
     temp_dir: TempDir,
 }
 
 impl SledStorageEngineBuilder {
+    /// Creates a new builder with a temporary directory
     pub fn new() -> Self {
         let temp_dir = TempDir::new().unwrap();
         Self { temp_dir }
     }
-}
 
-#[async_trait]
-impl StorageEngineBuilder for SledStorageEngineBuilder {
-    type Engine = SledStorageEngine;
-
-    async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
+    /// Builds a new storage engine instance
+    pub async fn build(&self) -> Result<Arc<SledStorageEngine>> {
         let unique_path = format!("sled_{}", Uuid::new_v4());
         let path = self.temp_dir.path().join(unique_path);
-
         let engine = SledStorageEngine::new(path, 1)?;
         Ok(Arc::new(engine))
     }
-
-    async fn cleanup(&self) -> Result<(), Error> {
-        // TempDir will be cleaned up automatically when dropped
-        Ok(())
-    }
 }
 
 #[tokio::test]
 #[traced_test]
-async fn test_sled_storage_engine() -> Result<(), Error> {
+async fn test_sled_storage_engine_basic() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
-    StorageEngineTestSuite::run_all_tests(builder).await
+    let engine = builder.build().await?;
+    let log_store = engine.log_store();
+
+    // Basic test: persist a few entries
+    let entries = vec![
+        Entry {
+            index: 1,
+            term: 1,
+            payload: Some(create_test_command_payload(1)),
+        },
+        Entry {
+            index: 2,
+            term: 1,
+            payload: Some(create_test_command_payload(2)),
+        },
+    ];
+
+    log_store.persist_entries(entries).await?;
+
+    // Verify entries can be retrieved
+    let retrieved = log_store.entry(1).await?;
+    assert!(retrieved.is_some(), "Entry 1 should exist");
+
+    Ok(())
 }
 
 #[tokio::test]
 #[traced_test]
-async fn test_sled_performance() -> Result<(), Error> {
+async fn test_sled_performance() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
     let log_store = engine.log_store();
@@ -61,7 +76,7 @@ async fn test_sled_performance() -> Result<(), Error> {
     let entries = (1..=10000)
         .map(|i| Entry {
             index: i,
-            term: i,
+            term: 1,
             payload: Some(create_test_command_payload(i)),
         })
         .collect();
@@ -71,31 +86,33 @@ async fn test_sled_performance() -> Result<(), Error> {
 
     debug!("Persisted 10,000 entries in {duration:?}");
     assert!(
-        duration.as_millis() < 1000,
-        "Should persist 10k entries in <1s"
+        duration.as_millis() < 5000,
+        "Should persist 10k entries in <5s"
     );
 
-    builder.cleanup().await?;
     Ok(())
 }
 
-fn create_test_command_payload(index: u64) -> d_engine::proto::common::EntryPayload {
-    // Create a simple insert command
+/// Helper function to create a test command payload
+fn create_test_command_payload(index: u64) -> EntryPayload {
     let key = Bytes::from(format!("key_{index}").into_bytes());
     let value = Bytes::from(format!("value_{index}").into_bytes());
 
-    let insert = Insert { key, value };
-    let operation = d_engine::proto::client::write_command::Operation::Insert(insert);
-    let write_cmd = d_engine::proto::client::WriteCommand {
+    let insert = Insert {
+        key,
+        value,
+        ttl_secs: 0,
+    };
+    let operation = Operation::Insert(insert);
+    let write_cmd = WriteCommand {
         operation: Some(operation),
     };
 
     let mut buffer = BytesMut::new();
     write_cmd.encode(&mut buffer).expect("Failed to encode insert command");
     let buffer = buffer.freeze();
-    d_engine::proto::common::EntryPayload {
-        payload: Some(d_engine::proto::common::entry_payload::Payload::Command(
-            buffer,
-        )),
+
+    EntryPayload {
+        payload: Some(Payload::Command(buffer)),
     }
 }

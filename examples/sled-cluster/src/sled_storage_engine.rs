@@ -1,16 +1,10 @@
 use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
-use d_engine::convert::safe_vk;
-use d_engine::proto::common::Entry;
-use d_engine::proto::common::LogId;
-use d_engine::Error;
-use d_engine::HardState;
-use d_engine::LogStore;
-use d_engine::MetaStore;
-use d_engine::ProstError;
-use d_engine::StorageEngine;
-use d_engine::StorageError;
+use d_engine::{
+    common::{Entry, LogId},
+    Error, HardState, LogStore, MetaStore, ProstError, Result, StorageEngine, StorageError,
+};
 use prost::Message;
 use sled::Batch;
 use sled::IVec;
@@ -62,7 +56,7 @@ impl LogStore for SledLogStore {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let mut batch = Batch::default();
         let mut max_index = 0;
 
@@ -84,7 +78,7 @@ impl LogStore for SledLogStore {
     async fn entry(
         &self,
         index: u64,
-    ) -> Result<Option<Entry>, Error> {
+    ) -> Result<Option<Entry>> {
         let key = SledStorageEngine::index_to_key(index);
         match self.tree.get(key).map_err(|e| StorageError::DbError(e.to_string()))? {
             Some(bytes) => {
@@ -99,7 +93,7 @@ impl LogStore for SledLogStore {
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
-    ) -> Result<Vec<Entry>, Error> {
+    ) -> Result<Vec<Entry>> {
         let start = SledStorageEngine::index_to_key(*range.start());
         let end = SledStorageEngine::index_to_key(*range.end());
         let mut entries = Vec::new();
@@ -117,7 +111,7 @@ impl LogStore for SledLogStore {
     async fn purge(
         &self,
         cutoff_index: LogId,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let start = SledStorageEngine::index_to_key(0);
         let end = SledStorageEngine::index_to_key(cutoff_index.index);
         let mut batch = Batch::default();
@@ -135,7 +129,7 @@ impl LogStore for SledLogStore {
     async fn truncate(
         &self,
         from_index: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let start_key = SledStorageEngine::index_to_key(from_index);
         let mut batch = Batch::default();
 
@@ -149,13 +143,13 @@ impl LogStore for SledLogStore {
     }
 
     #[instrument(skip(self))]
-    fn flush(&self) -> Result<(), Error> {
+    fn flush(&self) -> Result<()> {
         trace!("LogStore flush");
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
+    async fn flush_async(&self) -> Result<()> {
         trace!("LogStore flush");
         self.tree
             .flush_async()
@@ -165,7 +159,7 @@ impl LogStore for SledLogStore {
     }
 
     #[instrument(skip(self))]
-    async fn reset(&self) -> Result<(), Error> {
+    async fn reset(&self) -> Result<()> {
         self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
@@ -173,13 +167,16 @@ impl LogStore for SledLogStore {
     #[instrument(skip(self))]
     fn last_index(&self) -> u64 {
         match self.tree.last() {
-            Ok(Some((key, _))) => match safe_vk(&key) {
-                Ok(index) => index,
-                Err(err) => {
-                    tracing::warn!("Invalid key format in sled: {:?}", err);
+            Ok(Some((key, _))) => {
+                if key.len() >= 8 {
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&key[0..8]);
+                    u64::from_be_bytes(bytes)
+                } else {
+                    tracing::warn!("Invalid key format in sled: key too short");
                     0
                 }
-            },
+            }
             _ => 0,
         }
     }
@@ -190,7 +187,7 @@ impl MetaStore for SledMetaStore {
     fn save_hard_state(
         &self,
         state: &HardState,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let config = config::standard();
         match bincode::serde::encode_to_vec(state, config) {
             Ok(v) => {
@@ -219,7 +216,7 @@ impl MetaStore for SledMetaStore {
         Ok(())
     }
 
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+    fn load_hard_state(&self) -> Result<Option<HardState>> {
         info!(
             "pending load_role_hard_state_from_db with key: {:?}",
             HARD_STATE_KEY
@@ -262,12 +259,12 @@ impl MetaStore for SledMetaStore {
         }
     }
 
-    fn flush(&self) -> Result<(), Error> {
+    fn flush(&self) -> Result<()> {
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
+    async fn flush_async(&self) -> Result<()> {
         trace!("MetaStore flush");
         self.tree
             .flush_async()
@@ -307,7 +304,7 @@ impl SledStorageEngine {
     pub fn new<P: AsRef<Path> + std::fmt::Debug>(
         path: P,
         node_id: u32,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         let (log_tree, meta_tree) = init_sled_log_tree_and_meta_tree(path, node_id)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
 
@@ -344,7 +341,7 @@ impl SledLogStore {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Vec<u8>>, Error>
+    ) -> Result<Option<Vec<u8>>>
     where
         K: AsRef<[u8]> + 'static,
         V: AsRef<[u8]> + 'static,
@@ -363,7 +360,7 @@ impl SledLogStore {
     pub fn get<K>(
         &self,
         key: K,
-    ) -> Result<Option<Bytes>, Error>
+    ) -> Result<Option<Bytes>>
     where
         K: AsRef<[u8]> + Send + 'static,
     {
@@ -390,7 +387,7 @@ impl SledMetaStore {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Vec<u8>>, Error>
+    ) -> Result<Option<Vec<u8>>>
     where
         K: AsRef<[u8]> + 'static,
         V: AsRef<[u8]> + 'static,
@@ -409,7 +406,7 @@ impl SledMetaStore {
     pub fn get<K>(
         &self,
         key: K,
-    ) -> Result<Option<Bytes>, Error>
+    ) -> Result<Option<Bytes>>
     where
         K: AsRef<[u8]> + Send + 'static,
     {
@@ -433,7 +430,7 @@ impl SledMetaStore {
 pub fn init_sled_log_tree_and_meta_tree(
     sled_db_root_path: impl AsRef<std::path::Path> + std::fmt::Debug,
     node_id: u32,
-) -> Result<(sled::Tree, sled::Tree), sled::Error> {
+) -> std::result::Result<(sled::Tree, sled::Tree), sled::Error> {
     let db = init_sled_storage_engine_db(&sled_db_root_path)?;
     let log_tree_name = format!("raft_log_{RAFT_LOG_NAMESPACE}_{node_id}");
     let meta_tree_name = format!("raft_meta_{RAFT_META_NAMESPACE}_{node_id}");
@@ -445,7 +442,7 @@ pub fn init_sled_log_tree_and_meta_tree(
 
 pub fn init_sled_storage_engine_db(
     sled_db_root_path: impl AsRef<std::path::Path> + std::fmt::Debug
-) -> Result<sled::Db, sled::Error> {
+) -> std::result::Result<sled::Db, sled::Error> {
     tracing::debug!(
         "init_sled_storage_engine_db from path: {:?}",
         &sled_db_root_path

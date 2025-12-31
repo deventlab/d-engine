@@ -4,6 +4,93 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v0.2.0] - 2025-12-11 [✅ Released]
+
+### 🎯 Highlights for Developers
+
+#### Workspace Structure - Modular Dependencies
+
+**Problem**: v0.1.x pulled all dependencies even for client-only usage  
+**Solution**: Feature flags `client`/`server`/`full` - depend only on what you need
+
+```toml
+# Client-only (lightweight)
+d-engine = { version = "0.2", features = ["client"] }
+
+# Embedded server (full engine)
+d-engine = { version = "0.2", features = ["server"] }
+```
+
+**Impact**: Faster builds, smaller binaries
+
+#### TTL/Lease - Automatic Key Expiration
+
+**Use Case**: Distributed locks, session management, temporary state  
+**API**: `client.put_with_ttl("session:123", data, Duration::from_secs(60))`  
+**Feature**: Crash-safe (survives restart via absolute expiration time)
+
+#### Watch API - Real-Time Key Monitoring
+
+**Use Case**: Config change notifications, service discovery  
+**Example**:
+
+```rust,ignore
+let mut watcher = client.watch("config/").await?;
+while let Some(event) = watcher.next().await {
+    println!("Changed: {:?}", event);
+}
+```
+
+**Performance**: Lock-free, <0.1ms notification latency
+
+#### StandaloneServer - One-Line Deployment
+
+**Use Case**: Independent server process (production deployment)  
+**API**: `run(shutdown_rx)` uses env config, `run_with(config_path, shutdown_rx)` uses explicit config  
+**Benefit**: Blocks until shutdown, no manual lifecycle management
+
+#### EmbeddedEngine - In-Process Integration
+
+**Use Case**: Embed d-engine in your Rust application  
+**API**: `start()` uses env config, `start_with(config_path)` uses explicit config, `start_custom(...)` for advanced usage  
+**Benefit**: Zero gRPC overhead via LocalKvClient (<0.1ms latency)
+
+#### LocalKvClient - Zero-Overhead Embedded Access
+
+**When**: Your app and d-engine in same process  
+**Benefit**: Skip gRPC serialization, direct memory access (<0.1ms)  
+**Example**: See `examples/service-discovery-embedded/`
+
+---
+
+### 📚 New Examples
+
+- `examples/quick-start/` - 5-minute single-node setup
+- `examples/single-node-expansion/` - Dynamic 1→3 node scaling
+- `examples/service-discovery-embedded/` - LocalKvClient zero-overhead access
+- `examples/service-discovery-standalone/` - Watch API pattern
+
+---
+
+### ⚠️ Breaking Changes
+
+**File-based State Machine WAL Format**
+
+- WAL now uses absolute expiration time (not relative TTL)
+- **Action Required**: See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) if upgrading from v0.1.x
+- **New users**: No action needed
+
+---
+
+### 🚀 Performance & Quality
+
+- Watch API: Lock-free, tested with 1000+ concurrent watchers, <0.1ms notification latency
+- TTL cleanup: Lazy (read-time check) + Background (scheduled task), <1% CPU overhead
+- 1000+ new integration tests covering edge cases
+- Zero clippy warnings across entire codebase
+
+---
+
 ## [v0.1.4] - 2025-10-12 [✅ Released]
 
 ### Features

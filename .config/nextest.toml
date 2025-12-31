@@ -1,0 +1,8 @@
+# Nextest configuration for d-engine
+
+[profile.default]
+
+# Force serial execution for tests that use /tmp/db
+[[profile.default.overrides]]
+filter = "test(tmp_db) | test(config_path_env)"
+threads-required = 'num-cpus'

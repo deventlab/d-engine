@@ -1,0 +1,200 @@
+# ============================================================================
+# Clippy Configuration for d-engine Workspace
+# ============================================================================
+# This file configures Clippy linting rules for the entire workspace.
+#
+# Documentation: https://rust-lang.github.io/rust-clippy/master/index.html
+# Configuration Reference: https://doc.rust-lang.org/clippy/configuration.html
+#
+# All workspace crates inherit these settings unless explicitly overridden
+# in crate-specific attributes (e.g., #[allow(clippy::foo)]).
+# ============================================================================
+
+# ============================================================================
+# Complexity and Performance Thresholds
+# ============================================================================
+
+# Maximum cognitive complexity threshold for functions
+# Default: 25
+# Functions exceeding this complexity will trigger cognitive_complexity warning
+cognitive-complexity-threshold = 30
+
+# Maximum number of function arguments before suggesting refactoring
+# Default: 7
+# Functions with more parameters than this will trigger too_many_arguments
+too-many-arguments-threshold = 8
+
+# Maximum number of lines in a function body
+# Default: 200
+# This helps identify functions that might be too large to understand easily
+too-many-lines-threshold = 250
+
+# Type complexity threshold
+# Default: 250
+# Complex generic types exceeding this threshold trigger type_complexity warning
+type-complexity-threshold = 300
+
+# ============================================================================
+# Code Style and Formatting Preferences
+# ============================================================================
+
+# Enforce explicit documentation on public API items
+# Set to true to require docs on all public items, modules, and functions
+# Default: false
+# For strict documentation standards, set to true
+missing-docs-in-crate-items = false
+
+# Enforce parentheses around complex expressions
+# Default: false
+# Set to true for more explicit parentheses
+enforce-iter-loop-reborrow = false
+
+
+# ============================================================================
+# Pattern-Specific Configuration
+# ============================================================================
+
+# Wildcard imports threshold
+# Default: None (allow all wildcard imports)
+# wildcard-imports-allowed-crates = ["log", "sqlx::prelude"]
+
+# Suppress warnings for specific lint patterns
+# This is useful for third-party code or when you know what you're doing
+# allowed-scripts = ["Latin"]
+
+# ============================================================================
+# Documentation and Comments
+# ============================================================================
+
+# Enforce documentation for public items in crates
+# Default: false
+# Set to true to require /// doc comments on public functions
+doc-valid-idents = [
+    # Standard Rust identifiers
+    "Raft",
+    "Tokio",
+    "RocksDB",
+    "TCP",
+    "UDP",
+    "HTTP",
+    "HTTPS",
+    "API",
+    "UUID",
+    "URL",
+    "UTF-8",
+    "CRC",
+    "SHA",
+    "LRU",
+    "LTO",
+    "LLVM",
+    "JIT",
+    "EOF",
+    "YAML",
+    "JSON",
+    "XML",
+    "ASCII",
+    "ANSI",
+    # Project-specific identifiers
+    "DEngine",
+    "d-engine",
+    "EventLab",
+    "Consensus",
+    "Replication",
+    "Quorum",
+    "Term",
+    "Index",
+]
+
+# Character name length thresholds
+single-char-binding-names-threshold = 4
+
+# ============================================================================
+# Safety and Correctness
+# ============================================================================
+
+# Restrict unsafe code to specific modules (optional)
+# When set, unsafe code outside specified modules triggers warnings
+# unsafe-derive-serialize = false
+
+# Check for potential panics
+# When true, warns about patterns that might panic
+# allow-panic = false
+
+# ============================================================================
+# Testing and Development
+# ============================================================================
+
+# Allow certain patterns in test code that would normally be warnings
+# Tests often use patterns that are acceptable in that context
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# ============================================================================
+# Import Organization
+# ============================================================================
+
+# Enforce wildcard imports are only from specific crates
+# Helps maintain clean imports
+# wildcard-imports-allowed-crates = []
+
+# ============================================================================
+# Lint Override Examples (Commented Out)
+# ============================================================================
+# The following are examples of how to suppress specific lints.
+# Uncomment if needed for your project.
+
+# # Suppress warnings for specific patterns:
+# # (In code, use #[allow(clippy::lint_name)])
+# # Example: #[allow(clippy::too_many_arguments)]
+
+# ============================================================================
+# Best Practices & Tips
+# ============================================================================
+#
+# 1. COGNITIVE COMPLEXITY (default: 25)
+#    - Functions with high cognitive complexity are harder to understand
+#    - Consider breaking them into smaller helper functions
+#    - Threshold of 30 allows for moderately complex functions
+#
+# 2. TOO MANY ARGUMENTS (default: 7)
+#    - Functions with many parameters are hard to call and maintain
+#    - Consider grouping related parameters into a struct
+#    - Threshold of 8 allows for functions with moderate parameter counts
+#
+# 3. TYPE COMPLEXITY (default: 250)
+#    - Complex generic types are hard to understand
+#    - Consider type aliases: type MyType = Vec<HashMap<String, Box<dyn Trait>>>;
+#
+# 4. DOCUMENTATION (default: off)
+#    - Set missing_docs_in_crate_items = true for well-documented public APIs
+#    - Use //! for module-level documentation
+#    - Use /// for item-level documentation
+#
+# 5. UNSAFE CODE
+#    - Always document why unsafe is necessary
+#    - Use #[allow(unsafe_code)] with comments explaining safety invariants
+#
+# 6. TESTING
+#    - allow_unwrap_in_tests = true is recommended for cleaner test code
+#    - Test code has different style requirements than production code
+#
+# ============================================================================
+# Common Clippy Lints to Be Aware Of
+# ============================================================================
+#
+# HIGH PRIORITY (usually should be fixed):
+#   - clippy::all: Enables all lint groups
+#   - clippy::correctness: Correctness issues that are bugs
+#   - clippy::perf: Performance anti-patterns
+#   - clippy::style: Code style issues
+#
+# MEDIUM PRIORITY (should usually be fixed):
+#   - clippy::pedantic: More aggressive lints, higher false positive rate
+#   - clippy::suspicious: Suspicious patterns that might be bugs
+#
+# LOW PRIORITY (contextual):
+#   - clippy::cargo: Build system specific lints
+#   - clippy::complexity: Unnecessarily complex code
+#   - clippy::nursery: Experimental lints not yet stable
+#
+# ============================================================================

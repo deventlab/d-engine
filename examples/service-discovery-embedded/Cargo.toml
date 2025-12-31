@@ -1,0 +1,20 @@
+[package]
+name = "service-discovery-embedded"
+version = "0.2.0"
+edition = "2024"
+description = "Demonstrates embedded service discovery pattern using d-engine"
+
+[[bin]]
+name = "server"
+path = "server.rs"
+
+[dependencies]
+d-engine = { path = "../../d-engine", features = ["watch", "rocksdb"] }
+d-engine-core = { path = "../../d-engine-core", features = ["watch"] }
+
+tokio = { version = "1.36.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+incremental = true

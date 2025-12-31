@@ -1,0 +1,36 @@
+[package]
+name = "d-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "A lightweight distributed coordination engine for Rust applications—the consensus layer for building reliable distributed systems."
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = [
+    "raft",
+    "consensus",
+    "distributed-systems",
+    "storage",
+    "fault-tolerance",
+]
+categories = ["concurrency", "asynchronous", "algorithms", "database"]
+readme = "../README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["server", "rocksdb"]
+client = ["dep:d-engine-client"]
+server = ["dep:d-engine-server"]
+rocksdb = ["server", "d-engine-server/rocksdb"]
+watch = ["server", "d-engine-server/watch"]
+
+[dependencies]
+d-engine-client = { workspace = true, optional = true }
+d-engine-server = { workspace = true, optional = true }
+
+# No dev-dependencies needed - d-engine is a pure re-export wrapper
+# All tests are in d-engine-server/tests/

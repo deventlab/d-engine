@@ -1,7 +1,7 @@
 [package]
 name = "dengine_ctl"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 
 [dependencies]
 d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }

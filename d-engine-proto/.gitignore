@@ -1,0 +1,32 @@
+# Generated proto files (Rust only - go/ contains committed Go code)
+generated/
+
+# Ignore Go generated files outside go/ directory (user-generated)
+/*.pb.go
+/*.pb.gw.go
+/*_grpc.pb.go
+proto/*.pb.go
+proto/**/*.pb.go
+
+# Allow committed Go code in go/ directory
+!go/**/*.pb.go
+!go/**/*_grpc.pb.go
+
+# protoc compiler artifacts
+*.o
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+target/
+dist/

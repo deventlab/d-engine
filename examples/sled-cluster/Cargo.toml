@@ -1,12 +1,12 @@
 [package]
 name = "sled-demo"
-version = "0.1.3"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 
 [dependencies]
+d-engine = { path = "../../d-engine", features = ["server"], default-features = false }
+d-engine-proto = { path = "../../d-engine-proto" }
 # d-engine = "0.1.4"
-d-engine = { path = "../../../d-engine" }
-
 
 sled = { version = "0.34.7", features = [
     "compression",
@@ -15,7 +15,7 @@ sled = { version = "0.34.7", features = [
 prost = { version = "0.13", default-features = false }
 metrics-exporter-prometheus = "0.17"
 metrics = { version = "0.24", features = [] }
-tokio = { version = "1.4", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
