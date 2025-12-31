@@ -4302,6 +4302,480 @@ mod stale_learner_tests {
         assert!(!leader.next_index.contains_key(&101));
     }
 }
+
+// ================================================================================================
+// Tests for check_learner_progress() method
+// ================================================================================================
+
+#[cfg(test)]
+mod check_learner_progress_tests {
+    use super::*;
+    use d_engine_core::leader_state::PendingPromotion;
+    use tokio::time::{Duration, Instant};
+
+    /// Helper: Create mock context with configurable threshold
+    fn create_mock_context_with_threshold(
+        test_name: &str,
+        threshold: u64,
+    ) -> RaftContext<MockTypeConfig> {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = mock_raft_context(test_name, graceful_rx, None);
+        let mut config = node_config(&format!("/tmp/{test_name}"));
+        config.raft.learner_catchup_threshold = threshold;
+        ctx.node_config = Arc::new(config);
+
+        // Mock membership
+        let mut membership = create_mock_membership();
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::Promotable));
+        membership.expect_contains_node().returning(|_| true);
+        ctx.membership = Arc::new(membership);
+
+        ctx
+    }
+
+    /// **Test Goal**: Verify 1-second throttle mechanism
+    ///
+    /// **Scenario**: Two consecutive calls to check_learner_progress with interval < 1s
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (eligible for promotion)
+    /// - First call: last_learner_check is expired (forced check)
+    /// - Second call: immediately after (interval < 1s)
+    ///
+    /// **Expected Behavior**:
+    /// - First call: processes successfully, pending_promotions.len() = 1, sends 1 event
+    /// - Second call: throttled/skipped, pending_promotions.len() stays 1, no new event
+    /// - Total events = 1
+    ///
+    /// **Verification**:
+    /// - Throttle prevents frequent checks
+    /// - Avoids duplicate event emissions
+    #[tokio::test]
+    async fn test_throttle_mechanism() {
+        let ctx = create_mock_context_with_threshold("test_throttle_mechanism", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2); // Force first check
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]);
+
+        // First call - should process
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        assert_eq!(leader.pending_promotions.len(), 1);
+
+        // Second call immediately - should be throttled
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        assert_eq!(leader.pending_promotions.len(), 1); // No change
+
+        // Verify only 1 event sent
+        let mut event_count = 0;
+        while role_rx.try_recv().is_ok() {
+            event_count += 1;
+        }
+        assert_eq!(event_count, 1, "Should only send 1 event");
+    }
+
+    /// **Test Goal**: Verify caught_up calculation - boundary condition (gap = threshold)
+    ///
+    /// **Scenario**: Learner's gap exactly equals the configured threshold
+    ///
+    /// **Input**:
+    /// - threshold = 5
+    /// - learner 100, match_index=95, leader_commit=100
+    /// - gap = leader_commit - match_index = 100 - 95 = 5
+    ///
+    /// **Expected Behavior**:
+    /// - gap (5) <= threshold (5) → caught_up = true
+    /// - Learner added to pending_promotions queue
+    /// - pending_promotions.len() = 1
+    /// - pending_promotions[0].node_id = 100
+    ///
+    /// **Verification**:
+    /// - Boundary value handled correctly (<= not <)
+    /// - Learner exactly at threshold can be promoted
+    #[tokio::test]
+    async fn test_caught_up_at_threshold() {
+        let threshold = 5;
+        let ctx = create_mock_context_with_threshold("test_caught_up_at_threshold", threshold);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2); // Force check
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // gap = 100 - 95 = 5
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 1);
+        assert_eq!(leader.pending_promotions[0].node_id, 100);
+    }
+
+    /// **Test Goal**: Verify caught_up calculation - gap exceeds threshold
+    ///
+    /// **Scenario**: Learner is too far behind, not eligible for promotion
+    ///
+    /// **Input**:
+    /// - threshold = 5
+    /// - learner 100, match_index=94, leader_commit=100
+    /// - gap = leader_commit - match_index = 100 - 94 = 6
+    ///
+    /// **Expected Behavior**:
+    /// - gap (6) > threshold (5) → caught_up = false
+    /// - Learner not added to pending_promotions queue
+    /// - pending_promotions.len() = 0
+    ///
+    /// **Verification**:
+    /// - Learners too far behind are correctly filtered
+    /// - Prevents promotion of unsynchronized nodes
+    #[tokio::test]
+    async fn test_not_caught_up_exceeds_threshold() {
+        let threshold = 5;
+        let ctx =
+            create_mock_context_with_threshold("test_not_caught_up_exceeds_threshold", threshold);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(94))]); // gap = 100 - 94 = 6 > 5
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 0);
+    }
+
+    /// **Test Goal**: Verify handling of new learner with match_index = None
+    ///
+    /// **Scenario**: Newly joined learner with no replication progress yet
+    ///
+    /// **Input**:
+    /// - threshold = 5
+    /// - learner 100, match_index=None (new node, no replication record)
+    /// - leader_commit=100
+    ///
+    /// **Expected Behavior**:
+    /// - match_index.unwrap_or(0) → 0
+    /// - gap = leader_commit - 0 = 100
+    /// - gap (100) > threshold (5) → caught_up = false
+    /// - Learner not added to pending_promotions queue
+    /// - pending_promotions.len() = 0
+    ///
+    /// **Verification**:
+    /// - None value correctly handled as 0
+    /// - New nodes must synchronize data before promotion
+    #[tokio::test]
+    async fn test_new_learner_match_index_none() {
+        let threshold = 5;
+        let ctx =
+            create_mock_context_with_threshold("test_new_learner_match_index_none", threshold);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, None)]); // match_index = 0, gap = 100
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 0);
+    }
+
+    /// **Test Goal**: Verify deduplication mechanism - prevent duplicate queue entries
+    ///
+    /// **Scenario**: Learner already in queue, detected as caught up again
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (eligible)
+    /// - pending_promotions queue already contains node_id=100
+    ///
+    /// **Expected Behavior**:
+    /// - Detects node_id=100 already in already_pending set
+    /// - new_promotions filtered to empty
+    /// - No new PromoteReadyLearners event sent
+    /// - pending_promotions.len() remains 1
+    ///
+    /// **Verification**:
+    /// - Deduplication logic prevents duplicate promotion attempts
+    /// - Avoids duplicate event emissions
+    /// - Queue length unchanged
+    #[tokio::test]
+    async fn test_deduplication() {
+        let ctx = create_mock_context_with_threshold("test_deduplication", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        // Manually add learner 100 to pending queue
+        leader.pending_promotions.push_back(PendingPromotion::new(100, Instant::now()));
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // Should still have only 1 entry
+        assert_eq!(leader.pending_promotions.len(), 1);
+
+        // Should not send event (all learners already pending)
+        assert!(
+            role_rx.try_recv().is_err(),
+            "Should not send event for duplicate"
+        );
+    }
+
+    /// **Test Goal**: Verify status filter - ReadOnly learners should be skipped
+    ///
+    /// **Scenario**: Learner is caught up but has ReadOnly status (not promotable)
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (sync eligible)
+    /// - node_status = NodeStatus::ReadOnly (not promotable)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - caught_up = true, but node_status.is_promotable() = false
+    /// - Learner skipped by status filter
+    /// - pending_promotions.len() = 0
+    /// - No PromoteReadyLearners event sent
+    ///
+    /// **Verification**:
+    /// - Only Promotable status nodes can be promoted
+    /// - ReadOnly nodes cannot be promoted even when caught up
+    #[tokio::test]
+    async fn test_status_filter_readonly() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = mock_raft_context("test_status_filter_readonly", graceful_rx, None);
+        let mut config = node_config("/tmp/test_status_filter_readonly");
+        config.raft.learner_catchup_threshold = 5;
+        ctx.node_config = Arc::new(config);
+
+        // Mock membership to return ReadOnly status
+        let mut membership = create_mock_membership();
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::ReadOnly));
+        membership.expect_contains_node().returning(|_| true);
+        ctx.membership = Arc::new(membership);
+
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(
+            leader.pending_promotions.len(),
+            0,
+            "ReadOnly should not be promoted"
+        );
+    }
+
+    /// **Test Goal**: Verify status filter - Promotable learners should be processed
+    ///
+    /// **Scenario**: Learner is caught up and has Promotable status
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5
+    /// - node_status = NodeStatus::Promotable (promotable status)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - caught_up = true and node_status.is_promotable() = true
+    /// - Learner passes status filter
+    /// - Added to pending_promotions queue
+    /// - pending_promotions.len() = 1
+    ///
+    /// **Verification**:
+    /// - Promotable status nodes are promoted normally
+    /// - Status check correctly allows eligible nodes
+    #[tokio::test]
+    async fn test_status_filter_promotable() {
+        let ctx = create_mock_context_with_threshold("test_status_filter_promotable", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 1);
+    }
+
+    /// **Test Goal**: Verify boundary condition - empty learner_progress input
+    ///
+    /// **Scenario**: No learners to check
+    ///
+    /// **Input**:
+    /// - learner_progress = HashMap::new() (empty map)
+    /// - leader_commit=100
+    ///
+    /// **Expected Behavior**:
+    /// - Method returns early
+    /// - pending_promotions.len() = 0
+    /// - No events sent
+    ///
+    /// **Verification**:
+    /// - Empty input handled correctly
+    /// - Avoids unnecessary computation
+    #[tokio::test]
+    async fn test_empty_learner_progress() {
+        let ctx = create_mock_context_with_threshold("test_empty_learner_progress", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::new();
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 0);
+        assert!(role_rx.try_recv().is_err(), "Should not send event");
+    }
+
+    /// **Test Goal**: Verify node not in membership is skipped
+    ///
+    /// **Scenario**: Learner node has been removed from cluster membership
+    ///
+    /// **Input**:
+    /// - learner 999, match_index=95, leader_commit=100, gap=5 (caught up)
+    /// - membership.contains_node(999) = false (node removed)
+    ///
+    /// **Expected Behavior**:
+    /// - Node 999 is skipped in the iteration
+    /// - pending_promotions.len() = 0
+    /// - No events sent
+    ///
+    /// **Verification**:
+    /// - Removed nodes are filtered out
+    /// - Prevents promoting non-existent nodes
+    #[tokio::test]
+    async fn test_node_not_in_membership() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = mock_raft_context("test_node_not_in_membership", graceful_rx, None);
+        let mut config = node_config("/tmp/test_node_not_in_membership");
+        config.raft.learner_catchup_threshold = 5;
+        ctx.node_config = Arc::new(config);
+
+        // Mock membership: node 999 not found
+        let mut membership = create_mock_membership();
+        membership.expect_get_node_status().returning(|id| {
+            if id == 999 {
+                None // Not in membership
+            } else {
+                Some(NodeStatus::Promotable)
+            }
+        });
+        membership.expect_contains_node().returning(|_| true);
+        ctx.membership = Arc::new(membership);
+
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([
+            (100, Some(95)), // valid
+            (999, Some(95)), // not in membership
+        ]);
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // Should only add the valid learner
+        assert_eq!(leader.pending_promotions.len(), 1);
+        assert_eq!(leader.pending_promotions[0].node_id, 100);
+    }
+
+    /// **Test Goal**: Verify overflow protection when learner is ahead of leader
+    ///
+    /// **Scenario**: Learner's match_index > leader's commit_index (edge case)
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=100, leader_commit=5
+    /// - gap calculation: leader_commit.saturating_sub(match_index) = 5 - 100 = 0 (saturating)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - saturating_sub prevents underflow (returns 0 instead of negative)
+    /// - gap (0) <= threshold (5) → caught_up = true
+    /// - Learner is added to pending_promotions
+    /// - pending_promotions.len() = 1
+    ///
+    /// **Verification**:
+    /// - No integer underflow occurs
+    /// - saturating_sub handles edge case gracefully
+    #[tokio::test]
+    async fn test_overflow_protection_learner_ahead() {
+        let ctx = create_mock_context_with_threshold("test_overflow_protection_learner_ahead", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(5).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(10))]); // learner_match > leader_commit
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // checked_sub returns None → caught_up = true
+        assert_eq!(leader.pending_promotions.len(), 1);
+    }
+
+    /// **Test Goal**: Verify batch event optimization - multiple learners, single event
+    ///
+    /// **Scenario**: Multiple learners caught up simultaneously
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (caught up)
+    /// - learner 200, match_index=96, leader_commit=100, gap=4 (caught up)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - Both learners are caught up
+    /// - Both added to pending_promotions queue
+    /// - pending_promotions.len() = 2 (node 100 and 200)
+    /// - Only 1 PromoteReadyLearners event sent (batching optimization)
+    ///
+    /// **Verification**:
+    /// - Batch processing prevents event flooding
+    /// - Single event triggers processing of entire queue
+    /// - Efficient handling of multiple promotions
+    #[tokio::test]
+    async fn test_batch_event_sending() {
+        let ctx = create_mock_context_with_threshold("test_batch_event_sending", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95)), (200, Some(96))]);
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // Both learners should be in queue
+        assert_eq!(leader.pending_promotions.len(), 2);
+        let ids: Vec<_> = leader.pending_promotions.iter().map(|p| p.node_id).collect();
+        assert!(ids.contains(&100));
+        assert!(ids.contains(&200));
+
+        // Should receive exactly 1 event
+        let mut event_count = 0;
+        while let Ok(event) = role_rx.try_recv() {
+            if let RoleEvent::ReprocessEvent(inner) = event {
+                if matches!(*inner, RaftEvent::PromoteReadyLearners) {
+                    event_count += 1;
+                }
+            }
+        }
+        assert_eq!(
+            event_count, 1,
+            "Should send exactly 1 PromoteReadyLearners event"
+        );
+    }
+}
+
 #[cfg(test)]
 mod handle_client_read_request {
     use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;

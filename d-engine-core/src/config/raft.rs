@@ -56,6 +56,12 @@ pub struct RaftConfig {
     #[serde(default = "default_learner_catchup_threshold")]
     pub learner_catchup_threshold: u64,
 
+    /// Throttle interval (milliseconds) for learner progress checks
+    /// Prevents excessive checking of learner promotion eligibility
+    /// Default value is set via default_learner_check_throttle_ms() function
+    #[serde(default = "default_learner_check_throttle_ms")]
+    pub learner_check_throttle_ms: u64,
+
     /// Base timeout duration (in milliseconds) for general Raft operations
     /// Used as fallback timeout when operation-specific timeouts are not set
     /// Default value is set via default_general_timeout() function
@@ -108,6 +114,7 @@ impl Default for RaftConfig {
             snapshot: SnapshotConfig::default(),
             persistence: PersistenceConfig::default(),
             learner_catchup_threshold: default_learner_catchup_threshold(),
+            learner_check_throttle_ms: default_learner_check_throttle_ms(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
@@ -158,6 +165,11 @@ impl RaftConfig {
 fn default_learner_catchup_threshold() -> u64 {
     1
 }
+
+fn default_learner_check_throttle_ms() -> u64 {
+    1000 // 1 second
+}
+
 // in ms
 fn default_general_timeout() -> u64 {
     50

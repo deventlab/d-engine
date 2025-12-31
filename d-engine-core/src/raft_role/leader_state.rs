@@ -83,6 +83,7 @@ use crate::SnapshotConfig;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
+use crate::SystemError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
@@ -216,7 +217,7 @@ pub struct LeaderState<T: TypeConfig> {
     pub(super) node_config: Arc<RaftNodeConfig>,
 
     /// Last time we checked for learners
-    pub(super) last_learner_check: Instant,
+    pub last_learner_check: Instant,
 
     // -- Stale Learner Handling --
     /// The next scheduled time to check for stale learners.
@@ -1589,7 +1590,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    async fn check_learner_progress(
+    pub async fn check_learner_progress(
         &mut self,
         learner_progress: &HashMap<u32, Option<u64>>,
         ctx: &RaftContext<T>,
@@ -1597,111 +1598,133 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         debug!(?learner_progress, "check_learner_progress");
 
-        // Throttle checks to once per second
-        if self.last_learner_check.elapsed() < Duration::from_secs(1) {
+        if !self.should_check_learner_progress(ctx) {
             return Ok(());
         }
-        self.last_learner_check = Instant::now();
 
         if learner_progress.is_empty() {
             return Ok(());
         }
 
-        let leader_commit_index = self.commit_index();
-        let config = &ctx.node_config.raft;
+        let ready_learners = self.find_promotable_learners(learner_progress, ctx).await;
+        let new_promotions = self.deduplicate_promotions(ready_learners);
+
+        if !new_promotions.is_empty() {
+            self.enqueue_and_notify_promotions(new_promotions, role_tx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Check if enough time has elapsed since last learner progress check
+    fn should_check_learner_progress(
+        &mut self,
+        ctx: &RaftContext<T>,
+    ) -> bool {
+        let throttle_interval =
+            Duration::from_millis(ctx.node_config().raft.learner_check_throttle_ms);
+        if self.last_learner_check.elapsed() < throttle_interval {
+            return false;
+        }
+        self.last_learner_check = Instant::now();
+        true
+    }
+
+    /// Find learners that are caught up and eligible for promotion
+    async fn find_promotable_learners(
+        &self,
+        learner_progress: &HashMap<u32, Option<u64>>,
+        ctx: &RaftContext<T>,
+    ) -> Vec<u32> {
+        let leader_commit = self.commit_index();
+        let threshold = ctx.node_config().raft.learner_catchup_threshold;
+        let membership = ctx.membership();
+
         let mut ready_learners = Vec::new();
 
-        for (node_id, match_index) in learner_progress {
-            let node_status = match ctx.membership().get_node_status(*node_id).await {
-                Some(status) => status,
-                None => {
-                    warn!("Node {} not in membership", node_id);
-                    continue;
-                }
-            };
-            debug!("Learner: {} in status: {:?} ", node_id, &node_status);
+        for (&node_id, &match_index_opt) in learner_progress.iter() {
+            if !membership.contains_node(node_id).await {
+                continue;
+            }
 
-            // Skip non-promotable nodes early
+            if !self.is_learner_caught_up(match_index_opt, leader_commit, threshold) {
+                continue;
+            }
+
+            let node_status =
+                membership.get_node_status(node_id).await.unwrap_or(NodeStatus::ReadOnly);
             if !node_status.is_promotable() {
-                debug!("Node {node_id} is not promotable");
+                debug!(
+                    ?node_id,
+                    ?node_status,
+                    "Learner caught up but status is not Promotable, skipping"
+                );
                 continue;
             }
 
             debug!(
-                ?leader_commit_index,
-                ?match_index,
-                config.learner_catchup_threshold,
-                "check_learner_progress"
+                ?node_id,
+                match_index = ?match_index_opt.unwrap_or(0),
+                ?leader_commit,
+                gap = leader_commit.saturating_sub(match_index_opt.unwrap_or(0)),
+                "Learner caught up"
             );
-
-            let match_index = match_index.unwrap_or(0);
-            let caught_up = leader_commit_index
-                .checked_sub(match_index)
-                .map(|diff| diff <= config.learner_catchup_threshold)
-                .unwrap_or(true);
-
-            debug!("Caught up: {}", caught_up);
-            if caught_up {
-                if ctx.membership().contains_node(*node_id).await {
-                    ready_learners.push(*node_id);
-                } else {
-                    warn!("Node {} is already removed from cluster", node_id);
-                }
-            }
+            ready_learners.push(node_id);
         }
 
-        if !ready_learners.is_empty() {
-            debug!("Ready learners: {:?}", ready_learners);
+        ready_learners
+    }
 
-            // Print promotion messages for each ready learner (Plan B)
-            for learner_id in &ready_learners {
-                let match_index = learner_progress.get(learner_id).and_then(|mi| *mi).unwrap_or(0);
-                crate::utils::cluster_printer::print_leader_promoting_learner(
-                    self.node_id(),
-                    *learner_id,
-                    match_index,
-                    leader_commit_index,
-                );
-            }
+    /// Check if learner has caught up with leader based on log gap
+    fn is_learner_caught_up(
+        &self,
+        match_index: Option<u64>,
+        leader_commit: u64,
+        threshold: u64,
+    ) -> bool {
+        let match_index = match_index.unwrap_or(0);
+        let gap = leader_commit.saturating_sub(match_index);
+        gap <= threshold
+    }
 
-            // Add to pending queue (with deduplication)
-            // Check which learners are NOT already in the pending queue
-            let already_pending: std::collections::HashSet<u32> =
-                self.pending_promotions.iter().map(|p| p.node_id).collect();
+    /// Remove learners already in pending promotions queue
+    fn deduplicate_promotions(
+        &self,
+        ready_learners: Vec<u32>,
+    ) -> Vec<u32> {
+        let already_pending: std::collections::HashSet<_> =
+            self.pending_promotions.iter().map(|p| p.node_id).collect();
 
-            let new_promotions: Vec<_> = ready_learners
-                .into_iter()
-                .filter(|node_id| !already_pending.contains(node_id))
-                .map(|node_id| PendingPromotion::new(node_id, Instant::now()))
-                .collect();
+        ready_learners.into_iter().filter(|id| !already_pending.contains(id)).collect()
+    }
 
-            // Only send event if we actually added new promotions
-            if !new_promotions.is_empty() {
-                let new_promotion_ids: Vec<_> = new_promotions.iter().map(|p| p.node_id).collect();
-                self.pending_promotions.extend(new_promotions);
+    /// Add promotions to queue and send notification event
+    fn enqueue_and_notify_promotions(
+        &mut self,
+        new_promotions: Vec<u32>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        info!(
+            ?new_promotions,
+            "Learners caught up, adding to pending promotions"
+        );
 
-                // Create a PromoteReadyLearners event
-                let event = RaftEvent::PromoteReadyLearners;
-
-                trace!(
-                    "[Leader {}] 📤 Sending PromoteReadyLearners via ReprocessEvent, new_promotions: {:?}",
-                    self.node_id(),
-                    new_promotion_ids
-                );
-
-                // We use the ReprocessEvent mechanism to push the PromoteReadyLearners event back
-                // to the main event queue
-                if let Err(e) = role_tx.send(RoleEvent::ReprocessEvent(Box::new(event))) {
-                    error!("Failed to send Promotion event via RoleEvent: {}", e);
-                } else {
-                    trace!("Scheduled Promotion event via ReprocessEvent");
-                }
-            } else {
-                debug!("All ready learners are already pending promotion, skipping event");
-            }
-
-            // self.batch_promote_learners(ready_learners, ctx, role_tx).await?;
+        for node_id in new_promotions {
+            self.pending_promotions
+                .push_back(PendingPromotion::new(node_id, Instant::now()));
         }
+
+        role_tx
+            .send(RoleEvent::ReprocessEvent(Box::new(
+                RaftEvent::PromoteReadyLearners,
+            )))
+            .map_err(|e| {
+                let error_str = format!("{e:?}");
+                error!("Failed to send PromoteReadyLearners: {}", error_str);
+                Error::System(SystemError::Network(NetworkError::SingalSendFailed(
+                    error_str,
+                )))
+            })?;
 
         Ok(())
     }
@@ -2416,11 +2439,13 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        let zombie_candidates = ctx.membership().get_zombie_candidates().await;
+        // Optimize: get membership reference once to reduce lock contention
+        let membership = ctx.membership();
+        let zombie_candidates = membership.get_zombie_candidates().await;
         let mut nodes_to_remove = Vec::new();
 
         for node_id in zombie_candidates {
-            if let Some(status) = ctx.membership().get_node_status(node_id).await {
+            if let Some(status) = membership.get_node_status(node_id).await {
                 if status != NodeStatus::Active {
                     nodes_to_remove.push(node_id);
                 }

@@ -385,9 +385,6 @@ where
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
     }
 
-    /// Watch for changes on a specific key
-    ///
-    /// Returns a stream of WatchResponse events whenever the watched key changes.
     /// Watch for changes to a specific key
     ///
     /// Returns a stream of events (PUT/DELETE) for the specified key.

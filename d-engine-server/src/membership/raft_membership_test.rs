@@ -1484,3 +1484,95 @@ mod single_node_tests {
         );
     }
 }
+
+// ================================================================================================
+// Tests for can_rejoin() method
+// ================================================================================================
+
+#[cfg(test)]
+mod can_rejoin_tests {
+    use super::*;
+
+    /// Test 1: Reject non-learner role
+    #[tokio::test]
+    async fn test_can_rejoin_rejects_non_learner() {
+        let membership =
+            RaftMembership::<MockTypeConfig>::new(1, vec![], RaftNodeConfig::default());
+
+        // Try to join as Follower (should fail)
+        let result = membership.can_rejoin(100, Follower as i32).await;
+        assert!(result.is_err(), "Should reject non-learner role");
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Consensus(ConsensusError::Membership(MembershipError::NotLearner))
+        ));
+
+        // Try to join as Leader (should fail)
+        let result = membership.can_rejoin(101, Leader as i32).await;
+        assert!(result.is_err(), "Should reject Leader role");
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Consensus(ConsensusError::Membership(MembershipError::NotLearner))
+        ));
+
+        // Try to join as Candidate (should fail)
+        let result = membership.can_rejoin(102, Candidate as i32).await;
+        assert!(result.is_err(), "Should reject Candidate role");
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Consensus(ConsensusError::Membership(MembershipError::NotLearner))
+        ));
+    }
+
+    /// Test 2: Allow learner to join when node_id does not exist
+    #[tokio::test]
+    async fn test_can_rejoin_allows_new_learner() {
+        let membership = RaftMembership::<MockTypeConfig>::new(
+            1,
+            vec![NodeMeta {
+                id: 2,
+                address: "127.0.0.1:8081".to_string(),
+                role: Follower as i32,
+                status: NodeStatus::Active.into(),
+            }],
+            RaftNodeConfig::default(),
+        );
+
+        // New learner (node_id=100) should be allowed
+        let result = membership.can_rejoin(100, Learner as i32).await;
+        assert!(result.is_ok(), "Should allow new learner to join");
+    }
+
+    /// Test 3: Reject learner when node_id already exists
+    #[tokio::test]
+    async fn test_can_rejoin_rejects_existing_node() {
+        let membership = RaftMembership::<MockTypeConfig>::new(
+            1,
+            vec![
+                NodeMeta {
+                    id: 2,
+                    address: "127.0.0.1:8081".to_string(),
+                    role: Follower as i32,
+                    status: NodeStatus::Active.into(),
+                },
+                NodeMeta {
+                    id: 100,
+                    address: "127.0.0.1:8082".to_string(),
+                    role: Learner as i32,
+                    status: NodeStatus::Promotable.into(),
+                },
+            ],
+            RaftNodeConfig::default(),
+        );
+
+        // Learner with existing node_id=100 should be rejected
+        let result = membership.can_rejoin(100, Learner as i32).await;
+        assert!(result.is_err(), "Should reject existing node_id");
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Consensus(ConsensusError::Membership(
+                MembershipError::NodeAlreadyExists(100)
+            ))
+        ));
+    }
+}
