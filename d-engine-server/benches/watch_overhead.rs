@@ -83,6 +83,7 @@ async fn create_embedded_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn s
 [cluster]
 listen_address = "127.0.0.1:{port}"
 db_root_dir = "{}"
+single_node = true
 
 [raft.watch]
 event_queue_size = 10000

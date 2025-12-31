@@ -339,7 +339,7 @@ test-all: check-all-projects test-doc test-examples docs-check-all bench
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 ## test-all-legacy      Comprehensive test suite (includes clippy/docs/bench checks)
-test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
+test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all
 	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
