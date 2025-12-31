@@ -325,21 +325,21 @@ endif
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
 ## test-all             Run all tests with nextest (fast, parallel)
-test-all: check-all-projects test-doc test-examples docs-check-all bench
+test-all: check-all-projects test-doc test-examples docs-check-all
 	@echo "$(BLUE)Running all tests with nextest...$(NC)"
 	@if command -v cargo-nextest >/dev/null 2>&1; then \
-		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 		$(CARGO) nextest run --all-features --workspace --no-fail-fast; \
 	else \
 		echo "$(YELLOW)nextest not installed, falling back to cargo test$(NC)"; \
-		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 		$(CARGO) test --workspace --all-features --no-fail-fast; \
 	fi
 	@$(CARGO) test --doc --workspace
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 ## test-all-legacy      Comprehensive test suite (includes clippy/docs/bench checks)
-test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all
+test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
 	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution

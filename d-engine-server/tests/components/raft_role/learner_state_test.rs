@@ -448,10 +448,8 @@ async fn test_handle_raft_event_case6() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
-    assert_eq!(
-        resp_rx.recv().await.unwrap().unwrap_err().code(),
-        Code::PermissionDenied
-    );
+    let response = resp_rx.recv().await.unwrap().expect("should get response");
+    assert_eq!(response.error, ErrorCode::NotLeader as i32);
 }
 
 /// Test handling RaftLogCleanUp event by LearnerState

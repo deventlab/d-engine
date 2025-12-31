@@ -97,6 +97,8 @@ pub(crate) use proto::*;
 #[cfg(test)]
 mod cluster_test;
 #[cfg(test)]
+mod error_test;
+#[cfg(test)]
 mod kv_test;
 #[cfg(test)]
 mod mock_rpc;

@@ -819,8 +819,8 @@ mod handle_client_read_request {
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
-        let s = resp_rx.recv().await.unwrap().unwrap_err();
-        assert_eq!(s.code(), Code::PermissionDenied);
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32);
     }
 
     /// # Case 6.2: test ClientReadRequest with request(linear=false)
@@ -880,8 +880,8 @@ mod handle_client_read_request {
             .await
             .expect("should succeed");
 
-        let response = resp_rx.recv().await.unwrap();
-        assert!(response.is_err()); // Should be rejected
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32); // Should return NOT_LEADER
     }
 
     /// Test that candidate rejects LeaseRead policy
@@ -909,8 +909,8 @@ mod handle_client_read_request {
             .await
             .expect("should succeed");
 
-        let response = resp_rx.recv().await.unwrap();
-        assert!(response.is_err()); // Should be rejected
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32); // Should return NOT_LEADER
     }
 
     /// Test that candidate uses server default policy
@@ -940,8 +940,8 @@ mod handle_client_read_request {
             .await
             .expect("should succeed");
 
-        let response = resp_rx.recv().await.unwrap();
-        assert!(response.is_err()); // Should be rejected
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32); // Should return NOT_LEADER
     }
 
     /// Test EventualConsistency policy allows candidate reads

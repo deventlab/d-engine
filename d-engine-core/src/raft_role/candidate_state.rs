@@ -388,12 +388,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         })?;
                     }
                     None => {
-                        // Policy requires leader access - reject
-                        let error = tonic::Status::permission_denied(
-                            "Read consistency policy requires leader access. Current node is candidate.",
-                        );
-                        sender.send(Err(error)).map_err(|e| {
-                            error!("Failed to send policy rejection: {:?}", e);
+                        // Policy requires leader access - return NOT_LEADER with leader metadata
+                        let response = self.create_not_leader_response(ctx).await;
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send NOT_LEADER response: {:?}", e);
                             NetworkError::SingalSendFailed(format!("{e:?}"))
                         })?;
                     }
