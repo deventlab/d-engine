@@ -24,6 +24,7 @@ allow_client_override = true
 The consistency policy applied when clients don't specify one explicitly.
 
 **Recommendations**:
+
 - **Production systems**: `"LeaseRead"` (balanced performance and consistency)
 - **Financial/critical systems**: `"LinearizableRead"` (strictest guarantees)
 - **Analytics/monitoring**: `"EventualConsistency"` (maximum throughput)
@@ -39,6 +40,7 @@ The consistency policy applied when clients don't specify one explicitly.
 How long the leader considers its lease valid after successful heartbeat.
 
 **Trade-offs**:
+
 - **Higher values** (e.g., 1000ms):
   - Better read performance (fewer verification round-trips)
   - Larger window for stale reads if clock drift exists
@@ -62,6 +64,7 @@ Default heartbeat interval is 100ms, so minimum recommended lease is 200ms.
 Whether clients can specify per-request consistency policies.
 
 **Use cases**:
+
 - `true`: Allow mixed workloads (critical reads + analytics reads)
 - `false`: Enforce uniform consistency across all operations
 
@@ -79,6 +82,7 @@ allow_client_override = false  # Enforce strict policy
 ```
 
 **Result**:
+
 - All reads verify quorum before serving
 - No stale reads possible
 - Higher latency (~2ms p50)
@@ -95,6 +99,7 @@ allow_client_override = true  # Allow critical reads to override
 ```
 
 **Result**:
+
 - Reads served immediately from any node
 - Maximum throughput (~20x baseline)
 - Sub-millisecond latency
@@ -111,6 +116,7 @@ allow_client_override = true  # Mixed workload support
 ```
 
 **Result**:
+
 - Strong consistency with low latency
 - Clients can use LinearizableRead for critical operations
 - 7x better performance than LinearizableRead
@@ -127,6 +133,7 @@ allow_client_override = true
 ```
 
 **Result**:
+
 - Faster fallback to LinearizableRead if lease expires
 - Better handling of network partitions
 - Slightly more verification overhead
@@ -154,11 +161,13 @@ raft.pending_reads.queue_depth      # Should spike during high concurrency
 ### Health Indicators
 
 **Healthy LeaseRead configuration**:
+
 - `lease_renewal.success` rate: ~10/sec (100ms heartbeat interval)
 - `lease_renewal.failed` < 1% of attempts
 - `leadership_verification.duration_us` p99 < 5ms
 
 **Signs of misconfiguration**:
+
 - Frequent lease expirations → Increase `lease_duration_ms`
 - High `linearizable_read.coalesced` but low throughput → Network bottleneck
 - `leadership_verification.duration_us` p99 > 10ms → Check network latency
@@ -185,6 +194,7 @@ ntpq -p
 ### AWS/Cloud Environments
 
 Most cloud providers offer time synchronization services:
+
 - **AWS**: Amazon Time Sync Service (automatic)
 - **GCP**: Google NTP servers (automatic)
 - **Azure**: time.windows.com (configure)
@@ -193,15 +203,14 @@ Most cloud providers offer time synchronization services:
 
 ## Performance Impact Summary
 
-| Configuration | Read Latency (p50) | Throughput | Clock Dependency |
-|---------------|-------------------|------------|------------------|
-| `default_policy = "LinearizableRead"` | 2.1ms | Baseline | None |
-| `default_policy = "LeaseRead"`, `lease_duration_ms = 500` | 0.3ms | ~7x | Low (NTP) |
-| `default_policy = "LeaseRead"`, `lease_duration_ms = 1000` | 0.2ms | ~8x | Medium |
-| `default_policy = "EventualConsistency"` | 0.1ms | ~20x | None |
+| Configuration                                              | Read Latency (p50) | Throughput | Clock Dependency |
+| ---------------------------------------------------------- | ------------------ | ---------- | ---------------- |
+| `default_policy = "LinearizableRead"`                      | 2.1ms              | Baseline   | None             |
+| `default_policy = "LeaseRead"`, `lease_duration_ms = 500`  | 0.3ms              | ~7x        | Low (NTP)        |
+| `default_policy = "LeaseRead"`, `lease_duration_ms = 1000` | 0.2ms              | ~8x        | Medium           |
+| `default_policy = "EventualConsistency"`                   | 0.1ms              | ~20x       | None             |
 
 ## Further Reading
 
-- Client usage guide: `client_guide/read_consistency.md`
-- Architecture details: `architecture/read-path-design.md`
-- Performance tuning: `performance/throughput-optimization-guide.md`
+- Client usage guide: [Read Consistency Guide](../client_guide/read-consistency.md)
+- Performance tuning: [Throughput Optimization Guide](../performance/throughput-optimization-guide.md)

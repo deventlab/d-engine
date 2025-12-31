@@ -5,11 +5,10 @@
 //!
 //! # Architecture Overview
 //!
-//! The watch system uses a three-tier architecture:
+//! The watch system is composed of two main components created explicitly in NodeBuilder:
 //!
-//! 1. **Write Path (Hot Path)**: Non-blocking event notification via `try_send`
-//! 2. **Dispatcher Thread**: Background thread that distributes events to watchers
-//! 3. **Client Streams**: Per-client gRPC streams that deliver events
+//! 1. **WatchRegistry** (Shared State): Lock-free registration via DashMap
+//! 2. **WatchDispatcher** (Background Task): Spawned explicitly in Builder, distributes events
 //!
 //! ```text
 //! ┌─────────────┐
@@ -52,35 +51,23 @@
 //! # Usage Example
 //!
 //! ```ignore
-//! use d_engine_core::watch::{WatchManager, WatchConfig, WatchEventType};
+//! use d_engine_core::watch::{WatchRegistry, WatchDispatcher};
 //! use bytes::Bytes;
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! // Create and start manager
-//! let config = WatchConfig::default();
-//! let manager = WatchManager::new(config);
-//! manager.start();
+//! // Create components (typically done in NodeBuilder)
+//! let (unregister_tx, unregister_rx) = mpsc::unbounded_channel();
+//! let registry = Arc::new(WatchRegistry::new(10, unregister_tx));
+//! let dispatcher = WatchDispatcher::new(registry.clone(), broadcast_rx, unregister_rx);
+//!
+//! // Explicitly spawn dispatcher (visible resource allocation)
+//! tokio::spawn(async move {
+//!     dispatcher.run().await;
+//! });
 //!
 //! // Register a watcher
 //! let key = Bytes::from("mykey");
-//! let mut handle = manager.register(key.clone()).await;
-//!
-//! // Notify of changes (typically called from StateMachine)
-//! manager.notify_put(key.clone(), Bytes::from("new_value"));
-//!
-//! // Receive events
-//! while let Some(event) = handle.receiver_mut().unwrap().recv().await {
-//!     match event.event_type {
-//!         WatchEventType::Put => {
-//!             println!("Key updated: {:?} = {:?}", event.key, event.value);
-//!         }
-//!         WatchEventType::Delete => {
-//!             println!("Key deleted: {:?}", event.key);
-//!         }
-//!     }
-//! }
-//!
-//! manager.stop();
+//! let handle = registry.register(key);
 //! # });
 //! ```
 //!
@@ -117,13 +104,15 @@
 //!
 //! All types in this module are thread-safe and can be safely shared across threads:
 //!
-//! - [`WatchManager`] can be cloned and shared via `Arc`
-//! - All operations are lock-free or use fine-grained locking
-//! - The dispatcher runs on a dedicated background thread
+//! - [`WatchRegistry`] is shared via `Arc` between Node and Dispatcher
+//! - All operations are lock-free (DashMap + AtomicU64)
+//! - The dispatcher runs as an independent tokio task
 //!
-//! # Implementation Notes
+//! # Design Principles
 //!
-//! - Uses `crossbeam-channel` for the global event queue (lock-free MPMC)
+//! - **No hidden resource allocation**: All tokio::spawn calls are explicit in Builder
+//! - **Minimal abstraction**: Only essential data structures, no unnecessary wrappers
+//! - **Composable**: Registry and Dispatcher are independent, composed in Builder
 //! - Uses `DashMap` for the watcher registry (lock-free concurrent HashMap)
 //! - Uses `tokio::sync::mpsc` for per-watcher channels (async-friendly)
 //! - Watchers are automatically cleaned up when dropped (RAII pattern)
@@ -133,7 +122,11 @@ mod manager;
 #[cfg(test)]
 mod manager_test;
 
-pub use manager::{WatchEvent, WatchEventType, WatchManager, WatcherHandle, WatcherHandleGuard};
+pub use manager::WatchDispatcher;
+pub use manager::WatchEvent;
+pub use manager::WatchEventType;
+pub use manager::WatchRegistry;
+pub use manager::WatcherHandle;
 
 // Re-export WatchConfig from the unified config system
 pub use crate::config::WatchConfig;

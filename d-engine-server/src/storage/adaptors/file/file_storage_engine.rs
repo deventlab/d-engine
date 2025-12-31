@@ -1,4 +1,3 @@
-use prost::Message;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs::File;
@@ -15,8 +14,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use tonic::async_trait;
-use tracing::info;
 
 use d_engine_core::Error;
 use d_engine_core::HardState;
@@ -26,6 +23,9 @@ use d_engine_core::StorageEngine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
+use prost::Message;
+use tonic::async_trait;
+use tracing::info;
 
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";

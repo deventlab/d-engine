@@ -1,12 +1,12 @@
 [package]
 name = "d-engine-core"
-version = "0.1.0"
-edition = "2024"
-authors = ["Joshua Chi <joshokn@gmail.com>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "Core Raft consensus algorithm implementation and traits"
-homepage = "https://github.com/deventlab/d-engine"
-repository = "https://github.com/deventlab/d-engine"
-license = "MIT OR Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
 keywords = ["raft", "consensus", "algorithm"]
 categories = ["algorithms", "concurrency"]
 publish = false
@@ -18,6 +18,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 test-utils = ["mockall","uuid", "tonic-health"]
+# Experimental: Watch API for key change notifications
+# WARNING: This feature is under active development and not production-ready
+watch = []
 
 [dependencies]
 d-engine-proto = { workspace = true }

@@ -9,13 +9,14 @@
 
 use std::sync::Arc;
 
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VotedFor;
+
 use crate::MockRaftLog;
 use crate::MockTypeConfig;
 use crate::election::ElectionCore;
 use crate::election::ElectionHandler;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::election::VotedFor;
 
 // ============================================================================
 // Helper Functions
@@ -587,6 +588,11 @@ async fn test_handle_vote_request_large_term_numbers() {
 
 #[cfg(test)]
 mod single_node_election_tests {
+    use std::collections::HashSet;
+
+    use d_engine_proto::server::cluster::NodeMeta;
+    use d_engine_proto::server::election::VoteResponse;
+
     use super::*;
     use crate::ElectionError;
     use crate::Error;
@@ -594,9 +600,6 @@ mod single_node_election_tests {
     use crate::MockTransport;
     use crate::RaftNodeConfig;
     use crate::VoteResult;
-    use d_engine_proto::server::cluster::NodeMeta;
-    use d_engine_proto::server::election::VoteResponse;
-    use std::collections::HashSet;
 
     #[tokio::test]
     async fn test_single_node_auto_wins_election() {

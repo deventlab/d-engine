@@ -1,5 +1,6 @@
-use super::cluster_printer::*;
 use d_engine_proto::common::NodeRole;
+
+use super::cluster_printer::*;
 
 #[test]
 fn test_role_emoji_all_variants() {

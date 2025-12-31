@@ -1,103 +1,124 @@
 # Error Handling
 
+d-engine returns errors through two channels depending on your integration mode:
+
+- **Standalone (gRPC)**: `ErrorCode` in response
+- **Embedded (Rust)**: `Result<T, E>` from API
+
+Both modes use the same error categories defined in `proto/error.proto`.
+
+---
+
 ## Error Categories
 
-d-engine client errors are categorized by layer:
+### Network Errors (1000-1999)
 
-### Network Errors (Retryable)
+Connection problems. Retry with backoff.
 
-| Error | Cause | Retry Strategy |
-|-------|-------|----------------|
-| `ConnectionTimeout` | Network timeout | Retry after 3-5s |
-| `LeaderChanged` | Leader re-election | Retry immediately with leader hint |
-| `InvalidAddress` | Bad server address | Fix address, no retry |
+| Code                 | When                     | Action                               |
+| -------------------- | ------------------------ | ------------------------------------ |
+| `CONNECTION_TIMEOUT` | Network slow/unreachable | Retry after 3-5s                     |
+| `INVALID_ADDRESS`    | Malformed URL            | Fix address                          |
+| `LEADER_CHANGED`     | Leader re-elected        | Retry with new leader (see metadata) |
 
-### Protocol Errors (Client Issue)
+### Business Errors (4000-4999)
 
-| Error | Cause | Action |
-|-------|-------|--------|
-| `InvalidResponse` | Malformed server response | Check client/server version compatibility |
-| `VersionMismatch` | Incompatible API version | Upgrade client or server |
+Cluster state or request issues. Handle based on error.
 
-### Storage Errors (Server Issue)
+| Code                  | When                       | Action                  |
+| --------------------- | -------------------------- | ----------------------- |
+| `NOT_LEADER`          | Write sent to follower     | Redirect to leader      |
+| `CLUSTER_UNAVAILABLE` | < 2/3 nodes available      | Wait and retry          |
+| `INVALID_REQUEST`     | Bad request format         | Fix request             |
+| `STALE_OPERATION`     | Based on old cluster state | Refresh state and retry |
 
-| Error | Cause | Action |
-|-------|-------|--------|
-| `DiskFull` | Server disk full | Contact server admin |
-| `DataCorruption` | Storage corruption detected | Contact server admin |
-| `KeyNotExist` | Key not found | Normal case, handle gracefully |
+---
 
-### Business Errors (Retry with Logic)
+## Handling in Standalone Mode
 
-| Error | Cause | Action |
-|-------|-------|--------|
-| `NotLeader` | Request sent to follower | Redirect to leader |
-| `ClusterUnavailable` | No quorum (< 2/3 nodes) | Retry after cluster recovery |
-| `StaleOperation` | Operation based on old state | Refresh state and retry |
-| `RateLimited` | Too many requests | Backoff and retry |
-
-## Retry Best Practices
-
-### Automatic Retry (Built-in)
-
-d-engine client handles these automatically:
-- Leader election (redirects to new leader)
-- Transient network errors (exponential backoff)
-
-### Manual Retry Required
-
-Your application must handle:
-- `ClusterUnavailable`: Wait for cluster recovery
-- `RateLimited`: Implement backoff
-- `StaleOperation`: Refresh state before retry
-
-### Example: Retry with Backoff
+Use Leader Hint to redirect to the leader:
 
 ```go
-func writeWithRetry(client *dengine.Client, key, value string) error {
-    maxRetries := 3
-    for i := 0; i < maxRetries; i++ {
-        err := client.Put(key, value)
-        if err == nil {
-            return nil
-        }
-        
-        // Check error type
-        if isRetryable(err) {
-            backoff := time.Duration(1<<i) * time.Second
-            time.Sleep(backoff)
+currentAddr := "127.0.0.1:9081"  // Start with any node
+
+for i := 0; i < maxRedirects; i++ {
+    conn, _ := grpc.NewClient(currentAddr, ...)
+    client := pb.NewRaftClientServiceClient(conn)
+
+    resp, err := client.HandleClientWrite(ctx, req)
+    if err != nil {
+        return err  // Network error
+    }
+
+    if resp.Error == error_pb.ErrorCode_SUCCESS {
+        break  // Success
+    }
+
+    // Got NOT_LEADER - follow leader hint
+    if resp.Error == error_pb.ErrorCode_NOT_LEADER && resp.Metadata != nil {
+        leaderAddr := resp.Metadata.LeaderAddress
+        if leaderAddr != nil && *leaderAddr != "" {
+            conn.Close()
+            currentAddr = *leaderAddr  // Redirect
             continue
         }
-        return err // Non-retryable
     }
-    return errors.New("max retries exceeded")
-}
-
-func isRetryable(err error) bool {
-    // Check error code
-    // Network and Business errors are usually retryable
-    // Protocol and Storage errors are not
 }
 ```
+
+See [Quick Start](../quick-start-standalone.md) for complete working example.
+
+---
+
+## Handling in Embedded Mode
+
+Check `Result`:
+
+```rust,ignore
+match client.put(key, value).await {
+    Ok(_) => { /* success */ }
+    Err(e) => {
+        // e is ClientApiError
+        match e.code() {
+            ErrorCode::NotLeader => { /* handle */ }
+            ErrorCode::ClusterUnavailable => { /* retry */ }
+            _ => { /* other errors */ }
+        }
+    }
+}
+```
+
+---
 
 ## Leader Hint
 
-When receiving `NotLeader` or `LeaderChanged`, the error includes a leader hint:
+When you get `NOT_LEADER` error, check `metadata.LeaderAddress`:
 
-```json
-{
-  "code": "LeaderChanged",
-  "leader_hint": {
-    "id": "2",
-    "address": "192.168.1.11:9082",
-    "last_contact": 1234567890
-  }
+```go
+if resp.Error == error_pb.ErrorCode_NOT_LEADER && resp.Metadata != nil {
+    leaderAddr := resp.Metadata.LeaderAddress  // e.g., "0.0.0.0:9082"
+    leaderId := resp.Metadata.LeaderId          // e.g., "2"
+    // Reconnect to leaderAddr
 }
 ```
 
-Use this to redirect requests to the current leader.
+This allows immediate redirect instead of trying all nodes.
+
+---
+
+## Retry Strategy
+
+| Error                 | Retry? | How                       |
+| --------------------- | ------ | ------------------------- |
+| `CONNECTION_TIMEOUT`  | Yes    | Exponential backoff       |
+| `LEADER_CHANGED`      | Yes    | Immediate with new leader |
+| `NOT_LEADER`          | Yes    | Redirect to leader        |
+| `CLUSTER_UNAVAILABLE` | Yes    | Wait longer, don't hammer |
+| `INVALID_REQUEST`     | No     | Fix request first         |
+
+---
 
 ## See Also
 
-- [Client API (Rust)](https://github.com/deventlab/d-engine/blob/main/d-engine-client/src/error.rs) - Full error type definitions
-- [Go Client Guide](go-client.md) - Go client usage
+- [Quick Start](../quick-start-standalone.md) - See errors in action
+- [Read Consistency](./read-consistency.md) - Consistency vs availability

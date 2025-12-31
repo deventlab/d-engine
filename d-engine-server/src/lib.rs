@@ -24,10 +24,8 @@
 //!     let node = NodeBuilder::new(None, rx)
 //!         .storage_engine(storage)
 //!         .state_machine(state_machine)
-//!         .build()
-//!         .start_rpc_server()
-//!         .await
-//!         .ready()?;
+//!         .start()
+//!         .await?;
 //!
 //!     node.run().await?;
 //!     Ok(())
@@ -50,7 +48,6 @@
 //!
 //! See the [d-engine-docs](https://docs.rs/d-engine-docs) for architecture details.
 
-#![doc = include_str!("../../d-engine-docs/src/docs/overview.md")]
 #![warn(missing_docs)]
 
 // ==================== Core Public API ====================
@@ -60,19 +57,13 @@
 /// Contains [`Node`] and [`NodeBuilder`] for server setup.
 pub mod node;
 
-/// Embedded mode - application-friendly API
+/// Public API layer for different deployment modes
 ///
-/// Contains [`EmbeddedEngine`] for simplified embedded usage.
-pub mod embedded;
+/// Contains [`EmbeddedEngine`] and [`StandaloneServer`].
+pub mod api;
 
-/// Leader election information
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaderInfo {
-    /// ID of the current leader node
-    pub leader_id: u32,
-    /// Current Raft term
-    pub term: u64,
-}
+// Re-export LeaderInfo from d-engine-core
+pub use d_engine_core::LeaderInfo;
 
 /// Storage layer implementations
 ///
@@ -80,65 +71,60 @@ pub struct LeaderInfo {
 pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
-pub use embedded::EmbeddedEngine;
-pub use node::{LocalClientError, LocalKvClient, Node, NodeBuilder};
-
+pub use api::EmbeddedEngine;
+pub use api::StandaloneServer;
+// -------------------- Error Types --------------------
+/// Unified error type for all d-engine operations
+pub use d_engine_core::Error;
+/// Hard state (Raft persistent state: term, voted_for, log)
+pub use d_engine_core::HardState;
+/// Log storage trait
+pub use d_engine_core::LogStore;
+/// Metadata storage trait
+pub use d_engine_core::MetaStore;
+/// Protocol buffer error type
+pub use d_engine_core::ProstError;
+/// Unified result type (equivalent to Result<T, Error>)
+pub use d_engine_core::Result;
+/// Snapshot operation error type
+pub use d_engine_core::SnapshotError;
+/// Storage-specific error type
+pub use d_engine_core::StorageError;
+// -------------------- Extension Traits --------------------
+/// Storage trait for implementing custom storage backends
+///
+/// Implement this trait to create your own storage engine.
+pub use d_engine_core::{StateMachine, StorageEngine};
+pub use node::LocalClientError;
+pub use node::LocalKvClient;
+pub use node::Node;
+pub use node::NodeBuilder;
 // Re-export storage implementations
 pub use storage::{
     FileStateMachine,
     // File-based storage
     FileStorageEngine,
 };
-
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
 pub use storage::{RocksDBStateMachine, RocksDBStorageEngine};
-
-// -------------------- Extension Traits --------------------
-
-/// Storage trait for implementing custom storage backends
-///
-/// Implement this trait to create your own storage engine.
-pub use d_engine_core::{StateMachine, StorageEngine};
-
-/// Log storage trait
-pub use d_engine_core::LogStore;
-
-/// Metadata storage trait
-pub use d_engine_core::MetaStore;
-
-// -------------------- Error Types --------------------
-
-/// Unified error type for all d-engine operations
-pub use d_engine_core::Error;
-
-/// Unified result type (equivalent to Result<T, Error>)
-pub use d_engine_core::Result;
-
-/// Storage-specific error type
-pub use d_engine_core::StorageError;
-
-/// Snapshot operation error type
-pub use d_engine_core::SnapshotError;
-
-/// Protocol buffer error type
-pub use d_engine_core::ProstError;
-
-/// Hard state (Raft persistent state: term, voted_for, log)
-pub use d_engine_core::HardState;
 
 // -------------------- Data Types --------------------
 
 /// Common Raft protocol types
 pub mod common {
     // Basic types used in Raft consensus protocol
-    pub use d_engine_proto::common::{Entry, EntryPayload, LogId, entry_payload};
+    pub use d_engine_proto::common::Entry;
+    pub use d_engine_proto::common::EntryPayload;
+    pub use d_engine_proto::common::LogId;
+    pub use d_engine_proto::common::entry_payload;
 }
 
 /// Client protocol types
 pub mod client {
     // Client write command types for custom business logic
-    pub use d_engine_proto::client::{WriteCommand, write_command};
+    pub use d_engine_proto::client::WriteCommand;
+    pub use d_engine_proto::client::write_command;
 }
 
 /// Server storage protocol types

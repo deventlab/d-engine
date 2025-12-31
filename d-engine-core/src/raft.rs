@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use d_engine_proto::common::EntryPayload;
+// Re-export LeaderInfo from proto (application layer use)
+pub use d_engine_proto::common::LeaderInfo;
+use d_engine_proto::server::election::VotedFor;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;
@@ -26,8 +30,6 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::server::election::VotedFor;
 
 pub struct Raft<T>
 where
@@ -49,8 +51,8 @@ where
     new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
 
     // Leader change notification
-    // Contains (leader_id, term) when leader elected, sent on role transitions
-    leader_change_listener: Vec<mpsc::UnboundedSender<(Option<u32>, u64)>>,
+    // Uses watch::Sender for efficient multi-subscriber pattern
+    leader_change_listener: Option<watch::Sender<Option<LeaderInfo>>>,
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
@@ -132,7 +134,7 @@ where
 
             shutdown_signal: signal_params.shutdown_signal,
 
-            leader_change_listener: Vec::new(),
+            leader_change_listener: None,
 
             #[cfg(any(test, feature = "test-utils"))]
             test_role_transition_listener: Vec::new(),
@@ -144,29 +146,41 @@ where
 
     /// Register a listener for leader election events.
     ///
-    /// The listener will receive (leader_id, term) tuples:
-    /// - Some(leader_id) when a leader is elected
+    /// The listener will receive LeaderInfo updates:
+    /// - Some(LeaderInfo) when a leader is elected
     /// - None when no leader exists (during election)
     ///
     /// # Performance
-    /// Event-driven notification (no polling), zero-copy channel send
+    /// Event-driven notification (no polling), multi-subscriber support via watch channel
     pub fn register_leader_change_listener(
         &mut self,
-        tx: mpsc::UnboundedSender<(Option<u32>, u64)>,
+        tx: watch::Sender<Option<LeaderInfo>>,
     ) {
-        self.leader_change_listener.push(tx);
+        self.leader_change_listener = Some(tx);
     }
 
     /// Notify all leader change listeners.
     ///
     /// Called internally when role transitions occur.
+    /// Uses send_if_modified to avoid redundant notifications.
     fn notify_leader_change(
         &self,
         leader_id: Option<u32>,
         term: u64,
     ) {
-        for tx in &self.leader_change_listener {
-            let _ = tx.send((leader_id, term));
+        if let Some(tx) = &self.leader_change_listener {
+            tx.send_if_modified(|current| {
+                let new_info = leader_id.map(|id| LeaderInfo {
+                    leader_id: id,
+                    term,
+                });
+                if *current != new_info {
+                    *current = new_info;
+                    true
+                } else {
+                    false
+                }
+            });
         }
     }
 
@@ -195,9 +209,9 @@ where
 
     pub async fn run(&mut self) -> Result<()> {
         // Add snapshot handler before main loop
-        if self.ctx.node_config.is_joining() {
+        if self.ctx.node_config.is_learner() {
             info!(
-                "Node({}) is joining and needs to fetch initial snapshot.",
+                "Node({}) is learner and needs to fetch initial snapshot.",
                 self.node_id
             );
             if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {
@@ -236,7 +250,7 @@ where
                 biased;
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
-                    warn!("[Raft:{}] shutdown signal received.", self.node_id);
+                    info!("[Raft:{}] shutdown signal received.", self.node_id);
                     return Ok(());
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election

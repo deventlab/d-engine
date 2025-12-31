@@ -18,7 +18,6 @@ d-engine runs **inside your Rust application process**:
 ## Prerequisites
 
 - **Rust**: stable ([install](https://rustup.rs/))
-- **Disk**: ~50MB free space
 - **Time**: 5 minutes
 
 ---
@@ -35,11 +34,20 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ---
 
-## Step 2: Write Your First d-engine App (2 minutes)
+## Step 2: Create Config File (1 minute)
+
+Create `d-engine.toml`:
+
+```toml
+[cluster]
+db_root_dir = "./data/single-node"
+```
+
+## Step 3: Write Your First d-engine App (2 minutes)
 
 Create `src/main.rs`:
 
-```rust
+```rust,ignore
 use d_engine::prelude::*;
 use std::error::Error;
 use std::time::Duration;
@@ -48,16 +56,12 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine...\n");
 
-    // Start embedded engine with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
-
-    // Wait for node initialization
-    engine.ready().await;
-    println!("✓ Node initialized");
+    // Start embedded engine with config file
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election (single-node: instant)
-    let leader = engine.wait_leader(Duration::from_secs(5)).await?;
-    println!("✓ Leader elected: node {} (term {})\n", leader.leader_id, leader.term);
+    let leader = engine.wait_ready(Duration::from_secs(5)).await?;
+    println!("✓ Cluster is ready: leader {} (term {})\n", leader.leader_id, leader.term);
 
     // Get KV client (zero-overhead, in-process)
     let client = engine.client();
@@ -80,7 +84,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 ---
 
-## Step 3: Run It (30 seconds)
+## Step 4: Run It (30 seconds)
 
 ```bash
 cargo run
@@ -88,11 +92,10 @@ cargo run
 
 **Expected output**:
 
-```
+```text
 Starting d-engine...
 
-✓ Node initialized
-✓ Leader elected: node 1 (term 1)
+✓ Cluster is ready: leader 1 (term 1)
 
 ✓ Stored: hello = world
 ✓ Retrieved: hello = world
@@ -108,36 +111,31 @@ Done!
 
 ### Behind the Scenes
 
-```rust
-EmbeddedEngine::with_rocksdb("./data", None).await?
+```rust,ignore
+EmbeddedEngine::start_with("d-engine.toml").await?
 ```
 
 This one line:
 
-1. Created `./data/storage/` (Raft logs)
-2. Created `./data/state_machine/` (KV data)
-3. Initialized RocksDB storage engines
-4. Built Raft node with node_id=1
-5. Spawned `node.run()` in background (Raft protocol)
-6. Returned immediately (non-blocking)
+1. Reads config from `d-engine.toml`
+2. Created `./data/single-node/storage/` (Raft logs)
+3. Created `./data/single-node/state_machine/` (KV data)
+4. Initialized RocksDB storage engines
+5. Built Raft node with node_id=1
+6. Spawned `node.run()` in background (Raft protocol)
+7. Returned immediately (non-blocking)
 
-```rust
-engine.ready().await
+```rust,ignore
+engine.wait_ready(Duration::from_secs(5)).await?
 ```
 
-Waits for node initialization (gRPC server ready, ~100ms).
-
-```rust
-engine.wait_leader(Duration::from_secs(5)).await?
-```
-
-Waits for leader election:
+Waits for leader election (combines node initialization + leader election):
 
 - **Single-node**: Instant (<100ms, auto-elected)
 - **Multi-node**: Waits for majority quorum (~1-2s)
 
-```rust
-let client = engine.client()
+```rust,ignore
+let client = engine.client();
 ```
 
 Returns `LocalKvClient` for zero-overhead KV operations.
@@ -148,7 +146,7 @@ Returns `LocalKvClient` for zero-overhead KV operations.
 
 ### 1. Single-Node is a Valid Cluster
 
-```
+```text
 1 node = Raft cluster of 1
 - Auto-elected as leader
 - All writes commit immediately (quorum = 1)
@@ -161,7 +159,7 @@ Returns `LocalKvClient` for zero-overhead KV operations.
 
 ### 2. Local-First Operations
 
-```rust
+```rust,ignore
 client.put(key, value).await?;  // <0.1ms (local memory + disk)
 ```
 
@@ -171,8 +169,8 @@ No network, no serialization. Just direct function calls to Raft core.
 
 ### 3. Automatic Lifecycle Management
 
-```rust
-let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+```rust,ignore
+let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 // ↑ Internally spawns node.run() in background
 
 engine.stop().await?;
@@ -187,28 +185,28 @@ No manual `tokio::spawn()`, no leaked tasks.
 
 ### EmbeddedEngine
 
-```rust
-// Quick-start (development)
-EmbeddedEngine::with_rocksdb(data_dir: &str, config_path: Option<&str>) -> Result<Self>
+```rust,ignore
+// Use CONFIG_PATH environment variable
+EmbeddedEngine::start() -> Result<Self>
 
-// Production (custom storage)
-EmbeddedEngine::start(
-    config_path: Option<&str>,
+// Use explicit config file
+EmbeddedEngine::start_with(config_path: &str) -> Result<Self>
+
+// Advanced (custom storage)
+EmbeddedEngine::start_custom(
     storage: Arc<impl StorageEngine>,
-    state_machine: Arc<impl StateMachine>
+    state_machine: Arc<impl StateMachine>,
+    config_path: Option<&str>
 ) -> Result<Self>
 
-// Wait for initialization (NOT election)
-engine.ready().await
-
 // Wait for leader election (event-driven, no polling)
-engine.wait_leader(timeout: Duration) -> Result<LeaderInfo>
+engine.wait_ready(timeout: Duration) -> Result<LeaderInfo>
 
 // Get KV client
 engine.client() -> &LocalKvClient
 
 // Subscribe to leader changes (optional, for monitoring)
-engine.leader_notifier() -> watch::Receiver<Option<LeaderInfo>>
+engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>
 
 // Graceful shutdown
 engine.stop().await -> Result<()>
@@ -216,7 +214,7 @@ engine.stop().await -> Result<()>
 
 ### LocalKvClient
 
-```rust
+```rust,ignore
 // Write (replicates to majority)
 client.put(key: Vec<u8>, value: Vec<u8>) -> Result<PutResponse>
 
@@ -242,24 +240,24 @@ client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 
 ## Common Patterns
 
-### Pattern 1: Use Default /tmp Location
+### Pattern 1: Production (environment variable)
 
-```rust
-// Data stored in /tmp/d-engine/
-let engine = EmbeddedEngine::with_rocksdb("", None).await?;
+```rust,ignore
+// Reads config path from CONFIG_PATH env var
+let engine = EmbeddedEngine::start().await?;
 ```
 
-### Pattern 2: Custom Data Directory
+### Pattern 2: Development (explicit config)
 
-```rust
-// Data stored in ./my-app-data/
-let engine = EmbeddedEngine::with_rocksdb("./my-app-data", None).await?;
+```rust,ignore
+// Use specific config file
+let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes
 
-```rust
-let mut leader_rx = engine.leader_notifier();
+```rust,ignore
+let mut leader_rx = engine.leader_change_notifier();
 
 tokio::spawn(async move {
     while leader_rx.changed().await.is_ok() {
@@ -273,8 +271,8 @@ tokio::spawn(async move {
 
 ### Pattern 4: Handle Election Timeout
 
-```rust
-match engine.wait_leader(Duration::from_secs(10)).await {
+```rust,ignore
+match engine.wait_ready(Duration::from_secs(10)).await {
     Ok(leader) => println!("Leader ready: {}", leader.leader_id),
     Err(_) => {
         eprintln!("Election timeout - check cluster configuration");
@@ -299,7 +297,7 @@ match engine.wait_leader(Duration::from_secs(10)).await {
 
 ### "Failed to create data directory"
 
-**Cause**: Permission denied or invalid path.
+**Cause**: Permission denied or invalid path in config.
 
 **Fix**:
 
@@ -307,8 +305,9 @@ match engine.wait_leader(Duration::from_secs(10)).await {
 # Check permissions
 ls -la ./data
 
-# Or use /tmp (always writable)
-let engine = EmbeddedEngine::with_rocksdb("", None).await?;
+# Or update d-engine.toml to use /tmp
+[cluster]
+db_root_dir = "/tmp/d-engine"
 ```
 
 ### "Address already in use"
@@ -321,8 +320,6 @@ let engine = EmbeddedEngine::with_rocksdb("", None).await?;
 # Find and kill process
 lsof -i :9081
 kill <PID>
-
-# Or use different port in config
 ```
 
 ---
@@ -374,7 +371,7 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 ## Key Takeaways
 
-- ✅ **3-line startup**: `with_rocksdb()` → `ready()` → `wait_leader()`
+- ✅ **2-line startup**: `start_with()` → `wait_ready()`
 - ✅ **Zero boilerplate**: No manual spawn, no shutdown channels
 - ✅ **Event-driven**: No polling, <1ms notification latency
 - ✅ **Production-ready**: Auto-creates directories, graceful shutdown
@@ -382,7 +379,9 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 **This is what "embedded distributed engine" means**: complexity hidden, power exposed.
 
+For a complete working example, see [examples/quick-start-embedded](../../examples/quick-start-embedded).
+
 ---
 
 **Created**: 2025-11-28  
-**Updated**: 2025-11-28
+**Updated**: 2025-12-22

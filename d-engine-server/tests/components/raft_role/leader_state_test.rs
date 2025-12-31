@@ -1,20 +1,9 @@
-use d_engine_server::test_utils::*;
-
-use bytes::Bytes;
-use futures::StreamExt;
-use mockall::predicate::eq;
-use nanoid::nanoid;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-use tonic::transport::Endpoint;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::AppendResults;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
@@ -72,6 +61,16 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_server::test_utils::*;
+use futures::StreamExt;
+use mockall::predicate::eq;
+use nanoid::nanoid;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tonic::transport::Endpoint;
+use tracing_test::traced_test;
 
 struct ProcessRaftRequestTestContext {
     state: LeaderState<MockTypeConfig>,
@@ -1819,7 +1818,8 @@ fn test_state_size() {
         "LeaderState size: {}",
         size_of::<LeaderState<MockTypeConfig>>()
     );
-    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 376);
+    // Increased from 376 to 392 due to cluster_metadata field (ClusterMetadata)
+    assert!(size_of::<LeaderState<MockTypeConfig>>() <= 392);
 }
 
 /// # Case 1: Valid purge conditions with cluster consensus
@@ -2156,6 +2156,7 @@ async fn test_process_batch_case2_2_quorum_non_verifiable_failure() {
             },
         ]
     });
+    membership.expect_replication_peers().returning(Vec::new);
     context.raft_context.membership = Arc::new(membership);
 
     // Re-initialize cluster metadata after changing membership
@@ -2276,6 +2277,7 @@ async fn test_process_batch_case4_partial_timeouts() {
             },
         ]
     });
+    membership.expect_replication_peers().returning(Vec::new);
     context.raft_context.membership = Arc::new(membership);
 
     // Re-initialize cluster metadata after changing membership
@@ -2404,16 +2406,39 @@ mod process_batch_commit_index_tests {
     /// Setup helper for commit index tests with configurable cluster membership
     async fn setup_commit_index_test_context(
         path: &str,
-        is_single_node: bool,
+        single_voter: bool,
     ) -> ProcessRaftRequestTestContext {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut context = mock_raft_context(path, graceful_rx, None);
 
         // Mock membership based on cluster topology
         let mut membership = MockMembership::new();
-        membership.expect_is_single_node_cluster().returning(move || is_single_node);
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(Vec::new);
+
+        // For multi-node tests, return peer voters (excluding self/leader)
+        // For single-voter tests, return empty (only self is voter)
+        if single_voter {
+            membership.expect_voters().returning(Vec::new);
+        } else {
+            // Multi-node: return 2 peer voters (node 2 and 3), so total = 2 + 1 (leader) = 3
+            membership.expect_voters().returning(|| {
+                vec![
+                    NodeMeta {
+                        id: 2,
+                        address: "".to_string(),
+                        status: NodeStatus::Active as i32,
+                        role: Follower.into(),
+                    },
+                    NodeMeta {
+                        id: 3,
+                        address: "".to_string(),
+                        status: NodeStatus::Active as i32,
+                        role: Follower.into(),
+                    },
+                ]
+            });
+        }
+
         membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
         membership.expect_members().returning(Vec::new);
         membership.expect_check_cluster_is_ready().returning(|| Ok(()));
@@ -2446,7 +2471,8 @@ mod process_batch_commit_index_tests {
     /// When cluster has only one node, commit_index should advance to last_log_index immediately.
     /// This is correct because quorum of 1 = the single node itself.
     /// Bug detection: Uses different mock values to verify correct code path is executed:
-    /// - If bug exists (peer_updates.is_empty): calls calculate_majority_matched_index() -> returns 8 (wrong)
+    /// - If bug exists (peer_updates.is_empty): calls calculate_majority_matched_index() -> returns
+    ///   8 (wrong)
     /// - If fixed (next_index.is_empty()): calls last_entry_id() -> returns 7 (correct)
     #[tokio::test]
     #[traced_test]
@@ -2505,10 +2531,11 @@ mod process_batch_commit_index_tests {
     /// This is the critical bug fix: Leader must not use single-node logic just because
     /// peer_updates is empty. Empty peer_updates means no responses yet, not single-node cluster.
     ///
-    /// Scenario: 3-node cluster, Leader has initialized next_index for peers (even if no responses yet).
-    /// Bug detection: Uses different mock values to verify correct code path is executed:
+    /// Scenario: 3-node cluster, Leader has initialized next_index for peers (even if no responses
+    /// yet). Bug detection: Uses different mock values to verify correct code path is executed:
     /// - If bug exists (peer_updates.is_empty): calls last_entry_id() -> returns 9 (wrong)
-    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6 (correct)
+    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6
+    ///   (correct)
     #[tokio::test]
     #[traced_test]
     async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
@@ -2528,7 +2555,8 @@ mod process_batch_commit_index_tests {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
                     learner_progress: HashMap::new(),
-                    peer_updates: HashMap::new(), // BUG #186: Empty peer_updates should NOT trigger single-node logic
+                    peer_updates: HashMap::new(), /* BUG #186: Empty peer_updates should NOT
+                                                   * trigger single-node logic */
                 })
             });
 
@@ -2567,7 +2595,8 @@ mod process_batch_commit_index_tests {
     /// based on quorum (majority of nodes have replicated the log).
     /// Bug detection: Uses different mock values to verify correct code path is executed:
     /// - If bug exists (peer_updates.is_empty): calls last_entry_id() -> returns 10 (wrong)
-    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6 (correct)
+    /// - If fixed (next_index not empty): calls calculate_majority_matched_index() -> returns 6
+    ///   (correct)
     #[tokio::test]
     #[traced_test]
     async fn test_multi_node_cluster_with_peer_updates_commit_index() {
@@ -2610,7 +2639,8 @@ mod process_batch_commit_index_tests {
 
         let mut raft_log = MockRaftLog::new();
         // Different return values to detect which code path executes:
-        // - Fixed code (is_single_node_cluster check fails): calls calculate_majority_matched_index() -> 6
+        // - Fixed code (is_single_node_cluster check fails): calls
+        //   calculate_majority_matched_index() -> 6
         // - Buggy code (peer_updates.is_empty): calls last_entry_id() -> 10
         raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
@@ -2647,10 +2677,29 @@ async fn setup_process_batch_test_context(
 ) -> ProcessRaftRequestTestContext {
     let mut context = mock_raft_context(path, graceful_rx, None);
 
-    // Setup default membership mock with voters() support for init_cluster_metadata
+    // Setup default membership mock with voters() and replication_peers() support for
+    // init_cluster_metadata For process_batch tests, we need multi-node cluster (2+ peers) to
+    // avoid single_voter logic
     let mut membership = MockMembership::new();
     membership.expect_is_single_node_cluster().returning(|| false);
-    membership.expect_voters().returning(Vec::new); // Empty voters list by default
+    membership.expect_voters().returning(|| {
+        // Return 2 peer voters (node 2 and 3), so total = 2 + 1 (leader) = 3 (multi-node)
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".to_string(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".to_string(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    membership.expect_replication_peers().returning(Vec::new); // Empty replication peers by default
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2816,6 +2865,7 @@ async fn test_verify_internal_quorum_case3_non_verifiable_failure() {
             },
         ]
     });
+    membership.expect_replication_peers().returning(Vec::new);
     raft_context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
@@ -3011,7 +3061,7 @@ async fn test_handle_join_cluster_case1_success() {
     });
     membership.expect_contains_node().returning(|_| false);
     membership.expect_replication_peers().returning(Vec::new);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|_current_leader_id| ClusterMembership::default());
@@ -3067,6 +3117,7 @@ async fn test_handle_join_cluster_case1_success() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: address.clone(),
@@ -3109,6 +3160,7 @@ async fn test_handle_join_cluster_case2_node_exists() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
@@ -3141,7 +3193,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership.expect_voters().returning(Vec::new); // Empty voting members will cause quorum failure
     context.membership = Arc::new(membership);
 
@@ -3165,6 +3217,7 @@ async fn test_handle_join_cluster_case3_quorum_failed() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
@@ -3197,7 +3250,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     let mut membership = create_mock_membership();
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
 
     membership.expect_voters().returning(move || {
         vec![NodeMeta {
@@ -3222,6 +3275,7 @@ async fn test_handle_join_cluster_case4_quorum_error() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address: "127.0.0.1:8080".to_string(),
@@ -3255,7 +3309,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     membership.expect_can_rejoin().returning(|_, _| Ok(()));
     membership.expect_contains_node().returning(|_| false);
     membership.expect_replication_peers().returning(Vec::new);
-    membership.expect_add_learner().returning(|_, _| Ok(()));
+    membership.expect_add_learner().returning(|_, _, _| Ok(()));
     membership
         .expect_retrieve_cluster_membership_config()
         .returning(|_current_leader_id| ClusterMembership::default());
@@ -3322,6 +3376,7 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
     let result = state
         .handle_join_cluster(
             JoinRequest {
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
                 node_id,
                 node_role: Learner.into(),
                 address,
@@ -3339,14 +3394,15 @@ async fn test_handle_join_cluster_case5_snapshot_triggered() {
 
 #[cfg(test)]
 mod trigger_background_snapshot_test {
-    use futures::stream;
     use std::sync::Arc;
 
-    use super::*;
     use d_engine_core::SnapshotConfig;
     use d_engine_core::leader_state::LeaderState;
     use d_engine_proto::server::storage::SnapshotChunk;
     use d_engine_proto::server::storage::SnapshotMetadata;
+    use futures::stream;
+
+    use super::*;
 
     fn mock_membership(should_fail: bool) -> MockMembership<MockTypeConfig> {
         let mut membership = MockMembership::<MockTypeConfig>::new();
@@ -3445,14 +3501,13 @@ mod trigger_background_snapshot_test {
 mod batch_promote_learners_test {
     use std::sync::Arc;
 
-    use mockall::predicate::*;
-
-    use super::*;
-
     use d_engine_core::RaftContext;
     use d_engine_core::RoleEvent;
     use d_engine_core::leader_state::LeaderState;
     use d_engine_proto::common::NodeStatus;
+    use mockall::predicate::*;
+
+    use super::*;
 
     enum VerifyInternalQuorumWithRetrySuccess {
         Success,
@@ -3534,7 +3589,7 @@ mod batch_promote_learners_test {
             membership
                 .expect_get_node_status()
                 .with(eq(*learner_id))
-                .return_const(Some(NodeStatus::Syncing));
+                .return_const(Some(NodeStatus::Promotable));
         }
 
         raft_context.membership = Arc::new(membership);
@@ -3647,13 +3702,13 @@ mod pending_promotion_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use d_engine_core::leader_state::PendingPromotion;
+    use d_engine_core::leader_state::calculate_safe_batch_size;
     use parking_lot::Mutex;
     use tokio::time::Instant;
     use tokio::time::timeout;
 
     use super::*;
-    use d_engine_core::leader_state::PendingPromotion;
-    use d_engine_core::leader_state::calculate_safe_batch_size;
 
     // Test fixture
     struct TestFixture {
@@ -3681,19 +3736,13 @@ mod pending_promotion_tests {
             membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_can_rejoin().returning(|_, _| Ok(()));
             membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
-            membership
-                .expect_update_node_status()
-                .withf(|_id, status| *status == NodeStatus::StandBy)
-                .returning(|_, _| Ok(()));
             membership.expect_voters().returning(|| {
-                (2..=3)
-                    .map(|id| NodeMeta {
-                        id,
-                        address: "".to_string(),
-                        status: NodeStatus::Active as i32,
-                        role: Follower.into(),
-                    })
-                    .collect()
+                vec![NodeMeta {
+                    id: 2,
+                    address: "".to_string(),
+                    status: NodeStatus::Active as i32,
+                    role: Follower.into(),
+                }]
             });
             raft_context.membership = Arc::new(membership);
 
@@ -3861,10 +3910,11 @@ mod pending_promotion_tests {
     #[tokio::test]
     async fn test_handle_stale_learner() {
         let mut fixture = TestFixture::new("test_handle_stale_learner", true).await;
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
         assert!(
             fixture
                 .leader_state
-                .handle_stale_learner(1, &fixture.raft_context)
+                .handle_stale_learner(1, &role_tx, &fixture.raft_context)
                 .await
                 .is_ok()
         );
@@ -3873,19 +3923,18 @@ mod pending_promotion_tests {
     #[tokio::test]
     async fn test_partial_batch_promotion() {
         let mut fixture = TestFixture::new("test_partial_batch_promotion", true).await;
-        // Setup: 3 voters, 2 pending promotions -> max batch size=1
+        // Setup: 2 total voters (1 leader + 1 peer), 2 pending promotions
+        // -> (2 + 2) = 4 (even) -> max batch size = 1
         let mut membership = create_mock_membership();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        // mock membership with 3 voters
+        // mock membership with 1 voter (excluding self/leader)
         membership.expect_voters().returning(|| {
-            (2..=3)
-                .map(|id| NodeMeta {
-                    id,
-                    address: "".to_string(),
-                    status: NodeStatus::Active as i32,
-                    role: Follower.into(),
-                })
-                .collect()
+            vec![NodeMeta {
+                id: 2,
+                address: "".to_string(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            }]
         });
         fixture.raft_context.membership = Arc::new(membership);
         fixture.leader_state.pending_promotions = vec![
@@ -4023,12 +4072,13 @@ mod pending_promotion_tests {
 mod stale_learner_tests {
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::time::Instant;
 
-    use super::*;
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::leader_state::PendingPromotion;
     use d_engine_core::test_utils;
+    use tokio::time::Instant;
+
+    use super::*;
 
     // Setup helper
     fn create_test_leader_state(
@@ -4069,6 +4119,29 @@ mod stale_learner_tests {
         ctx.membership = membership.clone();
         ctx.node_config =
             config.unwrap_or_else(|| Arc::new(node_config(&format!("/tmp/{test_name}",))));
+
+        // Mock raft_log for calculate_majority_matched_index
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 0);
+        raft_log.expect_last_log_id().returning(|| None);
+        raft_log.expect_flush().returning(|| Ok(()));
+        raft_log.expect_load_hard_state().returning(|| Ok(None));
+        raft_log.expect_save_hard_state().returning(|_| Ok(()));
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(0));
+        ctx.storage.raft_log = Arc::new(raft_log);
+
+        // Mock replication handler to handle BatchRemove operations
+        ctx.handlers
+            .replication_handler
+            .expect_handle_raft_request_in_batch()
+            .returning(|_, _, _, _, _| {
+                Ok(AppendResults {
+                    commit_quorum_achieved: true,
+                    peer_updates: HashMap::new(),
+                    learner_progress: HashMap::new(),
+                })
+            });
+
         ctx
     }
 
@@ -4089,9 +4162,10 @@ mod stale_learner_tests {
             Arc::new(membership),
             Some(Arc::new(node_config)),
         );
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
         // Should only check first 100 entries (out of 200)
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
 
         // Should purge exactly 2 entries (1% of 200 = 2)
         assert_eq!(leader.pending_promotions.len(), 198);
@@ -4111,8 +4185,9 @@ mod stale_learner_tests {
         membership.expect_update_node_status().never();
 
         let ctx = mock_raft_context("test_no_purge_when_fresh", Arc::new(membership), None);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
         assert_eq!(leader.pending_promotions.len(), 2);
     }
 
@@ -4162,10 +4237,11 @@ mod stale_learner_tests {
         let (mut leader, membership) =
             create_test_leader_state("test_performance_large_queue", nodes);
         let ctx = mock_raft_context("test_performance_large_queue", Arc::new(membership), None);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
         // Time the staleness check
         let start = Instant::now();
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
         let elapsed = start.elapsed();
 
         // Should take <1ms even for large queues
@@ -4194,8 +4270,9 @@ mod stale_learner_tests {
             Arc::new(membership),
             Some(Arc::new(node_config)),
         );
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        leader.conditionally_purge_stale_learners(&ctx).await.unwrap();
+        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 2);
         assert!(leader.pending_promotions.iter().any(|p| p.node_id == 103));
@@ -4217,19 +4294,495 @@ mod stale_learner_tests {
             Arc::new(membership),
             None,
         );
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        assert!(leader.handle_stale_learner(101, &ctx).await.is_ok());
+        assert!(leader.handle_stale_learner(101, &role_tx, &ctx).await.is_ok());
 
         // Verify replication was stopped for this node
         assert!(!leader.next_index.contains_key(&101));
     }
 }
+
+// ================================================================================================
+// Tests for check_learner_progress() method
+// ================================================================================================
+
+#[cfg(test)]
+mod check_learner_progress_tests {
+    use super::*;
+    use d_engine_core::leader_state::PendingPromotion;
+    use tokio::time::{Duration, Instant};
+
+    /// Helper: Create mock context with configurable threshold
+    fn create_mock_context_with_threshold(
+        test_name: &str,
+        threshold: u64,
+    ) -> RaftContext<MockTypeConfig> {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = mock_raft_context(test_name, graceful_rx, None);
+        let mut config = node_config(&format!("/tmp/{test_name}"));
+        config.raft.learner_catchup_threshold = threshold;
+        ctx.node_config = Arc::new(config);
+
+        // Mock membership
+        let mut membership = create_mock_membership();
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::Promotable));
+        membership.expect_contains_node().returning(|_| true);
+        ctx.membership = Arc::new(membership);
+
+        ctx
+    }
+
+    /// **Test Goal**: Verify 1-second throttle mechanism
+    ///
+    /// **Scenario**: Two consecutive calls to check_learner_progress with interval < 1s
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (eligible for promotion)
+    /// - First call: last_learner_check is expired (forced check)
+    /// - Second call: immediately after (interval < 1s)
+    ///
+    /// **Expected Behavior**:
+    /// - First call: processes successfully, pending_promotions.len() = 1, sends 1 event
+    /// - Second call: throttled/skipped, pending_promotions.len() stays 1, no new event
+    /// - Total events = 1
+    ///
+    /// **Verification**:
+    /// - Throttle prevents frequent checks
+    /// - Avoids duplicate event emissions
+    #[tokio::test]
+    async fn test_throttle_mechanism() {
+        let ctx = create_mock_context_with_threshold("test_throttle_mechanism", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2); // Force first check
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]);
+
+        // First call - should process
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        assert_eq!(leader.pending_promotions.len(), 1);
+
+        // Second call immediately - should be throttled
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        assert_eq!(leader.pending_promotions.len(), 1); // No change
+
+        // Verify only 1 event sent
+        let mut event_count = 0;
+        while role_rx.try_recv().is_ok() {
+            event_count += 1;
+        }
+        assert_eq!(event_count, 1, "Should only send 1 event");
+    }
+
+    /// **Test Goal**: Verify caught_up calculation - boundary condition (gap = threshold)
+    ///
+    /// **Scenario**: Learner's gap exactly equals the configured threshold
+    ///
+    /// **Input**:
+    /// - threshold = 5
+    /// - learner 100, match_index=95, leader_commit=100
+    /// - gap = leader_commit - match_index = 100 - 95 = 5
+    ///
+    /// **Expected Behavior**:
+    /// - gap (5) <= threshold (5) → caught_up = true
+    /// - Learner added to pending_promotions queue
+    /// - pending_promotions.len() = 1
+    /// - pending_promotions[0].node_id = 100
+    ///
+    /// **Verification**:
+    /// - Boundary value handled correctly (<= not <)
+    /// - Learner exactly at threshold can be promoted
+    #[tokio::test]
+    async fn test_caught_up_at_threshold() {
+        let threshold = 5;
+        let ctx = create_mock_context_with_threshold("test_caught_up_at_threshold", threshold);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2); // Force check
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // gap = 100 - 95 = 5
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 1);
+        assert_eq!(leader.pending_promotions[0].node_id, 100);
+    }
+
+    /// **Test Goal**: Verify caught_up calculation - gap exceeds threshold
+    ///
+    /// **Scenario**: Learner is too far behind, not eligible for promotion
+    ///
+    /// **Input**:
+    /// - threshold = 5
+    /// - learner 100, match_index=94, leader_commit=100
+    /// - gap = leader_commit - match_index = 100 - 94 = 6
+    ///
+    /// **Expected Behavior**:
+    /// - gap (6) > threshold (5) → caught_up = false
+    /// - Learner not added to pending_promotions queue
+    /// - pending_promotions.len() = 0
+    ///
+    /// **Verification**:
+    /// - Learners too far behind are correctly filtered
+    /// - Prevents promotion of unsynchronized nodes
+    #[tokio::test]
+    async fn test_not_caught_up_exceeds_threshold() {
+        let threshold = 5;
+        let ctx =
+            create_mock_context_with_threshold("test_not_caught_up_exceeds_threshold", threshold);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(94))]); // gap = 100 - 94 = 6 > 5
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 0);
+    }
+
+    /// **Test Goal**: Verify handling of new learner with match_index = None
+    ///
+    /// **Scenario**: Newly joined learner with no replication progress yet
+    ///
+    /// **Input**:
+    /// - threshold = 5
+    /// - learner 100, match_index=None (new node, no replication record)
+    /// - leader_commit=100
+    ///
+    /// **Expected Behavior**:
+    /// - match_index.unwrap_or(0) → 0
+    /// - gap = leader_commit - 0 = 100
+    /// - gap (100) > threshold (5) → caught_up = false
+    /// - Learner not added to pending_promotions queue
+    /// - pending_promotions.len() = 0
+    ///
+    /// **Verification**:
+    /// - None value correctly handled as 0
+    /// - New nodes must synchronize data before promotion
+    #[tokio::test]
+    async fn test_new_learner_match_index_none() {
+        let threshold = 5;
+        let ctx =
+            create_mock_context_with_threshold("test_new_learner_match_index_none", threshold);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, None)]); // match_index = 0, gap = 100
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 0);
+    }
+
+    /// **Test Goal**: Verify deduplication mechanism - prevent duplicate queue entries
+    ///
+    /// **Scenario**: Learner already in queue, detected as caught up again
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (eligible)
+    /// - pending_promotions queue already contains node_id=100
+    ///
+    /// **Expected Behavior**:
+    /// - Detects node_id=100 already in already_pending set
+    /// - new_promotions filtered to empty
+    /// - No new PromoteReadyLearners event sent
+    /// - pending_promotions.len() remains 1
+    ///
+    /// **Verification**:
+    /// - Deduplication logic prevents duplicate promotion attempts
+    /// - Avoids duplicate event emissions
+    /// - Queue length unchanged
+    #[tokio::test]
+    async fn test_deduplication() {
+        let ctx = create_mock_context_with_threshold("test_deduplication", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        // Manually add learner 100 to pending queue
+        leader.pending_promotions.push_back(PendingPromotion::new(100, Instant::now()));
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // Should still have only 1 entry
+        assert_eq!(leader.pending_promotions.len(), 1);
+
+        // Should not send event (all learners already pending)
+        assert!(
+            role_rx.try_recv().is_err(),
+            "Should not send event for duplicate"
+        );
+    }
+
+    /// **Test Goal**: Verify status filter - ReadOnly learners should be skipped
+    ///
+    /// **Scenario**: Learner is caught up but has ReadOnly status (not promotable)
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (sync eligible)
+    /// - node_status = NodeStatus::ReadOnly (not promotable)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - caught_up = true, but node_status.is_promotable() = false
+    /// - Learner skipped by status filter
+    /// - pending_promotions.len() = 0
+    /// - No PromoteReadyLearners event sent
+    ///
+    /// **Verification**:
+    /// - Only Promotable status nodes can be promoted
+    /// - ReadOnly nodes cannot be promoted even when caught up
+    #[tokio::test]
+    async fn test_status_filter_readonly() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = mock_raft_context("test_status_filter_readonly", graceful_rx, None);
+        let mut config = node_config("/tmp/test_status_filter_readonly");
+        config.raft.learner_catchup_threshold = 5;
+        ctx.node_config = Arc::new(config);
+
+        // Mock membership to return ReadOnly status
+        let mut membership = create_mock_membership();
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::ReadOnly));
+        membership.expect_contains_node().returning(|_| true);
+        ctx.membership = Arc::new(membership);
+
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(
+            leader.pending_promotions.len(),
+            0,
+            "ReadOnly should not be promoted"
+        );
+    }
+
+    /// **Test Goal**: Verify status filter - Promotable learners should be processed
+    ///
+    /// **Scenario**: Learner is caught up and has Promotable status
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5
+    /// - node_status = NodeStatus::Promotable (promotable status)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - caught_up = true and node_status.is_promotable() = true
+    /// - Learner passes status filter
+    /// - Added to pending_promotions queue
+    /// - pending_promotions.len() = 1
+    ///
+    /// **Verification**:
+    /// - Promotable status nodes are promoted normally
+    /// - Status check correctly allows eligible nodes
+    #[tokio::test]
+    async fn test_status_filter_promotable() {
+        let ctx = create_mock_context_with_threshold("test_status_filter_promotable", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 1);
+    }
+
+    /// **Test Goal**: Verify boundary condition - empty learner_progress input
+    ///
+    /// **Scenario**: No learners to check
+    ///
+    /// **Input**:
+    /// - learner_progress = HashMap::new() (empty map)
+    /// - leader_commit=100
+    ///
+    /// **Expected Behavior**:
+    /// - Method returns early
+    /// - pending_promotions.len() = 0
+    /// - No events sent
+    ///
+    /// **Verification**:
+    /// - Empty input handled correctly
+    /// - Avoids unnecessary computation
+    #[tokio::test]
+    async fn test_empty_learner_progress() {
+        let ctx = create_mock_context_with_threshold("test_empty_learner_progress", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::new();
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        assert_eq!(leader.pending_promotions.len(), 0);
+        assert!(role_rx.try_recv().is_err(), "Should not send event");
+    }
+
+    /// **Test Goal**: Verify node not in membership is skipped
+    ///
+    /// **Scenario**: Learner node has been removed from cluster membership
+    ///
+    /// **Input**:
+    /// - learner 999, match_index=95, leader_commit=100, gap=5 (caught up)
+    /// - membership.contains_node(999) = false (node removed)
+    ///
+    /// **Expected Behavior**:
+    /// - Node 999 is skipped in the iteration
+    /// - pending_promotions.len() = 0
+    /// - No events sent
+    ///
+    /// **Verification**:
+    /// - Removed nodes are filtered out
+    /// - Prevents promoting non-existent nodes
+    #[tokio::test]
+    async fn test_node_not_in_membership() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut ctx = mock_raft_context("test_node_not_in_membership", graceful_rx, None);
+        let mut config = node_config("/tmp/test_node_not_in_membership");
+        config.raft.learner_catchup_threshold = 5;
+        ctx.node_config = Arc::new(config);
+
+        // Mock membership: node 999 not found
+        let mut membership = create_mock_membership();
+        membership.expect_get_node_status().returning(|id| {
+            if id == 999 {
+                None // Not in membership
+            } else {
+                Some(NodeStatus::Promotable)
+            }
+        });
+        membership.expect_contains_node().returning(|_| true);
+        ctx.membership = Arc::new(membership);
+
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([
+            (100, Some(95)), // valid
+            (999, Some(95)), // not in membership
+        ]);
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // Should only add the valid learner
+        assert_eq!(leader.pending_promotions.len(), 1);
+        assert_eq!(leader.pending_promotions[0].node_id, 100);
+    }
+
+    /// **Test Goal**: Verify overflow protection when learner is ahead of leader
+    ///
+    /// **Scenario**: Learner's match_index > leader's commit_index (edge case)
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=100, leader_commit=5
+    /// - gap calculation: leader_commit.saturating_sub(match_index) = 5 - 100 = 0 (saturating)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - saturating_sub prevents underflow (returns 0 instead of negative)
+    /// - gap (0) <= threshold (5) → caught_up = true
+    /// - Learner is added to pending_promotions
+    /// - pending_promotions.len() = 1
+    ///
+    /// **Verification**:
+    /// - No integer underflow occurs
+    /// - saturating_sub handles edge case gracefully
+    #[tokio::test]
+    async fn test_overflow_protection_learner_ahead() {
+        let ctx = create_mock_context_with_threshold("test_overflow_protection_learner_ahead", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(5).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(10))]); // learner_match > leader_commit
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // checked_sub returns None → caught_up = true
+        assert_eq!(leader.pending_promotions.len(), 1);
+    }
+
+    /// **Test Goal**: Verify batch event optimization - multiple learners, single event
+    ///
+    /// **Scenario**: Multiple learners caught up simultaneously
+    ///
+    /// **Input**:
+    /// - learner 100, match_index=95, leader_commit=100, gap=5 (caught up)
+    /// - learner 200, match_index=96, leader_commit=100, gap=4 (caught up)
+    /// - threshold = 5
+    ///
+    /// **Expected Behavior**:
+    /// - Both learners are caught up
+    /// - Both added to pending_promotions queue
+    /// - pending_promotions.len() = 2 (node 100 and 200)
+    /// - Only 1 PromoteReadyLearners event sent (batching optimization)
+    ///
+    /// **Verification**:
+    /// - Batch processing prevents event flooding
+    /// - Single event triggers processing of entire queue
+    /// - Efficient handling of multiple promotions
+    #[tokio::test]
+    async fn test_batch_event_sending() {
+        let ctx = create_mock_context_with_threshold("test_batch_event_sending", 5);
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+        leader.update_commit_index(100).unwrap();
+        leader.last_learner_check = Instant::now() - Duration::from_secs(2);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let learner_progress = HashMap::from([(100, Some(95)), (200, Some(96))]);
+
+        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+
+        // Both learners should be in queue
+        assert_eq!(leader.pending_promotions.len(), 2);
+        let ids: Vec<_> = leader.pending_promotions.iter().map(|p| p.node_id).collect();
+        assert!(ids.contains(&100));
+        assert!(ids.contains(&200));
+
+        // Should receive exactly 1 event
+        let mut event_count = 0;
+        while let Ok(event) = role_rx.try_recv() {
+            if let RoleEvent::ReprocessEvent(inner) = event {
+                if matches!(*inner, RaftEvent::PromoteReadyLearners) {
+                    event_count += 1;
+                }
+            }
+        }
+        assert_eq!(
+            event_count, 1,
+            "Should send exactly 1 PromoteReadyLearners event"
+        );
+    }
+}
+
 #[cfg(test)]
 mod handle_client_read_request {
-    use super::*;
     use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
     use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
+
+    use super::*;
 
     /// Test LeaseRead policy with valid lease
     #[tokio::test]
@@ -4461,12 +5014,15 @@ mod handle_client_read_request {
 /// Tests for is_lease_valid function
 #[cfg(test)]
 mod lease_validity_tests {
-    use super::*;
+    use std::sync::Arc;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::test_utils::MockBuilder;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::watch;
+
+    use super::*;
 
     /// Test with a valid lease (timestamp within the lease duration)
     #[test]

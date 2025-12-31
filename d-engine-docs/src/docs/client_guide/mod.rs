@@ -8,7 +8,7 @@
 //!   policies
 //! - [Error Handling](error_handling.md) - Error categories and retry strategies
 pub mod read_consistency {
-    #![doc = include_str!("read_consistency.md")]
+    #![doc = include_str!("read-consistency.md")]
 }
 
 pub mod error_handling {

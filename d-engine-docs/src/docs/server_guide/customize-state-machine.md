@@ -198,7 +198,7 @@ let custom_sm = Arc::new(CustomStateMachine::new().await?);
 
 NodeBuilder::new(config, shutdown_rx)
     .state_machine(custom_sm)  // Required component
-    .start_server()
+    .start()
     .await?;
 ```
 

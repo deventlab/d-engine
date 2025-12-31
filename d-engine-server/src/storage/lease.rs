@@ -26,14 +26,18 @@
 //! - Cleanup: O(N) with read locks → no write blocking, rare execution
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
 
 use bytes::Bytes;
-use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
-
 use d_engine_core::Lease;
+use dashmap::DashMap;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::Result;
 
@@ -96,6 +100,7 @@ impl DefaultLease {
     ///
     /// # Arguments
     /// * `max_duration_ms` - Maximum duration in milliseconds
+    #[allow(dead_code)]
     fn cleanup_expired_with_limit(
         &self,
         max_duration_ms: u64,
@@ -165,6 +170,13 @@ impl DefaultLease {
 
         manager
     }
+
+    /// Returns reference to the lease configuration.
+    ///
+    /// Used by StateMachine implementations to check cleanup strategy.
+    pub fn config(&self) -> &d_engine_core::config::LeaseConfig {
+        &self.config
+    }
 }
 
 impl Lease for DefaultLease {
@@ -172,12 +184,12 @@ impl Lease for DefaultLease {
     ///
     /// # TTL Semantics
     ///
-    /// - **Absolute expiration time**: The expiration time is calculated as
-    ///   `expire_at = SystemTime::now() + Duration::from_secs(ttl_secs)` and stored internally.
+    /// - **Absolute expiration time**: The expiration time is calculated as `expire_at =
+    ///   SystemTime::now() + Duration::from_secs(ttl_secs)` and stored internally.
     /// - **Crash-safe**: The absolute expiration time survives node restarts. After crash recovery,
     ///   expired keys remain expired (no TTL reset).
-    /// - **Persistent**: The expiration time is persisted to disk during snapshot generation
-    ///   and graceful shutdown.
+    /// - **Persistent**: The expiration time is persisted to disk during snapshot generation and
+    ///   graceful shutdown.
     ///
     /// # Example
     ///
@@ -226,7 +238,7 @@ impl Lease for DefaultLease {
         self.key_to_expiry.remove(key);
     }
 
-    /// Check if a key is expired.
+    /// Check if a key has expired.
     ///
     /// # Performance
     ///
@@ -268,28 +280,19 @@ impl Lease for DefaultLease {
             .collect()
     }
 
-    /// Piggyback cleanup on apply operations.
+    /// Piggyback cleanup on apply operations (DEPRECATED - no longer used).
     ///
-    /// Called every N applies (configured via piggyback_frequency).
-    /// Returns expired keys that were removed.
+    /// This method is kept for backward compatibility but is no longer called.
+    /// Cleanup is now handled by:
+    /// - Lazy strategy: cleanup in get() method
+    /// - Background strategy: dedicated async task
     ///
     /// # Performance
     ///
-    /// - Fast path (no cleanup): O(1) atomic check
-    /// - Cleanup path: O(N) with time limit, shard read locks
+    /// - Fast path: O(1) - always returns empty vec
     fn on_apply(&self) -> Vec<Bytes> {
-        // Fast path: if piggyback is not enabled, return immediately
-        if !self.config.is_piggyback() {
-            return vec![];
-        }
-
-        // Piggyback cleanup: check if it's time to cleanup
-        let count = self.apply_counter.fetch_add(1, Ordering::Relaxed);
-        if count % self.config.piggyback_frequency == 0 {
-            self.cleanup_expired_with_limit(self.config.max_cleanup_duration_ms)
-        } else {
-            vec![]
-        }
+        // No-op: piggyback cleanup removed to avoid blocking apply path
+        vec![]
     }
 
     /// Check if any keys have been registered.

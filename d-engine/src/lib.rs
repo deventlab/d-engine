@@ -120,14 +120,17 @@ pub use d_engine_client::{
 #[cfg_attr(docsrs, doc(cfg(feature = "client")))]
 /// Protocol types for client operations
 pub mod protocol {
-    pub use d_engine_client::protocol::{ClientResult, ReadConsistencyPolicy, WriteCommand};
+    pub use d_engine_client::protocol::ClientResult;
+    pub use d_engine_client::protocol::ReadConsistencyPolicy;
+    pub use d_engine_client::protocol::WriteCommand;
 }
 
 #[cfg(feature = "client")]
 #[cfg_attr(docsrs, doc(cfg(feature = "client")))]
 /// Cluster management types
 pub mod cluster_types {
-    pub use d_engine_client::cluster_types::{NodeMeta, NodeStatus};
+    pub use d_engine_client::cluster_types::NodeMeta;
+    pub use d_engine_client::cluster_types::NodeStatus;
 }
 
 // ==================== Core API ====================
@@ -135,9 +138,13 @@ pub mod cluster_types {
 #[cfg(feature = "client")]
 #[cfg_attr(docsrs, doc(cfg(feature = "client")))]
 pub use d_engine_client::KvClient;
-
+#[cfg(all(feature = "server", feature = "rocksdb"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "server", feature = "rocksdb"))))]
+pub use d_engine_server::RocksDBStateMachine;
+#[cfg(all(feature = "server", feature = "rocksdb"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "server", feature = "rocksdb"))))]
+pub use d_engine_server::RocksDBStorageEngine;
 // ==================== Server API ====================
-
 #[cfg(feature = "server")]
 #[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub use d_engine_server::{
@@ -162,27 +169,29 @@ pub use d_engine_server::{
     ProstError,
     Result,
     SnapshotError,
+    // Standalone mode
+    StandaloneServer,
     StateMachine,
     StorageEngine,
     StorageError,
 };
 
-#[cfg(all(feature = "server", feature = "rocksdb"))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "server", feature = "rocksdb"))))]
-pub use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
-
 #[cfg(feature = "server")]
 #[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 /// Common Raft protocol types
 pub mod common {
-    pub use d_engine_server::common::{Entry, EntryPayload, LogId, entry_payload};
+    pub use d_engine_server::common::Entry;
+    pub use d_engine_server::common::EntryPayload;
+    pub use d_engine_server::common::LogId;
+    pub use d_engine_server::common::entry_payload;
 }
 
 #[cfg(feature = "server")]
 #[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 /// Client write command types
 pub mod write_command {
-    pub use d_engine_server::client::{WriteCommand, write_command};
+    pub use d_engine_server::client::WriteCommand;
+    pub use d_engine_server::client::write_command;
 }
 
 #[cfg(feature = "server")]
@@ -202,11 +211,33 @@ pub mod storage {
 /// ```
 pub mod prelude {
     #[cfg(feature = "client")]
-    pub use d_engine_client::{Client, ClientBuilder, GrpcKvClient, KvClient};
-
+    pub use d_engine_client::Client;
+    #[cfg(feature = "client")]
+    pub use d_engine_client::ClientBuilder;
+    #[cfg(feature = "client")]
+    pub use d_engine_client::GrpcKvClient;
+    #[cfg(feature = "client")]
+    pub use d_engine_client::KvClient;
     #[cfg(feature = "server")]
-    pub use d_engine_server::{
-        EmbeddedEngine, FileStateMachine, FileStorageEngine, LeaderInfo, LocalClientError,
-        LocalKvClient, Node, NodeBuilder, StateMachine, StorageEngine,
-    };
+    pub use d_engine_server::EmbeddedEngine;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::FileStateMachine;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::FileStorageEngine;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::LeaderInfo;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::LocalClientError;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::LocalKvClient;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::Node;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::NodeBuilder;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::StandaloneServer;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::StateMachine;
+    #[cfg(feature = "server")]
+    pub use d_engine_server::StorageEngine;
 }

@@ -2,14 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tokio::sync::watch;
-use tokio::time;
-use tonic::Code;
-use tonic::Request;
-use tracing_test::traced_test;
-
-use crate::test_utils::MockBuilder;
-use crate::test_utils::mock_node;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::AppendResults;
 use d_engine_core::MockElectionCore;
@@ -35,6 +27,14 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
+use tokio::sync::watch;
+use tokio::time;
+use tonic::Code;
+use tonic::Request;
+use tracing_test::traced_test;
+
+use crate::test_utils::MockBuilder;
+use crate::test_utils::mock_node;
 
 /// # Case: Test RPC services timeout
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn test_server_is_not_ready() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = mock_node("/tmp/test_server_is_not_ready", graceful_rx, None);
     // Force the server to not be ready (implementation-specific)
-    node.set_ready(false);
+    node.set_rpc_ready(false);
 
     // Vote request
     let result = node
@@ -246,7 +246,7 @@ async fn test_handle_rpc_services_successfully() {
         .with_election_handler(election_handler)
         .with_node_config(settings)
         .build_node();
-    node.set_ready(true);
+    node.set_rpc_ready(true);
 
     // Start Raft run thread
     let raft_lock = node.raft_core.clone();

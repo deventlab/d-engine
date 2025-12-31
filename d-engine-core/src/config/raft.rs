@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
 
+use super::lease::LeaseConfig;
 use super::validate_directory;
 use crate::Error;
 use crate::Result;
@@ -54,6 +55,12 @@ pub struct RaftConfig {
     /// Default value is set via default_learner_catchup_threshold() function
     #[serde(default = "default_learner_catchup_threshold")]
     pub learner_catchup_threshold: u64,
+
+    /// Throttle interval (milliseconds) for learner progress checks
+    /// Prevents excessive checking of learner promotion eligibility
+    /// Default value is set via default_learner_check_throttle_ms() function
+    #[serde(default = "default_learner_check_throttle_ms")]
+    pub learner_check_throttle_ms: u64,
 
     /// Base timeout duration (in milliseconds) for general Raft operations
     /// Used as fallback timeout when operation-specific timeouts are not set
@@ -107,6 +114,7 @@ impl Default for RaftConfig {
             snapshot: SnapshotConfig::default(),
             persistence: PersistenceConfig::default(),
             learner_catchup_threshold: default_learner_catchup_threshold(),
+            learner_check_throttle_ms: default_learner_check_throttle_ms(),
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
@@ -157,6 +165,11 @@ impl RaftConfig {
 fn default_learner_catchup_threshold() -> u64 {
     1
 }
+
+fn default_learner_check_throttle_ms() -> u64 {
+    1000 // 1 second
+}
+
 // in ms
 fn default_general_timeout() -> u64 {
     50
@@ -422,200 +435,6 @@ impl StateMachineConfig {
     pub fn validate(&self) -> Result<()> {
         self.lease.validate()?;
         Ok(())
-    }
-}
-
-/// Lease (time-based key expiration) configuration
-///
-/// d-engine provides lease-based key expiration management with multiple cleanup
-/// strategies to balance resource efficiency with timely expiration:
-///
-/// - `disabled`: No automatic cleanup (zero overhead) - **DEFAULT**
-/// - `passive`: Cleanup only on read access
-/// - `piggyback`: Cleanup during Raft apply events (recommended for lease users)
-/// - `background`: Dedicated background task (not recommended)
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct LeaseConfig {
-    /// Lease cleanup strategy
-    ///
-    /// Available strategies:
-    /// - `"disabled"`: No lease cleanup (DEFAULT). Use if you don't use leases at all.
-    ///   - Overhead: 0% (completely zero overhead)
-    ///   - Memory: Expired keys remain until read or manual cleanup
-    ///   - Best for: Applications that don't use lease feature
-    ///
-    /// - `"passive"`: Cleanup only when keys are accessed via get()
-    ///   - Overhead: ~0.01% (35ns per read)
-    ///   - Memory: Cold expired keys remain indefinitely
-    ///   - Best for: Cache-like workloads, hot key access patterns
-    ///
-    /// - `"piggyback"`: Cleanup during Raft apply events (recommended for lease users)
-    ///   - Overhead: ~0.01% (<1ms per 100 applies)
-    ///   - Memory: Expired keys cleaned within N applies
-    ///   - Best for: Most production lease use cases
-    ///   - Note: Requires write traffic to trigger cleanup
-    ///
-    /// - `"background"`: Dedicated background cleanup task
-    ///   - Overhead: ~0.001% (periodic wakeup)
-    ///   - Memory: Expired keys cleaned within interval
-    ///   - Best for: Large cold data with leases
-    ///   - Warning: Conflicts with "resource efficiency" design
-    #[serde(default = "default_cleanup_strategy")]
-    pub cleanup_strategy: String,
-
-    /// Piggyback cleanup frequency (applies every N Raft applies)
-    ///
-    /// Only used when `cleanup_strategy = "piggyback"`
-    ///
-    /// Default: 100 (cleanup every 100 Raft applies)
-    /// Range: 10-10000
-    ///
-    /// Tuning guide:
-    /// - Lower value (e.g., 10):
-    ///   - More frequent cleanup
-    ///   - Lower memory usage
-    ///   - Higher CPU overhead (~0.1%)
-    ///
-    /// - Higher value (e.g., 1000):
-    ///   - Less frequent cleanup
-    ///   - Higher memory usage
-    ///   - Lower CPU overhead (~0.001%)
-    ///
-    /// Recommended:
-    /// - High-frequency writes (>1K/sec): 50-100
-    /// - Medium-frequency writes (100-1K/sec): 100-500
-    /// - Low-frequency writes (<100/sec): 500-1000
-    #[serde(default = "default_piggyback_frequency")]
-    pub piggyback_frequency: u64,
-
-    /// Maximum cleanup duration per cycle (milliseconds)
-    ///
-    /// Default: 1ms (prevents blocking Raft apply)
-    /// Range: 0-100ms
-    ///
-    /// This limits how long cleanup can run in a single cycle.
-    /// If cleanup exceeds this duration, it will pause and continue
-    /// in the next cycle.
-    ///
-    /// Tuning guide:
-    /// - 0ms: Cleanup disabled (same as "passive" strategy)
-    /// - 1ms: Balanced (default, recommended)
-    /// - 5-10ms: Aggressive cleanup (may impact latency)
-    /// - >10ms: Not recommended (can block Raft)
-    #[serde(default = "default_max_cleanup_duration_ms")]
-    pub max_cleanup_duration_ms: u64,
-
-    /// Background cleanup interval (seconds)
-    ///
-    /// Only used when `cleanup_strategy = "background"`
-    ///
-    /// Default: 60 seconds
-    /// Range: 1-3600 seconds
-    ///
-    /// Note: Background cleanup uses a dedicated tokio task,
-    /// which conflicts with d-engine's "resource efficiency" design.
-    /// Only use if you have specific requirements for cold data cleanup.
-    #[serde(default = "default_background_interval_secs")]
-    pub background_interval_secs: u64,
-}
-
-fn default_cleanup_strategy() -> String {
-    "disabled".to_string()
-}
-
-fn default_piggyback_frequency() -> u64 {
-    100
-}
-
-fn default_max_cleanup_duration_ms() -> u64 {
-    1
-}
-
-fn default_background_interval_secs() -> u64 {
-    60
-}
-
-impl Default for LeaseConfig {
-    fn default() -> Self {
-        Self {
-            cleanup_strategy: default_cleanup_strategy(),
-            piggyback_frequency: default_piggyback_frequency(),
-            max_cleanup_duration_ms: default_max_cleanup_duration_ms(),
-            background_interval_secs: default_background_interval_secs(),
-        }
-    }
-}
-
-impl LeaseConfig {
-    pub fn validate(&self) -> Result<()> {
-        // Validate strategy
-        match self.cleanup_strategy.as_str() {
-            "disabled" | "passive" | "piggyback" | "background" => {}
-            _ => {
-                return Err(Error::Config(ConfigError::Message(format!(
-                    "Invalid lease cleanup strategy: '{}'. Valid options: disabled, passive, piggyback, background",
-                    self.cleanup_strategy
-                ))));
-            }
-        }
-
-        // Validate piggyback_frequency
-        //
-        // Range rationale (10-10000):
-        // - Lower bound (10): Prevents excessive cleanup overhead. Cleanup every <10 applies
-        //   would waste CPU on frequent empty scans and impact Raft apply latency.
-        // - Upper bound (10000): Ensures timely cleanup. At high write rates (1K/sec),
-        //   waiting >10K applies means ~10 seconds between cleanups, risking memory bloat
-        //   from accumulated expired keys.
-        //
-        // Design trade-off:
-        // - Too low: High cleanup overhead, lower throughput
-        // - Too high: Delayed cleanup, higher memory usage
-        // - Typical: 100 (cleanup every 100 applies, ~100ms at 1K writes/sec)
-        if !(10..=10000).contains(&self.piggyback_frequency) {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "piggyback_frequency must be between 10 and 10000, got {} (see validation comments for rationale)",
-                self.piggyback_frequency
-            ))));
-        }
-
-        // Validate max_cleanup_duration_ms
-        if self.max_cleanup_duration_ms > 100 {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "max_cleanup_duration_ms cannot exceed 100ms, got {}ms",
-                self.max_cleanup_duration_ms
-            ))));
-        }
-
-        // Validate background_interval_secs
-        if !(1..=3600).contains(&self.background_interval_secs) {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "background_interval_secs must be between 1 and 3600, got {}",
-                self.background_interval_secs
-            ))));
-        }
-
-        Ok(())
-    }
-
-    /// Returns true if lease cleanup is completely disabled
-    pub fn is_disabled(&self) -> bool {
-        self.cleanup_strategy == "disabled"
-    }
-
-    /// Returns true if passive cleanup strategy is enabled
-    pub fn is_passive(&self) -> bool {
-        self.cleanup_strategy == "passive"
-    }
-
-    /// Returns true if piggyback cleanup strategy is enabled
-    pub fn is_piggyback(&self) -> bool {
-        self.cleanup_strategy == "piggyback"
-    }
-
-    /// Returns true if background cleanup strategy is enabled
-    pub fn is_background(&self) -> bool {
-        self.cleanup_strategy == "background"
     }
 }
 
@@ -935,13 +754,12 @@ fn default_stale_check_interval() -> Duration {
 ///
 /// **Note:** Both strategies now fully load all log entries from disk into memory at startup.
 /// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
-#[doc = include_str!("../../../d-engine-docs/src/docs/architecture/raft-log-persistence-architecture.md")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
     /// Disk-first persistence strategy.
     ///
-    /// - **Write path**: On append, the log entry is first written to disk. Only after a
-    ///   successful disk write is it acknowledged and stored in the in-memory `SkipMap`.
+    /// - **Write path**: On append, the log entry is first written to disk. Only after a successful
+    ///   disk write is it acknowledged and stored in the in-memory `SkipMap`.
     ///
     /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///
@@ -1311,16 +1129,6 @@ fn default_client_compression() -> bool {
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WatchConfig {
-    /// Enable or disable the Watch feature
-    ///
-    /// When `false`, the Watch manager is not created and all Watch RPC calls
-    /// will return `UNAVAILABLE` status. This provides zero overhead when
-    /// Watch functionality is not needed.
-    ///
-    /// **Default**: false
-    #[serde(default = "default_watch_enabled")]
-    pub enabled: bool,
-
     /// Buffer size for the global event queue shared across all watchers
     ///
     /// This queue sits between the write path and the dispatcher thread.
@@ -1373,7 +1181,6 @@ pub struct WatchConfig {
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
-            enabled: default_watch_enabled(),
             event_queue_size: default_event_queue_size(),
             watcher_buffer_size: default_watcher_buffer_size(),
             enable_metrics: default_enable_watch_metrics(),
@@ -1384,9 +1191,9 @@ impl Default for WatchConfig {
 impl WatchConfig {
     /// Validates watch configuration parameters
     pub fn validate(&self) -> Result<()> {
-        if self.enabled && self.event_queue_size == 0 {
+        if self.event_queue_size == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "watch.event_queue_size must be greater than 0 when watch is enabled".into(),
+                "watch.event_queue_size must be greater than 0".into(),
             )));
         }
 
@@ -1398,9 +1205,9 @@ impl WatchConfig {
             );
         }
 
-        if self.enabled && self.watcher_buffer_size == 0 {
+        if self.watcher_buffer_size == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "watch.watcher_buffer_size must be greater than 0 when watch is enabled".into(),
+                "watch.watcher_buffer_size must be greater than 0".into(),
             )));
         }
 
@@ -1414,10 +1221,6 @@ impl WatchConfig {
 
         Ok(())
     }
-}
-
-const fn default_watch_enabled() -> bool {
-    false
 }
 
 const fn default_event_queue_size() -> usize {

@@ -9,11 +9,6 @@
 
 mod grpc_raft_service;
 pub(crate) mod grpc_transport;
-mod watch_dispatcher;
-mod watch_handler;
-
-pub(crate) use watch_dispatcher::{WatchDispatcher, WatchDispatcherHandle, WatchRegistration};
-pub(crate) use watch_handler::WatchStreamHandler;
 
 #[cfg(test)]
 mod grpc_raft_service_test;
@@ -21,7 +16,11 @@ mod grpc_raft_service_test;
 #[cfg(test)]
 mod grpc_transport_test;
 
-use crate::Node;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::Result;
 use d_engine_core::SystemError;
@@ -35,10 +34,6 @@ use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceSer
 use futures::FutureExt;
 use rcgen::CertifiedKey;
 use rcgen::generate_simple_self_signed;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::watch;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Certificate;
@@ -49,6 +44,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
+use crate::Node;
 
 /// RPC server works for RAFT protocol
 /// It mainly listens on two request: Vote RPC Request and Append Entries RPC
@@ -194,7 +191,7 @@ where
             // SocketAddr::from_str(&listen_address).map_err(|e| Error::AddrParseError(e))?,
             listen_address,
             shutdown_signal.changed().map(|_s| {
-                warn!("Stopping RPC server. {}", listen_address);
+                info!("Stopping RPC server. {}", listen_address);
             }),
         )
         .await

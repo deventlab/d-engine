@@ -1,9 +1,8 @@
-use tracing::error;
-
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeRole::Learner;
+use tracing::error;
 
 pub(crate) fn is_majority(
     num: usize,

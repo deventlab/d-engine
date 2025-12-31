@@ -1,13 +1,20 @@
 use std::time::Duration;
 
-use d_engine_client::{Client, ClientApiError};
+use d_engine_client::Client;
+use d_engine_client::ClientApiError;
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::common::{
-    LATENCY_IN_MS, TestContext, WAIT_FOR_NODE_READY_IN_SEC, check_cluster_is_ready,
-    create_bootstrap_urls, create_node_config, get_available_ports, node_config, reset, start_node,
-};
+use crate::common::LATENCY_IN_MS;
+use crate::common::TestContext;
+use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
+use crate::common::check_cluster_is_ready;
+use crate::common::create_bootstrap_urls;
+use crate::common::create_node_config;
+use crate::common::get_available_ports;
+use crate::common::node_config;
+use crate::common::reset;
+use crate::common::start_node;
 
 const TEST_DIR: &str = "cluster_start_stop/failover";
 const DB_ROOT_DIR: &str = "./db/cluster_start_stop/failover";
@@ -57,8 +64,9 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     // Write test data before failover
     client.kv().put("before-failover", "initial-value").await?;
-    // Wait for commit to propagate before reading
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    // Wait for data to replicate to all nodes before reading
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
+    // Use get_eventual() after sufficient wait time to ensure data is replicated
     let result = client.kv().get_eventual("before-failover").await?;
     assert_eq!(
         result.expect("Key should exist after write").value.as_ref(),
@@ -98,9 +106,8 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
             Err(e) => return Err(e),
         }
     }
-    // Wait for commit to propagate after successful put
+    // Wait for data to replicate after failover and re-election
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
-
     // Verify old data still readable
     let old_val = client.kv().get_eventual("before-failover").await?.unwrap();
     assert_eq!(old_val.value.as_ref(), b"initial-value");
@@ -129,6 +136,8 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     info!("Node 1 restarted. Verifying data sync");
 
+    // Wait for node 1 to sync data from cluster
+    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
     // Verify node 1 synced data from cluster
     client.refresh(None).await?;
     let synced_val = client.kv().get_eventual("after-failover").await?.unwrap();

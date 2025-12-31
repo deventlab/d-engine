@@ -6,7 +6,8 @@
 //!
 //! ## Guides
 //!
-//! - [Throughput Optimization](self::throughput_optimization_guide) - Maximizing operation throughput
+//! - [Throughput Optimization](self::throughput_optimization_guide) - Maximizing operation
+//!   throughput
 
 pub mod throughput_optimization_guide {
     #![doc = include_str!("throughput-optimization-guide.md")]

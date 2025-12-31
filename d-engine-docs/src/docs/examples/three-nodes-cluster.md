@@ -244,5 +244,4 @@ LOG_LEVEL=info make start-node1
 ## Next Steps
 
 - **Single-node expansion**: See [single-node-expansion.md](single-node-expansion.md) for dynamic 1→3 scaling
-- **Service discovery**: See [service-discovery-pattern.md](../client_guide/service-discovery-pattern.md) for DNS/discovery integration
 - **Run benchmarks**: See [../../benches/d-engine-bench/README.md](../../../../benches/d-engine-bench/README.md) to reproduce performance tests

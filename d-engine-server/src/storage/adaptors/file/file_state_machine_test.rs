@@ -1,7 +1,4 @@
 use bytes::Bytes;
-use prost::Message;
-
-use crate::FileStateMachine;
 use d_engine_core::StateMachine;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Insert;
@@ -9,6 +6,9 @@ use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::entry_payload::Payload;
+use prost::Message;
+
+use crate::FileStateMachine;
 
 #[tokio::test]
 async fn test_wal_replay_after_crash() {
@@ -102,8 +102,10 @@ async fn test_wal_replay_after_crash() {
 #[tokio::test]
 #[ignore] // Optional: run with `cargo test -- --ignored`
 async fn test_file_state_machine_performance() {
-    use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
     use std::sync::Arc;
+
+    use d_engine_core::state_machine_test::StateMachineBuilder;
+    use d_engine_core::state_machine_test::StateMachineTestSuite;
     use tonic::async_trait;
 
     struct FileStateMachineBuilder {

@@ -15,9 +15,6 @@ initial_cluster = [
     { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner, Joining
 ]
 
-# initial_cluster_size is IMMUTABLE - must match node 1's config
-initial_cluster_size = 1
-
 db_root_dir = "./db"
 log_dir = "./logs"
 

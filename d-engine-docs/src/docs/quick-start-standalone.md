@@ -1,113 +1,123 @@
 # Quick Start: Standalone Mode in 5 Minutes
 
-**Goal**: Start 3-node d-engine cluster, connect with Go gRPC client.
+**Goal**: Start 3-node d-engine cluster and verify it works with gRPC.
+
+> d-engine uses **standard gRPC** - works with any language (Go, Python, Java, Node.js, Rust, etc.)
 
 ---
 
 ## Prerequisites
 
-- Rust stable
-- Go 1.20+ (optional, for client example)
+- Rust stable (to build d-engine)
+- Go 1.20+ (for client example)
 - 5 minutes
 
 ---
 
-## Step 1: Start 3-Node Cluster (1 minute)
+## Step 1: Start Demo Cluster (1 minute)
+
+> **What is this?**  
+> `examples/three-nodes-cluster` is a demo project included in d-engine repository.  
+> It simulates a production-like 3-node cluster for quick testing.
 
 ```bash
 cd examples/three-nodes-cluster
 make start-cluster
 ```
 
-This command:
+**What happens**:
 
-- Builds release binary
-- Starts 3 nodes in parallel
-- Auto-elects leader
-- Ready for gRPC connections on `127.0.0.1:9081`, `9082`, `9083`
+- Starts 3 d-engine server processes (Node 1/2/3)
+- Auto-elects leader (takes ~2s)
+- Exposes gRPC endpoints: `127.0.0.1:9081-9083`
+- Persists data to `./db/1/`, `./db/2/`, `./db/3/`
 
----
+**Verify cluster is ready**:
 
-## Step 2: Go Client Hello World (2 minutes)
+```bash
+# Check processes
+ps aux | grep "target/release/demo"  # Should see 3 processes
 
-Create `main.go`:
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"log"
-	"time"
-
-	// When Go client available: "github.com/deventlab/d-engine-go-client"
-)
-
-func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// TODO: When Go client ready
-	// client := dengine.NewClient("127.0.0.1:9081")
-	// client.Put(ctx, []byte("hello"), []byte("world"))
-	// val, _ := client.Get(ctx, []byte("hello"))
-	// fmt.Printf("Value: %s\n", val)
-
-	fmt.Println("Go client coming soon")
-}
+# Check logs for leader election
+tail -f logs/1/demo.log  # Look for ">>> switch to Leader"
 ```
 
 ---
 
-## What Just Happened?
+## Step 2: Run Go Client (1 minute)
 
-| Component            | What it does                               |
-| -------------------- | ------------------------------------------ |
-| `make start-cluster` | Builds + starts Node 1, 2, 3 in parallel   |
-| Auto-election        | Majority (2/3) nodes elected leader in <2s |
-| RocksDB              | Each node persists logs/state to `./db/N/` |
-| gRPC server          | Each node listens on port 908N             |
+```bash
+cd examples/quick-start-standalone
+make run
+```
+
+**What this does:**
+
+1. Connects to any node (tries 127.0.0.1:9081 first)
+2. Sends write request
+3. If `NOT_LEADER` error, follows `metadata.LeaderAddress` to redirect
+4. Writes `hello=world` to leader
+5. Reads back with LinearizableRead consistency
+
+**Expected output**:
+
+```text
+Not leader, redirecting to 0.0.0.0:9082
+Write success (leader at 0.0.0.0:9082)
+Value: world
+```
+
+> **Note**: Leader may be at any node. The client uses Leader Hint from error response to redirect automatically.
+
+**Want to see the code?** Check [examples/quick-start-standalone/main.go](../../examples/quick-start-standalone/main.go)
 
 ---
 
-## Monitor Cluster
+## What's Next?
+
+**Try other languages:**
+
+- Proto files: `d-engine-proto/proto/*.proto`
+- Language guides: <https://grpc.io/docs/languages/>
+
+**Advanced topics:**
+
+- [Monitor cluster and test failover](#monitor-cluster)
+- [Embedded vs Standalone comparison](#embedded-vs-standalone)
+- [Production deployment](../../examples/three-nodes-cluster/README.md)
+
+**Clean up:**
+
+```bash
+make stop-cluster && make clean
+```
+
+---
+
+## Advanced Topics
+
+### Monitor Cluster
 
 ```bash
 # Watch node 1 logs
-tail -f examples/three-nodes-cluster/logs/1/demo.log
+tail -f logs/1/demo.log
 
-# Kill leader (observe failover)
-pkill -f "target/release/demo"
-
-# Restart cluster
-make start-cluster
+# Test failover (kill leader, observe re-election)
+pkill -f "demo.*node-id=1"
+tail -f logs/2/demo.log  # Watch new leader election
 ```
 
----
+### Embedded vs Standalone
 
-## Key Differences: Embedded vs Standalone
-
-| Feature           | Embedded (Rust)                  | Standalone (gRPC)      |
-| ----------------- | -------------------------------- | ---------------------- |
-| **Latency**       | <0.1ms                           | 1-2ms                  |
-| **Serialization** | None                             | Protobuf               |
-| **Language**      | Rust only                        | Any (Go, Python, Java) |
-| **Deployment**    | 1 binary                         | 3 server processes     |
-| **Setup**         | `EmbeddedEngine::with_rocksdb()` | `make start-cluster`   |
-
----
-
-## Next: Scale & Monitor
-
-- **Add node**: `make join-node4` (learner mode)
-- **Logs**: `logs/1/`, `logs/2/`, `logs/3/`
-- **Metrics**: Prometheus on ports 8081-8083
-- **Profiling**: `make perf-cluster` (generates flame graphs)
-
-See `examples/three-nodes-cluster/README.md` for advanced usage.
+| Feature           | Embedded (Rust)                | Standalone (gRPC)      |
+| ----------------- | ------------------------------ | ---------------------- |
+| **Latency**       | <0.1ms                         | 1-2ms                  |
+| **Serialization** | None                           | Protobuf               |
+| **Language**      | Rust only                      | Any (Go, Python, Java) |
+| **Deployment**    | 1 binary                       | 3 server processes     |
+| **Setup**         | `EmbeddedEngine::start_with()` | `make start-cluster`   |
 
 ---
 
 **Created**: 2025-12-04  
-**Updated**: 2025-12-04
+**Updated**: 2025-12-30

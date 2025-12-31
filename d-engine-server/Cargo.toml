@@ -1,12 +1,12 @@
 [package]
 name = "d-engine-server"
-version = "0.2.0"
-edition = "2024"
-authors = ["Joshua Chi <joshokn@gmail.com>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "Production-ready Raft consensus engine server and runtime"
-homepage = "https://github.com/deventlab/d-engine"
-repository = "https://github.com/deventlab/d-engine"
-license = "MIT OR Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
 keywords = ["raft", "consensus", "distributed-systems", "async"]
 categories = ["asynchronous", "concurrency", "network-programming"]
 publish = false
@@ -18,6 +18,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 test-utils = ["mockall", "astral-tokio-tar", "async-compression", "nanoid"]
 rocksdb = ["dep:rocksdb"]
+# Experimental: Watch API for key change notifications
+# WARNING: This feature is under active development and not production-ready
+watch = ["d-engine-core/watch"]
 
 [dependencies]
 d-engine-proto = { workspace = true }
@@ -74,7 +77,17 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 [[bench]]
 name = "state_machine"
 harness = false
+required-features = ["watch"]
 
 [[bench]]
 name = "ttl"
+harness = false
+
+[[bench]]
+name = "watch_overhead"
+harness = false
+required-features = ["watch", "rocksdb"]
+
+[[bench]]
+name = "lease_performance"
 harness = false

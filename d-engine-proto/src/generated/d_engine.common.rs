@@ -77,6 +77,9 @@ pub struct AddNode {
     pub node_id: u32,
     #[prost(string, tag = "2")]
     pub address: ::prost::alloc::string::String,
+    /// Status of the node being added (PROMOTABLE or READ_ONLY)
+    #[prost(enumeration = "NodeStatus", tag = "3")]
+    pub status: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -138,30 +141,48 @@ pub struct Snapshot {
     #[prost(message, repeated, tag = "2")]
     pub data: ::prost::alloc::vec::Vec<SnapshotEntry>,
 }
+/// Leader election information
+/// Used at: Application layer (internal Raft protocol notifications)
+/// Purpose: Notify applications about leader changes via watch channel
+/// Fields: Minimal - only what Raft protocol needs
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct LeaderInfo {
+    /// Current leader node ID
+    #[prost(uint32, tag = "1")]
+    pub leader_id: u32,
+    /// Current Raft term
+    #[prost(uint64, tag = "2")]
+    pub term: u64,
+}
+/// Leader hint for client redirection
+/// Used at: Network layer (gRPC error responses)
+/// Purpose: Help clients redirect requests to the current leader
+/// Fields: Includes network address for immediate retry
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LeaderHint {
+    /// Current leader node ID
+    #[prost(uint32, tag = "1")]
+    pub leader_id: u32,
+    /// Leader's network address (e.g., "127.0.0.1:5001")
+    #[prost(string, tag = "2")]
+    pub address: ::prost::alloc::string::String,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum NodeStatus {
-    /// Initial joining process
+    /// Learner states
     ///
-    /// New node, catching up with logs
-    Joining = 0,
-    /// Start syncing with leader committed logs
-    Syncing = 1,
-    /// Running status
+    /// Learner that CAN be promoted to voter
+    Promotable = 0,
+    /// Learner that will NEVER be promoted (permanent analytics node)
+    ReadOnly = 1,
+    /// Voter state
     ///
-    /// Formal voting member
+    /// Voting member (Follower, Candidate, or Leader)
     Active = 2,
-    /// Disaster recovery ready node (data has been synchronized)
-    StandBy = 3,
-    /// Offline process
-    ///
-    /// Prepare to go offline (not accepting new requests, transfer data)
-    Draining = 4,
-    /// Retiring (data migration completed)
-    Retiring = 5,
-    /// Zombie node (removed from cluster)
-    Zombie = 6,
 }
 impl NodeStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -170,25 +191,17 @@ impl NodeStatus {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Joining => "JOINING",
-            Self::Syncing => "SYNCING",
+            Self::Promotable => "PROMOTABLE",
+            Self::ReadOnly => "READ_ONLY",
             Self::Active => "ACTIVE",
-            Self::StandBy => "STAND_BY",
-            Self::Draining => "DRAINING",
-            Self::Retiring => "RETIRING",
-            Self::Zombie => "ZOMBIE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "JOINING" => Some(Self::Joining),
-            "SYNCING" => Some(Self::Syncing),
+            "PROMOTABLE" => Some(Self::Promotable),
+            "READ_ONLY" => Some(Self::ReadOnly),
             "ACTIVE" => Some(Self::Active),
-            "STAND_BY" => Some(Self::StandBy),
-            "DRAINING" => Some(Self::Draining),
-            "RETIRING" => Some(Self::Retiring),
-            "ZOMBIE" => Some(Self::Zombie),
             _ => None,
         }
     }

@@ -1,8 +1,9 @@
-use bytes::Bytes;
-use prost::Message;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+
+use bytes::Bytes;
+use prost::Message;
 
 use crate::ConvertError;
 use crate::Result;

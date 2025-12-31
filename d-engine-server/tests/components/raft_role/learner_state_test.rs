@@ -1,13 +1,8 @@
-use bytes::Bytes;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tracing::debug;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
@@ -45,6 +40,11 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tracing::debug;
+use tracing_test::traced_test;
 
 /// Validate Follower step up as Candidate in new election round
 #[tokio::test]
@@ -448,10 +448,8 @@ async fn test_handle_raft_event_case6() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
-    assert_eq!(
-        resp_rx.recv().await.unwrap().unwrap_err().code(),
-        Code::PermissionDenied
-    );
+    let response = resp_rx.recv().await.unwrap().expect("should get response");
+    assert_eq!(response.error, ErrorCode::NotLeader as i32);
 }
 
 /// Test handling RaftLogCleanUp event by LearnerState
@@ -506,6 +504,7 @@ async fn test_handle_raft_event_case10() {
 
     // Step 2: Prepare the event
     let request = JoinRequest {
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
         node_id: 2,
         node_role: Learner.into(),
         address: "127.0.0.1:9090".to_string(),
@@ -992,4 +991,173 @@ mod role_violation_tests {
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
     }
+}
+
+/// Test Learner detects promotion to Voter on MembershipApplied event
+///
+/// Critical unit test validating that when a Learner receives MembershipApplied
+/// event and membership shows it has been promoted to Voter, it correctly
+/// transitions to Follower role by sending BecomeFollower event.
+#[tokio::test]
+#[traced_test]
+async fn test_learner_promotion_on_membership_applied() {
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
+    use mockall::predicate::eq;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Setup MockMembership with expectation
+    let mut mock_membership = MockMembership::<MockTypeConfig>::new();
+
+    // Node 3 has been promoted to Voter (Follower role)
+    let promoted_node = NodeMeta {
+        id: 3,
+        address: "127.0.0.1:8003".to_string(),
+        role: NodeRole::Follower as i32,
+        status: NodeStatus::Active as i32,
+    };
+
+    mock_membership
+        .expect_retrieve_node_meta()
+        .with(eq(3))
+        .times(1)
+        .return_once(move |_| Some(promoted_node));
+
+    // Create context and inject mocked membership
+    let mut context = mock_raft_context("/tmp/test_learner_promotion", graceful_rx, None);
+    context.set_membership(Arc::new(mock_membership));
+
+    let mut state = LearnerState::<MockTypeConfig>::new(3, context.node_config.clone());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::MembershipApplied;
+
+    // Execute: Handle MembershipApplied event
+    let result = state.handle_raft_event(raft_event, &context, role_tx).await;
+    assert!(
+        result.is_ok(),
+        "MembershipApplied should succeed: {result:?}"
+    );
+
+    // Verify: Should receive BecomeFollower event
+    let role_event = tokio::time::timeout(Duration::from_millis(100), role_rx.recv())
+        .await
+        .expect("Should receive event within timeout")
+        .expect("Channel should not be closed");
+
+    match role_event {
+        RoleEvent::BecomeFollower(leader_id) => {
+            assert_eq!(leader_id, None, "Should not specify leader on promotion");
+        }
+        other => panic!("Expected BecomeFollower event, got: {other:?}"),
+    }
+}
+
+/// Test Learner remains Learner when not promoted on MembershipApplied
+///
+/// Validates that when membership still shows node as Learner after
+/// MembershipApplied event, no role transition occurs.
+#[tokio::test]
+#[traced_test]
+async fn test_learner_stays_learner_on_membership_applied() {
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
+    use mockall::predicate::eq;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Setup MockMembership with expectation
+    let mut mock_membership = MockMembership::<MockTypeConfig>::new();
+
+    // Node 3 is still a Learner (not promoted)
+    let learner_node = NodeMeta {
+        id: 3,
+        address: "127.0.0.1:8003".to_string(),
+        role: NodeRole::Learner as i32,
+        status: NodeStatus::Promotable as i32,
+    };
+
+    mock_membership
+        .expect_retrieve_node_meta()
+        .with(eq(3))
+        .times(1)
+        .return_once(move |_| Some(learner_node));
+
+    // Create context and inject mocked membership
+    let mut context = mock_raft_context("/tmp/test_learner_stays_learner", graceful_rx, None);
+    context.set_membership(Arc::new(mock_membership));
+
+    let mut state = LearnerState::<MockTypeConfig>::new(3, context.node_config.clone());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::MembershipApplied;
+
+    // Execute: Handle MembershipApplied event
+    let result = state.handle_raft_event(raft_event, &context, role_tx).await;
+    assert!(
+        result.is_ok(),
+        "MembershipApplied should succeed: {result:?}"
+    );
+
+    // Verify: Should NOT receive any role transition event
+    let timeout_result = tokio::time::timeout(Duration::from_millis(100), role_rx.recv()).await;
+
+    if let Ok(Some(event)) = timeout_result {
+        panic!("Should not send role transition event when still Learner, but got: {event:?}");
+    }
+
+    assert!(
+        timeout_result.is_err() || matches!(timeout_result, Ok(None)),
+        "Should not send role transition event when still Learner"
+    );
+}
+
+/// Test Learner handles node not found in membership gracefully
+///
+/// Edge case: MembershipApplied event but node is not in membership
+/// (could happen during removal or race condition)
+#[tokio::test]
+#[traced_test]
+async fn test_learner_node_not_found_on_membership_applied() {
+    use mockall::predicate::eq;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Setup MockMembership with expectation
+    let mut mock_membership = MockMembership::<MockTypeConfig>::new();
+
+    // Node 3 not found in membership
+    mock_membership
+        .expect_retrieve_node_meta()
+        .with(eq(3))
+        .times(1)
+        .return_once(move |_| None);
+
+    // Create context and inject mocked membership
+    let mut context = mock_raft_context("/tmp/test_learner_not_found", graceful_rx, None);
+    context.set_membership(Arc::new(mock_membership));
+
+    let mut state = LearnerState::<MockTypeConfig>::new(3, context.node_config.clone());
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let raft_event = RaftEvent::MembershipApplied;
+
+    // Execute: Handle MembershipApplied event
+    let result = state.handle_raft_event(raft_event, &context, role_tx).await;
+    assert!(
+        result.is_ok(),
+        "MembershipApplied should succeed even when node not found"
+    );
+
+    // Verify: Should NOT receive any role transition event (logged as warning)
+    let timeout_result = tokio::time::timeout(Duration::from_millis(100), role_rx.recv()).await;
+
+    if let Ok(Some(event)) = timeout_result {
+        panic!("Should not send role transition event when node not found, but got: {event:?}");
+    }
+
+    assert!(
+        timeout_result.is_err() || matches!(timeout_result, Ok(None)),
+        "Should not send role transition event when node not found"
+    );
 }

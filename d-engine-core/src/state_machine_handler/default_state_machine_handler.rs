@@ -7,12 +7,19 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::watch::WatchManager;
-
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use bytes::Bytes;
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::PurgeLogRequest;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::stream::BoxStream;
 use memmap2::Mmap;
 use memmap2::MmapOptions;
@@ -59,19 +66,6 @@ use crate::convert::classify_error;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
-use d_engine_proto::client::ClientResult;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use prost::Message;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -108,9 +102,10 @@ where
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
 
-    /// Optional watch manager for monitoring key changes
-    /// When None, watch functionality is disabled with zero overhead
-    watch_manager: Option<Arc<WatchManager>>,
+    /// Broadcast channel for watch event notifications (fire-and-forget)
+    /// StateMachine sends events here without blocking on watchers
+    #[cfg(feature = "watch")]
+    watch_event_tx: Option<tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
@@ -187,13 +182,11 @@ where
         // Apply the chunk and track errors
         let apply_result = sm.apply_chunk(chunk.clone()).await;
 
-        // Notify watchers of changes only on success
-        // PERF: has_watchers() is O(1) and avoids expensive protobuf decoding when no watchers exist
+        // Fire-and-forget watch events on success (non-blocking)
+        #[cfg(feature = "watch")]
         if apply_result.is_ok() {
-            if let Some(ref watch_mgr) = self.watch_manager {
-                if watch_mgr.has_watchers() {
-                    self.notify_watchers(&chunk, watch_mgr);
-                }
+            if let Some(ref tx) = self.watch_event_tx {
+                self.broadcast_watch_events(&chunk, tx);
             }
         }
 
@@ -706,31 +699,48 @@ impl<T> DefaultStateMachineHandler<T>
 where
     T: TypeConfig,
 {
-    /// Notify watchers of key changes in the applied chunk
+    /// Broadcast watch events for applied chunk entries (fire-and-forget)
     ///
-    /// This method parses the chunk entries and sends watch events for PUT and DELETE operations.
-    /// It runs on the hot path but uses non-blocking try_send to maintain < 0.01% overhead.
+    /// Parses chunk entries and broadcasts WatchEvent via tokio::broadcast channel.
+    /// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
+    /// Decoupled from WatchManager: only sends signal, doesn't care who listens.
+    #[cfg(feature = "watch")]
     #[inline]
-    fn notify_watchers(
+    fn broadcast_watch_events(
         &self,
         chunk: &[Entry],
-        watch_mgr: &Arc<WatchManager>,
+        tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
     ) {
+        use d_engine_proto::client::WatchEventType;
+        use d_engine_proto::client::WatchResponse;
+        use d_engine_proto::client::WriteCommand;
+        use d_engine_proto::client::write_command::Operation;
+        use d_engine_proto::common::entry_payload::Payload;
+        use prost::Message;
+
         for entry in chunk {
             if let Some(ref payload) = entry.payload {
                 if let Some(Payload::Command(bytes)) = &payload.payload {
-                    // Decode the WriteCommand
                     if let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) {
-                        match write_cmd.operation {
-                            Some(Operation::Insert(insert)) => {
-                                watch_mgr.notify_put(insert.key, insert.value);
-                            }
-                            Some(Operation::Delete(delete)) => {
-                                watch_mgr.notify_delete(delete.key);
-                            }
-                            None => {
-                                // No operation, skip
-                            }
+                        let event = match write_cmd.operation {
+                            Some(Operation::Insert(insert)) => Some(WatchResponse {
+                                key: insert.key,
+                                value: insert.value,
+                                event_type: WatchEventType::Put as i32,
+                                error: 0,
+                            }),
+                            Some(Operation::Delete(delete)) => Some(WatchResponse {
+                                key: delete.key,
+                                value: bytes::Bytes::new(),
+                                event_type: WatchEventType::Delete as i32,
+                                error: 0,
+                            }),
+                            None => None,
+                        };
+
+                        if let Some(ev) = event {
+                            // Fire-and-forget: ignore send errors (no receivers or lagging)
+                            let _ = tx.send(ev);
                         }
                     }
                 }
@@ -750,7 +760,9 @@ where
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
-        watch_manager: Option<Arc<WatchManager>>,
+        #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
+            tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
+        >,
     ) -> Self {
         Self {
             node_id,
@@ -767,14 +779,14 @@ where
 
             snapshot_lock: RwLock::new(()),
             snapshot_in_progress: AtomicBool::new(false),
-            watch_manager,
+            #[cfg(feature = "watch")]
+            watch_event_tx,
         }
     }
 
-    /// Convenience constructor for tests without watch manager
+    /// Convenience constructor for tests without watch
     ///
-    /// This is a backward-compatible wrapper that calls `new()` with `None` for watch_manager.
-    /// Use this in tests to avoid updating all test callsites.
+    /// Backward-compatible wrapper that calls `new()` with None for watch_event_tx.
     #[cfg(test)]
     pub fn new_without_watch(
         node_id: u32,
@@ -791,7 +803,7 @@ where
             state_machine,
             snapshot_config,
             snapshot_policy,
-            None, // No watch manager for tests
+            None, // No watch event tx for tests
         )
     }
 

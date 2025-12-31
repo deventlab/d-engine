@@ -1,12 +1,12 @@
+use d_engine_core::ConnectionParams;
+use d_engine_core::NetworkConfig;
+use d_engine_core::test_utils::MockNode;
+use d_engine_core::test_utils::MockRpcService;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
 use super::*;
-use d_engine_core::ConnectionParams;
-use d_engine_core::NetworkConfig;
-use d_engine_core::test_utils::MockNode;
-use d_engine_core::test_utils::MockRpcService;
 
 /// Case 1: server is not ready
 #[tokio::test]

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::entry_payload::Payload;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
@@ -23,8 +25,6 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::scoped_timer::ScopedTimer;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::entry_payload::Payload;
 
 // Dependencies container
 pub struct CommitHandlerDependencies<T: TypeConfig> {
@@ -74,7 +74,7 @@ where
             tokio::select! {
                     // P0: shutdown received;
                     _ = shutdown_signal.changed() => {
-                        warn!("[CommitHandler] shutdown signal received.");
+                        info!("[CommitHandler] shutdown signal received.");
                         return Ok(());
                     }
 
@@ -270,6 +270,12 @@ where
 
                 // 2. CRITICAL: Barrier point
                 self.membership.notify_config_applied(entry.index).await;
+
+                // 2.5. Notify leader to refresh cluster metadata cache
+                // This must happen AFTER membership is applied
+                if let Err(e) = self.event_tx.send(RaftEvent::MembershipApplied).await {
+                    warn!("Failed to send MembershipApplied event: {:?}", e);
+                }
 
                 // 3. Leader self-removal: Step down immediately per Raft protocol
                 if is_self_removal {

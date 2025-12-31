@@ -1,12 +1,11 @@
 use std::error::Error;
 
+use d_engine_proto::error::ErrorCode;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;
-
-use d_engine_proto::error::ErrorCode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientApiError {
@@ -17,7 +16,7 @@ pub enum ClientApiError {
         message: String,
         retry_after_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        leader_hint: Option<LeaderInfo>,
+        leader_hint: Option<LeaderHint>,
     },
 
     /// Protocol layer error (client needs to check protocol compatibility)
@@ -95,12 +94,8 @@ pub enum ClientApiError {
 // pub enum GeneralErrorType {
 //     General,
 // }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LeaderInfo {
-    pub id: String,
-    pub address: String,
-    pub last_contact: u64, // Unix timestamp in ms
-}
+// Re-export LeaderHint from proto (network layer use)
+pub use d_engine_proto::common::LeaderHint;
 impl From<tonic::transport::Error> for ClientApiError {
     /// Converts a tonic transport error into a ClientApiError
     ///
@@ -204,48 +199,15 @@ impl From<Status> for ClientApiError {
     }
 }
 
-// impl ClientApiError {
-//     pub fn error_category(&self) -> ErrorCategory {
-//         match self.code() {
-//             ErrorCode::ConnectionTimeout
-//             | ErrorCode::InvalidAddress
-//             | ErrorCode::LeaderChanged
-//             | ErrorCode::JoinError => ErrorCategory::Network,
-
-//             ErrorCode::InvalidResponse | ErrorCode::VersionMismatch => ErrorCategory::Protocol,
-
-//             ErrorCode::DiskFull
-//             | ErrorCode::DataCorruption
-//             | ErrorCode::StorageIoError
-//             | ErrorCode::StoragePermissionDenied
-//             | ErrorCode::KeyNotExist => ErrorCategory::Storage,
-
-//             ErrorCode::NotLeader
-//             | ErrorCode::StaleOperation
-//             | ErrorCode::InvalidRequest
-//             | ErrorCode::RateLimited
-//             | ErrorCode::ClusterUnavailable
-//             | ErrorCode::ProposeFailed
-//             | ErrorCode::TermOutdated
-//             | ErrorCode::RetryRequired => ErrorCategory::Business,
-
-//             ErrorCode::General | ErrorCode::Uncategorized => ErrorCategory::General,
-
-//             _ => ErrorCategory::General,
-//         }
-//     }
-// }
-
-fn parse_leader_from_metadata(status: &Status) -> Option<LeaderInfo> {
+fn parse_leader_from_metadata(status: &Status) -> Option<LeaderHint> {
     status
         .metadata()
         .get("x-raft-leader")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
             // Manually parse JSON-like string
-            let mut id = None;
+            let mut leader_id = None;
             let mut address = None;
-            let mut last_contact = None;
 
             // Remove whitespace and outer braces
             let s = s.trim().trim_start_matches('{').trim_end_matches('}');
@@ -258,18 +220,16 @@ fn parse_leader_from_metadata(status: &Status) -> Option<LeaderInfo> {
                     let value = value.trim().trim_matches('"');
 
                     match key {
-                        "id" => id = Some(value.to_string()),
+                        "leader_id" => leader_id = value.parse().ok(),
                         "address" => address = Some(value.to_string()),
-                        "last_contact" => last_contact = value.parse().ok(),
                         _ => continue,
                     }
                 }
             }
 
-            Some(LeaderInfo {
-                id: id?,
+            Some(LeaderHint {
+                leader_id: leader_id?,
                 address: address?,
-                last_contact: last_contact?,
             })
         })
 }

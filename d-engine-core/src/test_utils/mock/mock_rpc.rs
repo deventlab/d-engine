@@ -1,10 +1,5 @@
 use std::sync::Arc;
 
-use tokio_stream::StreamExt;
-use tonic::Streaming;
-use tracing::trace;
-
-use crate::test_utils::create_test_snapshot_stream;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -32,6 +27,11 @@ use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
+use tokio_stream::StreamExt;
+use tonic::Streaming;
+use tracing::trace;
+
+use crate::test_utils::create_test_snapshot_stream;
 
 #[derive(Clone, Default)]
 pub struct MockRpcService {

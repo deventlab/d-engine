@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotResponse;
 use futures::StreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
@@ -18,8 +20,6 @@ use crate::SnapshotError;
 use crate::StorageError;
 use crate::create_test_chunk;
 use crate::create_test_snapshot_stream;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotResponse;
 
 /// Helper to create a valid snapshot stream
 fn create_snapshot_stream(
@@ -78,7 +78,8 @@ fn create_snapshot_chunk(
 #[cfg(test)]
 mod run_push_transfer_test {
     use super::*;
-    use crate::{MockNode, SystemError};
+    use crate::MockNode;
+    use crate::SystemError;
 
     #[tokio::test]
     async fn test_push_transfer_success() {

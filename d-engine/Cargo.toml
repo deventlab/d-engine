@@ -1,12 +1,12 @@
 [package]
 name = "d-engine"
-version = "0.2.0"
-edition = "2024"
-authors = ["Joshua Chi <joshokn@gmail.com>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "A lightweight distributed coordination engine for Rust applications—the consensus layer for building reliable distributed systems."
-homepage = "https://github.com/deventlab/d-engine"
-repository = "https://github.com/deventlab/d-engine"
-license = "MIT OR Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
 keywords = [
     "raft",
     "consensus",
@@ -26,6 +26,7 @@ default = ["server", "rocksdb"]
 client = ["dep:d-engine-client"]
 server = ["dep:d-engine-server"]
 rocksdb = ["server", "d-engine-server/rocksdb"]
+watch = ["server", "d-engine-server/watch"]
 
 [dependencies]
 d-engine-client = { workspace = true, optional = true }

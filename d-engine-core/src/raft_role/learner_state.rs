@@ -3,6 +3,19 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotResponse;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::Status;
@@ -16,6 +29,7 @@ use tracing::warn;
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
+use super::can_serve_read_locally;
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
@@ -34,18 +48,6 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Learner;
-
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotResponse;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 
 /// Learner node's state in Raft cluster.
 ///
@@ -109,22 +111,14 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     }
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Follower",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "[Node {}] Learner → Follower (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
 
         // Print promotion message (Plan B)
@@ -279,16 +273,31 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 })?;
             }
 
-            RaftEvent::ClientReadRequest(_client_read_request, sender) => {
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Learner can not process client read request",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+            RaftEvent::ClientReadRequest(client_read_request, sender) => {
+                match can_serve_read_locally(&client_read_request, ctx) {
+                    Some(_policy) => {
+                        // Only EventualConsistency will reach here - safe to serve locally
+                        let results = ctx
+                            .handlers
+                            .state_machine_handler
+                            .read_from_state_machine(client_read_request.keys)
+                            .unwrap_or_default();
+                        let response = ClientResponse::read_results(results);
+                        debug!("Learner serving local read: {:?}", response);
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send local read response: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
+                        })?;
+                    }
+                    None => {
+                        // Policy requires leader access - return NOT_LEADER with leader metadata
+                        let response = self.create_not_leader_response(ctx).await;
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send NOT_LEADER response: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{e:?}"))
+                        })?;
+                    }
+                }
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
@@ -446,6 +455,42 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 .into());
             }
 
+            RaftEvent::MembershipApplied => {
+                // Check if this learner has been promoted to Voter
+                let my_id = self.node_id();
+                let node_meta = ctx.membership().retrieve_node_meta(my_id).await;
+
+                if let Some(meta) = node_meta {
+                    // Check if role is Voter (any role except LEARNER)
+                    // FOLLOWER=0, CANDIDATE=1, LEADER=2, LEARNER=3
+                    let is_voter = meta.role != NodeRole::Learner as i32;
+
+                    if is_voter {
+                        info!(
+                            "Learner {} detected promotion to Voter (role={}), transitioning to Follower",
+                            my_id, meta.role
+                        );
+
+                        // Transition to Follower role
+                        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+                            let error_str = format!("{e:?}");
+                            error!("Failed to send BecomeFollower event: {}", error_str);
+                            NetworkError::SingalSendFailed(error_str)
+                        })?;
+                    } else {
+                        debug!(
+                            "Learner {} still in Learner role (role={}) after MembershipApplied",
+                            my_id, meta.role
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Learner {} not found in membership after MembershipApplied",
+                        my_id
+                    );
+                }
+            }
+
             RaftEvent::StepDownSelfRemoved => {
                 // Unreachable: handled at Raft level before reaching RoleState
                 unreachable!("StepDownSelfRemoved should be handled in Raft::run()");
@@ -473,6 +518,17 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
         // 3. Continue the original Join process
         let node_config = ctx.node_config();
+
+        // Get this node's configured status from initial_cluster
+        // Node MUST be defined in initial_cluster with explicit status
+        let node_status = node_config
+            .cluster
+            .initial_cluster
+            .iter()
+            .find(|n| n.id == node_config.cluster.node_id)
+            .map(|n| n.status)
+            .ok_or_else(|| MembershipError::JoinClusterFailed(node_config.cluster.node_id))?;
+
         let response = ctx
             .transport()
             .join_cluster(
@@ -481,6 +537,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     node_id: node_config.cluster.node_id,
                     node_role: Learner as i32,
                     address: node_config.cluster.listen_address.to_string(),
+                    status: node_status,
                 },
                 node_config.retry.join_cluster,
                 membership.clone(),

@@ -2,15 +2,17 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use config::ConfigError;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
 use serde::Deserialize;
 use serde::Serialize;
+#[cfg(debug_assertions)]
+use tracing::warn;
 
 use super::validate_directory;
 use crate::Error;
 use crate::Result;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
 
 /// Cluster node configuration parameters
 ///
@@ -115,6 +117,26 @@ impl ClusterConfig {
         }
 
         // Validate storage paths
+        // Check /tmp/db usage: strict in release, permissive in debug
+        if self.db_root_dir == PathBuf::from("/tmp/db") {
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(Error::Config(ConfigError::Message(
+                    "db_root_dir not configured. Using /tmp/db is not allowed in release builds. \
+                     Please set CONFIG_PATH environment variable or configure [cluster.db_root_dir] \
+                     in your config file.".into()
+                )));
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                warn!(
+                    "⚠️  Using default /tmp/db (data will be lost on reboot). \
+                     Set CONFIG_PATH or configure [cluster.db_root_dir] for production."
+                );
+            }
+        }
+
         validate_directory(&self.db_root_dir, "db_root_dir")?;
         validate_directory(&self.log_dir, "log_dir")?;
 

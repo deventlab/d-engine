@@ -1,13 +1,8 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use bytes::Bytes;
-use prost::Message;
-use tempfile::TempDir;
-use tonic::async_trait;
-
-use crate::Error;
-use crate::storage::StateMachine;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
@@ -17,6 +12,12 @@ use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use prost::Message;
+use tempfile::TempDir;
+use tonic::async_trait;
+
+use crate::Error;
+use crate::storage::StateMachine;
 
 /// Test suite for StateMachine implementations
 ///
@@ -66,11 +67,11 @@ impl StateMachineTestSuite {
         assert!(state_machine.is_running());
 
         // Test explicit start/stop
-        state_machine.start()?;
+        state_machine.start().await?;
         assert!(state_machine.is_running());
         state_machine.stop()?;
         assert!(!state_machine.is_running());
-        state_machine.start()?;
+        state_machine.start().await?;
         assert!(state_machine.is_running());
 
         Ok(())

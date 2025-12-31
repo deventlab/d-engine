@@ -10,22 +10,15 @@
 //!   state machines (no implicit defaults).
 //! - **Customization**: Allows overriding components via setter methods (e.g., `storage_engine()`,
 //!   `state_machine()`, `transport()`).
-//! - **Simple Startup: One method to start the node: `start_server().await?`**:
-//!   - `build()`: Assembles the [`Node`], initializes background tasks (e.g., [`CommitHandler`],
-//!     replication, election).
-//!   - `ready()`: Finalizes construction and returns the initialized [`Node`].
-//!   - `start_rpc_server()`: Spawns the gRPC server for cluster communication.
+//! - **Simple API**: Single `start().await?` method to build and launch the node.
 //!
 //! ## Example
 //! ```ignore
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
-//! let node = NodeBuilder::new(Some("cluster_config.yaml"), shutdown_rx)
+//! let node = NodeBuilder::init(config, shutdown_rx)
 //!     .storage_engine(custom_storage_engine)  // Required component
 //!     .state_machine(custom_state_machine)    // Required component
-//!     .build()
-//!     .start_rpc_server().await
-//!     .ready()
-//!     .unwrap();
+//!     .start().await?;
 //! ```
 //!
 //! ## Notes
@@ -39,20 +32,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use tokio::sync::Mutex;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-
-use super::RaftTypeConfig;
-use crate::Node;
-use crate::membership::RaftMembership;
-use crate::network::grpc;
-use crate::network::grpc::WatchDispatcher;
-use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::storage::BufferedRaftLog;
 use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
@@ -75,13 +54,30 @@ use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
-use d_engine_core::WatchManager;
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::SMHOF;
 use d_engine_core::alias::SNP;
 use d_engine_core::alias::TROF;
 use d_engine_core::follower_state::FollowerState;
 use d_engine_core::learner_state::LearnerState;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchDispatcher;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchRegistry;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+
+use super::LeaderNotifier;
+use super::RaftTypeConfig;
+use crate::Node;
+use crate::membership::RaftMembership;
+use crate::network::grpc;
+use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::storage::BufferedRaftLog;
 
 /// Builder for creating a Raft node
 ///
@@ -95,8 +91,7 @@ use d_engine_core::learner_state::LearnerState;
 /// let node = NodeBuilder::new(None, shutdown_rx)
 ///     .storage_engine(Arc::new(FileStorageEngine::new(...)?))
 ///     .state_machine(Arc::new(FileStateMachine::new(...).await?))
-///     .build()
-///     .ready()?;
+///     .start().await?;
 /// ```
 pub struct NodeBuilder<SE, SM>
 where
@@ -238,42 +233,42 @@ where
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
 
         // Handle state machine initialization
-        let mut state_machine = self.state_machine.take().expect("State machine must be set");
+        let state_machine = self.state_machine.take().ok_or_else(|| {
+            SystemError::NodeStartFailed(
+                "State machine must be set before calling build()".to_string(),
+            )
+        })?;
 
-        // Inject lease configuration into state machine
-        // Framework-level feature: developers don't see lease, it's transparent
-        // Lease config comes from NodeConfig, injected before Arc wrapping
-        {
-            let lease_config = node_config.raft.state_machine.lease.clone();
+        // Note: Lease configuration should be injected BEFORE wrapping in Arc.
+        // See StandaloneServer::start() or EmbeddedEngine::with_rocksdb() for correct pattern.
+        // If state_machine is passed from user code, they are responsible for lease injection.
 
-            // Try to inject lease config into d-engine built-in state machines
-            // User-defined state machines silently skip (no error, no lease)
-            // state_machine is Arc<SM>, so we need Arc::get_mut for mutable access
-            if let Some(sm) = Arc::get_mut(&mut state_machine) {
-                sm.try_inject_lease(lease_config)?;
-            } else {
-                // Arc has multiple references - this indicates a bug in builder usage
-                // State machine should be created fresh and passed directly to builder
-                error!(
-                    "CRITICAL: Cannot inject lease config - Arc<StateMachine> has multiple references. This is a builder API usage error."
-                );
-                return Err(d_engine_core::StorageError::StateMachineError(
-                    "State machine Arc must have single ownership when passed to builder"
-                        .to_string(),
-                )
-                .into());
-            }
-        }
+        // Start state machine: flip flags and load persisted data
+        state_machine.start().await?;
 
-        // Start state machine: synchronous setup (flip flags, prepare structures)
-        state_machine.start()?;
-
-        // Post-start async initialization: load persisted lease data, etc.
-        // Guaranteed to complete before node becomes operational
-        state_machine.post_start_init().await?;
+        // Spawn lease background cleanup task (if TTL feature is enabled)
+        // Framework-level feature: completely transparent to developers
+        let lease_cleanup_handle = if node_config.raft.state_machine.lease.enabled {
+            info!(
+                "Starting lease background cleanup worker (interval: {}ms)",
+                node_config.raft.state_machine.lease.interval_ms
+            );
+            Some(Self::spawn_background_cleanup_worker(
+                Arc::clone(&state_machine),
+                node_config.raft.state_machine.lease.interval_ms,
+                self.shutdown_signal.clone(),
+            ))
+        } else {
+            debug!("Lease feature disabled: no background cleanup worker");
+            None
+        };
 
         // Handle storage engine initialization
-        let storage_engine = self.storage_engine.take().expect("Storage engine must be set");
+        let storage_engine = self.storage_engine.take().ok_or_else(|| {
+            SystemError::NodeStartFailed(
+                "Storage engine must be set before calling build()".to_string(),
+            )
+        })?;
 
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
@@ -298,23 +293,40 @@ where
 
         let shutdown_signal = self.shutdown_signal.clone();
 
-        // Initialize watch manager and dispatcher if enabled in config
-        let (watch_manager, watch_dispatcher_handle) = if node_config.raft.watch.enabled {
-            let watch_mgr = WatchManager::new(node_config.raft.watch.clone());
-            watch_mgr.start();
-            let watch_mgr_arc = Arc::new(watch_mgr);
+        // Initialize watch system (controlled by feature flag at compile time)
+        // All resource allocation is explicit and visible here (no hidden spawns)
+        #[cfg(feature = "watch")]
+        let watch_system = {
+            let (broadcast_tx, broadcast_rx) =
+                tokio::sync::broadcast::channel(node_config.raft.watch.event_queue_size);
 
-            // Create and spawn watch dispatcher
-            let (dispatcher, handle) =
-                WatchDispatcher::new(watch_mgr_arc.clone(), shutdown_signal.clone());
-            Self::spawn_watch_dispatcher(dispatcher);
+            // Create unregister channel
+            let (unregister_tx, unregister_rx) = mpsc::unbounded_channel();
 
-            (Some(watch_mgr_arc), Some(handle))
-        } else {
-            (None, None)
+            // Create shared registry
+            let registry = Arc::new(WatchRegistry::new(
+                node_config.raft.watch.watcher_buffer_size,
+                unregister_tx,
+            ));
+
+            // Create dispatcher
+            let dispatcher =
+                WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+
+            // Explicitly spawn dispatcher task (resource allocation visible)
+            let dispatcher_handle = tokio::spawn(async move {
+                dispatcher.run().await;
+            });
+
+            Some((broadcast_tx, registry, dispatcher_handle))
         };
 
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
+            #[cfg(feature = "watch")]
+            let watch_event_tx = watch_system.as_ref().map(|(tx, _, _)| tx.clone());
+            #[cfg(not(feature = "watch"))]
+            let watch_event_tx = None;
+
             Arc::new(DefaultStateMachineHandler::new(
                 node_id,
                 last_applied_index,
@@ -322,7 +334,7 @@ where
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,
-                watch_manager.clone(),
+                watch_event_tx,
             ))
         });
         let membership = Arc::new(self.membership.take().unwrap_or_else(|| {
@@ -343,12 +355,12 @@ where
 
         // Construct my role
         // Role initialization flow:
-        // 1. Check joining status from node config
+        // 1. Check if node is learner from config
         // 2. Load persisted hard state from storage
         // 3. Determine initial role based on cluster state
         // 4. Inject dependencies to role state
         let last_applied_index = Some(state_machine.last_applied().index);
-        let my_role = if node_config_arc.is_joining() {
+        let my_role = if node_config_arc.is_learner() {
             RaftRole::Learner(Box::new(LearnerState::new(
                 node_id,
                 node_config_arc.clone(),
@@ -397,24 +409,9 @@ where
         // Register commit event listener
         raft_core.register_new_commit_listener(new_commit_event_tx);
 
-        // Create leader election notification channel
-        let (leader_elected_tx, leader_elected_rx) = watch::channel(None);
-        let leader_elected_tx_clone = leader_elected_tx.clone();
-
-        // Register leader change listener
-        let (leader_change_tx, mut leader_change_rx) = mpsc::unbounded_channel();
-        raft_core.register_leader_change_listener(leader_change_tx);
-
-        // Spawn task to forward leader changes to watch channel
-        tokio::spawn(async move {
-            while let Some((leader_id, term)) = leader_change_rx.recv().await {
-                let leader_info = leader_id.map(|id| crate::LeaderInfo {
-                    leader_id: id,
-                    term,
-                });
-                let _ = leader_elected_tx_clone.send(leader_info);
-            }
-        });
+        // Create leader notification channel and register with Raft core
+        let leader_notifier = LeaderNotifier::new();
+        raft_core.register_leader_change_listener(leader_notifier.sender());
 
         // Start CommitHandler in a single thread
         let deps = CommitHandlerDependencies {
@@ -436,10 +433,10 @@ where
         // Spawn commit listener via Builder method
         // This ensures all tokio::spawn calls are visible in one place (Builder impl)
         // Following the "one page visible" Builder pattern principle
-        Self::spawn_state_machine_commit_listener(commit_handler);
+        let commit_handler_handle = Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
-        let (ready_notify_tx, _ready_notify_rx) = watch::channel(false);
+        let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
 
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,
@@ -447,12 +444,15 @@ where
             membership,
             event_tx: event_tx.clone(),
             ready: AtomicBool::new(false),
-            ready_notify_tx,
-            leader_elected_tx,
-            _leader_elected_rx: leader_elected_rx,
+            rpc_ready_tx,
+            leader_notifier,
             node_config: node_config_arc,
-            watch_manager,
-            watch_dispatcher_handle,
+            #[cfg(feature = "watch")]
+            watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),
+            #[cfg(feature = "watch")]
+            _watch_dispatcher_handle: watch_system.map(|(_, _, handle)| handle),
+            _commit_handler_handle: Some(commit_handler_handle),
+            _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
         };
 
@@ -465,9 +465,12 @@ where
     /// This method is called during node build() to start the commit handler thread.
     /// All spawn_* methods are centralized in NodeBuilder so developers can see
     /// all resource consumption (threads/tasks) in one place.
+    ///
+    /// # Returns
+    /// * `JoinHandle` - Task handle for lifecycle management
     fn spawn_state_machine_commit_listener(
         mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             match commit_handler.run().await {
                 Ok(_) => {
@@ -478,30 +481,67 @@ where
                     println!("commit_handler exit program");
                 }
             }
-        });
+        })
+    }
+
+    /// Spawn lease background cleanup task (if enabled).
+    ///
+    /// This task runs independently from Raft apply pipeline, avoiding any blocking.
+    /// Only spawns when cleanup_strategy = "background" (not "disabled" or "piggyback").
+    ///
+    /// # Arguments
+    /// * `state_machine` - Arc reference to state machine for accessing lease manager
+    /// * `lease_config` - Lease configuration determining cleanup behavior
+    /// * `shutdown_signal` - Watch channel for graceful shutdown notification
+    ///
+    /// # Returns
+    /// * `Option<JoinHandle>` - Task handle if background cleanup is enabled, None otherwise
+    ///
+    /// # Design Principles
+    /// - **Zero overhead**: If disabled, returns None immediately (no task spawned)
+    /// - **One page visible**: All long-running tasks spawned here in builder.rs
+    /// - **Industry standard**: Follows etcd/TiKV/Consul background cleanup pattern
+    /// - **Graceful shutdown**: Monitors shutdown signal for clean termination
+    fn spawn_background_cleanup_worker(
+        state_machine: Arc<SM>,
+        interval_ms: u64,
+        mut shutdown_signal: watch::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Call state machine's lease background cleanup
+                        match state_machine.lease_background_cleanup().await {
+                            Ok(deleted_keys) => {
+                                if !deleted_keys.is_empty() {
+                                    debug!(
+                                        "Lease background cleanup: deleted {} expired keys",
+                                        deleted_keys.len()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!("Lease background cleanup failed: {:?}", e);
+                            }
+                        }
+                    }
+                    _ = shutdown_signal.changed() => {
+                        info!("Lease background cleanup received shutdown signal");
+                        break;
+                    }
+                }
+            }
+
+            debug!("Lease background cleanup worker stopped");
+        })
     }
 
     /// Spawn watch dispatcher as background task.
     ///
     /// The dispatcher manages all watch streams for the lifetime of the node.
-    /// It spawns a separate task for each active watch client, providing:
-    /// - **Isolation**: One slow client doesn't affect others
-    /// - **Resource control**: Dispatcher can limit max concurrent watches
-    /// - **Observability**: Centralized metrics and monitoring
-    ///
-    /// Expected resource usage:
-    /// - Dispatcher itself: ~2KB (1 tokio task)
-    /// - Per watch client: ~2KB (1 tokio task per client)
-    /// - Auto cleanup when client disconnects
-    ///
-    /// # Arguments
-    /// * `dispatcher` - The watch dispatcher instance
-    fn spawn_watch_dispatcher(dispatcher: WatchDispatcher) {
-        tokio::spawn(async move {
-            dispatcher.run().await;
-        });
-    }
-
     /// Sets a custom state machine handler implementation.
     ///
     /// This allows developers to provide their own implementation of the state machine handler
@@ -527,7 +567,7 @@ where
     ///
     /// # Panics
     /// Panics if node hasn't been built or address binding fails
-    pub async fn start_rpc_server(self) -> Self {
+    async fn start_rpc_server(self) -> Self {
         debug!("1. --- start RPC server --- ");
         if let Some(ref node) = self.node {
             let node_clone = node.clone();
@@ -548,31 +588,32 @@ where
         }
     }
 
-    /// Unified method to build and start the server.
+    /// Builds and starts the Raft node.
     ///
-    /// This method combines the following steps:
-    /// 1. Initialize the state machine (including lease injection if applicable)
-    /// 2. Build the Raft core and node
-    /// 3. Start the gRPC server for cluster communication
+    /// This is the primary method to initialize and start a node. It performs:
+    /// 1. State machine initialization (including lease injection if applicable)
+    /// 2. Raft core construction
+    /// 3. Background task spawning (commit handler, replication, election)
+    /// 4. gRPC server startup for cluster communication
     ///
     /// # Returns
     /// An `Arc<Node>` ready for operation
     ///
     /// # Errors
     /// Returns an error if any initialization step fails
-    pub async fn start_server(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
+    ///
+    /// # Example
+    /// ```ignore
+    /// let node = NodeBuilder::init(config, shutdown_rx)
+    ///     .storage_engine(storage)
+    ///     .state_machine(state_machine)
+    ///     .start().await?;
+    /// ```
+    pub async fn start(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
         let builder = self.build().await?;
         let builder = builder.start_rpc_server().await;
-        builder.ready()
-    }
-
-    /// Returns the built node instance after successful construction.
-    ///
-    /// # Errors
-    /// Returns Error::NodeFailedToStartError if build hasn't completed
-    pub fn ready(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
-        self.node.ok_or_else(|| {
-            SystemError::NodeStartFailed("check node ready failed".to_string()).into()
+        builder.node.ok_or_else(|| {
+            SystemError::NodeStartFailed("Node build failed unexpectedly".to_string()).into()
         })
     }
 

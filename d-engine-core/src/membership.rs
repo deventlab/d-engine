@@ -1,3 +1,9 @@
+use d_engine_proto::common::MembershipChange;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::ClusterConfChangeRequest;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::NodeMeta;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
@@ -7,12 +13,6 @@ use tracing::warn;
 use crate::MembershipError;
 use crate::Result;
 use crate::TypeConfig;
-use d_engine_proto::common::MembershipChange;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::ClusterConfChangeRequest;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::NodeMeta;
 
 // Add connection type management in RpcPeerChannels
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -138,6 +138,7 @@ where
         &self,
         node_id: u32,
         address: String,
+        status: NodeStatus,
     ) -> Result<()>;
 
     /// Activate node

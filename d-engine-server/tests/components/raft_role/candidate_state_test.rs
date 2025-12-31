@@ -1,11 +1,6 @@
-use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Code;
-use tonic::Status;
-use tracing_test::traced_test;
 
+use bytes::Bytes;
 use d_engine_core::ConsensusError;
 use d_engine_core::ElectionError;
 use d_engine_core::Error;
@@ -45,6 +40,11 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_server::test_utils::*;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tracing_test::traced_test;
 
 /// # Case 1: Can vote myself
 #[tokio::test]
@@ -678,6 +678,7 @@ async fn test_handle_raft_event_case10() {
 
     // Step 2: Prepare the event
     let request = JoinRequest {
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
         node_id: 2,
         node_role: Learner.into(),
         address: "127.0.0.1:9090".to_string(),
@@ -790,12 +791,13 @@ mod role_violation_tests {
 
 #[cfg(test)]
 mod handle_client_read_request {
-    use super::*;
     use d_engine_core::RaftNodeConfig;
     use d_engine_core::config::ReadConsistencyPolicy as ServerPolicy;
     use d_engine_core::convert::safe_kv_bytes;
     use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
     use d_engine_server::test_utils::MockBuilder;
+
+    use super::*;
 
     /// # Case 6.1: test ClientReadRequest with linear request
     #[tokio::test]
@@ -817,8 +819,8 @@ mod handle_client_read_request {
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
 
-        let s = resp_rx.recv().await.unwrap().unwrap_err();
-        assert_eq!(s.code(), Code::PermissionDenied);
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32);
     }
 
     /// # Case 6.2: test ClientReadRequest with request(linear=false)
@@ -878,8 +880,8 @@ mod handle_client_read_request {
             .await
             .expect("should succeed");
 
-        let response = resp_rx.recv().await.unwrap();
-        assert!(response.is_err()); // Should be rejected
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32); // Should return NOT_LEADER
     }
 
     /// Test that candidate rejects LeaseRead policy
@@ -907,8 +909,8 @@ mod handle_client_read_request {
             .await
             .expect("should succeed");
 
-        let response = resp_rx.recv().await.unwrap();
-        assert!(response.is_err()); // Should be rejected
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32); // Should return NOT_LEADER
     }
 
     /// Test that candidate uses server default policy
@@ -938,8 +940,8 @@ mod handle_client_read_request {
             .await
             .expect("should succeed");
 
-        let response = resp_rx.recv().await.unwrap();
-        assert!(response.is_err()); // Should be rejected
+        let response = resp_rx.recv().await.unwrap().expect("should get response");
+        assert_eq!(response.error, ErrorCode::NotLeader as i32); // Should return NOT_LEADER
     }
 
     /// Test EventualConsistency policy allows candidate reads

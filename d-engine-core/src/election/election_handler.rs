@@ -2,6 +2,9 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VotedFor;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -23,9 +26,6 @@ use crate::alias::TROF;
 use crate::cluster::is_majority;
 use crate::if_higher_term_found;
 use crate::is_target_log_more_recent;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::election::VotedFor;
 
 #[derive(Clone)]
 pub struct ElectionHandler<T: TypeConfig> {

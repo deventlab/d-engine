@@ -18,6 +18,13 @@ mod batch_buffer_test;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::SuccessResult;
 use dashmap::DashMap;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
@@ -31,13 +38,6 @@ use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::TypeConfig;
 use crate::alias::ROF;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::ConflictResult;
-use d_engine_proto::server::replication::SuccessResult;
 
 /// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]

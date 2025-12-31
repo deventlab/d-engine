@@ -132,6 +132,9 @@ pub struct JoinRequest {
     /// Network address of the new node
     #[prost(string, tag = "3")]
     pub address: ::prost::alloc::string::String,
+    /// Desired status of the node (PROMOTABLE or READ_ONLY)
+    #[prost(enumeration = "super::super::common::NodeStatus", tag = "4")]
+    pub status: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

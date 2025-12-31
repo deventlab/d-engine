@@ -2,6 +2,12 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Candidate;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -35,13 +41,6 @@ use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Candidate;
-
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
 
 /// Candidate node's volatile state during leader election.
 ///
@@ -99,22 +98,14 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Leader now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Leader",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Leader now.\n
-                =================================
-                \n\n",
+            "[Node {}] Candidate → Leader (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Leader(Box::new(self.into())))
     }
@@ -126,44 +117,28 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
     fn become_follower(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Follower",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Follower now.\n
-                =================================
-                \n\n",
+            "[Node {}] Candidate → Follower (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
 
     fn become_learner(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Learner",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "[Node {}] Candidate → Learner (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Learner(Box::new(self.into())))
     }
@@ -413,12 +388,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         })?;
                     }
                     None => {
-                        // Policy requires leader access - reject
-                        let error = tonic::Status::permission_denied(
-                            "Read consistency policy requires leader access. Current node is candidate.",
-                        );
-                        sender.send(Err(error)).map_err(|e| {
-                            error!("Failed to send policy rejection: {:?}", e);
+                        // Policy requires leader access - return NOT_LEADER with leader metadata
+                        let response = self.create_not_leader_response(ctx).await;
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send NOT_LEADER response: {:?}", e);
                             NetworkError::SingalSendFailed(format!("{e:?}"))
                         })?;
                     }
@@ -566,6 +539,12 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     ),
                 }
                 .into());
+            }
+
+            RaftEvent::MembershipApplied => {
+                // Candidates don't maintain cluster metadata cache
+                // This event is only relevant for leaders
+                debug!("Candidate ignoring MembershipApplied event");
             }
 
             RaftEvent::StepDownSelfRemoved => {

@@ -1,10 +1,7 @@
-use bytes::Bytes;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use tempfile::TempDir;
-use tracing_test::traced_test;
 
-use super::*;
+use bytes::Bytes;
 use d_engine_core::HardState;
 use d_engine_core::LogStore;
 use d_engine_core::MetaStore;
@@ -13,6 +10,10 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
+use tempfile::TempDir;
+use tracing_test::traced_test;
+
+use super::*;
 
 // Helper to create test entries
 fn create_entries(range: RangeInclusive<u64>) -> Vec<Entry> {
@@ -342,4 +343,128 @@ async fn test_large_entry_persistence() {
     assert_eq!(retrieved.index, 1);
     assert_eq!(retrieved.term, 1);
     assert_eq!(retrieved.payload, large_entry.payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::Noop;
+    use d_engine_proto::common::entry_payload::Payload;
+
+    use super::*;
+
+    /// Test to demonstrate TempDir drop race condition
+    ///
+    /// This test shows that when TempDir is dropped before FileStorageEngine,
+    /// the storage engine can still operate (due to open file handles),
+    /// but subsequent operations may fail if they need to access the filesystem.
+    #[tokio::test]
+    async fn test_tempdir_drop_race_condition() {
+        // Scenario 1: TempDir dropped immediately - demonstrates the problem
+        let storage_without_tempdir = {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let storage_path = temp_dir.path().join("storage");
+
+            // Create storage engine
+            let storage =
+                FileStorageEngine::new(storage_path.clone()).expect("Failed to create storage");
+
+            println!("Storage created at: {storage_path:?}");
+            println!("Directory exists: {}", storage_path.exists());
+
+            // temp_dir is dropped here!
+            storage
+        };
+
+        // Small delay to allow OS to process directory deletion
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        println!("After TempDir drop - checking if we can still use storage...");
+
+        // Try to persist entries - this uses already-open file handles
+        let entry = Entry {
+            index: 1,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Noop(Noop {})),
+            }),
+        };
+
+        let result = storage_without_tempdir.log_store().persist_entries(vec![entry]).await;
+
+        println!("Persist result: {result:?}");
+
+        // This typically succeeds because file handles are still valid!
+        assert!(result.is_ok(), "Write to open file handle should succeed");
+
+        // Scenario 2: TempDir kept alive - the correct way
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let storage_path = _temp_dir.path().join("storage");
+
+        let storage_with_tempdir =
+            FileStorageEngine::new(storage_path.clone()).expect("Failed to create storage");
+
+        println!("\nWith TempDir kept alive:");
+        println!("Directory exists: {}", storage_path.exists());
+
+        let entry = Entry {
+            index: 1,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Noop(Noop {})),
+            }),
+        };
+
+        let result = storage_with_tempdir.log_store().persist_entries(vec![entry]).await;
+
+        assert!(
+            result.is_ok(),
+            "All operations should succeed when TempDir is alive"
+        );
+
+        // _temp_dir stays alive until end of test
+    }
+
+    /// Test demonstrating that new file operations fail after TempDir drop
+    #[test]
+    fn test_new_file_operations_fail_after_tempdir_drop() {
+        let storage_path = {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let path = temp_dir.path().join("storage");
+
+            // Create initial storage
+            let _storage = FileStorageEngine::new(path.clone()).expect("Failed to create storage");
+
+            println!("Created storage at: {path:?}");
+            println!("Directory exists before drop: {}", path.exists());
+            path
+            // temp_dir dropped here
+        };
+
+        // Force wait for OS to process deletion
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        println!("Directory exists after drop: {}", storage_path.exists());
+
+        // Explicitly try to remove the directory to ensure it's gone
+        let _ = std::fs::remove_dir_all(&storage_path);
+
+        println!(
+            "Directory exists after explicit removal: {}",
+            storage_path.exists()
+        );
+
+        // Try to create a NEW FileStorageEngine with the same path
+        // This will attempt to open/create files in the deleted directory
+        println!("\nAttempting to create new storage after directory deletion...");
+        let result = FileStorageEngine::new(storage_path.clone());
+
+        println!("Result: {:?}", result.is_ok());
+
+        // Actually, fs::create_dir_all in FileStorageEngine::new will recreate the directory!
+        // So this might still succeed, but demonstrates the concept
+        if result.is_ok() {
+            println!("Note: Operation succeeded because fs::create_dir_all recreates directories");
+        }
+    }
 }

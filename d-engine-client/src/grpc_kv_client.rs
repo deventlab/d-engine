@@ -2,6 +2,15 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_proto::client::ClientReadRequest;
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WatchRequest;
+use d_engine_proto::client::WatchResponse;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::raft_client_service_client::RaftClientServiceClient;
+use d_engine_proto::error::ErrorCode;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -14,17 +23,9 @@ use tracing::warn;
 use super::ClientInner;
 use crate::ClientApiError;
 use crate::ClientResponseExt;
+use crate::KvClient as CoreKvClient;
+use crate::KvResult;
 use crate::scoped_timer::ScopedTimer;
-use crate::{KvClient as CoreKvClient, KvResult};
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientResult;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::WatchRequest;
-use d_engine_proto::client::WatchResponse;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::raft_client_service_client::RaftClientServiceClient;
-use d_engine_proto::error::ErrorCode;
 
 /// gRPC-based key-value store client
 ///

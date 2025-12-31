@@ -1,5 +1,3 @@
-use bytes::Bytes;
-use futures::future::join_all;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,17 +5,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::vec;
-use tempfile::tempdir;
-use tokio::time::Instant;
-use tokio::time::sleep;
-use tracing::debug;
-use tracing_test::traced_test;
 
-use super::*;
-use crate::FileStorageEngine;
-use crate::node::RaftTypeConfig;
-use crate::storage::BufferedRaftLog;
-use crate::test_utils::{self};
+use bytes::Bytes;
 use d_engine_core::FlushPolicy;
 use d_engine_core::LogStore;
 use d_engine_core::MockLogStore;
@@ -34,6 +23,18 @@ use d_engine_core::test_utils::generate_insert_commands;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
+use futures::future::join_all;
+use tempfile::tempdir;
+use tokio::time::Instant;
+use tokio::time::sleep;
+use tracing::debug;
+use tracing_test::traced_test;
+
+use super::*;
+use crate::FileStorageEngine;
+use crate::node::RaftTypeConfig;
+use crate::storage::BufferedRaftLog;
+use crate::test_utils::{self};
 
 // Test utilities
 struct TestContext {
@@ -2080,9 +2081,10 @@ mod disk_first_tests {
 
 mod mem_first_tests {
 
-    use super::*;
     use d_engine_core::LogStore;
     use d_engine_core::StorageEngine;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
@@ -2534,13 +2536,13 @@ mod filter_out_conflicts_and_append_performance_tests {
 mod performance_tests {
     use std::sync::Arc;
 
+    use d_engine_core::MockLogStore;
+    use d_engine_core::MockMetaStore;
+    use d_engine_core::MockStorageEngine;
     use tokio::sync::Barrier;
     use tokio::time::Duration;
 
     use super::*;
-    use d_engine_core::MockLogStore;
-    use d_engine_core::MockMetaStore;
-    use d_engine_core::MockStorageEngine;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2951,13 +2953,14 @@ mod batch_processor_tests {
 }
 
 mod save_load_hard_state_tests {
-    use super::*;
-    use crate::FileStorageEngine;
     use d_engine_core::HardState;
     use d_engine_core::LogStore;
     use d_engine_core::MetaStore;
     use d_engine_core::StorageEngine;
     use d_engine_proto::server::election::VotedFor;
+
+    use super::*;
+    use crate::FileStorageEngine;
 
     /// Test that hard state operations use the meta tree and not the log tree
     #[tokio::test]
@@ -4234,12 +4237,14 @@ async fn test_gap_handling_in_indexes() {
 
 #[tokio::test]
 async fn test_read_performance_remains_lockfree() {
-    // Detect if this test is being run individually (via cargo test <name>)
-    let args: Vec<String> = std::env::args().collect();
-    let test_name = "test_read_performance_remains_lockfree";
-    let is_single_run = args.iter().any(|a| a.contains(test_name));
-
-    let expected_min = if is_single_run { 10_000.0 } else { 10.0 };
+    // Use environment variable to control performance validation mode
+    // Set CI=1 to use relaxed threshold for CI environment (10 reads/sec)
+    // Without it, use strict performance validation (10K reads/sec)
+    let expected_min = if std::env::var("CI").is_ok() {
+        10.0
+    } else {
+        10_000.0
+    };
 
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -4518,13 +4523,15 @@ async fn test_shutdown_with_multiple_flushes() {
 
 #[cfg(test)]
 mod durable_index_test {
+    use std::sync::atomic::Ordering;
+
+    use d_engine_core::FlushPolicy;
+    use d_engine_core::PersistenceConfig;
+    use d_engine_core::PersistenceStrategy;
     use tempfile::tempdir;
     use tokio::sync::oneshot;
 
-    use d_engine_core::{FlushPolicy, PersistenceConfig, PersistenceStrategy};
-
     use super::*;
-    use std::sync::atomic::Ordering;
 
     #[tokio::test]
     async fn test_durable_index_with_non_contiguous_entries() {

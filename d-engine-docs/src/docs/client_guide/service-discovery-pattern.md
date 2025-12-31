@@ -22,7 +22,7 @@ Service discovery systems have specific requirements that align well with d-engi
 
 - Most reads served from local memory
 - Network communication only for writes and coordination
-- Embedded mode: zero serialization overhead (Rust only)
+- Embedded mode: zero alization overhead (Rust only)
 
 ## Core Capabilities
 

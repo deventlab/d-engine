@@ -5,23 +5,6 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use dashmap::DashMap;
-use futures::FutureExt;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::task;
-use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::async_trait;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
 use d_engine_core::AppendResult;
 use d_engine_core::BackoffPolicy;
 use d_engine_core::ClusterUpdateResult;
@@ -53,6 +36,22 @@ use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
+use dashmap::DashMap;
+use futures::FutureExt;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::task;
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::async_trait;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 pub struct PeerAppender {
     pub(crate) sender: mpsc::Sender<AppendRequest>,

@@ -1,42 +1,34 @@
-use d_engine_server::embedded::EmbeddedEngine;
 use std::time::Duration;
-use tracing_test::traced_test;
 
-#[allow(dead_code)]
-const TEST_DIR: &str = "embedded/single_node";
+use d_engine_server::EmbeddedEngine;
+use tracing_test::traced_test;
 
 /// Test single-node EmbeddedEngine basic lifecycle
 #[tokio::test]
-#[cfg(feature = "rocksdb")]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = format!("./db/{TEST_DIR}");
-
-    // Clean up previous test data
-    if tokio::fs::metadata(&data_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(&data_dir).await?;
-    }
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
 
     // Configure single-node cluster via environment variables
     // Safe in test context: tests run in isolated processes
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9001");
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", data_dir.to_str().unwrap());
     }
 
     // Start embedded engine with RocksDB
-    let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
+    let engine = EmbeddedEngine::start().await?;
 
     // Clean up environment variables immediately
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
+        std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR");
     }
 
-    // Wait for node initialization
-    engine.ready().await;
-
     // Single-node should elect itself as leader
-    let leader_info = engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader_info = engine.wait_ready(Duration::from_secs(5)).await?;
     assert_eq!(
         leader_info.leader_id, 1,
         "Single node should elect itself as leader"
@@ -81,41 +73,37 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
 /// Test leader notification mechanism
 #[tokio::test]
 #[traced_test]
-#[cfg(feature = "rocksdb")]
 async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = format!("./db/{TEST_DIR}_notify");
-
-    if tokio::fs::metadata(&data_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(&data_dir).await?;
-    }
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
 
     // Configure single-node cluster
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9002");
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", data_dir.to_str().unwrap());
     }
 
-    let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
+    let engine = EmbeddedEngine::start().await?;
 
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
+        std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR");
     }
 
-    engine.ready().await;
-
     // Wait for leader election
-    let leader_info = engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader_info = engine.wait_ready(Duration::from_secs(5)).await?;
     assert_eq!(
         leader_info.leader_id, 1,
         "Single node should elect itself as leader"
     );
 
     // Subscribe to leader changes AFTER election
-    let leader_rx = engine.leader_notifier();
+    let leader_rx = engine.leader_change_notifier();
 
     // Current value should already show leader elected
-    let leader = leader_rx.borrow().clone();
+    let leader = *leader_rx.borrow();
     assert!(leader.is_some(), "Leader should already be elected");
 
     engine.stop().await?;
@@ -126,25 +114,25 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
 /// Test data persistence across restarts
 #[tokio::test]
 #[traced_test]
-#[cfg(feature = "rocksdb")]
 async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = format!("./db/{TEST_DIR}_persist");
+    use std::time::Duration;
 
-    if tokio::fs::metadata(&data_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(&data_dir).await?;
-    }
+    use d_engine_server::EmbeddedEngine;
+
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
 
     // Configure single-node cluster
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9003");
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", data_dir.to_str().unwrap());
     }
 
     // First session: write data
     {
-        let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
-        engine.ready().await;
-        engine.wait_leader(Duration::from_secs(5)).await?;
+        let engine = EmbeddedEngine::start().await?;
+        engine.wait_ready(Duration::from_secs(5)).await?;
 
         engine.client().put(b"persist-key".to_vec(), b"persist-value".to_vec()).await?;
 
@@ -159,9 +147,8 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // Second session: verify data still exists
     {
-        let engine = EmbeddedEngine::with_rocksdb(&data_dir, None).await?;
-        engine.ready().await;
-        engine.wait_leader(Duration::from_secs(5)).await?;
+        let engine = EmbeddedEngine::start().await?;
+        engine.wait_ready(Duration::from_secs(5)).await?;
 
         let value = engine.client().get_linearizable(b"persist-key".to_vec()).await?;
         assert_eq!(
@@ -177,6 +164,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
+        std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR");
     }
 
     Ok(())

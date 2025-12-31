@@ -13,7 +13,7 @@ name = "watcher"
 path = "watcher.rs"
 
 [dependencies]
-d-engine-client = { path = "../../d-engine-client" }
+d-engine-client = { path = "../../d-engine-client", features = ["watch"] }
 
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1.36.0", features = ["full"] }

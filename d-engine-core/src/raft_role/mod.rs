@@ -10,7 +10,14 @@ mod raft_role_test;
 #[cfg(test)]
 mod leader_state_test;
 
+use std::collections::HashMap;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+
 use candidate_state::CandidateState;
+use d_engine_proto::client::ClientReadRequest;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::server::election::VotedFor;
 use follower_state::FollowerState;
 pub use leader_state::ClusterMetadata;
 use leader_state::LeaderState;
@@ -21,9 +28,6 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use serde::ser::SerializeStruct;
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
@@ -34,9 +38,6 @@ use super::RaftEvent;
 use super::RoleEvent;
 use crate::Result;
 use crate::TypeConfig;
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::server::election::VotedFor;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -197,6 +198,14 @@ impl SharedState {
     /// - leader/term changes with committed=true
     ///
     /// This enables event-driven leader discovery notifications without hot-path overhead.
+    /// Update voted_for and return true if this represents a new leader commitment
+    ///
+    /// Returns true when:
+    /// - committed transitions from false to true, OR
+    /// - leader/term changes with committed=true, OR
+    /// - current_leader is None (node restart scenario)
+    ///
+    /// This enables event-driven leader discovery notifications without hot-path overhead.
     pub fn update_voted_for(
         &mut self,
         new_vote: VotedFor,
@@ -207,7 +216,8 @@ impl SharedState {
                 new_vote.committed
                     && (old.voted_for_id != new_vote.voted_for_id
                         || old.voted_for_term != new_vote.voted_for_term
-                        || !old.committed) // committed: false → true
+                        || !old.committed // committed: false → true
+                        || self.current_leader().is_none()) // Node restart: memory cleared
             }
             None => new_vote.committed,
         };
@@ -424,8 +434,9 @@ pub enum QuorumVerificationResult {
     RetryRequired,  // Retry required (leadership still exists)
 }
 
-use crate::config::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
 use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+
+use crate::config::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
 
 /// Checks if non-leader node can serve read request locally
 ///

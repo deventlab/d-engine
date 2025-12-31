@@ -37,13 +37,10 @@
 //! - Cluster formation and interaction tests
 //! - Failure scenario testing with real component interactions
 
-use super::mock::mock_state_machine;
-use crate::FileStateMachine;
-use crate::FileStorageEngine;
-use crate::membership::RaftMembership;
-use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::node::RaftTypeConfig;
-use crate::storage::BufferedRaftLog;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
 use d_engine_core::FlushPolicy;
@@ -68,11 +65,16 @@ use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::debug;
+
+use super::mock::mock_state_machine;
+use crate::FileStateMachine;
+use crate::FileStorageEngine;
+use crate::membership::RaftMembership;
+use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::node::RaftTypeConfig;
+use crate::storage::BufferedRaftLog;
 
 /// Complete testing environment for Raft consensus algorithm integration tests.
 ///
@@ -139,10 +141,10 @@ where
 /// # Arguments
 ///
 /// * `db_path` - The file system path for the database storage
-/// * `peers_meta_option` - Optional cluster peer configuration. If `None`, defaults
-///   to a 3-node cluster with nodes 1, 2, and 3 on ports 8080-8082
-/// * `restart` - If `true`, skips database reset and reuses existing state.
-///   If `false`, performs a fresh database initialization
+/// * `peers_meta_option` - Optional cluster peer configuration. If `None`, defaults to a 3-node
+///   cluster with nodes 1, 2, and 3 on ports 8080-8082
+/// * `restart` - If `true`, skips database reset and reuses existing state. If `false`, performs a
+///   fresh database initialization
 ///
 /// # Returns
 ///
@@ -235,7 +237,7 @@ pub fn setup_raft_components(
         state_machine.clone(),
         node_config.raft.snapshot.clone(),
         snapshot_policy,
-        None, // No watch manager for tests
+        None, // No watch for tests
     );
 
     let node_config_clone = node_config.clone();

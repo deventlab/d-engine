@@ -1,17 +1,15 @@
-use d_engine_server::embedded::EmbeddedEngine;
-#[cfg(feature = "rocksdb")]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
-use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
+use d_engine_server::api::EmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::common::{create_node_config, get_available_ports, node_config, reset};
-
-const TEST_DIR: &str = "embedded/failover";
-const DB_ROOT_DIR: &str = "./db/embedded/failover";
-const LOG_DIR: &str = "./logs/embedded/failover";
+use crate::common::create_node_config;
+use crate::common::get_available_ports;
+use crate::common::node_config;
 
 /// Test 3-node cluster leader failover with EmbeddedEngine API
 ///
@@ -22,10 +20,10 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 /// 4. Verify cluster operational with 2/3 nodes
 #[tokio::test]
 #[traced_test]
-#[serial]
-#[cfg(feature = "rocksdb")]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
-    reset(TEST_DIR).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root_dir = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -38,7 +36,14 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], ports, DB_ROOT_DIR, LOG_DIR).await;
+        let config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root_dir.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
         let config = node_config(&config_str);
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
@@ -57,20 +62,14 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
         configs.push((config_str, config_path));
 
-        let engine = EmbeddedEngine::start(Some(&configs[i].1), storage, state_machine).await?;
+        let engine =
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&configs[i].1)).await?;
         engines.push(engine);
     }
 
-    // Wait for cluster initialization
-    for engine in &engines {
-        engine.ready().await;
-    }
-
-    info!("All nodes initialized, waiting for leader election");
-
     // Wait for initial leader
     let initial_leader = engines[0]
-        .wait_leader(Duration::from_secs(10))
+        .wait_ready(Duration::from_secs(10))
         .await
         .expect("Failed to elect initial leader");
     info!(
@@ -105,7 +104,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         "Initial leader: {}, Watcher node: {}",
         initial_leader.leader_id, watcher_id
     );
-    let mut leader_rx = engines[watcher_idx].leader_notifier();
+    let mut leader_rx = engines[watcher_idx].leader_change_notifier();
 
     // Kill the actual leader node
     info!("Killing leader node {}", initial_leader.leader_id);
@@ -118,7 +117,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     let new_leader_info = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             // Check current state
-            let current = leader_rx.borrow().clone();
+            let current = *leader_rx.borrow();
 
             if let Some(leader) = current {
                 if leader.leader_id != initial_leader.leader_id {
@@ -196,16 +195,14 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 /// 5. Verify it rejoins and syncs data
 #[tokio::test]
 #[traced_test]
-#[serial]
-#[cfg(feature = "rocksdb")]
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
-    reset(&format!("{TEST_DIR}_rejoin")).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let db_root = format!("{DB_ROOT_DIR}_rejoin");
-    let log_dir = format!("{LOG_DIR}_rejoin");
 
     info!("Starting 3-node cluster for rejoin test");
 
@@ -214,7 +211,14 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
+        let config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
@@ -232,17 +236,13 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
         configs.push((config_str, config_path));
 
-        let engine = EmbeddedEngine::start(Some(&configs[i].1), storage, state_machine).await?;
+        let engine =
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&configs[i].1)).await?;
         engines.push(engine);
     }
 
-    for engine in &engines {
-        engine.ready().await;
-    }
-
-    info!("Waiting for leader election");
     let leader_info = engines[0]
-        .wait_leader(Duration::from_secs(10))
+        .wait_ready(Duration::from_secs(10))
         .await
         .expect("Failed to elect leader");
     info!(
@@ -296,8 +296,8 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
     let restarted_engine =
-        EmbeddedEngine::start(Some(&killed_config.1), storage, state_machine).await?;
-    restarted_engine.ready().await;
+        EmbeddedEngine::start_custom(storage, state_machine, Some(&killed_config.1)).await?;
+    restarted_engine.wait_ready(Duration::from_secs(30)).await?;
 
     // Wait for sync
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -331,15 +331,14 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 /// Test minority failure (2/3 nodes down) causes cluster unavailability
 #[tokio::test]
 #[traced_test]
-#[cfg(feature = "rocksdb")]
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
-    reset(&format!("{TEST_DIR}_minority")).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let db_root = format!("{DB_ROOT_DIR}_minority");
-    let log_dir = format!("{LOG_DIR}_minority");
 
     info!("Starting 3-node cluster for minority failure test");
 
@@ -347,7 +346,14 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
+        let config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
@@ -363,16 +369,12 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         let config_path = format!("/tmp/d-engine-test-minority-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start(Some(&config_path), storage, state_machine).await?;
+        let engine =
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
         engines.push(engine);
     }
 
-    for engine in &engines {
-        engine.ready().await;
-    }
-
-    info!("Waiting for leader election in 3-node cluster");
-    let leader_info = engines[0].wait_leader(Duration::from_secs(10)).await?;
+    let leader_info = engines[0].wait_ready(Duration::from_secs(10)).await?;
     info!(
         "Leader elected successfully: node {}",
         leader_info.leader_id

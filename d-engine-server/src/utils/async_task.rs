@@ -1,14 +1,13 @@
 use std::time::Duration;
 
+use d_engine_core::BackoffPolicy;
+use d_engine_core::NetworkError;
+use d_engine_core::Result;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
-
-use d_engine_core::BackoffPolicy;
-use d_engine_core::NetworkError;
-use d_engine_core::Result;
 
 /// General one
 pub(crate) async fn task_with_timeout_and_exponential_backoff<F, T, P>(

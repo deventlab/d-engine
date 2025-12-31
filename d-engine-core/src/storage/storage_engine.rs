@@ -3,14 +3,14 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
 use crate::Error;
 use crate::HardState;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
 
 /// High-performance storage abstraction for Raft consensus
 ///

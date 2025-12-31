@@ -2,6 +2,15 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::storage::PurgeLogResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotResponse;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -38,15 +47,6 @@ use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::utils::cluster::error;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::storage::PurgeLogResponse;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotResponse;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 
 /// Follower node's state in Raft consensus.
 ///
@@ -104,22 +104,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     }
     fn become_candidate(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Candidate now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Candidate",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Candidate now.\n
-                =================================
-                \n\n",
+            "[Node {}] Follower → Candidate (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Candidate(Box::new(self.into())))
     }
@@ -130,22 +122,14 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     }
     fn become_learner(&self) -> Result<RaftRole<T>> {
         info!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "Node {} term {} transitioning to Learner",
             self.node_id(),
             self.current_term(),
         );
         println!(
-            "\n\n
-                =================================
-                [{:?}<{:?}>] >>> switch to Learner now.\n
-                =================================
-                \n\n",
+            "[Node {}] Follower → Learner (term {})",
             self.node_id(),
-            self.current_term(),
+            self.current_term()
         );
         Ok(RaftRole::Learner(Box::new(self.into())))
     }
@@ -361,12 +345,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         })?;
                     }
                     None => {
-                        // Policy requires leader access - reject
-                        let error = tonic::Status::permission_denied(
-                            "Read consistency policy requires leader access. Current node is follower.",
-                        );
-                        sender.send(Err(error)).map_err(|e| {
-                            error!("Failed to send policy rejection: {:?}", e);
+                        // Policy requires leader access - return NOT_LEADER with leader metadata
+                        let response = self.create_not_leader_response(ctx).await;
+                        sender.send(Ok(response)).map_err(|e| {
+                            error!("Failed to send NOT_LEADER response: {:?}", e);
                             NetworkError::SingalSendFailed(format!("{e:?}"))
                         })?;
                     }
@@ -601,6 +583,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     ),
                 }
                 .into());
+            }
+
+            RaftEvent::MembershipApplied => {
+                // Followers don't maintain cluster metadata cache
+                // This event is only relevant for leaders
+                debug!("Follower ignoring MembershipApplied event");
             }
 
             RaftEvent::StepDownSelfRemoved => {

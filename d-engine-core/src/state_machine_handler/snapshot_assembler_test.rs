@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::tempdir;
 use tokio::fs::read;
 use tracing_test::traced_test;
 
 use crate::SnapshotAssembler;
 use crate::SnapshotPathManager;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
 
 #[tokio::test]
 #[traced_test]

@@ -1,3 +1,6 @@
+use std::pin::Pin;
+use std::sync::Arc;
+
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -14,8 +17,6 @@ use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::cluster_management_service_server::ClusterManagementService;
 use futures::Stream;
-use std::pin::Pin;
-use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub struct MockRpcService {
@@ -30,7 +31,6 @@ pub struct MockRpcService {
     pub expected_metadata_response:
         Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
 
-    pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
 }
 impl MockRpcService {
@@ -80,11 +80,9 @@ impl ClusterManagementService for MockRpcService {
         &self,
         _request: tonic::Request<JoinRequest>,
     ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
-        match &self.expected_join_cluster_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
-            Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock join_cluster response set")),
-        }
+        Err(tonic::Status::unimplemented(
+            "join_cluster removed from client API",
+        ))
     }
 
     async fn discover_leader(

@@ -12,6 +12,8 @@ mod election_handler_test;
 
 use std::sync::Arc;
 
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VotedFor;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
@@ -22,8 +24,6 @@ use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::TROF;
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::election::VotedFor;
 
 /// State transition data for election outcomes
 #[derive(Debug)]

@@ -1,0 +1,6 @@
+# d-engine quick-start configuration
+# Minimal single-node setup
+
+[cluster]
+# Where to store data
+db_root_dir = "./data/single-node"

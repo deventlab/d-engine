@@ -10,10 +10,6 @@ initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # role=2 (Leader), status=2 (Active)
 ]
 
-# KEY: initial_cluster_size = 1 triggers single-node mode
-# This is IMMUTABLE and tells the node to bootstrap without election
-initial_cluster_size = 1
-
 db_root_dir = "./db"
 log_dir = "./logs"
 

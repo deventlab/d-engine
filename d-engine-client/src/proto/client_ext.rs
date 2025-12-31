@@ -1,7 +1,7 @@
-use d_engine_proto::{
-    client::{ClientResponse, ClientResult, client_response::SuccessResult},
-    error::ErrorCode,
-};
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::client::client_response::SuccessResult;
+use d_engine_proto::error::ErrorCode;
 use tracing::error;
 
 use crate::ClientApiError;

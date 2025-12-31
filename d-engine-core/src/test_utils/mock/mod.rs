@@ -10,14 +10,13 @@
 //! - Allows precise behavior injection for handlers
 //! - Enables isolated testing of component interactions
 //!
-//! The [`TestContext`] struct encapsulates a controlled testing environment
-//! containing:
+//! The mock context encapsulates a controlled testing environment containing:
 //! - Mock storage implementations (raft log, state machine)
 //! - Simulated network layer
 //! - Configurable cluster membership
 //! - Instrumented handler implementations
 //!
-//! The [`setup_mock_context`] function initializes a test environment with:
+//! Mock initialization provides a test environment with:
 //! - Auto-generated mock objects via [mockall] attributes
 //! - Preconfigured peer responses
 //! - Deterministic transport simulation
@@ -44,16 +43,16 @@ mod mock_rpc_service;
 mod mock_storage_engine;
 mod mock_type_config;
 
+use d_engine_proto::server::cluster::NodeMeta;
 pub use mock_raft_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
 pub use mock_storage_engine::*;
 pub use mock_type_config::*;
+use tokio::sync::watch;
 
 use super::node_config;
 use crate::RaftContext;
-use d_engine_proto::server::cluster::NodeMeta;
-use tokio::sync::watch;
 
 pub fn mock_raft_context(
     db_path: &str,

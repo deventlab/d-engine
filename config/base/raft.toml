@@ -104,11 +104,8 @@ client_response = false
 
 # Watch mechanism configuration for monitoring key changes
 # Provides lock-free event notification with minimal write path overhead
+# Controlled by 'watch' feature flag at compile time
 [raft.watch]
-# Enable or disable Watch feature
-# When false, Watch RPC calls return UNAVAILABLE (zero overhead)
-# Default: true
-enabled = true
 
 # Global event queue buffer size (shared across all watchers)
 # Tuning guidelines:

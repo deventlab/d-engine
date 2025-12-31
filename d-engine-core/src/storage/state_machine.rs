@@ -1,15 +1,14 @@
 #![doc = include_str!("../../../d-engine-docs/src/docs/server_guide/customize-state-machine.md")]
 
 use bytes::Bytes;
-
-#[cfg(any(test, feature = "test-utils"))]
-use mockall::automock;
-
-use crate::Error;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
+#[cfg(any(test, feature = "test-utils"))]
+use mockall::automock;
 use tonic::async_trait;
+
+use crate::Error;
 
 /// State machine trait for Raft consensus
 ///
@@ -24,8 +23,13 @@ use tonic::async_trait;
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
     /// Starts the state machine service.
-    /// This is typically a sync operation as it just flips internal state flags.
-    fn start(&self) -> Result<(), Error>;
+    ///
+    /// This method:
+    /// 1. Flips internal state flags
+    /// 2. Loads persisted data (e.g., TTL state from disk)
+    ///
+    /// Called once during node startup. Performance is not critical.
+    async fn start(&self) -> Result<(), Error>;
 
     /// Stops the state machine service gracefully.
     /// This is typically a sync operation for state management.
@@ -166,64 +170,35 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Async operation as it may involve cleaning up files and data.
     async fn reset(&self) -> Result<(), Error>;
 
-    /// Framework-internal: Inject lease configuration if supported.
+    /// Background lease cleanup hook.
     ///
-    /// This is an optional feature for state machine implementations.
-    /// Built-in state machines (RocksDB, File) override this to support lease-based TTL.
-    /// User-defined state machines can optionally implement this for TTL support.
+    /// Called periodically by the background cleanup task (if enabled).
+    /// Returns keys that were cleaned up.
     ///
     /// # Default Implementation
-    /// No-op - user-defined SMs that don't need TTL don't have to implement this.
+    /// No-op, suitable for state machines without lease support.
     ///
-    /// # Arguments
-    /// * `config` - Lease configuration from NodeConfig
+    /// # Called By
+    /// Framework calls this from background cleanup task spawned in NodeBuilder::build().
+    /// Only called when cleanup_strategy = "background".
     ///
     /// # Returns
-    /// - Ok(()) - Configuration injected successfully, or not applicable
-    /// - Err(Error) - Framework error during injection
-    ///
-    /// # Called By
-    /// Framework calls this in NodeBuilder::build() before start() is called,
-    /// when the state machine is still mutable and unwrapped from Arc.
-    ///
-    /// # Example (Implementation in RocksDBStateMachine)
-    /// ```ignore
-    /// fn try_inject_lease(&mut self, config: LeaseConfig) -> Result<(), Error> {
-    ///     let lease = Arc::new(DefaultLease::new(config));
-    ///     self.lease = Some(lease);
-    ///     Ok(())
-    /// }
-    /// ```
-    fn try_inject_lease(
-        &mut self,
-        _config: crate::config::LeaseConfig,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Post-start async initialization hook.
-    ///
-    /// Called after `start()` and after the state machine is wrapped in Arc.
-    /// Use this for async operations like loading persisted lease data.
-    ///
-    /// # Default Implementation
-    /// No-op, suitable for simple state machines or user-defined implementations
-    /// that don't require async initialization.
-    ///
-    /// # Called By
-    /// Framework calls this in NodeBuilder::build() after start() completes.
-    /// Guaranteed to complete before the node becomes operational.
+    /// - Vec of deleted keys (for logging/metrics)
     ///
     /// # Example (d-engine built-in state machines)
     /// ```ignore
-    /// async fn post_start_init(&self) -> Result<(), Error> {
+    /// async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
     ///     if let Some(ref lease) = self.lease {
-    ///         self.load_lease_data().await?;
+    ///         let expired_keys = lease.get_expired_keys(SystemTime::now());
+    ///         if !expired_keys.is_empty() {
+    ///             self.delete_batch(&expired_keys).await?;
+    ///         }
+    ///         return Ok(expired_keys);
     ///     }
-    ///     Ok(())
+    ///     Ok(vec![])
     /// }
     /// ```
-    async fn post_start_init(&self) -> Result<(), Error> {
-        Ok(())
+    async fn lease_background_cleanup(&self) -> Result<Vec<bytes::Bytes>, Error> {
+        Ok(vec![])
     }
 }

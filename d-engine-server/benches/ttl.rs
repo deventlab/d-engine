@@ -1,23 +1,30 @@
 //! TTL Manager Performance Benchmarks
 //!
 //! This benchmark suite focuses specifically on TTL management operations,
-//! particularly the piggyback cleanup mechanism and TTL registration overhead.
+//! particularly background cleanup and TTL registration overhead.
 //!
 //! Performance Targets:
-//! - Piggyback cleanup: < 1ms for typical workloads
+//! - Background cleanup: < 1ms for typical workloads
 //! - TTL registration: < 100ns per entry
 //! - Expired check: < 50ns per key
 
 use std::time::Duration;
 
 use bytes::Bytes;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use d_engine_core::{Lease, StateMachine};
-use d_engine_proto::client::{
-    WriteCommand,
-    write_command::{Insert, Operation},
-};
-use d_engine_proto::common::{Entry, EntryPayload, Noop, entry_payload::Payload};
+use criterion::BenchmarkId;
+use criterion::Criterion;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
+use d_engine_core::Lease;
+use d_engine_core::StateMachine;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::Noop;
+use d_engine_proto::common::entry_payload::Payload;
 use d_engine_server::storage::FileStateMachine;
 use prost::Message;
 use tempfile::TempDir;
@@ -27,10 +34,11 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     use d_engine_server::storage::DefaultLease;
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    // For TTL benchmarks, we need piggyback cleanup enabled
+    // For TTL benchmarks, we need lease enabled
     let lease_config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "piggyback".to_string(),
-        ..Default::default()
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
     };
 
     let mut sm = FileStateMachine::new(temp_dir.path().to_path_buf())
@@ -99,8 +107,9 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
     // Test with different numbers of expired keys
     for expired_count in [10, 50, 100, 500].iter() {
         let lease_config = d_engine_core::config::LeaseConfig {
-            cleanup_strategy: "piggyback".to_string(),
-            ..Default::default()
+            enabled: true,
+            interval_ms: 1000,
+            max_cleanup_duration_ms: 1,
         };
         let lease = DefaultLease::new(lease_config);
 
@@ -136,8 +145,9 @@ fn bench_ttl_registration(c: &mut Criterion) {
     use d_engine_server::storage::DefaultLease;
 
     let lease_config = d_engine_core::config::LeaseConfig {
-        cleanup_strategy: "piggyback".to_string(),
-        ..Default::default()
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
     };
     let lease = DefaultLease::new(lease_config);
 

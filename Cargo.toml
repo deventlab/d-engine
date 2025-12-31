@@ -1,4 +1,3 @@
-
 [workspace]
 members = [
   "d-engine",
@@ -16,12 +15,21 @@ exclude = [
   "examples/three-nodes-cluster",
   "examples/single-node-expansion",
   "examples/quick-start",
+  "examples/quick-start-embedded",
   "examples/service-discovery-standalone",
   "examples/service-discovery-embedded",
   "benches/d-engine-bench",
 ]
 
 resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+authors = ["Joshua Chi <joshokn@gmail.com>"]
+homepage = "https://github.com/deventlab/d-engine"
+repository = "https://github.com/deventlab/d-engine"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 d-engine-proto = { path = "./d-engine-proto" }

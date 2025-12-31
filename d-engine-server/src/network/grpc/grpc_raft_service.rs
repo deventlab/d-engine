@@ -3,23 +3,9 @@
 //! log replication, and cluster configuration management.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
-use super::WatchRegistration;
-use tokio::select;
-use tokio::time::timeout;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
-use tonic::Request;
-use tonic::Response;
-use tonic::Status;
-use tonic::Streaming;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
-use crate::Node;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
@@ -29,7 +15,6 @@ use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::WatchRequest;
-
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -52,6 +37,23 @@ use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
+use futures::Stream;
+#[cfg(feature = "watch")]
+use futures::StreamExt;
+use tokio::select;
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
+use tonic::Request;
+use tonic::Response;
+use tonic::Status;
+use tonic::Streaming;
+use tracing::debug;
+use tracing::error;
+#[cfg(feature = "watch")]
+use tracing::info;
+use tracing::warn;
+
+use crate::Node;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
@@ -67,7 +69,7 @@ where
         &self,
         request: tonic::Request<VoteRequest>,
     ) -> std::result::Result<Response<VoteResponse>, Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!(
                 "[rpc|request_vote] My raft setup(Node:{}) is not ready!",
                 self.node_id
@@ -101,7 +103,7 @@ where
         &self,
         request: Request<AppendEntriesRequest>,
     ) -> std::result::Result<Response<AppendEntriesResponse>, tonic::Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("[rpc|append_entries] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -130,7 +132,7 @@ where
         &self,
         request: tonic::Request<tonic::Streaming<SnapshotAck>>,
     ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("stream_snapshot: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -159,7 +161,7 @@ where
         &self,
         request: tonic::Request<Streaming<SnapshotChunk>>,
     ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("install_snapshot: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -182,7 +184,7 @@ where
         &self,
         request: tonic::Request<PurgeLogRequest>,
     ) -> std::result::Result<tonic::Response<PurgeLogResponse>, Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("purge_log: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -214,7 +216,7 @@ where
         &self,
         request: tonic::Request<ClusterConfChangeRequest>,
     ) -> std::result::Result<Response<ClusterConfUpdateResponse>, Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!(
                 "[rpc|update_cluster_conf_from_leader] Node-{} is not ready!",
                 self.node_id
@@ -241,7 +243,7 @@ where
         request: tonic::Request<MetadataRequest>,
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         debug!("receive get_cluster_metadata");
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!(
                 "[rpc|get_cluster_metadata] Node-{} is not ready!",
                 self.node_id
@@ -266,7 +268,7 @@ where
         request: tonic::Request<JoinRequest>,
     ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
         debug!("receive join_cluster");
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("[rpc|join_cluster] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -287,7 +289,7 @@ where
         request: tonic::Request<LeaderDiscoveryRequest>,
     ) -> std::result::Result<tonic::Response<LeaderDiscoveryResponse>, tonic::Status> {
         debug!("receive discover_leader");
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("[rpc|discover_leader] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -308,9 +310,8 @@ impl<T> RaftClientService for Node<T>
 where
     T: TypeConfig,
 {
-    type WatchStream = tokio_stream::wrappers::ReceiverStream<
-        Result<d_engine_proto::client::WatchResponse, Status>,
-    >;
+    type WatchStream =
+        Pin<Box<dyn Stream<Item = Result<d_engine_proto::client::WatchResponse, Status>> + Send>>;
 
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic
@@ -321,7 +322,7 @@ where
         &self,
         request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("[handle_client_write] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -368,7 +369,7 @@ where
         &self,
         request: tonic::Request<ClientReadRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
-        if !self.server_is_ready() {
+        if !self.is_rpc_ready() {
             warn!("handle_client_read: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
@@ -384,9 +385,9 @@ where
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
     }
 
-    /// Watch for changes on a specific key
+    /// Watch for changes to a specific key
     ///
-    /// Returns a stream of WatchResponse events whenever the watched key changes.
+    /// Returns a stream of events (PUT/DELETE) for the specified key.
     /// The stream will continue until the client disconnects or the server shuts down.
     ///
     /// # Arguments
@@ -397,6 +398,7 @@ where
     ///
     /// # Errors
     /// Returns Status::UNAVAILABLE if Watch is disabled in configuration
+    #[cfg(feature = "watch")]
     async fn watch(
         &self,
         request: tonic::Request<WatchRequest>,
@@ -404,20 +406,10 @@ where
         let watch_request = request.into_inner();
         let key = watch_request.key;
 
-        // Check if watch dispatcher is enabled
-        let dispatcher_handle = match &self.watch_dispatcher_handle {
-            Some(handle) => handle,
-            None => {
-                return Err(Status::unavailable(
-                    "Watch feature is disabled in server configuration",
-                ));
-            }
-        };
-
-        let watch_manager = self
-            .watch_manager
-            .as_ref()
-            .expect("Watch manager must exist if dispatcher handle exists");
+        // Check if watch registry is available
+        let registry = self.watch_registry.as_ref().ok_or_else(|| {
+            Status::unavailable("Watch feature is disabled in server configuration")
+        })?;
 
         info!(
             node_id = self.node_id,
@@ -425,32 +417,32 @@ where
             "Registering watch for key"
         );
 
-        // Register watcher and get handle
-        let watcher_handle = watch_manager.register(key.clone()).await;
+        // Register watcher and get receiver
+        let handle = registry.register(key);
+        let (_watcher_id, _key, receiver) = handle.into_receiver();
 
-        // Extract receiver while keeping cleanup guard
-        let (watcher_id, watched_key, event_receiver, guard) = watcher_handle.into_receiver();
+        // Convert mpsc::Receiver -> Boxed Stream with sentinel error on close
+        // When the stream ends (receiver closed), send an UNAVAILABLE error to help clients
+        // detect server shutdown/restart and implement reconnection logic
+        let stream = tokio_stream::wrappers::ReceiverStream::new(receiver)
+            .map(Ok)
+            .chain(futures::stream::once(async {
+                Err(Status::unavailable(
+                    "Watch stream closed: server may have shut down or restarted. Please reconnect and re-register the watcher."
+                ))
+            }));
 
-        // Create output channel for gRPC stream
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
 
-        // Send registration request to dispatcher
-        // The dispatcher will spawn a task to handle this watch stream
-        // All spawns are controlled through the dispatcher (spawned in NodeBuilder::build())
-        let registration = WatchRegistration {
-            key: watched_key,
-            response_sender: tx,
-            guard,
-            event_receiver,
-            watcher_id,
-        };
-
-        dispatcher_handle
-            .register(registration)
-            .await
-            .map_err(|_| Status::internal("Failed to register watch with dispatcher"))?;
-
-        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    #[cfg(not(feature = "watch"))]
+    async fn watch(
+        &self,
+        _request: tonic::Request<WatchRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
+        Err(Status::unimplemented(
+            "Watch feature is not compiled in this build",
+        ))
     }
 }
 

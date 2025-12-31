@@ -1,13 +1,13 @@
 use std::time::Duration;
 
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Leader;
 use tokio::time;
 use tracing_test::traced_test;
 
 use super::*;
 use crate::state_machine_handler::snapshot_policy::SnapshotContext;
 use crate::state_machine_handler::snapshot_policy::SnapshotPolicy;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Leader;
 
 #[tokio::test]
 #[traced_test]

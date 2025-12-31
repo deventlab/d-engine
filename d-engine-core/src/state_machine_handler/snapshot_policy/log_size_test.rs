@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::SnapshotContext;
-use crate::LogSizePolicy;
-use crate::SnapshotPolicy;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
+use serial_test::serial;
+
+use super::SnapshotContext;
+use crate::LogSizePolicy;
+use crate::SnapshotPolicy;
 
 // Test context builder for better test readability
 fn test_context(
@@ -77,6 +79,7 @@ fn resets_after_cooldown_period() {
 }
 
 #[test]
+#[serial]
 fn handles_concurrent_checks_with_cooldown() {
     let policy = Arc::new(LogSizePolicy::new(100, Duration::from_secs(1)));
     let ctx = test_context(200, 100, Leader as i32);

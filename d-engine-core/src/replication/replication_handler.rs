@@ -5,6 +5,17 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::BytesMut;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
 use dashmap::DashMap;
 use prost::Message;
 use tonic::async_trait;
@@ -19,7 +30,6 @@ use super::ReplicationCore;
 use crate::AppendResults;
 use crate::IdAllocationError;
 use crate::LeaderStateSnapshot;
-use crate::Membership;
 use crate::PeerUpdate;
 use crate::RaftContext;
 use crate::RaftLog;
@@ -31,17 +41,6 @@ use crate::TypeConfig;
 use crate::alias::ROF;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::is_majority;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::ConflictResult;
-use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
 
 #[derive(Clone)]
 pub struct ReplicationHandler<T>
@@ -68,36 +67,19 @@ where
         let _timer = ScopedTimer::new("handle_raft_request_in_batch");
 
         debug!("-------- handle_raft_request_in_batch --------");
-        trace!("entry_payloads: {:?}", &entry_payloads);
 
         // ----------------------
         // Phase 1: Pre-Checks and Cluster Topology Detection
         // ----------------------
-        let is_single_node = cluster_metadata.is_single_node;
-        let membership = ctx.membership();
-
-        // Determine replication targets based on cluster topology
-        let replication_targets = if is_single_node {
-            // Single-node cluster: no peers to replicate to, will write logs and return early
-            vec![]
-        } else {
-            // Multi-node cluster: get all replication peers
-            let targets = membership.replication_peers().await;
-            if targets.is_empty() {
-                // Multi-node cluster with no peers configured is an error
-                warn!("No replication peer found for leader {}", self.my_id);
-                return Err(ReplicationError::NoPeerFound {
-                    leader_id: self.my_id,
-                }
-                .into());
-            }
-            targets
-        };
+        // Use cached replication targets from cluster metadata (zero-cost)
+        let replication_targets = &cluster_metadata.replication_targets;
 
         // Separate Voters and Learners
+        // Use role (not status) to distinguish: Follower/Candidate are voters, Learner are learners
+        // This is more robust than using status, which can be temporarily non-Active
         let (voters, learners): (Vec<_>, Vec<_>) = replication_targets
             .iter()
-            .partition(|node| node.status == NodeStatus::Active as i32);
+            .partition(|node| node.role != NodeRole::Learner as i32);
 
         if !learners.is_empty() {
             trace!(
@@ -149,11 +131,11 @@ where
         // Phase 5: Replication
         // ----------------------
 
-        // Single-node cluster: logs already written in Phase 2, return immediately
-        // No replication needed, quorum is automatically achieved (quorum of 1)
-        if is_single_node {
+        // No peers: logs already written in Phase 2, return immediately
+        // No replication needed, quorum is automatically achieved (standalone node)
+        if replication_targets.is_empty() {
             debug!(
-                "Single-node cluster (leader={}): logs persisted, quorum automatically achieved",
+                "Standalone node (leader={}): logs persisted, quorum automatically achieved",
                 self.my_id
             );
             return Ok(AppendResults {
@@ -169,6 +151,7 @@ where
         let mut peer_updates = HashMap::new();
         let mut learner_progress = HashMap::new();
 
+        let membership = ctx.membership();
         match ctx
             .transport()
             .send_append_requests(
@@ -227,6 +210,12 @@ where
                                         raft_log,
                                         current_next_index,
                                     )?;
+
+                                    // Record Learner progress
+                                    if learners.iter().any(|n| n.id == append_response.node_id) {
+                                        learner_progress
+                                            .insert(append_response.node_id, update.match_index);
+                                    }
 
                                     peer_updates.insert(append_response.node_id, update);
                                 }

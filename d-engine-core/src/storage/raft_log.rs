@@ -5,20 +5,21 @@
 //! to maintain Raft consensus protocol correctness.
 //!
 //! Key Safety Properties (from Raft paper):
-//! 1. Log Matching: If two logs contain an entry with same index and term,
-//!    then logs are identical in all preceding entries
+//! 1. Log Matching: If two logs contain an entry with same index and term, then logs are identical
+//!    in all preceding entries
 //! 2. Leader Append-Only: Leaders never overwrite or delete entries
-//! 3. State Machine Safety: If a server has applied a log entry at a given
-//!    index, no other server will ever apply a different log entry for that index
+//! 3. State Machine Safety: If a server has applied a log entry at a given index, no other server
+//!    will ever apply a different log entry for that index
 
-use crate::Result;
+use std::ops::RangeInclusive;
+
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
-use std::ops::RangeInclusive;
 use tonic::async_trait;
+
+use crate::Result;
 
 #[cfg_attr(any(test, feature = "test-utils"), automock)]
 #[async_trait]
@@ -210,7 +211,8 @@ pub trait RaftLog: Send + Sync + 'static {
     ///
     /// # Safety Invariants
     /// - Entries MUST have strictly increasing indices (no gaps)
-    /// - Entries MUST NOT conflict with existing entries (use filter_out_conflicts_and_append for that)
+    /// - Entries MUST NOT conflict with existing entries (use filter_out_conflicts_and_append for
+    ///   that)
     /// - After successful return, entries MUST be retrievable via entry()
     /// - MUST update last_entry_id() atomically
     /// - MUST update term indexes (first/last_index_for_term) atomically

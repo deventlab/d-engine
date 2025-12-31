@@ -10,61 +10,87 @@
 //! - End-to-end Watch notification latency: < 100µs
 //! - Batch operations: Linear scaling
 
+#![cfg(feature = "watch")]
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::BenchmarkId;
+use criterion::Criterion;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
 use d_engine_core::StateMachine;
-use d_engine_core::config::WatchConfig;
-use d_engine_core::watch::{WatchManager, WatcherHandle};
-use d_engine_proto::client::{
-    WriteCommand,
-    write_command::{Insert, Operation},
-};
-use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
+use d_engine_core::watch::WatchDispatcher;
+use d_engine_core::watch::WatchRegistry;
+use d_engine_core::watch::WatcherHandle;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::entry_payload::Payload;
 use d_engine_server::storage::FileStateMachine;
 use prost::Message;
 use tempfile::TempDir;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 /// Helper to create a temporary state machine for benchmarking
 async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let sm = FileStateMachine::new(temp_dir.path().to_path_buf())
+    let mut sm = FileStateMachine::new(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to create state machine");
+
+    // Enable TTL for benchmarks that need it
+    let lease_config = d_engine_core::config::LeaseConfig {
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 1,
+    };
+    let lease = Arc::new(d_engine_server::storage::DefaultLease::new(lease_config));
+    sm.set_lease(lease);
+
     (sm, temp_dir)
 }
 
-/// Helper to create a WatchManager for benchmarking
-fn create_watch_manager(
+/// Helper to create a WatchRegistry + WatchDispatcher for benchmarking
+fn create_watch_system(
     event_queue_size: usize,
     watcher_buffer_size: usize,
-) -> Arc<WatchManager> {
-    let config = WatchConfig {
-        enabled: true,
-        event_queue_size,
-        watcher_buffer_size,
-        enable_metrics: false,
-    };
-    let manager = WatchManager::new(config);
-    manager.start();
-    Arc::new(manager)
+) -> (
+    Arc<WatchRegistry>,
+    broadcast::Sender<d_engine_proto::client::WatchResponse>,
+) {
+    let (broadcast_tx, broadcast_rx) = broadcast::channel(event_queue_size);
+    let (unregister_tx, unregister_rx) = mpsc::unbounded_channel();
+
+    let registry = Arc::new(WatchRegistry::new(watcher_buffer_size, unregister_tx));
+
+    // Spawn dispatcher
+    let dispatcher = WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+    tokio::spawn(async move {
+        dispatcher.run().await;
+    });
+
+    (registry, broadcast_tx)
 }
 
 /// Helper to register multiple watchers
 ///
 /// Returns the watcher handles to keep watchers alive during benchmarks.
 /// Handles must be kept in scope or watchers will be immediately unregistered.
-async fn register_watchers(
-    manager: &WatchManager,
+fn register_watchers(
+    registry: &WatchRegistry,
     count: usize,
     key_prefix: &str,
 ) -> Vec<WatcherHandle> {
     let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let key = format!("{key_prefix}{i}");
-        handles.push(manager.register(key.into()).await);
+        handles.push(registry.register(key.into()));
     }
     handles
 }
@@ -302,10 +328,10 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
     c.bench_function("apply_with_1_watcher", |b| {
         b.to_async(&runtime).iter(|| async {
             let (sm, _temp_dir) = create_test_state_machine().await;
-            let watch_manager = create_watch_manager(1000, 10);
+            let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             // Register 1 watcher (keep handle alive to prevent unregistration)
-            let _watchers = register_watchers(&watch_manager, 1, "key_").await;
+            let _watchers = register_watchers(&registry, 1, "key_");
 
             let entries = create_entries_without_ttl(100, 1);
 
@@ -317,11 +343,25 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                             if let Some(op) = write_cmd.operation {
                                 match op {
                                     Operation::Insert(insert) => {
-                                        watch_manager
-                                            .notify_put(insert.key.clone(), insert.value.clone());
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: insert.key.clone(),
+                                            value: insert.value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
                                     }
                                     Operation::Delete(delete) => {
-                                        watch_manager.notify_delete(delete.key.clone());
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: delete.key.clone(),
+                                            value: bytes::Bytes::new(),
+                                            event_type:
+                                                d_engine_proto::client::WatchEventType::Delete
+                                                    as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
                                     }
                                 }
                             }
@@ -344,10 +384,10 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
     c.bench_function("apply_with_10_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
             let (sm, _temp_dir) = create_test_state_machine().await;
-            let watch_manager = create_watch_manager(1000, 10);
+            let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             // Register 10 watchers (keep handles alive to prevent unregistration)
-            let _watchers = register_watchers(&watch_manager, 10, "key_").await;
+            let _watchers = register_watchers(&registry, 10, "key_");
 
             let entries = create_entries_without_ttl(100, 1);
 
@@ -359,11 +399,25 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                             if let Some(op) = write_cmd.operation {
                                 match op {
                                     Operation::Insert(insert) => {
-                                        watch_manager
-                                            .notify_put(insert.key.clone(), insert.value.clone());
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: insert.key.clone(),
+                                            value: insert.value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
                                     }
                                     Operation::Delete(delete) => {
-                                        watch_manager.notify_delete(delete.key.clone());
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: delete.key.clone(),
+                                            value: bytes::Bytes::new(),
+                                            event_type:
+                                                d_engine_proto::client::WatchEventType::Delete
+                                                    as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
                                     }
                                 }
                             }
@@ -386,10 +440,10 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
     c.bench_function("apply_with_100_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
             let (sm, _temp_dir) = create_test_state_machine().await;
-            let watch_manager = create_watch_manager(1000, 10);
+            let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             // Register 100 watchers (keep handles alive to prevent unregistration)
-            let _watchers = register_watchers(&watch_manager, 100, "key_").await;
+            let _watchers = register_watchers(&registry, 100, "key_");
 
             let entries = create_entries_without_ttl(100, 1);
 
@@ -401,11 +455,25 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                             if let Some(op) = write_cmd.operation {
                                 match op {
                                     Operation::Insert(insert) => {
-                                        watch_manager
-                                            .notify_put(insert.key.clone(), insert.value.clone());
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: insert.key.clone(),
+                                            value: insert.value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
                                     }
                                     Operation::Delete(delete) => {
-                                        watch_manager.notify_delete(delete.key.clone());
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: delete.key.clone(),
+                                            value: bytes::Bytes::new(),
+                                            event_type:
+                                                d_engine_proto::client::WatchEventType::Delete
+                                                    as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
                                     }
                                 }
                             }
@@ -427,21 +495,28 @@ fn bench_watch_e2e_latency(c: &mut Criterion) {
 
     c.bench_function("watch_e2e_latency", |b| {
         b.to_async(&runtime).iter(|| async {
-            let watch_manager = create_watch_manager(1000, 10);
+            let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             let key = Bytes::from("test_key");
             let value = Bytes::from("test_value");
 
             // Register a watcher
-            let handle = watch_manager.register(key.clone()).await;
-            let (_id, _key, mut receiver, _guard) = handle.into_receiver();
+            let mut watcher = registry.register(key.clone());
 
-            // Measure time from notify to receive
+            // Measure time from broadcast to receive
             let start = tokio::time::Instant::now();
-            watch_manager.notify_put(key.clone(), value.clone());
 
-            // Wait for event to arrive
-            if let Some(_event) = receiver.recv().await {
+            // Simulate watch event broadcast
+            let event = d_engine_proto::client::WatchResponse {
+                key: key.clone(),
+                value: value.clone(),
+                event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                error: 0, // No error
+            };
+            let _ = broadcast_tx.send(event);
+
+            // Wait for event to arrive at watcher
+            if let Some(_event) = watcher.receiver_mut().recv().await {
                 let latency = start.elapsed();
                 black_box(latency);
             }

@@ -5,23 +5,23 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    common::{entry_payload::Payload, Entry, LogId},
+    Result, SnapshotError, StateMachine, StorageError,
+    common::{Entry, LogId, entry_payload::Payload},
     storage::SnapshotMetadata,
     write_command::{
-        write_command::{Delete, Insert, Operation},
         WriteCommand,
+        write_command::{Delete, Insert, Operation},
     },
-    Result, SnapshotError, StateMachine, StorageError,
 };
 use parking_lot::Mutex;
 use prost::Message;
 use sled::Batch;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -93,7 +93,7 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    fn start(&self) -> Result<()> {
+    async fn start(&self) -> Result<()> {
         debug!("start state machine");
         self.is_serving.store(true, Ordering::Release);
         Ok(())
@@ -528,6 +528,12 @@ impl StateMachine for SledStateMachine {
         let db = self.db.load();
         db.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
+    }
+
+    async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>> {
+        // SledStateMachine example doesn't implement lease support
+        // Return empty vector (no cleanup performed)
+        Ok(vec![])
     }
 }
 

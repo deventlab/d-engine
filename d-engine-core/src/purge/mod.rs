@@ -1,4 +1,3 @@
-#![doc = include_str!("../../../d-engine-docs/src/docs/architecture/raft-log-persistence-architecture.md")]
 //! Log compaction and purge management.
 //!
 //! Defines the interface for customizing log purge behavior in Raft leaders and followers.
@@ -11,12 +10,12 @@ pub use default_executor::*;
 #[cfg(test)]
 mod default_executor_test;
 
+use d_engine_proto::common::LogId;
 #[cfg(any(test, feature = "test-utils"))]
 use mockall::automock;
 use tonic::async_trait;
 
 use crate::Result;
-use d_engine_proto::common::LogId;
 
 /// Defines the behavior for log entry compaction and physical deletion.
 ///

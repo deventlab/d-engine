@@ -1,7 +1,13 @@
-use arc_swap::ArcSwap;
-use bytes::Bytes;
 use std::sync::Arc;
 use std::vec;
+
+use arc_swap::ArcSwap;
+use bytes::Bytes;
+use d_engine_proto::client::ClientResponse;
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::error::ErrorCode;
+use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
@@ -12,11 +18,6 @@ use crate::ClusterClient;
 use crate::ConnectionPool;
 use crate::GrpcKvClient;
 use crate::mock_rpc_service::MockNode;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::client::ClientResult;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::error::ErrorCode;
-use d_engine_proto::server::cluster::ClusterMembership;
 
 #[tokio::test]
 #[traced_test]

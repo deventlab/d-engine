@@ -1,10 +1,5 @@
 use std::path::PathBuf;
 
-use tonic::Status;
-
-use crate::MaybeCloneOneshotSender;
-use crate::Result;
-use crate::StreamResponseSender;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -27,6 +22,11 @@ use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
+use tonic::Status;
+
+use crate::MaybeCloneOneshotSender;
+use crate::Result;
+use crate::StreamResponseSender;
 
 #[derive(Debug, Clone)]
 pub struct NewCommitData {
@@ -127,6 +127,10 @@ pub enum RaftEvent {
     /// Node removed itself from cluster membership
     /// Leader must step down immediately after self-removal per Raft protocol
     StepDownSelfRemoved,
+
+    /// Membership change has been applied to state
+    /// Leader should refresh cluster metadata cache
+    MembershipApplied,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -192,6 +196,10 @@ pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             // StepDownSelfRemoved is handled at Raft level, not converted to TestEvent
             // This is a control flow event, not a user-facing event
             TestEvent::CreateSnapshotEvent // Placeholder - this event won't be emitted to tests
+        }
+        RaftEvent::MembershipApplied => {
+            // MembershipApplied is internal event for cache refresh
+            TestEvent::CreateSnapshotEvent // Placeholder
         }
     }
 }

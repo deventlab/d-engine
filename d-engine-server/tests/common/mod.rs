@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,7 +12,6 @@ use d_engine_client::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
 use d_engine_core::config::BackoffPolicy;
-
 use d_engine_core::config::CommitHandlerConfig;
 use d_engine_core::config::ElectionConfig;
 use d_engine_core::config::FlushPolicy;
@@ -109,6 +110,44 @@ pub async fn create_node_config(
             let id = i as u64 + 1;
             format!(
                 "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ");
+
+    format!(
+        r#"
+        [cluster]
+        node_id = {node_id}
+        listen_address = '127.0.0.1:{port}'
+        initial_cluster = [
+            {initial_cluster_entries}
+        ]
+        db_root_dir = '{db_root_dir}'
+        log_dir = '{log_dir}'
+        "#
+    )
+}
+
+/// Create node config with custom role for specific node
+/// Allows setting a node as LEARNER (role=3) instead of VOTER (role=1)
+pub async fn create_node_config_with_role(
+    node_id: u64,
+    port: u16,
+    cluster_ports: &[u16],
+    node_role: i32, // 1 = VOTER, 3 = LEARNER
+    db_root_dir: &str,
+    log_dir: &str,
+) -> String {
+    let initial_cluster_entries = cluster_ports
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let id = i as u64 + 1;
+            // Use custom role if this is the current node, otherwise default to VOTER
+            let role = if id == node_id { node_role } else { 1 };
+            format!(
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = {role}, status = 2 }}"
             )
         })
         .collect::<Vec<_>>()
@@ -263,7 +302,12 @@ async fn build_node(
     let storage_engine = if let Some(s) = storage_engine {
         s
     } else {
-        let storage_path = config.cluster.db_root_dir.clone().join("storage_engine");
+        let storage_path = config
+            .cluster
+            .db_root_dir
+            .clone()
+            .join(config.cluster.node_id.to_string())
+            .join("storage_engine");
         Arc::new(
             FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
         )
@@ -275,7 +319,11 @@ async fn build_node(
     let state_machine = if let Some(sm) = state_machine {
         sm
     } else {
-        let state_machine_path = config.cluster.db_root_dir.join("state_machine");
+        let state_machine_path = config
+            .cluster
+            .db_root_dir
+            .join(config.cluster.node_id.to_string())
+            .join("state_machine");
         Arc::new(
             FileStateMachine::new(state_machine_path)
                 .await
@@ -286,17 +334,10 @@ async fn build_node(
     builder = builder.state_machine(state_machine);
 
     // Build and start the node
-    let node = builder
-        .build()
-        .await
-        .map_err(|e| {
-            eprintln!("Failed to build node: {e:?}");
-            std::io::Error::other(format!("Failed to build node: {e}"))
-        })?
-        .start_rpc_server()
-        .await
-        .ready()
-        .expect("Should succeed to start node");
+    let node = builder.start().await.map_err(|e| {
+        eprintln!("Failed to start node: {e:?}");
+        std::io::Error::other(format!("Failed to start node: {e}"))
+    })?;
 
     // Return both the node and the temp directory to keep it alive
     Ok(node)

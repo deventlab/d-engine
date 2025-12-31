@@ -1,5 +1,8 @@
+use d_engine_proto::common::AddNode;
+use d_engine_proto::common::RemoveNode;
+use d_engine_proto::common::membership_change::Change;
+
 use crate::test_utils::EntryBuilder;
-use d_engine_proto::common::{AddNode, RemoveNode, membership_change::Change};
 
 #[test]
 fn test_entry_builder_creation() {
@@ -46,6 +49,7 @@ fn test_entry_builder_config_add_node() {
     let change = Change::AddNode(AddNode {
         node_id: 2,
         address: "127.0.0.1:8080".to_string(),
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
     });
     let (_, entry) = builder.config(change);
 
@@ -73,6 +77,7 @@ fn test_entry_builder_mixed_sequence() {
     let change = Change::AddNode(AddNode {
         node_id: 5,
         address: "192.168.1.1:9000".to_string(),
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
     });
     let (_, config_entry) = builder.config(change);
 
@@ -193,6 +198,7 @@ fn test_entry_builder_payload_types() {
     let change = Change::AddNode(AddNode {
         node_id: 1,
         address: "127.0.0.1:5000".to_string(),
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
     });
     let (_, config_entry) = builder.config(change);
 

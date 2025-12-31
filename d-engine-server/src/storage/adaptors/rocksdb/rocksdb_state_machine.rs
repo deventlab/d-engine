@@ -8,6 +8,18 @@ use std::time::SystemTime;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::Error;
+use d_engine_core::Lease;
+use d_engine_core::StateMachine;
+use d_engine_core::StorageError;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Delete;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
 use prost::Message;
 use rocksdb::Cache;
@@ -23,18 +35,6 @@ use tracing::instrument;
 use tracing::warn;
 
 use crate::storage::DefaultLease;
-use d_engine_core::Error;
-use d_engine_core::Lease;
-use d_engine_core::StateMachine;
-use d_engine_core::StorageError;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Delete;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::server::storage::SnapshotMetadata;
 
 const STATE_MACHINE_CF: &str = "state_machine";
 const STATE_MACHINE_META_CF: &str = "state_machine_meta";
@@ -57,6 +57,13 @@ pub struct RocksDBStateMachine {
     // DefaultLease is thread-safe internally (uses DashMap + Mutex)
     // Injected by NodeBuilder after construction
     lease: Option<Arc<DefaultLease>>,
+
+    /// Whether lease manager is enabled (immutable after init)
+    /// Set to true when lease is injected, never changes after that
+    ///
+    /// Invariant: lease_enabled == true ⟹ lease.is_some()
+    /// Performance: Allows safe unwrap_unchecked in hot paths
+    lease_enabled: bool,
 }
 
 impl RocksDBStateMachine {
@@ -85,7 +92,8 @@ impl RocksDBStateMachine {
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
-            lease: None, // Will be injected by NodeBuilder
+            lease: None,          // Will be injected by NodeBuilder
+            lease_enabled: false, // Default: no lease until set
         })
     }
 
@@ -98,6 +106,8 @@ impl RocksDBStateMachine {
         &mut self,
         lease: Arc<DefaultLease>,
     ) {
+        // Mark lease as enabled (immutable after this point)
+        self.lease_enabled = true;
         self.lease = Some(lease);
     }
 
@@ -396,8 +406,15 @@ impl RocksDBStateMachine {
 
 #[async_trait]
 impl StateMachine for RocksDBStateMachine {
-    fn start(&self) -> Result<(), Error> {
+    async fn start(&self) -> Result<(), Error> {
         self.is_serving.store(true, Ordering::SeqCst);
+
+        // Load persisted lease data if configured
+        if let Some(ref _lease) = self.lease {
+            self.load_lease_data().await?;
+            debug!("Lease data loaded during state machine initialization");
+        }
+
         info!("RocksDB state machine started");
         Ok(())
     }
@@ -416,15 +433,6 @@ impl StateMachine for RocksDBStateMachine {
         Ok(())
     }
 
-    fn try_inject_lease(
-        &mut self,
-        config: d_engine_core::config::LeaseConfig,
-    ) -> Result<(), Error> {
-        let lease = Arc::new(DefaultLease::new(config));
-        self.lease = Some(lease);
-        Ok(())
-    }
-
     fn is_running(&self) -> bool {
         self.is_serving.load(Ordering::SeqCst)
     }
@@ -433,26 +441,8 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
-        // Passive expiration check: DefaultLease handles expiration logic
-        if let Some(ref lease) = self.lease {
-            if lease.is_expired(key_buffer) {
-                // Key has expired, delete it
-                let db = self.db.load();
-                let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                    StorageError::DbError("State machine CF not found".to_string())
-                })?;
-
-                // Delete from RocksDB
-                db.delete_cf(&cf, key_buffer)
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-                // Unregister from lease
-                lease.unregister(key_buffer);
-
-                debug!("Passive expiration: deleted key {:?}", key_buffer);
-                return Ok(None);
-            }
-        }
+        // Background cleanup strategy: expired keys are cleaned by background worker
+        // No on-read checks needed (simplifies get() hot path)
 
         let db = self.db.load();
         let cf = db
@@ -517,11 +507,19 @@ impl StateMachine for RocksDBStateMachine {
                         })) => {
                             batch.put_cf(&cf, &key, &value);
 
-                            // Register TTL if specified
+                            // Register lease if TTL specified
                             if ttl_secs > 0 {
-                                if let Some(ref lease) = self.lease {
-                                    lease.register(key.clone(), ttl_secs);
+                                // Validate lease is enabled before accepting TTL requests
+                                if !self.lease_enabled {
+                                    return Err(StorageError::FeatureNotEnabled(
+                                        "TTL feature is not enabled on this server. \
+                                         Enable it in config: [raft.state_machine.lease] enabled = true".into()
+                                    ).into());
                                 }
+
+                                // Safety: lease_enabled invariant ensures lease.is_some()
+                                let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
+                                lease.register(key.clone(), ttl_secs);
                             }
                         }
                         Some(Operation::Delete(Delete { key })) => {
@@ -553,23 +551,10 @@ impl StateMachine for RocksDBStateMachine {
 
         self.apply_batch(batch)?;
 
-        // TTL cleanup: piggyback on apply_chunk for minimal overhead
-        // DefaultLease uses time-limited cleanup to avoid blocking
-        if let Some(ref lease) = self.lease {
-            let expired_keys = lease.on_apply();
-            if !expired_keys.is_empty() {
-                let db = self.db.load();
-                let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                    StorageError::DbError("State machine CF not found".to_string())
-                })?;
-
-                let mut batch = WriteBatch::default();
-                for key in &expired_keys {
-                    batch.delete_cf(&cf, key);
-                }
-                self.apply_batch(batch)?;
-            }
-        }
+        // Note: Lease cleanup is now handled by:
+        // - Lazy strategy: cleanup in get() method
+        // - Background strategy: dedicated async task
+        // This avoids blocking the Raft apply hot path
 
         if let Some(log_id) = highest_index_entry {
             self.update_last_applied(log_id);
@@ -774,14 +759,6 @@ impl StateMachine for RocksDBStateMachine {
         self.flush()
     }
 
-    async fn post_start_init(&self) -> Result<(), Error> {
-        if let Some(ref _lease) = self.lease {
-            self.load_lease_data().await?;
-            debug!("Lease data loaded during state machine initialization");
-        }
-        Ok(())
-    }
-
     #[instrument(skip(self))]
     async fn reset(&self) -> Result<(), Error> {
         let db = self.db.load();
@@ -812,5 +789,45 @@ impl StateMachine for RocksDBStateMachine {
 
         info!("RocksDB state machine reset completed");
         Ok(())
+    }
+
+    async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
+        // Fast path: no lease configured
+        let Some(ref lease) = self.lease else {
+            return Ok(vec![]);
+        };
+
+        // Get all expired keys
+        let now = SystemTime::now();
+        let expired_keys = lease.get_expired_keys(now);
+
+        if expired_keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        debug!(
+            "Lease background cleanup: found {} expired keys",
+            expired_keys.len()
+        );
+
+        // Delete expired keys from RocksDB
+        let db = self.db.load();
+        let cf = db
+            .cf_handle(STATE_MACHINE_CF)
+            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+
+        let mut batch = WriteBatch::default();
+        for key in &expired_keys {
+            batch.delete_cf(&cf, key);
+        }
+
+        self.apply_batch(batch)?;
+
+        info!(
+            "Lease background cleanup: deleted {} expired keys",
+            expired_keys.len()
+        );
+
+        Ok(expired_keys)
     }
 }

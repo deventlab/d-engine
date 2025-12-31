@@ -1,16 +1,15 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use d_engine_core::ConnectionType;
+use d_engine_core::NetworkConfig;
+use d_engine_core::NetworkError;
+use d_engine_core::Result;
 use dashmap::DashMap;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tracing::debug;
 use tracing::trace;
-
-use d_engine_core::ConnectionType;
-use d_engine_core::NetworkConfig;
-use d_engine_core::NetworkError;
-use d_engine_core::Result;
 
 /// Cached gRPC channel with metadata
 #[derive(Clone)]

@@ -214,42 +214,46 @@ fn type_mismatch_in_config_should_fail_gracefully() {
 
 /// Tests for node join status detection
 mod join_status_tests {
-    use super::*;
     use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
-    /// # Case 1: Node is in joining status
+    use super::*;
+
+    /// # Case 1: Node is a learner with promotable status
     #[test]
-    fn test_is_joining_case1_active_joining() {
+    fn test_is_joining_case1_active_promotable() {
         let mut config = RaftNodeConfig::default();
         config.cluster.node_id = 100;
         config.cluster.initial_cluster = vec![
             NodeMeta {
                 id: 100,
                 address: "127.0.0.1:8080".to_string(),
-                role: 1, // FOLLOWER
-                status: NodeStatus::Joining as i32,
+                role: d_engine_proto::common::NodeRole::Learner as i32,
+                status: NodeStatus::Promotable as i32,
             },
             NodeMeta {
                 id: 200,
                 address: "127.0.0.1:8081".to_string(),
-                role: 1, // FOLLOWER
+                role: d_engine_proto::common::NodeRole::Follower as i32,
                 status: NodeStatus::Active as i32,
             },
         ];
 
-        assert!(config.is_joining(), "Node 100 should be in joining status");
+        assert!(
+            config.is_learner(),
+            "Node 100 with role=Learner should return true"
+        );
     }
 
-    /// # Case 2: Node is active, not joining
+    /// # Case 2: Node is active, not promotable
     #[test]
-    fn test_is_joining_case2_active_not_joining() {
+    fn test_is_joining_case2_active_not_promotable() {
         let mut config = RaftNodeConfig::default();
         config.cluster.node_id = 200;
         config.cluster.initial_cluster = vec![
             NodeMeta {
                 id: 100,
-                status: NodeStatus::Joining as i32,
+                status: NodeStatus::Promotable as i32,
                 ..Default::default()
             },
             NodeMeta {
@@ -259,7 +263,7 @@ mod join_status_tests {
             },
         ];
 
-        assert!(!config.is_joining(), "Node 200 should not be joining");
+        assert!(!config.is_learner(), "Node 200 should not be promotable");
     }
 
     /// # Case 3: Node not in initial cluster
@@ -270,7 +274,7 @@ mod join_status_tests {
         config.cluster.initial_cluster = vec![
             NodeMeta {
                 id: 100,
-                status: NodeStatus::Joining as i32,
+                status: NodeStatus::Promotable as i32,
                 ..Default::default()
             },
             NodeMeta {
@@ -281,7 +285,7 @@ mod join_status_tests {
         ];
 
         assert!(
-            !config.is_joining(),
+            !config.is_learner(),
             "Node 300 not in cluster should return false"
         );
     }
@@ -293,44 +297,49 @@ mod join_status_tests {
         config.cluster.node_id = 100;
         config.cluster.initial_cluster = Vec::new();
 
-        assert!(!config.is_joining(), "Empty cluster should return false");
+        assert!(!config.is_learner(), "Empty cluster should return false");
     }
 
-    /// # Case 5: Multiple joining nodes (shouldn't happen but test anyway)
+    /// # Case 5: Multiple learner nodes (shouldn't happen but test anyway)
     #[test]
-    fn test_is_joining_case5_multiple_joining() {
+    fn test_is_joining_case5_multiple_promotable() {
         let mut config = RaftNodeConfig::default();
         config.cluster.node_id = 100;
         config.cluster.initial_cluster = vec![
             NodeMeta {
                 id: 100,
-                status: NodeStatus::Joining as i32,
+                role: d_engine_proto::common::NodeRole::Learner as i32,
+                status: NodeStatus::Promotable as i32,
                 ..Default::default()
             },
             NodeMeta {
                 id: 200,
-                status: NodeStatus::Joining as i32,
+                role: d_engine_proto::common::NodeRole::Learner as i32,
+                status: NodeStatus::Promotable as i32,
                 ..Default::default()
             },
         ];
 
-        assert!(config.is_joining(), "Node 100 should still be joining");
+        assert!(
+            config.is_learner(),
+            "Node 100 with role=Learner should return true"
+        );
     }
 
-    /// # Case 6: Draining status
+    /// # Case 6: ReadOnly status
     #[test]
-    fn test_is_joining_case6_draining_status() {
+    fn test_is_joining_case6_readonly_status() {
         let mut config = RaftNodeConfig::default();
         config.cluster.node_id = 100;
         config.cluster.initial_cluster = vec![NodeMeta {
             id: 100,
-            status: NodeStatus::Draining as i32,
+            status: NodeStatus::ReadOnly as i32,
             ..Default::default()
         }];
 
         assert!(
-            !config.is_joining(),
-            "Draining status should not be joining"
+            !config.is_learner(),
+            "ReadOnly status should not be promotable"
         );
     }
 
@@ -345,6 +354,6 @@ mod join_status_tests {
             ..Default::default()
         }];
 
-        assert!(!config.is_joining(), "Invalid status should not be joining");
+        assert!(!config.is_learner(), "Invalid status should not be joining");
     }
 }

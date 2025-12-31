@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use std::collections::HashMap;
+
+    use bytes::Bytes;
 
     /// Test that get_multi reconstructs results in correct key order.
     ///

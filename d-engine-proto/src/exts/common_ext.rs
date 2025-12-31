@@ -1,7 +1,10 @@
-use crate::common::{
-    EntryPayload, MembershipChange, Noop, entry_payload::Payload, membership_change::Change,
-};
 use bytes::Bytes;
+
+use crate::common::EntryPayload;
+use crate::common::MembershipChange;
+use crate::common::Noop;
+use crate::common::entry_payload::Payload;
+use crate::common::membership_change::Change;
 
 impl EntryPayload {
     pub fn command(command: Bytes) -> Self {
