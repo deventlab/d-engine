@@ -82,11 +82,13 @@ async fn create_embedded_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn s
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
+db_root_dir = "{}"
 
 [raft.watch]
 event_queue_size = 10000
 watcher_buffer_size = 100
-"#
+"#,
+        db_path.display()
     );
     std::fs::write(&config_path, config_content)?;
 
