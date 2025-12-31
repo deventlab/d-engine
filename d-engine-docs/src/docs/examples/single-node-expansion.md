@@ -110,8 +110,7 @@ db_root_dir = "./db"
 | **Learner** (role=3) ✅  | Safe - doesn't affect quorum during sync   | None - promotes after catching up       |
 | **Follower** (role=2) ⚠️ | Risky - immediately participates in quorum | High - can slow down writes if unstable |
 
-**IMPORTANT**: Always join new nodes as Learner. Joining as Follower can impact cluster availability if the new node is slow or unstable.  
-📖 Details: See [Node Join & Learner Promotion Architecture](../../architecture/node-join-architecture.md)
+**IMPORTANT**: Always join new nodes as Learner. Joining as Follower can impact cluster availability if the new node is slow or unstable.
 
 **Start**:
 

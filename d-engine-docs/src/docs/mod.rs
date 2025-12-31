@@ -5,7 +5,6 @@
 //!
 //! ## Documentation Sections
 //!
-//! - [Architecture](self::architecture) - Core design principles and implementation details
 //! - [Client Guide](self::client_guide) - Client application development and API usage
 //! - [Performance](self::performance) - Optimization techniques and benchmarking
 //! - [Server Guide](self::server_guide) - Server deployment and customization
@@ -26,7 +25,6 @@ pub mod use_cases {
     #![doc = include_str!("use-cases.md")]
 }
 
-pub mod architecture;
 pub mod client_guide;
 pub mod examples;
 pub mod performance;

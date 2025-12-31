@@ -176,7 +176,6 @@ make clean-logs   # Remove logs and DB only
 ## Further Reading
 
 - [Single-Node Expansion Guide](../../d-engine-docs/src/docs/examples/single-node-expansion.md) - Detailed explanation
-- [Node Join Architecture](../../d-engine-docs/src/docs/architecture/node-join-architecture.md) - Why Learner → Voter pattern
 
 ---
 

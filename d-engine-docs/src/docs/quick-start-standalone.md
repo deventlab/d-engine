@@ -61,7 +61,7 @@ make run
 
 **Expected output**:
 
-```
+```text
 Not leader, redirecting to 0.0.0.0:9082
 Write success (leader at 0.0.0.0:9082)
 Value: world

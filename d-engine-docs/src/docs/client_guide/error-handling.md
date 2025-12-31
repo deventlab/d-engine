@@ -74,7 +74,7 @@ See [Quick Start](../quick-start-standalone.md) for complete working example.
 
 Check `Result`:
 
-```rust
+```rust,ignore
 match client.put(key, value).await {
     Ok(_) => { /* success */ }
     Err(e) => {
@@ -122,4 +122,3 @@ This allows immediate redirect instead of trying all nodes.
 
 - [Quick Start](../quick-start-standalone.md) - See errors in action
 - [Read Consistency](./read-consistency.md) - Consistency vs availability
-- [Error Design Principles](../architecture/error-handling-design-principles.md) - Why we designed it this way

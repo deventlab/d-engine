@@ -81,7 +81,6 @@
 //! #### Server Operators
 //! - [Customize Storage Engine](docs::server_guide::customize_storage_engine)
 //! - [Customize State Machine](docs::server_guide::customize_state_machine)
-//! - [Log Purge Executor](docs::server_guide::customize_raft_log_purge_executor)
 //! - [Consistency Tuning](docs::server_guide::consistency_tuning)
 //! - [Watch Feature](docs::server_guide::watch_feature)
 //!
