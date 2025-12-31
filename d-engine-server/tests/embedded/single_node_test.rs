@@ -3,25 +3,18 @@ use std::time::Duration;
 use d_engine_server::EmbeddedEngine;
 use tracing_test::traced_test;
 
-#[allow(dead_code)]
-const TEST_DIR: &str = "embedded/single_node";
-
 /// Test single-node EmbeddedEngine basic lifecycle
 #[tokio::test]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = format!("./db/{TEST_DIR}");
-
-    // Clean up previous test data
-    if tokio::fs::metadata(&data_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(&data_dir).await?;
-    }
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
 
     // Configure single-node cluster via environment variables
     // Safe in test context: tests run in isolated processes
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9001");
-        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", &data_dir);
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", data_dir.to_str().unwrap());
     }
 
     // Start embedded engine with RocksDB
@@ -81,17 +74,14 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
 #[tokio::test]
 #[traced_test]
 async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = format!("./db/{TEST_DIR}_notify");
-
-    if tokio::fs::metadata(&data_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(&data_dir).await?;
-    }
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
 
     // Configure single-node cluster
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9002");
-        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", &data_dir);
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", data_dir.to_str().unwrap());
     }
 
     let engine = EmbeddedEngine::start().await?;
@@ -129,17 +119,14 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     use d_engine_server::EmbeddedEngine;
 
-    let data_dir = format!("./db/{TEST_DIR}_persist");
-
-    if tokio::fs::metadata(&data_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(&data_dir).await?;
-    }
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
 
     // Configure single-node cluster
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9003");
-        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", &data_dir);
+        std::env::set_var("RAFT__CLUSTER__DB_ROOT_DIR", data_dir.to_str().unwrap());
     }
 
     // First session: write data

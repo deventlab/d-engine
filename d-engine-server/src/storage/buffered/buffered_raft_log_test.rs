@@ -4237,12 +4237,14 @@ async fn test_gap_handling_in_indexes() {
 
 #[tokio::test]
 async fn test_read_performance_remains_lockfree() {
-    // Detect if this test is being run individually (via cargo test <name>)
-    let args: Vec<String> = std::env::args().collect();
-    let test_name = "test_read_performance_remains_lockfree";
-    let is_single_run = args.iter().any(|a| a.contains(test_name));
-
-    let expected_min = if is_single_run { 10_000.0 } else { 10.0 };
+    // Use environment variable to control performance validation mode
+    // Set CI=1 to use relaxed threshold for CI environment (10 reads/sec)
+    // Without it, use strict performance validation (10K reads/sec)
+    let expected_min = if std::env::var("CI").is_ok() {
+        10.0
+    } else {
+        10_000.0
+    };
 
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,

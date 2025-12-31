@@ -78,7 +78,7 @@ Value: world
 **Try other languages:**
 
 - Proto files: `d-engine-proto/proto/*.proto`
-- Language guides: https://grpc.io/docs/languages/
+- Language guides: <https://grpc.io/docs/languages/>
 
 **Advanced topics:**
 

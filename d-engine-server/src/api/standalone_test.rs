@@ -92,7 +92,7 @@ listen_addr = "127.0.0.1:0"
 
     #[tokio::test]
     #[cfg(debug_assertions)]
-    #[serial]
+    #[serial(tmp_db)]
     async fn test_run_with_config_path_env_tmp_db_allows_in_debug() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("test_config.toml");
@@ -190,7 +190,7 @@ listen_addr = "127.0.0.1:0"
 
     #[tokio::test]
     #[cfg(debug_assertions)]
-    #[serial]
+    #[serial(tmp_db)]
     async fn test_run_without_config_path_env_allows_in_debug() {
         // No CONFIG_PATH env var - uses default config with /tmp/db
         unsafe {
@@ -400,7 +400,7 @@ election_timeout_max_ms = 3000
 
     #[tokio::test]
     #[cfg(debug_assertions)]
-    #[serial]
+    #[serial(tmp_db)]
     async fn test_run_with_tmp_db_allows_in_debug() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("test_config.toml");

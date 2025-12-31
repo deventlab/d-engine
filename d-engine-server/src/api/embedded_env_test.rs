@@ -74,7 +74,7 @@ listen_addr = "127.0.0.1:0"
 
     #[tokio::test]
     #[cfg(debug_assertions)]
-    #[serial]
+    #[serial(tmp_db)]
     async fn test_start_with_config_path_env_tmp_db_allows_in_debug() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_path = _temp_dir.path().join("test_config.toml");

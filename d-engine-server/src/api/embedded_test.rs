@@ -347,7 +347,7 @@ mod embedded_engine_tests {
 
         #[tokio::test]
         #[cfg(debug_assertions)]
-        #[serial]
+        #[serial(tmp_db)]
         async fn test_start_without_config_path_env_allows_in_debug() {
             // No CONFIG_PATH env var - uses default config with /tmp/db
             unsafe {
@@ -446,7 +446,7 @@ election_timeout_max_ms = 3000
 
         #[tokio::test]
         #[cfg(debug_assertions)]
-        #[serial]
+        #[serial(tmp_db)]
         async fn test_start_with_tmp_db_allows_in_debug() {
             let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
             let config_path = _temp_dir.path().join("test_config.toml");

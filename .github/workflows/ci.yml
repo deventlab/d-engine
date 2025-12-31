@@ -45,6 +45,7 @@ jobs:
       contents: read
     env:
       RUST_TOOLCHAIN: 1.88.0
+      CI: 1
     steps:
       - uses: actions/checkout@v4
         with:

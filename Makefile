@@ -73,7 +73,8 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)Testing:$(NC)"
 	@echo "    make test                  # Run unit + integration tests"
-	@echo "    make test-all              # Run all tests including benchmarks"
+	@echo "    make test-all              # Fast parallel testing (nextest)"
+	@echo "    make test-all-legacy       # Comprehensive pre-release suite"
 	@echo "    make test-unit             # Run unit tests only"
 	@echo "    make test-integration      # Run integration tests only"
 	@echo ""
@@ -104,12 +105,15 @@ check-env:
 	@echo "$(GREEN)✓ Cargo found: $$($(CARGO) --version)$(NC)"
 	@echo "$(GREEN)✓ Rustc found: $$(rustc --version)$(NC)"
 
-## install-tools        Install required Rust components (rustfmt, clippy, etc.)
+## install-tools        Install required Rust components (rustfmt, clippy, nextest)
 install-tools: check-env
 	@echo "$(BLUE)Installing Rust development components...$(NC)"
 	@rustup component add rustfmt clippy rust-src rust-analyzer 2>/dev/null || true
+	@if ! command -v cargo-nextest >/dev/null 2>&1; then \
+		echo "$(YELLOW)Installing cargo-nextest for fast parallel testing...$(NC)"; \
+		cargo install cargo-nextest --locked; \
+	fi
 	@echo "$(GREEN)✓ Components installed$(NC)"
-	@echo "$(CYAN)Optional: cargo install cargo-nextest --locked$(NC)"
 
 ## install              Alias for install-tools
 install: install-tools
@@ -320,36 +324,23 @@ endif
 		$(CARGO) test -p $(CRATE) --lib --tests --no-fail-fast -- --nocapture --show-output
 	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
 
-## test-all             Run all tests: unit + integration + doc + benchmarks + clippy checks
-test-all: check-all-projects test-unit test-integration test-release test-doc test-examples docs-check-all bench
-	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
+## test-all             Run all tests with nextest (fast, parallel)
+test-all: check-all-projects test-doc test-examples docs-check-all bench
+	@echo "$(BLUE)Running all tests with nextest...$(NC)"
+	@if command -v cargo-nextest >/dev/null 2>&1; then \
+		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) nextest run --all-features --workspace --no-fail-fast; \
+	else \
+		echo "$(YELLOW)nextest not installed, falling back to cargo test$(NC)"; \
+		RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) test --workspace --all-features --no-fail-fast; \
+	fi
+	@$(CARGO) test --doc --workspace
+	@echo "$(GREEN)✓ All tests passed$(NC)"
 
-## test-release         Run unit tests in release mode (validates release-only behavior)
-test-release: install-tools check-workspace
-	@echo "$(BLUE)Running unit tests in release mode...$(NC)"
-	@for member in $(WORKSPACE_MEMBERS); do \
-		echo "$(CYAN)Release mode testing crate: $$member$(NC)"; \
-		if [ "$$member" = "d-engine-server" ]; then \
-			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test --release -p $$member --lib --features rocksdb,watch --no-fail-fast -- --skip embedded_env_test --nocapture || \
-			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
-		elif [ "$$member" = "d-engine-core" ]; then \
-			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test --release -p $$member --lib --features watch --no-fail-fast -- --nocapture || \
-			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
-		else \
-			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test --release -p $$member --lib --no-fail-fast -- --nocapture || \
-			{ echo "$(RED)✗ Release tests failed in crate: $$member$(NC)"; exit 1; }; \
-		fi; \
-	done
-	@echo "$(GREEN)✓ Release mode tests passed$(NC)"
-	@echo ""
-	@echo "$(BLUE)Running release mode sequential tests...$(NC)"
-	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Release sequential tests failed$(NC)"; exit 1; }
-	@echo "$(GREEN)✓ All release mode tests passed$(NC)"
+## test-all-legacy      Comprehensive test suite (includes clippy/docs/bench checks)
+test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
+	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace

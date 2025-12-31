@@ -16,12 +16,10 @@ use futures::StreamExt;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
-mod client_manager;
-mod common;
-use common::TestContext;
-use common::create_node_config;
-use common::node_config;
-use common::start_node;
+use crate::common::TestContext;
+use crate::common::create_node_config;
+use crate::common::node_config;
+use crate::common::start_node;
 
 /// Helper function to create a 3-node standalone cluster with watch enabled
 async fn setup_standalone_cluster()
@@ -29,9 +27,18 @@ async fn setup_standalone_cluster()
     let temp_dir = TempDir::new()?;
     let base_path = temp_dir.path();
 
-    // Use random ports to avoid conflicts
-    let base_port = 50000 + (std::process::id() % 10000) as u16;
-    let ports = [base_port, base_port + 1, base_port + 2];
+    // Use system-assigned ports to avoid conflicts
+    // Bind temporarily to get available ports, then release immediately
+    let ports: Vec<u16> = (0..3)
+        .map(|_| {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
+            let port = listener.local_addr().expect("Failed to get local addr").port();
+            drop(listener); // Release immediately
+            port
+        })
+        .collect();
+    let ports = [ports[0], ports[1], ports[2]];
 
     let mut graceful_txs = Vec::new();
     let mut node_handles = Vec::new();

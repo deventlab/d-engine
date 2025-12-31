@@ -4,18 +4,12 @@ use std::time::Duration;
 use d_engine_server::RocksDBStateMachine;
 use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
-use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use crate::common::reset;
-
-const TEST_DIR: &str = "embedded/failover";
-const DB_ROOT_DIR: &str = "./db/embedded/failover";
-const LOG_DIR: &str = "./logs/embedded/failover";
 
 /// Test 3-node cluster leader failover with EmbeddedEngine API
 ///
@@ -26,9 +20,10 @@ const LOG_DIR: &str = "./logs/embedded/failover";
 /// 4. Verify cluster operational with 2/3 nodes
 #[tokio::test]
 #[traced_test]
-#[serial]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
-    reset(TEST_DIR).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root_dir = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -41,7 +36,14 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], ports, DB_ROOT_DIR, LOG_DIR).await;
+        let config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root_dir.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
         let config = node_config(&config_str);
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
@@ -193,15 +195,14 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 /// 5. Verify it rejoins and syncs data
 #[tokio::test]
 #[traced_test]
-#[serial]
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
-    reset(&format!("{TEST_DIR}_rejoin")).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let db_root = format!("{DB_ROOT_DIR}_rejoin");
-    let log_dir = format!("{LOG_DIR}_rejoin");
 
     info!("Starting 3-node cluster for rejoin test");
 
@@ -210,7 +211,14 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
+        let config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
@@ -324,13 +332,13 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[traced_test]
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
-    reset(&format!("{TEST_DIR}_minority")).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let db_root = format!("{DB_ROOT_DIR}_minority");
-    let log_dir = format!("{LOG_DIR}_minority");
 
     info!("Starting 3-node cluster for minority failure test");
 
@@ -338,7 +346,14 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
-        let config_str = create_node_config(node_id, ports[i], ports, &db_root, &log_dir).await;
+        let config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));

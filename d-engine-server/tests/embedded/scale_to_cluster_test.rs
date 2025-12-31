@@ -4,17 +4,11 @@ use std::time::Duration;
 use d_engine_server::EmbeddedEngine;
 use d_engine_server::RocksDBStateMachine;
 use d_engine_server::RocksDBStorageEngine;
-use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use crate::common::reset;
-
-const TEST_DIR: &str = "embedded/scale_to_cluster";
-const DB_ROOT_DIR: &str = "./db/embedded/scale_to_cluster";
-const LOG_DIR: &str = "./logs/embedded/scale_to_cluster";
 
 /// Test scaling from single-node to 3-node cluster
 ///
@@ -24,9 +18,10 @@ const LOG_DIR: &str = "./logs/embedded/scale_to_cluster";
 /// 3. Verify cluster healthy and data preserved
 #[tokio::test]
 #[traced_test]
-#[serial]
 async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>> {
-    reset(TEST_DIR).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let db_root_dir = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -45,13 +40,16 @@ initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }}
 ]
 initial_cluster_size = 1
-db_root_dir = '{DB_ROOT_DIR}'
-log_dir = '{LOG_DIR}'
+db_root_dir = '{}'
+log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[0], ports[0]
+        ports[0],
+        ports[0],
+        db_root_dir.display(),
+        log_dir.display()
     );
 
     let node1_config_path = "/tmp/scale_test_node1.toml";
@@ -98,13 +96,17 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 3, status = 0 }}
 ]
 initial_cluster_size = 1
-db_root_dir = '{DB_ROOT_DIR}'
-log_dir = '{LOG_DIR}'
+db_root_dir = '{}'
+log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[1], ports[0], ports[1]
+        ports[1],
+        ports[0],
+        ports[1],
+        db_root_dir.display(),
+        log_dir.display()
     );
 
     let node2_config_path = "/tmp/scale_test_node2.toml";
@@ -138,13 +140,18 @@ initial_cluster = [
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 0 }}
 ]
 initial_cluster_size = 1
-db_root_dir = '{DB_ROOT_DIR}'
-log_dir = '{LOG_DIR}'
+db_root_dir = '{}'
+log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[2], ports[0], ports[1], ports[2]
+        ports[2],
+        ports[0],
+        ports[1],
+        ports[2],
+        db_root_dir.display(),
+        log_dir.display()
     );
 
     let node3_config_path = "/tmp/scale_test_node3.toml";
@@ -270,15 +277,18 @@ general_raft_timeout_duration_in_ms = 5000
 /// 4. Cluster remains operational with 2/3 majority
 #[tokio::test]
 #[traced_test]
-#[serial]
 async fn test_leader_failover_after_dynamic_scaling() -> Result<(), Box<dyn std::error::Error>> {
-    reset(&format!("{TEST_DIR}_failover")).await?;
+    // reset(&format!("{TEST_DIR}_failover")).await?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let db_root_dir = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let db_root = format!("{DB_ROOT_DIR}_failover");
-    let log_dir = format!("{LOG_DIR}_failover");
+    let db_root = format!("{}_failover", db_root_dir.display());
+    let log_dir = format!("{}_failover", log_dir.display());
 
     // ============================================================================
     // Phase 1: Single-Node Bootstrap
@@ -293,8 +303,8 @@ listen_address = '127.0.0.1:{}'
 initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }}
 ]
-db_root_dir = '{db_root}'
-log_dir = '{log_dir}'
+db_root_dir = '{}'
+log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 100
@@ -302,7 +312,7 @@ general_raft_timeout_duration_in_ms = 100
 election_timeout_min = 300
 election_timeout_max = 600
 "#,
-        ports[0], ports[0]
+        ports[0], ports[0], db_root, log_dir
     );
 
     let node1_config_path = "/tmp/failover_test_node1.toml";
@@ -546,7 +556,7 @@ election_timeout_max = 6000
 
     // Restart Node 1 (it was crashed at end of Phase 4)
     // Node 1 will rejoin as a follower since it already had membership
-    let node1_db_root = std::path::PathBuf::from(DB_ROOT_DIR).join("node1");
+    let node1_db_root = db_root_dir.clone().join("node1");
     let node1_storage_path = node1_db_root.join("storage");
     let node1_sm_path = node1_db_root.join("state_machine");
 
@@ -571,7 +581,11 @@ db_root_dir = '{}'
 election_timeout_ms = 150
 heartbeat_interval_ms = 50
 "#,
-        ports[0], ports[0], ports[1], ports[2], DB_ROOT_DIR
+        ports[0],
+        ports[0],
+        ports[1],
+        ports[2],
+        db_root_dir.display()
     );
 
     let node1_config_path = "/tmp/d-engine-test-node1-phase6.toml".to_string();

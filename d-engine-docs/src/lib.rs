@@ -84,14 +84,6 @@
 //! - [Consistency Tuning](docs::server_guide::consistency_tuning)
 //! - [Watch Feature](docs::server_guide::watch_feature)
 //!
-//! #### Architecture Deep Dive
-//! - [Raft Roles](docs::architecture::raft_role)
-//! - [Election Design](docs::architecture::election_design)
-//! - [Log Persistence](docs::architecture::raft_log_persistence_architecture)
-//! - [Snapshot Design](docs::architecture::snapshot_module_design)
-//! - [Node Join](docs::architecture::node_join_architecture)
-//! - [Error Handling Principles](docs::architecture::error_handling_design_principles)
-//!
 //! ### Examples & Performance
 //! - [Single Node Expansion](docs::examples::single_node_expansion) - Scale from 1 to 3 nodes
 //! - [Throughput Optimization](docs::performance::throughput_optimization_guide)
