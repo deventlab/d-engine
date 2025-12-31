@@ -4,9 +4,10 @@
 //!
 //! ## Available Guides
 //!
-//! - [Read Consistency](read_consistency.md) - Understanding and configuring read consistency
+//! - [Read Consistency](read_consistency) - Understanding and configuring read consistency
 //!   policies
-//! - [Error Handling](error_handling.md) - Error categories and retry strategies
+//! - [Error Handling](error_handling) - Error categories and retry strategies
+
 pub mod read_consistency {
     #![doc = include_str!("read-consistency.md")]
 }

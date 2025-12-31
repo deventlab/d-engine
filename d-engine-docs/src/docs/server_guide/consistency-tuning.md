@@ -212,5 +212,5 @@ Most cloud providers offer time synchronization services:
 
 ## Further Reading
 
-- Client usage guide: [Read Consistency Guide](../client_guide/read-consistency.md)
-- Performance tuning: [Throughput Optimization Guide](../performance/throughput-optimization-guide.md)
+- Client usage guide: [Read Consistency Guide](crate::docs::client_guide::read_consistency)
+- Performance tuning: [Throughput Optimization Guide](crate::docs::performance::throughput_optimization_guide)

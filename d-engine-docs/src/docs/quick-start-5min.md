@@ -328,7 +328,7 @@ kill <PID>
 
 ### Scale to 3-Node Cluster
 
-See [examples/single-node-expansion.md](./examples/single-node-expansion.md):
+See [Single Node Expansion](crate::docs::examples::single_node_expansion):
 
 - How to expand from 1 node to 3 nodes
 - Configuration changes needed
@@ -337,7 +337,7 @@ See [examples/single-node-expansion.md](./examples/single-node-expansion.md):
 
 ### Production-Grade 3-Node Cluster
 
-See [examples/three-nodes-cluster.md](./examples/three-nodes-cluster.md):
+See [Three Nodes Cluster](crate::docs::examples::three_nodes_cluster):
 
 - Start with 3 nodes simultaneously
 - Production-ready configuration
@@ -360,7 +360,7 @@ See [examples/three-nodes-cluster.md](./examples/three-nodes-cluster.md):
 
 ### Advanced Usage
 
-See [advanced-embedded.md](./advanced-embedded.md):
+For advanced usage:
 
 - Custom storage engines
 - Custom state machines
@@ -379,7 +379,7 @@ See [advanced-embedded.md](./advanced-embedded.md):
 
 **This is what "embedded distributed engine" means**: complexity hidden, power exposed.
 
-For a complete working example, see [examples/quick-start-embedded](../../examples/quick-start-embedded).
+For a complete working example, see the [quick-start-embedded example](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded).
 
 ---
 

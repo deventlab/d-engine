@@ -258,15 +258,12 @@ client.put(b"key", b"value")
 
 ### For Embedded Mode Users
 
-1. [Quick Start: Embedded in 5 Minutes](./quick-start-5min.md)
-2. [Advanced Embedded Usage](./server_guide/advanced-embedded.md)
-3. [Custom Storage Engines](./server_guide/customize-storage-engine.md)
+1. [Quick Start: Embedded in 5 Minutes](crate::docs::quick_start_5min)
+2. [Custom Storage Engines](crate::docs::server_guide::customize_storage_engine)
 
 ### For Standalone Mode Users
 
-1. [Quick Start: Standalone Mode](./quick-start-standalone.md)
-2. [Client API Guide](./client_guide/client-api.md)
-3. [Multi-Language Clients](./client_guide/multi-language-clients.md)
+1. [Quick Start: Standalone Mode](crate::docs::quick_start_standalone)
 
 ---
 

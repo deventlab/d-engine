@@ -11,7 +11,7 @@
 //! - **EmbeddedEngine**: Single-node start, scale to 3 nodes with zero code changes
 //! - **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
 //!
-//! See [CHANGELOG](../CHANGELOG.md) for full details.
+//! See the [CHANGELOG](https://github.com/deventlab/d-engine/blob/main/CHANGELOG.md) for full details.
 //!
 //! ## Quick Start
 //!

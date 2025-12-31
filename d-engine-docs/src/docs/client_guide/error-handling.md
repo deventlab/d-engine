@@ -66,7 +66,7 @@ for i := 0; i < maxRedirects; i++ {
 }
 ```
 
-See [Quick Start](../quick-start-standalone.md) for complete working example.
+See [Quick Start](crate::docs::quick_start_standalone) for complete working example.
 
 ---
 
@@ -120,5 +120,5 @@ This allows immediate redirect instead of trying all nodes.
 
 ## See Also
 
-- [Quick Start](../quick-start-standalone.md) - See errors in action
-- [Read Consistency](./read-consistency.md) - Consistency vs availability
+- [Quick Start](crate::docs::quick_start_standalone) - See errors in action
+- [Read Consistency](crate::docs::client_guide::read_consistency) - Consistency vs availability

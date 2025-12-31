@@ -69,7 +69,7 @@ Value: world
 
 > **Note**: Leader may be at any node. The client uses Leader Hint from error response to redirect automatically.
 
-**Want to see the code?** Check [examples/quick-start-standalone/main.go](../../examples/quick-start-standalone/main.go)
+**Want to see the code?** Check the [quick-start-standalone example](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 
 ---
 
@@ -84,7 +84,7 @@ Value: world
 
 - [Monitor cluster and test failover](#monitor-cluster)
 - [Embedded vs Standalone comparison](#embedded-vs-standalone)
-- [Production deployment](../../examples/three-nodes-cluster/README.md)
+- [Production deployment example](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-cluster)
 
 **Clean up:**
 

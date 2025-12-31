@@ -88,11 +88,6 @@
 //! - [Single Node Expansion](docs::examples::single_node_expansion) - Scale from 1 to 3 nodes
 //! - [Throughput Optimization](docs::performance::throughput_optimization_guide)
 //!
-//! ## API Documentation
-//!
-//! - [d_engine_server](../d_engine_server/index.html) - Server runtime API
-//! - [d_engine_client](../d_engine_client/index.html) - Client library API
-//! - [d_engine_core](../d_engine_core/index.html) - Core Raft traits
 //!
 //! ## License
 //!

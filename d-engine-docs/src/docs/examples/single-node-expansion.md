@@ -251,7 +251,7 @@ db_root_dir = "./db"
 ## Next Steps
 
 - See `examples/single-node-expansion/README.md` for detailed architecture
-- Review [quick-start-5min.md](./quick-start-5min.md) for embedded mode basics
+- Review [Quick Start Guide](crate::docs::quick_start_5min) for embedded mode basics
 - Check `examples/three-nodes-cluster/` for direct 3-node deployment
 
 ---

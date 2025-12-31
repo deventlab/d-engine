@@ -48,7 +48,7 @@
 
 ## Next Steps
 
-If your use case matches → **[Choose Integration Mode](integration-modes.md)**
+If your use case matches → **[Choose Integration Mode](crate::docs::integration_modes)**
 
 ---
 

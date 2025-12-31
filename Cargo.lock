@@ -598,11 +598,6 @@ dependencies = [
 [[package]]
 name = "d-engine-docs"
 version = "0.2.0"
-dependencies = [
- "d-engine-server",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "d-engine-proto"

@@ -16,7 +16,4 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-d-engine-server = { workspace = true }
-
-tokio = { workspace = true }
-tracing = { workspace = true }
+# No dependencies needed - this is a pure documentation crate

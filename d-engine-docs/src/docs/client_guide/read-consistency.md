@@ -192,7 +192,7 @@ Maximum staleness ≈ ~100ms (typical).
 
 For detailed server-side configuration (lease duration tuning, monitoring metrics, deployment scenarios), see:
 
-**[Server Guide: Consistency Tuning](../server_guide/consistency-tuning.md)**
+**[Server Guide: Consistency Tuning](crate::docs::server_guide::consistency_tuning)**
 
 ---
 

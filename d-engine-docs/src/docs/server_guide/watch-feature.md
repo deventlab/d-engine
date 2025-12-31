@@ -490,5 +490,5 @@ while let Some(event) = stream.next().await {
 
 ## See Also
 
-- [Customize State Machine](customize-state-machine.md) - Integrate Watch notifications
-- [Performance Optimization](../performance/throughput-optimization-guide.md) - Optimization guidelines
+- [Customize State Machine](crate::docs::server_guide::customize_state_machine) - Integrate Watch notifications
+- [Performance Optimization](crate::docs::performance::throughput_optimization_guide) - Optimization guidelines
