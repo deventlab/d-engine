@@ -6,12 +6,12 @@ use bincode::config;
 use bytes::Bytes;
 use d_engine::{
     Result, SnapshotError, StateMachine, StorageError,
-    common::{Entry, LogId, entry_payload::Payload},
-    storage::SnapshotMetadata,
-    write_command::{
+    client::{
         WriteCommand,
         write_command::{Delete, Insert, Operation},
     },
+    common::{Entry, LogId, entry_payload::Payload},
+    server_storage::SnapshotMetadata,
 };
 use parking_lot::Mutex;
 use prost::Message;

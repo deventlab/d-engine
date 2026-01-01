@@ -122,7 +122,7 @@ This example runs a single-node d-engine. The node automatically becomes leader 
 
 When you need high availability, add peers to your configuration. Your application code stays unchanged.
 
-See [Single-Node Expansion](../../../d-engine-docs/src/docs/examples/single-node-expansion.md) for step-by-step instructions.
+See [Single-Node Expansion](https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html) for step-by-step instructions.
 
 ## Using This as a Template
 
@@ -174,8 +174,8 @@ make run
 
 ## Next Steps
 
-- Read the full [quick-start guide](../../../d-engine-docs/src/docs/quick-start-5min.md)
-- Learn about [scaling to clusters](../../../d-engine-docs/src/docs/examples/single-node-expansion.md)
+- Read the full [quick-start guide](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_5min/index.html)
+- Learn about [scaling to clusters](https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html)
 - Explore more [examples](../)
 
 ## Key Takeaways

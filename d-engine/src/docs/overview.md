@@ -24,13 +24,12 @@ Follow this learning path to get started quickly:
 
 ## Crate Organization
 
-| Crate | Purpose |
-|-------|---------|
-| **d-engine-proto** | Protocol definitions (Prost) |
-| **d-engine-core** | Core Raft algorithm & traits |
+| Crate               | Purpose                         |
+| ------------------- | ------------------------------- |
+| **d-engine-proto**  | Protocol definitions (Prost)    |
+| **d-engine-core**   | Core Raft algorithm & traits    |
 | **d-engine-client** | Client library for applications |
-| **d-engine-server** | Server runtime implementation |
-| **d-engine-docs** | Documentation (you are here) |
+| **d-engine-server** | Server runtime implementation   |
 
 ## Quick Start
 
@@ -65,6 +64,7 @@ make start-cluster
 ## Documentation Index
 
 ### Getting Started
+
 - [Is d-engine Right for You?](crate::docs::use_cases) - Common use cases
 - [Integration Modes](crate::docs::integration_modes) - Embedded vs Standalone
 - [Quick Start - Embedded](crate::docs::quick_start_5min)
@@ -73,19 +73,21 @@ make start-cluster
 ### Guides by Role
 
 #### Client Developers
+
 - [Read Consistency](crate::docs::client_guide::read_consistency) - Choosing consistency policies
 - [Error Handling](crate::docs::client_guide::error_handling)
 
 #### Server Operators
+
 - [Customize Storage Engine](crate::docs::server_guide::customize_storage_engine)
 - [Customize State Machine](crate::docs::server_guide::customize_state_machine)
 - [Consistency Tuning](crate::docs::server_guide::consistency_tuning)
 - [Watch Feature](crate::docs::server_guide::watch_feature)
 
 ### Examples & Performance
+
 - [Single Node Expansion](crate::docs::examples::single_node_expansion) - Scale from 1 to 3 nodes
 - [Throughput Optimization](crate::docs::performance::throughput_optimization_guide)
-
 
 ## License
 

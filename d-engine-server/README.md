@@ -175,7 +175,7 @@ impl StorageEngine for MyStorageEngine {
 }
 ```
 
-See the [Customize guides](https://github.com/deventlab/d-engine/tree/main/docs/src/docs/server_guide) for detailed implementation instructions.
+See the [Server Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html) for detailed implementation instructions.
 
 ---
 
@@ -212,10 +212,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For comprehensive guides:
 
-- [Customize Storage Engine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-storage-engine.md)
-- [Customize State Machine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-state-machine.md)
-- [Watch Feature Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/watch-feature.md)
-- [Consistency Tuning](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/consistency-tuning.md)
+- [Customize Storage Engine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_storage_engine/index.html)
+- [Customize State Machine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_state_machine/index.html)
+- [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html)
+- [Consistency Tuning](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/consistency_tuning/index.html)
 
 ---
 

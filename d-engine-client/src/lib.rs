@@ -61,8 +61,8 @@
 //! ## Documentation
 //!
 //! For comprehensive guides:
-//! - [Read Consistency](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/read-consistency.md)
-//! - [Error Handling](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/error-handling.md)
+//! - [Read Consistency](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/read_consistency/index.html)
+//! - [Error Handling](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/error_handling/index.html)
 
 mod builder;
 mod cluster;

@@ -86,9 +86,9 @@
 //! ## Documentation
 //!
 //! For comprehensive guides:
-//! - [Customize Storage Engine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-storage-engine.md)
-//! - [Customize State Machine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-state-machine.md)
-//! - [Watch Feature Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/watch-feature.md)
+//! - [Customize Storage Engine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_storage_engine/index.html)
+//! - [Customize State Machine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_state_machine/index.html)
+//! - [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html)
 
 #![warn(missing_docs)]
 

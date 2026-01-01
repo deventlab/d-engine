@@ -52,7 +52,7 @@
 //! ## Documentation
 //!
 //! For language-specific integration guides:
-//! - [Go Client Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/go-client.md)
+//! - [Go Client Example](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 //!
 //! ## Protocol Modules
 //!

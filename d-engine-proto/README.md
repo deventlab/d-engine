@@ -101,8 +101,8 @@ This crate provides protobuf-generated types organized by service area:
 
 For language-specific integration guides:
 
-- [Go Client Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/go-client.md)
-- [Error Handling](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/error-handling.md)
+- [Go Client Example](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
+- [Error Handling](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/error_handling/index.html)
 
 ---
 

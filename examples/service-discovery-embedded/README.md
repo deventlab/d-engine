@@ -56,4 +56,3 @@ The demo will:
 ## Related
 
 - [Standalone Example](../service-discovery-standalone/) — gRPC client mode
-- [Service Discovery Pattern](../../d-engine-docs/src/docs/client_guide/service-discovery-pattern.md)
