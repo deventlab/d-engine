@@ -59,7 +59,7 @@ Usage examples demonstrating different d-engine integration modes.
 
 ## Requirements
 
-- **Rust**: 1.70+
+- **Rust**: 1.85+
 - **Go**: 1.20+ (for Go examples)
 - **Protobuf**: libprotoc 3.0+ (for code generation)
 - **OS**: Linux/macOS

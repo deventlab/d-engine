@@ -41,7 +41,7 @@ Clone the d-engine repository or download the proto files:
 
 ```bash
 git clone https://github.com/deventlab/d-engine.git
-cd d-engine/d-engine-proto/proto
+cd d-engine/d-engine-proto
 ```
 
 **Step 2: Generate client code**
