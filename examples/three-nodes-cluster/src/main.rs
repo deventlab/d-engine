@@ -90,6 +90,11 @@ async fn start_dengine_server(
     config_path: String,
     graceful_rx: watch::Receiver<()>,
 ) {
+    println!("╔════════════════════════════════════════╗");
+    println!("║  d-engine Node Starting...             ║");
+    println!("║  Config: {:<28} ║", config_path);
+    println!("╚════════════════════════════════════════╝");
+
     // StandaloneServer with explicit config path
     // Blocks until shutdown signal received
     if let Err(e) = StandaloneServer::run_with(&config_path, graceful_rx).await {
