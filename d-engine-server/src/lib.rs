@@ -1,52 +1,86 @@
 //! # d-engine-server
 //!
-//! Production-ready Raft consensus server implementation.
+//! Complete Raft server with gRPC and storage - batteries included
 //!
-//! ## Architecture
-//! - [`node`] - Node lifecycle management
-//! - [`storage`] - Pluggable storage backends
-//! - Core Raft protocol (re-exported from `d-engine-core`)
-//! - Protocol definitions (re-exported from `d-engine-proto`)
+//! ## When to use this crate directly
 //!
-//! ## Quick Start
-//! ```ignore
+//! - ✅ Embedding server in a larger Rust application
+//! - ✅ Need programmatic access to server APIs
+//! - ✅ Building custom tooling around d-engine
+//! - ✅ Already have your own client implementation
+//!
+//! ## When to use `d-engine` instead
+//!
+//! Most users should use [`d-engine`](https://crates.io/crates/d-engine):
+//!
+//! ```toml
+//! [dependencies]
+//! d-engine = { version = "0.2", features = ["server"] }
+//! ```
+//!
+//! It re-exports this crate plus optional client libraries with simpler dependency management.
+//!
+//! ## Quick Start (Direct Use)
+//!
+//! ```rust,ignore
 //! use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
 //! use std::sync::Arc;
 //! use std::path::PathBuf;
 //!
-//! #[tokio::main(flavor = "current_thread")]
+//! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let (tx, rx) = tokio::sync::watch::channel(());
+//!     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 //!
-//!     let storage = Arc::new(FileStorageEngine::new(PathBuf::from("/tmp/storage"))?);
-//!     let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("/tmp/sm")).await?);
+//!     let storage = Arc::new(FileStorageEngine::new(PathBuf::from("./storage"))?);
+//!     let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("./sm")).await?);
 //!
-//!     let node = NodeBuilder::new(None, rx)
+//!     let node = NodeBuilder::new(None, shutdown_rx)
 //!         .storage_engine(storage)
 //!         .state_machine(state_machine)
-//!         .start()
-//!         .await?;
+//!         .build()
+//!         .start_rpc_server()
+//!         .await
+//!         .ready()
+//!         .expect("Failed to start node");
 //!
 //!     node.run().await?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Custom Storage Backend
+//! ## Features
+//!
+//! This crate provides:
+//! - **gRPC Server** - Production-ready Raft RPC implementation
+//! - **Storage Backends** - File-based and RocksDB storage
+//! - **Cluster Orchestration** - Node lifecycle and membership management
+//! - **Snapshot Coordination** - Automatic log compaction
+//! - **Watch API** - Real-time state change notifications
+//!
+//! ## Custom Storage
 //!
 //! Implement the [`StateMachine`] and [`StorageEngine`] traits:
 //!
 //! ```rust,ignore
 //! use d_engine_server::{StateMachine, StorageEngine};
 //!
-//! struct MyStateMachine { /* ... */ }
-//! impl StateMachine for MyStateMachine { /* ... */ }
+//! struct MyStateMachine;
+//! impl StateMachine for MyStateMachine {
+//!     // Apply committed entries to your application state
+//! }
 //!
-//! struct MyStorageEngine { /* ... */ }
-//! impl StorageEngine for MyStorageEngine { /* ... */ }
+//! struct MyStorageEngine;
+//! impl StorageEngine for MyStorageEngine {
+//!     // Persist Raft logs and metadata
+//! }
 //! ```
 //!
-//! See the [d-engine-docs](https://docs.rs/d-engine-docs) for architecture details.
+//! ## Documentation
+//!
+//! For comprehensive guides:
+//! - [Customize Storage Engine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-storage-engine.md)
+//! - [Customize State Machine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-state-machine.md)
+//! - [Watch Feature Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/watch-feature.md)
 
 #![warn(missing_docs)]
 

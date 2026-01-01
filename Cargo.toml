@@ -4,11 +4,11 @@ members = [
   "d-engine-proto",
   "d-engine-core",
   "d-engine-client",
-  "d-engine-docs",
   "d-engine-server"
 ]
 
 exclude = [
+  "docs",
   "examples/client_usage",
   "examples/rocksdb-cluster",
   "examples/sled-cluster",
@@ -32,10 +32,10 @@ repository = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-d-engine-proto = { path = "./d-engine-proto" }
-d-engine-core = { path = "./d-engine-core" }
-d-engine-client = { path = "./d-engine-client" }
-d-engine-server = { path = "./d-engine-server" }
+d-engine-proto = { path = "./d-engine-proto", version = "0.2.0" }
+d-engine-core = { path = "./d-engine-core", version = "0.2.0" }
+d-engine-client = { path = "./d-engine-client", version = "0.2.0" }
+d-engine-server = { path = "./d-engine-server", version = "0.2.0" }
 
 tokio = { version = "1", features = [
     "macros",

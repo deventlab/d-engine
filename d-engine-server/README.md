@@ -237,7 +237,6 @@ service RaftClusterService {
 - **d-engine-client**: Rust client library
 - **d-engine-proto**: Protocol buffer definitions
 - **d-engine-core**: Core Raft implementation
-- **d-engine-docs**: Architecture and design documentation
 
 ## License
 

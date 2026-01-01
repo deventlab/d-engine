@@ -1,243 +1,164 @@
+#![warn(missing_docs)]
+
 //! # d-engine
 //!
-//! A lightweight and strongly consistent Raft consensus engine written in Rust.
-//! Build reliable and scalable distributed systems by embedding d-engine into your applications.
-//!
-//! ## What's New in v0.2.0
-//!
-//! - **Modular workspace**: Use `features = ["client"]` to reduce dependencies
-//! - **TTL/Lease**: Automatic key expiration for distributed locks
-//! - **Watch API**: Real-time key change notifications
-//! - **EmbeddedEngine**: Single-node start, scale to 3 nodes with zero code changes
-//! - **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
-//!
-//! See the [CHANGELOG](https://github.com/deventlab/d-engine/blob/main/CHANGELOG.md) for full details.
+//! 🚀 Lightweight Raft consensus engine - recommended entry point for most users
 //!
 //! ## Quick Start
 //!
-//! Add d-engine to your `Cargo.toml` with features you need:
-//!
 //! ```toml
-//! # For client-only applications
-//! d-engine = { version = "0.2", features = ["client"] }
-//!
-//! # For server/embedded applications
-//! d-engine = { version = "0.2", features = ["server"] }
-//!
-//! # For applications that need both
-//! d-engine = { version = "0.2", features = ["full"] }
+//! [dependencies]
+//! d-engine = { version = "0.2", features = ["server", "client"] }
 //! ```
+//!
+//! ## When to use which crate?
+//!
+//! | Your use case | Recommended crate |
+//! |---------------|------------------|
+//! | **Most users - full application** | `d-engine` (this crate) ⭐ |
+//! | **Client-only application** | `d-engine` with `features = ["client"]` |
+//! | **Server-only application** | `d-engine` with `features = ["server"]` |
+//! | **Custom Raft integration** | [`d-engine-core`](https://crates.io/crates/d-engine-core) |
+//! | **Non-Rust client (Python/Go/Java)** | [`d-engine-proto`](https://crates.io/crates/d-engine-proto) for `.proto` files |
+//!
+//! ## Architecture
+//!
+//! d-engine supports two integration modes:
+//!
+//! ### Embedded Mode (Rust)
+//! - Your app + Raft engine in **one process**
+//! - Zero-overhead `LocalKvClient` (memory-only, <0.1ms)
+//! - Use `d-engine` crate with `features = ["server"]`
+//!
+//! ### Standalone Mode (Any Language)
+//! - Raft server as **separate process**
+//! - Client connects via **gRPC**
+//! - Go/Python/Java: use `d-engine-proto` to generate client code
+//! - Rust: use `d-engine-client` crate
+//!
+//! ## Crate Organization
+//!
+//! ```text
+//! d-engine          ← Start here (Rust apps)
+//! ├── client        ← gRPC client (optional)
+//! └── server        ← Raft server + LocalKvClient
+//!     └── core      ← Pure Raft algorithm
+//!
+//! d-engine-proto    ← Protocol definitions (Go/Python/Java)
+//! ```
+//!
+//! ## 📚 Full Documentation
+//!
+//! For comprehensive guides, see:
+//! - [Quick Start - Embedded Mode](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/quick-start-5min.md)
+//! - [Quick Start - Standalone Mode](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/quick-start-standalone.md)
+//! - [Integration Modes Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/integration-modes.md)
+//! - [Examples Directory](https://github.com/deventlab/d-engine/tree/main/examples)
 //!
 //! ## Features
 //!
-//! - **`client`** - Client library for connecting to d-engine servers
-//! - **`server`** - Embed a d-engine Raft server into your application
-//! - **`full`** - Both client and server capabilities
+//! - `server` - Server runtime (enabled by default)
+//! - `client` - Client library (enabled by default)
+//! - `rocksdb` - RocksDB storage backend (enabled by default)
+//! - `watch` - Real-time key monitoring
 //!
-//! ## Client Example
+//! ## Examples
+//!
+//! ### Embedded Mode (Single Binary)
 //!
 //! ```rust,ignore
-//! use d_engine::Client;
+//! use d_engine::prelude::*;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let client = Client::builder(vec![
-//!         "http://localhost:9081".into(),
-//!         "http://localhost:9082".into(),
-//!     ])
-//!     .build()
-//!     .await?;
+//!     // Start embedded engine with RocksDB
+//!     let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
 //!
-//!     // Write data
-//!     client.kv().put("key", "value").await?;
+//!     // Wait for node initialization
+//!     engine.ready().await;
 //!
-//!     // Read data
-//!     let value = client.kv().get("key").await?;
-//!     println!("Value: {:?}", value);
+//!     // Wait for leader election
+//!     engine.wait_leader(std::time::Duration::from_secs(5)).await?;
+//!
+//!     // Get KV client
+//!     let client = engine.client();
+//!
+//!     // Store and retrieve data
+//!     client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+//!
+//!     if let Some(value) = client.get(b"hello".to_vec()).await? {
+//!         println!("Retrieved: hello = {}", String::from_utf8_lossy(&value));
+//!     }
 //!
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Server Example (Embedded)
+//! ### Standalone Mode (Separate Client/Server)
 //!
+//! Server:
 //! ```rust,ignore
-//! use d_engine::{NodeBuilder, FileStorageEngine, FileStateMachine};
+//! use d_engine::prelude::*;
 //! use std::sync::Arc;
-//! use std::path::PathBuf;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let (tx, rx) = tokio::sync::watch::channel(());
+//!     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 //!
-//!     let storage = Arc::new(FileStorageEngine::new(PathBuf::from("/tmp/storage"))?);
-//!     let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("/tmp/sm")).await?);
+//!     let storage = Arc::new(RocksDBStorageEngine::new("./storage")?);
+//!     let state_machine = Arc::new(RocksDBStateMachine::new("./state_machine").await?);
 //!
-//!     let node = NodeBuilder::new(None, rx)
+//!     let node = NodeBuilder::new(None, shutdown_rx)
 //!         .storage_engine(storage)
 //!         .state_machine(state_machine)
-//!         .start_server()
-//!         .await?;
+//!         .build()
+//!         .start_rpc_server()
+//!         .await
+//!         .ready()
+//!         .expect("Failed to start node");
 //!
 //!     node.run().await?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Architecture
+//! Client:
+//! ```rust,ignore
+//! use d_engine::prelude::*;
 //!
-//! d-engine is designed with a modular architecture:
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let client = Client::connect(vec!["http://localhost:50051"]).await?;
 //!
-//! - **d-engine-proto**: Protocol definitions (Protobuf/gRPC)
-//! - **d-engine-core**: Core Raft algorithm implementation
-//! - **d-engine-client**: Client library for cluster communication
-//! - **d-engine-server**: Production-ready server runtime
+//!     client.put(b"key".to_vec(), b"value".to_vec()).await?;
 //!
-//! This main crate re-exports the public APIs from these components based on
-//! enabled features, providing a unified interface for developers.
+//!     Ok(())
+//! }
+//! ```
 
-#![warn(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
-// ==================== Client API ====================
-
-#[cfg(feature = "client")]
-#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
-pub use d_engine_client::{
-    // Main entry points
-    Client,
-    // Error types
-    ClientApiError,
-    ClientBuilder,
-    // Configuration
-    ClientConfig,
-    // Specialized clients
-    ClusterClient,
-    GrpcKvClient,
-};
-
-#[cfg(feature = "client")]
-#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
-/// Protocol types for client operations
-pub mod protocol {
-    pub use d_engine_client::protocol::ClientResult;
-    pub use d_engine_client::protocol::ReadConsistencyPolicy;
-    pub use d_engine_client::protocol::WriteCommand;
-}
-
-#[cfg(feature = "client")]
-#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
-/// Cluster management types
-pub mod cluster_types {
-    pub use d_engine_client::cluster_types::NodeMeta;
-    pub use d_engine_client::cluster_types::NodeStatus;
-}
-
-// ==================== Core API ====================
-
-#[cfg(feature = "client")]
-#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
-pub use d_engine_client::KvClient;
-#[cfg(all(feature = "server", feature = "rocksdb"))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "server", feature = "rocksdb"))))]
-pub use d_engine_server::RocksDBStateMachine;
-#[cfg(all(feature = "server", feature = "rocksdb"))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "server", feature = "rocksdb"))))]
-pub use d_engine_server::RocksDBStorageEngine;
-// ==================== Server API ====================
+// Re-export server components when server feature is enabled
 #[cfg(feature = "server")]
-#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
-pub use d_engine_server::{
-    // Embedded mode
-    EmbeddedEngine,
-    // Error types
-    Error,
-    // Storage implementations
-    FileStateMachine,
-    FileStorageEngine,
-    // Data types
-    HardState,
-    LeaderInfo,
-    // Embedded KV client (zero-overhead, same process)
-    LocalKvClient,
-    // Extension traits for custom implementations
-    LogStore,
-    MetaStore,
-    // Main entry points
-    Node,
-    NodeBuilder,
-    ProstError,
-    Result,
-    SnapshotError,
-    // Standalone mode
-    StandaloneServer,
-    StateMachine,
-    StorageEngine,
-    StorageError,
-};
+pub use d_engine_server::*;
 
-#[cfg(feature = "server")]
-#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
-/// Common Raft protocol types
-pub mod common {
-    pub use d_engine_server::common::Entry;
-    pub use d_engine_server::common::EntryPayload;
-    pub use d_engine_server::common::LogId;
-    pub use d_engine_server::common::entry_payload;
-}
+// Re-export client components when client feature is enabled
+#[cfg(feature = "client")]
+pub use d_engine_client::*;
 
-#[cfg(feature = "server")]
-#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
-/// Client write command types
-pub mod write_command {
-    pub use d_engine_server::client::WriteCommand;
-    pub use d_engine_server::client::write_command;
-}
-
-#[cfg(feature = "server")]
-#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
-/// Server storage types
-pub mod storage {
-    pub use d_engine_server::server_storage::SnapshotMetadata;
-}
-
-// ==================== Convenience Re-exports ====================
-
-/// Convenient prelude for quick imports
+/// Convenient prelude for importing common types
 ///
-/// Import everything you need with:
 /// ```rust,ignore
 /// use d_engine::prelude::*;
 /// ```
 pub mod prelude {
+    #[cfg(feature = "server")]
+    pub use d_engine_server::{
+        EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, LocalKvClient, Node,
+        NodeBuilder, Result, StateMachine, StorageEngine,
+    };
+
+    #[cfg(feature = "rocksdb")]
+    pub use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+
     #[cfg(feature = "client")]
-    pub use d_engine_client::Client;
-    #[cfg(feature = "client")]
-    pub use d_engine_client::ClientBuilder;
-    #[cfg(feature = "client")]
-    pub use d_engine_client::GrpcKvClient;
-    #[cfg(feature = "client")]
-    pub use d_engine_client::KvClient;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::EmbeddedEngine;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::FileStateMachine;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::FileStorageEngine;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::LeaderInfo;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::LocalClientError;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::LocalKvClient;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::Node;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::NodeBuilder;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::StandaloneServer;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::StateMachine;
-    #[cfg(feature = "server")]
-    pub use d_engine_server::StorageEngine;
+    pub use d_engine_client::{Client, KvClient};
 }

@@ -3,13 +3,13 @@ name = "d-engine-client"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Client library for connecting to d-engine Raft consensus servers"
+description = "Client library for interacting with d-engine Raft clusters via gRPC"
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 keywords = ["raft", "consensus", "client", "async"]
 categories = ["asynchronous", "network-programming"]
-publish = false
+publish = true
 
 [package.metadata.docs.rs]
 all-features = true

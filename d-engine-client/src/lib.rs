@@ -1,32 +1,66 @@
-//! Client module for distributed consensus system
+//! # d-engine-client
 //!
-//! Provides core components for interacting with the d_engine cluster:
+//! Client library for interacting with d-engine Raft clusters via gRPC
+//!
+//! ## When to use this crate directly
+//!
+//! - ✅ Building client-only Rust applications
+//! - ✅ Need fine-grained control over client behavior
+//! - ✅ Integrating d-engine into existing Rust services
+//!
+//! ## When to use `d-engine` instead
+//!
+//! Most users prefer [`d-engine`](https://crates.io/crates/d-engine) with the `client` feature:
+//!
+//! ```toml
+//! [dependencies]
+//! d-engine = { version = "0.2", features = ["client"] }
+//! ```
+//!
+//! This gives you the same client APIs with simpler dependency management.
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
+//! use d_engine_client::Client;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let client = Client::connect(vec!["http://localhost:50051"]).await?;
+//!
+//!     // Write data
+//!     client.put(b"key".to_vec(), b"value".to_vec()).await?;
+//!
+//!     // Read data
+//!     if let Some(value) = client.get(b"key".to_vec()).await? {
+//!         println!("Value: {:?}", value);
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Read Consistency
+//!
+//! Choose consistency level based on your needs:
+//!
+//! - `get_linearizable()` - Strong consistency (read from Leader)
+//! - `get_eventual()` - Fast local reads (stale OK)
+//! - `get_lease()` - Optimized with leader lease
+//!
+//! ## Features
+//!
+//! This crate provides:
 //! - [`Client`] - Main entry point with cluster access
 //! - [`ClientBuilder`] - Configurable client construction
-//! - [`KvClient`] - Key-value store operations
+//! - [`KvClient`] - Key-value store operations trait
 //! - [`ClusterClient`] - Cluster management operations
-//! - [`ConnectionPool`] - Underlying connection management
 //!
-//! # Basic Usage
-//! ```no_run
-//! use d_engine_client::Client;
-//! use d_engine_client::ClientBuilder;
-//! use std::time::Duration;
-//! use core::error::Error;
+//! ## Documentation
 //!
-//! #[tokio::main(flavor = "current_thread")]
-//! async fn main(){
-//!     // Initialize client with automatic cluster discovery
-//!     let client = Client::builder(vec![
-//!         "http://node1:9081".into(),
-//!         "http://node2:9082".into()
-//!     ])
-//!     .connect_timeout(Duration::from_secs(3))
-//!     .request_timeout(Duration::from_secs(1))
-//!     .enable_compression(true)
-//!     .build()
-//!     .await
-//!     .unwrap();
+//! For comprehensive guides:
+//! - [Read Consistency](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/read-consistency.md)
+//! - [Error Handling](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/error-handling.md)
 //!
 //!     // Execute key-value operations
 //!     client.kv().put("user:1001", "Alice").await.unwrap();

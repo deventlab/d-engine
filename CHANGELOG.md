@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.0] - 2025-12-11 [✅ Released]
+## [v0.2.0] - 2026-01-01 [✅ Released]
 
 ### 🎯 Highlights for Developers
 

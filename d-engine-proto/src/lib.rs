@@ -1,8 +1,50 @@
-//! Protocol buffer type extensions
+//! # d-engine-proto
 //!
-//! This module provides additional trait implementations and helper methods
-//! for protobuf-generated types. The re-exports here are used by dependent crates
-//! (d-engine-core, d-engine, d-engine-client) when they import from this crate.
+//! gRPC protocol definitions - for building non-Rust d-engine clients
+//!
+//! ## When to use this crate
+//!
+//! - ✅ Building Go/Python/Java clients
+//! - ✅ Need raw `.proto` files for code generation
+//! - ✅ Custom protocol extensions
+//! - ✅ Contributing to d-engine protocol development
+//!
+//! ## For Rust users
+//!
+//! If you're writing Rust code, use [`d-engine`](https://crates.io/crates/d-engine) or
+//! [`d-engine-client`](https://crates.io/crates/d-engine-client) instead - they provide
+//! higher-level APIs on top of these protocol definitions.
+//!
+//! ```toml
+//! [dependencies]
+//! d-engine = { version = "0.2", features = ["client"] }
+//! ```
+//!
+//! ## For non-Rust developers
+//!
+//! The `.proto` files are included in this crate. Generate client code for your language:
+//!
+//! ```bash
+//! # Python example
+//! protoc --python_out=. --grpc_python_out=. d-engine.proto
+//!
+//! # Go example
+//! protoc --go_out=. --go-grpc_out=. d-engine.proto
+//!
+//! # Java example
+//! protoc --java_out=. --grpc-java_out=. d-engine.proto
+//! ```
+//!
+//! Protocol files are located in the source repository under `d-engine-proto/proto/`.
+//!
+//! ## Documentation
+//!
+//! For language-specific integration guides:
+//! - [Go Client Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/go-client.md)
+//!
+//! ## Protocol Modules
+//!
+//! This crate provides protobuf-generated Rust types organized by service area:
 
 pub mod common {
     include!("generated/d_engine.common.rs");

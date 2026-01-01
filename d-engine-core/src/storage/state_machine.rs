@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../d-engine-docs/src/docs/server_guide/customize-state-machine.md")]
+#![doc = include_str!("../../../docs/src/docs/server_guide/customize-state-machine.md")]
 
 use bytes::Bytes;
 use d_engine_proto::common::Entry;
